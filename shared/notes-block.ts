@@ -34,7 +34,7 @@ function fullEntry(note: NoteCard): string {
   const outside = note.source === "model-after-outside-content" ? ", written after reading outside content" : "";
   const body = note.body.length > NOTE_BODY_CAP ? `${note.body.slice(0, NOTE_BODY_CAP)}${MORE_BODY}` : note.body;
   // Continuation lines are indented so a body can't look like another note.
-  return `- ${flat(note.title, NOTE_TITLE_CAP)} (${day})${outside}: ${body.replace(/\n/g, "\n  ")}`;
+  return `- ${flat(note.title, NOTE_TITLE_CAP)} (${day})${outside}: ${body.replace(/\r\n|[\r\u2028\u2029]/g, "\n").replace(/\n/g, "\n  ")}`;
 }
 
 function titleEntry(note: NoteCard): string {
@@ -56,16 +56,19 @@ function assemble(full: NoteCard[], titles: NoteCard[], more: number): string {
  * past that, notes fall back from bodies to titles, then from titles to the
  * count. An empty list gives a sentinel, so the block never silently vanishes.
  */
-export function renderNotesBlock(cards: NoteCard[]): string {
+export function renderNotesBlock(cards: NoteCard[], liveCount = cards.length): string {
   if (cards.length === 0) return `${HEADER}\n${fence("notes", EMPTY)}`;
   const sorted = [...cards].sort((a, b) => {
     const delta = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
     if (Number.isNaN(delta)) throw new Error("notes_updated_at_invalid");
     return delta !== 0 ? delta : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
-  const total = sorted.length;
-  let fullCount = Math.min(NOTES_FULL_COUNT, total);
-  let titleCount = Math.min(NOTES_TITLE_COUNT, total - fullCount);
+  // `liveCount` is how many notes the bot really has when `cards` is only the
+  // newest page of them: the "N more" line counts against it.
+  const total = Math.max(liveCount, sorted.length);
+  const shown = sorted.length;
+  let fullCount = Math.min(NOTES_FULL_COUNT, shown);
+  let titleCount = Math.min(NOTES_TITLE_COUNT, shown - fullCount);
   const build = () => assemble(
     sorted.slice(0, fullCount),
     sorted.slice(fullCount, fullCount + titleCount),
@@ -74,7 +77,7 @@ export function renderNotesBlock(cards: NoteCard[]): string {
   let text = build();
   while (text.length > NOTES_BLOCK_CAP && fullCount > 0) {
     fullCount -= 1;
-    titleCount = Math.min(NOTES_TITLE_COUNT, total - fullCount);
+    titleCount = Math.min(NOTES_TITLE_COUNT, shown - fullCount);
     text = build();
   }
   while (text.length > NOTES_BLOCK_CAP && titleCount > 0) {

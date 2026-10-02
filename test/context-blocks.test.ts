@@ -270,3 +270,23 @@ test("a bad timestamp fails loud", () => {
   assert.throws(() => renderNotesBlock([note(1, { updatedAt: "nope" }), note(2)]), /notes_updated_at_invalid/);
   assert.throws(() => renderNotesBlock([note(1, { updatedAt: "nope" })]), RangeError);
 });
+
+test("fence also escapes a closing tag with whitespace inside it", () => {
+  assert.equal(fence("t", "a < / t> b <\n/T> c <\t/  t"), "<t>\na <\\/t> b <\\/T> c <\\/t\n</t>");
+  assert.match(fence("owner-instructions", "x < /owner-instructions> y"), /x <\\\/owner-instructions> y/);
+});
+
+test("a note body with CR, U+2028 or U+2029 stays indented under its note", () => {
+  const card = (body: string): NoteCard => ({ id: "n1", title: "T", body, updatedAt: "2026-10-01T00:00:00Z" });
+  const text = renderNotesBlock([card("one\r\ntwo\rthree\u2028four\u2029five")]);
+  assert.match(text, /: one\n  two\n  three\n  four\n  five\n/);
+  assert.equal(/[\r\u2028\u2029]/.test(text), false);
+});
+
+test("\"N more\" counts against the live total when only a page of notes is passed", () => {
+  const cards = Array.from({ length: 56 }, (_, index): NoteCard => ({
+    id: `n${String(index).padStart(2, "0")}`, title: `T${index}`, body: "b", updatedAt: new Date(Date.UTC(2026, 9, 1, 0, index)).toISOString(),
+  }));
+  assert.match(renderNotesBlock(cards, 90), /34 more: use memory_search\./);
+  assert.doesNotMatch(renderNotesBlock(cards), /more: use memory_search/);
+});

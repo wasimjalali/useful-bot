@@ -15,7 +15,7 @@ export default defineDynamic({
     "turn.started": async (event, ctx) => {
       const turnId = turnIdOf(event);
       try {
-        const snapshot = await ensureTurnSnapshot(ctx, turnId);
+        const snapshot = await ensureTurnSnapshot(ctx, turnId, true);
         // Unbound or mismatched: nothing to render, and the model resolver refuses the turn.
         if (!snapshot || snapshot.status !== "ok") return null;
         return defineInstructions({ content: renderContext(snapshot.context) });

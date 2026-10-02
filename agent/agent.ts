@@ -3,7 +3,7 @@ import { defineAgent, defineDynamic } from "eve";
 import { POLICY_WINDOW_TOKENS } from "../shared/policy.ts";
 import { routerFetch } from "./lib/router-fetch.ts";
 import { turnIdOf } from "./lib/router-identity.ts";
-import { perSessionModel } from "./lib/session-model.ts";
+import { frozenTurnFor, perSessionModel } from "./lib/session-model.ts";
 import { ensureTurnSnapshot, frozenSelection } from "./lib/turn-snapshot.ts";
 import { routerApiBase } from "../shared/stack.ts";
 
@@ -203,7 +203,10 @@ export default defineAgent({
           throw new Error("bot_context_missing");
         }
         const model = routerModel(ctx.session.id, turnId);
-        return { model, modelContextWindowTokens: snapshot.selection.windowTokens };
+        // The window is the frozen selection's, the one the handle sends.
+        const frozen = frozenTurnFor(ctx.session.id);
+        if (!frozen) throw new Error("bot_context_missing");
+        return { model, modelContextWindowTokens: frozen.selection.windowTokens };
       },
     },
   }),

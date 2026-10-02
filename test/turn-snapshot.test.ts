@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { applyShellAction, DEFAULT_BOT_ID, orchestratorId, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
 import { bindSession, readSessionBot } from "../shared/session-bindings.ts";
+import { upsertSessionGrant } from "../shared/workspace-store.ts";
+import { renderContext } from "../shared/context-blocks.ts";
 import { withBotSelection } from "../shared/shell-store.ts";
 import {
   boundBotId,
@@ -288,5 +290,33 @@ test("list_models reports the model the turn froze, not the default", async () =
     // A session nobody is bound to has no turn to describe.
     const blocked = await silenced(async () => listModels.execute({ kind: "chat" } as never, ctxFor("sess-lm-nobody") as never));
     assert.deepEqual(blocked.result, { status: "blocked", error: "bot_context_missing" });
+  });
+});
+
+test("with no turn id a failed mark sticks until the next turn.started, then the turn rebuilds", async () => {
+  await withWorld(async ({ alpha }) => {
+    const ctx = ctxFor("sess-sticky", alpha);
+    markSnapshotFailed("sess-sticky", undefined, alpha);
+    const stuck = await ensureTurnSnapshot(ctx, undefined);
+    assert.equal(stuck?.status, "failed", "a later step does not rebuild the failure away");
+    assert.equal((await ensureTurnSnapshot(ctx, undefined)), stuck);
+    const fresh = await ensureTurnSnapshot(ctx, undefined, true);
+    assert.equal(fresh?.status, "ok", "turn.started clears it");
+    assert.equal((await ensureTurnSnapshot(ctx, undefined))?.status, "ok");
+  });
+});
+
+test("This chat shows the permission and folder the session grant gives, which is what the tools enforce", async () => {
+  await withWorld(async ({ alpha }) => {
+    const ctx = ctxFor("sess-grant", alpha);
+    // No grant: the tools treat the session as Read only, so that is what is shown.
+    const bare = await ensureTurnSnapshot(ctx, "t1");
+    assert.equal(bare?.status === "ok" && bare.permission, "read_only");
+    assert.equal(bare?.status === "ok" && bare.folder, null);
+    upsertSessionGrant({ sessionId: "sess-grant", path: "/Users/someone/Projects/Atlas", permission: "full_access" });
+    const granted = await ensureTurnSnapshot(ctx, "t2");
+    assert.equal(granted?.status === "ok" && granted.permission, "full_access");
+    assert.equal(granted?.status === "ok" && granted.folder, "Atlas");
+    assert.match(granted?.status === "ok" ? renderContext(granted.context) : "", /This chat: Full access, folder "Atlas" attached\./);
   });
 });

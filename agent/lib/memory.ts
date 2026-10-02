@@ -56,6 +56,8 @@ export interface MemoryExcerpt {
   id: string;
   revision: number;
   title: string;
+  /** Who wrote it last: a tool that returns a note marks the turn when this is outside-sourced. */
+  source: NoteSource;
   body: string;
   truncated: boolean;
 }
@@ -204,11 +206,12 @@ function serializeNote(meta: NoteMeta, body: string): string {
 }
 
 /** A note as search and list show it: the body clipped to a preview. */
-function previewOf(note: { id: string; revision: number; title: string }, body: string): MemoryExcerpt {
+function previewOf(note: { id: string; revision: number; title: string; source: NoteSource }, body: string): MemoryExcerpt {
   return {
     id: note.id,
     revision: note.revision,
     title: note.title,
+    source: note.source,
     body: body.slice(0, PREVIEW_CHARS),
     truncated: body.length > PREVIEW_CHARS,
   };
@@ -445,6 +448,15 @@ export class MemoryStore {
     return excerpts;
   }
 
+  /** How many live notes a bot has, however many a page of them shows. */
+  countLive(botId: string): number {
+    if (!botId) throw new Error("memory_bot_required");
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS c FROM notes WHERE status = 'active' AND bot_id = ? AND (expires_at IS NULL OR expires_at > ?)",
+    ).get(botId, new Date().toISOString()) as { c: number };
+    return row.c;
+  }
+
   list(botId: string, limit = 100): MemoryNoteCard[] {
     if (!botId) throw new Error("memory_bot_required");
     const now = new Date().toISOString();
@@ -458,7 +470,7 @@ export class MemoryStore {
         // The index is a cache of the files: a row whose file now says
         // another owner, or an expiry, is not this bot's live note.
         if (!this.isLiveFor(meta, botId)) continue;
-        cards.push({ ...previewOf(meta, body), tags: meta.tags, updatedAt: meta.updatedAt, source: meta.source });
+        cards.push({ ...previewOf(meta, body), tags: meta.tags, updatedAt: meta.updatedAt });
       } catch {
         this.skippedRows += 1;
       }
@@ -509,6 +521,7 @@ export class MemoryStore {
       id: meta.id,
       revision: meta.revision,
       title: meta.title,
+      source: meta.source,
       body,
       truncated: false,
     };
@@ -673,7 +686,7 @@ export class MemoryStore {
     if (meta.status !== "active" || (meta.expiresAt !== null && meta.expiresAt <= new Date().toISOString())) {
       throw new Error("memory_not_found");
     }
-    return { id: meta.id, revision: meta.revision, title: meta.title, body, truncated: false, tags: meta.tags, updatedAt: meta.updatedAt, source: meta.source };
+    return { id: meta.id, revision: meta.revision, title: meta.title, source: meta.source, body, truncated: false, tags: meta.tags, updatedAt: meta.updatedAt };
   }
 
   private insertIndex(meta: NoteMeta, body: string): void {

@@ -81,6 +81,13 @@ function remember(snapshot: TurnSnapshot): void {
   if (reg.latest.size > REGISTRY_CAP) reg.latest.delete(reg.latest.keys().next().value as string);
 }
 
+/** A read keeps the turn alive: eviction drops the idlest, not the oldest written. */
+function touch(key: string, snapshot: TurnSnapshot): void {
+  const byTurn = registry().byTurn;
+  byTurn.delete(key);
+  byTurn.set(key, snapshot);
+}
+
 /**
  * The snapshot of one turn, or the session's latest when no turn id is given
  * (a tool whose context carries none). A failed snapshot is returned as it is:
@@ -88,9 +95,11 @@ function remember(snapshot: TurnSnapshot): void {
  */
 export function turnSnapshot(sessionId: string, turnId?: string): TurnSnapshot | null {
   const reg = registry();
-  if (turnId !== undefined) return reg.byTurn.get(keyOf(sessionId, turnId)) ?? null;
-  const latest = reg.latest.get(sessionId);
-  return latest ? reg.byTurn.get(latest) ?? null : null;
+  const key = turnId !== undefined ? keyOf(sessionId, turnId) : reg.latest.get(sessionId);
+  const held = key ? reg.byTurn.get(key) : undefined;
+  if (!held) return null;
+  touch(key as string, held);
+  return held;
 }
 
 /** Record that this turn's context could not be built, so the model resolver refuses the turn. */
@@ -187,12 +196,18 @@ export function buildSnapshot(
   // A step with no turn id cannot be told from the turn before it, so it
   // re-reads. That re-read prefers the grant (written once, at turn start)
   // over the owner's live pick, so a pick made mid-turn cannot split the turn.
-  const grantPick = turnId === undefined ? readSessionGrant(sessionId)?.selection ?? null : null;
+  const grant = readSessionGrant(sessionId);
+  const grantPick = turnId === undefined ? grant?.selection ?? null : null;
   const picked = grantPick ?? botSelection(bot, store);
   const selection: TurnSelection = { ...picked, windowTokens: windowTokensFor(picked) };
   const composer = botComposerState(store, picked);
   const image = publicProviders(store).roles.image;
 
+  // What the tools enforce is the session grant (agent/lib/workspace.ts,
+  // permission.ts), so that is what the turn shows: a session with no grant is
+  // Read only there, and the folder is the one the grant attached.
+  const permission: WorkspacePermission = grant?.permission ?? "read_only";
+  const folder = grant?.path ? basename(grant.path) : null;
   const isGroup = bot.kind === "group";
   const members = isGroup
     ? bot.memberIds.flatMap((id) => {
@@ -220,8 +235,8 @@ export function buildSnapshot(
     kind: bot.kind,
     profileRevision: bot.profileRevision,
     selection,
-    permission: bot.permission,
-    folder: bot.workspace ? basename(bot.workspace.path) : null,
+    permission,
+    folder,
     outside: deliveryClaim(ctx) === "handoff",
     model,
     image: imageModel,
@@ -234,8 +249,8 @@ export function buildSnapshot(
         first,
         date: now,
         tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        permission: bot.permission,
-        folder: bot.workspace ? basename(bot.workspace.path) : null,
+        permission,
+        folder,
         model: { label: model.label, id: model.id, connection: model.connection },
         image: imageModel ? { label: imageModel.label, id: imageModel.id } : null,
         firstChat,
@@ -251,11 +266,23 @@ export function buildSnapshot(
  * is rebuilt every call. A build that throws is recorded as failed and logged:
  * the model resolver then refuses the turn.
  */
-export function snapshotForBot(botId: string, ctx: SnapshotCtx, turnId: string | undefined): TurnSnapshot {
+export function snapshotForBot(
+  botId: string,
+  ctx: SnapshotCtx,
+  turnId: string | undefined,
+  turnStart = false,
+): TurnSnapshot {
   const sessionId = ctx.session.id;
+  const held = registry().byTurn.get(keyOf(sessionId, turnId));
   if (turnId !== undefined) {
-    const held = registry().byTurn.get(keyOf(sessionId, turnId));
-    if (held) return held;
+    if (held) {
+      touch(keyOf(sessionId, turnId), held);
+      return held;
+    }
+  } else if (held?.status === "failed" && !turnStart) {
+    // With no turn id a failure mark can't be told from the next turn's, so it
+    // sticks until the next turn.started (`turnStart`) instead of being rebuilt away.
+    return held;
   }
   let snapshot: TurnSnapshot;
   try {
@@ -274,10 +301,14 @@ export function snapshotForBot(botId: string, ctx: SnapshotCtx, turnId: string |
  * is the one entry point for the context block, the model resolver and the
  * tools, and it rebuilds a missing snapshot (a process restart mid-turn).
  */
-export async function ensureTurnSnapshot(ctx: SnapshotCtx, turnId: string | undefined): Promise<TurnSnapshot | null> {
+export async function ensureTurnSnapshot(
+  ctx: SnapshotCtx,
+  turnId: string | undefined,
+  turnStart = false,
+): Promise<TurnSnapshot | null> {
   const botId = await boundBotId(ctx);
   if (!botId) return null;
-  return snapshotForBot(botId, ctx, turnId);
+  return snapshotForBot(botId, ctx, turnId, turnStart);
 }
 
 /** The frozen selection of a turn the resolver already ensured. Throws `bot_context_missing` otherwise. */

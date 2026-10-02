@@ -33,7 +33,7 @@ import { applyProvidersDelete, applyProvidersPut, CONNECTION_REMOVED_BOTS_PINNED
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
 import { listThreadEvents } from "../shared/agent-store.ts";
-import { perSessionModel, frozenTurnFor, isFirstStepOfTurn } from "../agent/lib/session-model.ts";
+import { perSessionModel, frozenTurnFor } from "../agent/lib/session-model.ts";
 import { windowTokensFor } from "../agent/lib/model-window.ts";
 import { buildSnapshot, frozenSelection, snapshotForBot } from "../agent/lib/turn-snapshot.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../shared/policy.ts";
@@ -788,13 +788,6 @@ test("a per-bot PUT with an effort or speed that is not a known id is invalid_re
     // null effort is a real value, not an invalid one: it is accepted (and snapped to the model's levels).
     assert.doesNotThrow(() => applyProvidersPut({ botId: aId, effort: null }));
   });
-});
-
-test("a first step with no turn id waits for the stamp; only the same turn id skips it", () => {
-  assert.equal(isFirstStepOfTurn(null, undefined), true, "no frozen entry, no turn id: undefined === undefined must not skip the wait");
-  assert.equal(isFirstStepOfTurn(null, "t1"), true);
-  assert.equal(isFirstStepOfTurn({ turnId: "t1" } as never, "t2"), true);
-  assert.equal(isFirstStepOfTurn({ turnId: "t1" } as never, "t1"), false);
 });
 
 test("a DELETE whose bot reset fails twice is refused, the connection stays and the bots are untouched", () => {

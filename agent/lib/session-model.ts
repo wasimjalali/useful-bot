@@ -31,15 +31,6 @@ export function frozenTurnFor(eveSessionId: string): FrozenTurn | null {
   return registry().get(eveSessionId) ?? null;
 }
 
-/**
- * Whether a step is the first of its turn and so must wait for the stamp: no
- * frozen entry at all, or one for a different turn. Comparing the ids alone
- * would skip the wait for a first step with no turn id (undefined === undefined).
- */
-export function isFirstStepOfTurn(frozen: FrozenTurn | null, turnId: string | undefined): boolean {
-  return !frozen || frozen.turnId !== turnId;
-}
-
 function remember(eveSessionId: string, frozen: FrozenTurn): void {
   const map = registry();
   // Insertion order is age: re-inserting keeps the oldest key the idlest session.

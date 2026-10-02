@@ -1,5 +1,13 @@
 import { defineMemory, defineMemoryProvider } from "eve/memory";
-import { renderNotesBlock, NOTES_FULL_COUNT, type NoteCard } from "../../shared/notes-block.ts";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+  renderNotesBlock,
+  NOTES_FULL_COUNT,
+  NOTES_TITLE_COUNT,
+  type NoteCard,
+} from "../../shared/notes-block.ts";
 import { sharedMemoryStore, type MemoryStore } from "../lib/memory.ts";
 import { boundBotId, type SnapshotCtx } from "../lib/turn-snapshot.ts";
 
@@ -15,12 +23,60 @@ import { boundBotId, type SnapshotCtx } from "../lib/turn-snapshot.ts";
  * the safe shape for an unbound session. A null recall keeps the previous
  * record. The same record id is replaced each time, and an empty list sends a
  * sentinel because blank content is refused and a recall cannot retract.
+ *
+ * Replay: eve stores a digest per operation id and throws "replayed with a
+ * different result" if a replayed recall renders other bytes, which would
+ * retire the session. After a restart mid-turn eve can replay the operation,
+ * and the owner may have edited a note meanwhile. So the rendered block is
+ * persisted per (bot, operation) in a small bounded folder next to the memory
+ * index, written before the result is returned, and read back first on replay.
+ * (Not proved from eve's source that a resumed turn never re-runs recall for a
+ * recorded operation, so the persistence is what makes the replay safe.)
  */
 export const NOTES_RECORD_ID = "bot-notes";
 const OPERATION_CAP = 256;
 
-/** The rendered block per operation: eve replays a recall and refuses a different result. */
+/** The rendered block per operation, in memory: the fast path in front of the disk copy. */
 const byOperation = new Map<string, string>();
+
+/** Forget the in-memory renders, as a process restart does. The disk copies stay. */
+export function forgetRecallCache(): void {
+  byOperation.clear();
+}
+
+/** The folder of persisted renders, beside the notes and the index of the store. */
+function recallDir(store: MemoryStore): string {
+  return join(dirname(store.notesDir), "recall");
+}
+
+function recallFile(store: MemoryStore, key: string): string {
+  return join(recallDir(store), `${createHash("sha256").update(key).digest("hex")}.txt`);
+}
+
+function readPersisted(store: MemoryStore, key: string): string | undefined {
+  try {
+    return readFileSync(recallFile(store, key), "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+}
+
+/** Write the render before it is returned, and keep the folder to the newest OPERATION_CAP files. */
+function persist(store: MemoryStore, key: string, content: string): void {
+  const dir = recallDir(store);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = recallFile(store, key);
+  const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  writeFileSync(tmp, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  renameSync(tmp, path);
+  const files = readdirSync(dir).filter((name) => name.endsWith(".txt"));
+  if (files.length <= OPERATION_CAP) return;
+  const aged = files.map((name) => ({ name, at: statSync(join(dir, name)).mtimeMs })).sort((x, y) => x.at - y.at);
+  for (const old of aged.slice(0, files.length - OPERATION_CAP)) {
+    try { unlinkSync(join(dir, old.name)); } catch { /* another recall pruned it */ }
+  }
+}
 
 /** Which bot's notes this session holds: the same claim and binding the turn snapshot uses. Never throws. */
 export async function notesScope(ctx: SnapshotCtx): Promise<string | null> {
@@ -32,15 +88,27 @@ export async function notesScope(ctx: SnapshotCtx): Promise<string | null> {
   }
 }
 
-/** The bot's live notes as cards: the newest few with their whole body, the rest as previews. */
-function loadCards(store: MemoryStore, botId: string): NoteCard[] {
-  return store.list(botId, 100).map((card, index) => ({
+/**
+ * The exact block a bot's recall renders from its live notes: the newest few
+ * with their whole body, then titles, counted against the bot's true note
+ * count. Recall and admission sizing both call this one function.
+ */
+export function renderNotesFor(botId: string, store: () => MemoryStore = sharedMemoryStore): string {
+  const notes = store();
+  const page = notes.list(botId, NOTES_FULL_COUNT + NOTES_TITLE_COUNT);
+  // Same order the block uses, so the bodies loaded are the ones it shows in full.
+  const sorted = [...page].sort((a, b) => {
+    const delta = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    return delta !== 0 ? delta : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  const cards: NoteCard[] = sorted.map((card, index) => ({
     id: card.id,
     title: card.title,
-    body: index < NOTES_FULL_COUNT ? store.readCard(card.id, botId).body : card.body,
+    body: index < NOTES_FULL_COUNT ? notes.readCard(card.id, botId).body : card.body,
     updatedAt: card.updatedAt,
     source: card.source,
   }));
+  return renderNotesBlock(cards, notes.countLive(botId));
 }
 
 /** The recall result for one operation. Never throws: a failure returns null. */
@@ -56,7 +124,17 @@ export function recallNotes(
     const key = `${botId}\u0000${ctx.operationId}`;
     let content = byOperation.get(key);
     if (content === undefined) {
-      content = renderNotesBlock(loadCards(store(), botId));
+      const notes = store();
+      content = readPersisted(notes, key);
+      if (content === undefined) {
+        content = renderNotesFor(botId, () => notes);
+        try {
+          persist(notes, key, content);
+        } catch (err) {
+          // Without the copy a replay could differ, but the turn is not worth failing for it.
+          console.error("[memory] notes render not persisted", err instanceof Error ? err.message : err);
+        }
+      }
       if (byOperation.size >= OPERATION_CAP) byOperation.delete(byOperation.keys().next().value as string);
       byOperation.set(key, content);
     }

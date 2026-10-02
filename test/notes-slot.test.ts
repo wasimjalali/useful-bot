@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
-import { NOTES_RECORD_ID, notesScope, recallNotes } from "../agent/memory/notes.ts";
+import { forgetRecallCache, NOTES_RECORD_ID, notesScope, recallNotes, renderNotesFor } from "../agent/memory/notes.ts";
 import notes from "../agent/memory/notes.ts";
 import { markOutside, seenOutside } from "../agent/lib/outside-content.ts";
 import { ensureTurnSnapshot } from "../agent/lib/turn-snapshot.ts";
@@ -119,14 +119,37 @@ test("a replayed operation returns the same bytes even after the owner edits a n
   assert.match(contentOf(recallNotes(recallCtx("op-after", "bot-a"), () => store)) ?? "", /second/);
 });
 
-test("the operation cache is capped at 256 entries", () => {
+test("a replay after a restart returns the persisted bytes, even after the owner edits a note", () => {
+  const store = freshStore();
+  const n = put(store, "bot-a", "Plan", "v1");
+  const first = contentOf(recallNotes(recallCtx("op-restart", "bot-a"), () => store));
+  put(store, "bot-a", "Plan", "v2", { id: n.id, expectedRevision: 1 });
+  forgetRecallCache();
+  assert.equal(contentOf(recallNotes(recallCtx("op-restart", "bot-a"), () => store)), first);
+  assert.match(contentOf(recallNotes(recallCtx("op-restart-new", "bot-a"), () => store)) ?? "", /v2/);
+});
+
+test("the persisted renders are bounded at 256 files", () => {
   const store = freshStore();
   put(store, "bot-a", "Plan", "v1");
-  const first = contentOf(recallNotes(recallCtx("op-cap-0", "bot-a"), () => store));
-  for (let index = 1; index <= 300; index += 1) recallNotes(recallCtx(`op-cap-${index}`, "bot-a"), () => store);
-  put(store, "bot-a", "Plan", "v2", { id: store.list("bot-a")[0].id, expectedRevision: 1 });
-  // op-cap-0 was evicted, so it renders afresh instead of replaying v1.
-  assert.notEqual(contentOf(recallNotes(recallCtx("op-cap-0", "bot-a"), () => store)), first);
+  for (let index = 0; index < 300; index += 1) recallNotes(recallCtx(`op-cap-${index}`, "bot-a"), () => store);
+  const files = readdirSync(join(dirname(store.notesDir), "recall")).filter((name) => name.endsWith(".txt"));
+  assert.ok(files.length <= 256 && files.length > 200, `kept ${files.length}`);
+});
+
+test("renderNotesFor counts \"more\" against the true note count and shows the newest bodies in full", () => {
+  const store = freshStore();
+  for (let index = 0; index < 70; index += 1) {
+    store.upsert({
+      expectedRevision: null, title: `Note ${String(index).padStart(2, "0")}`, tags: [], body: `body-${index}`, botId: "bot-a",
+      source: "model", expiresAt: null, sessionId: "s",
+    });
+  }
+  const text = renderNotesFor("bot-a", () => store);
+  // 6 full + 50 titles are shown: 14 of 70 are behind "more".
+  assert.match(text, /14 more: use memory_search\./);
+  assert.equal((text.match(/body-\d+/g) ?? []).length, 6, "six bodies, the newest");
+  assert.deepEqual(text, renderNotesFor("bot-a", () => store), "deterministic");
 });
 
 test("recall never throws: a store error returns null and is logged", async () => {

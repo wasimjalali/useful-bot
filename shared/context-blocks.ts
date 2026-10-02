@@ -27,7 +27,8 @@ export function flat(value: string, cap = FIELD_CAP): string {
  * tag inside the text is escaped (`</tag` becomes `<\/tag`, any letter case).
  */
 export function fence(tag: string, text: string): string {
-  const escaped = text.replace(new RegExp(`</(${tag})`, "gi"), "<\\/$1");
+  // Whitespace inside the closing tag (`< / tag`) is escaped too: a model reads it as the tag.
+  const escaped = text.replace(new RegExp(`<\\s*/\\s*(${tag})`, "gi"), "<\\/$1");
   return `<${tag}>\n${escaped}\n</${tag}>`;
 }
 

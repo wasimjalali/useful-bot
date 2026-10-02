@@ -27,6 +27,8 @@ import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
 import bash from "../agent/tools/bash.ts";
 import listBots from "../agent/tools/list_bots.ts";
 import memorySearch from "../agent/tools/memory_search.ts";
+import memoryRead from "../agent/tools/memory_read.ts";
+import { seenOutside } from "../agent/lib/outside-content.ts";
 import memoryUpsert from "../agent/tools/memory_upsert.ts";
 import memoryDelete from "../agent/tools/memory_delete.ts";
 import readFile from "../agent/tools/read_file.ts";
@@ -719,6 +721,37 @@ test("memory_upsert marks a note written after outside content, and the mark sta
     await run(memoryUpsert, note("After a read", { id: marked.id, expectedRevision: 1, body: "edited" }), laterCtx);
     assert.equal(store.readCard(marked.id, "bot-useful").source, "model-after-outside-content");
     assert.equal(store.readCard(marked.id, "bot-useful").body, "edited");
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("reading a note written after outside content marks the turn, so it cannot be laundered into a clean note", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null });
+    const turn = (id: string) => ({ session: { id: "sess-home", turn: { id } } });
+    const clean = await run<{ id: string }>(memoryUpsert, note("Clean"), turn("t-0"));
+    await run(listDir, { path: "Desktop" }, turn("t-1"));
+    const marked = await run<{ id: string }>(memoryUpsert, note("Marked"), turn("t-1"));
+    // A turn that reads only a clean note stays clean.
+    await run(memoryRead, { id: clean.id }, turn("t-clean"));
+    assert.equal(seenOutside(turn("t-clean")), false);
+    // Reading or searching the marked one marks the turn.
+    await run(memoryRead, { id: marked.id }, turn("t-read"));
+    assert.equal(seenOutside(turn("t-read")), true);
+    await run(memorySearch, { query: "Marked" }, turn("t-search"));
+    assert.equal(seenOutside(turn("t-search")), true);
+    const copy = await run<{ id: string }>(memoryUpsert, note("Copy"), turn("t-read"));
+    assert.equal(new MemoryStore(memoryRoot).readCard(copy.id, "bot-useful").source, "model-after-outside-content");
   } finally {
     if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
     else process.env.UB_MEMORY_ROOT = previousMemory;
