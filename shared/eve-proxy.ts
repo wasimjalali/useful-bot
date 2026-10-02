@@ -10,7 +10,7 @@ import {
   type TurnTextPart,
 } from "./attachments.ts";
 
-import { resolveRoute, speakersFrom, threadPrefix, type Route, type Speaker } from "./threads.ts";
+import { resolveRoute, speakersFrom, type Route } from "./threads.ts";
 import { withSessionNotes } from "./continuation-brief.ts";
 import type { ThreadKind } from "./agent-store.ts";
 
@@ -184,46 +184,31 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
   return { ...route, mentionNames };
 }
 
-/**
- * Full turn rewrite: bot or group identity, the resolved group roster, and the
- * targeted member when the owner used an @mention. Empty for the default bot, so
- * the verified 1:1 path is byte identical.
- */
 /** The note a group turn carries when the owner @mentioned members. */
 export function mentionLine(names: string[]): string {
   const who = names.join(", ");
   return `The owner addressed ${who}. Answer for that member's part as the orchestrator; don't claim to be ${who}.`;
 }
 
+/**
+ * The turn rewrite: the message validated, and the app notes folded in as
+ * hidden lines the transcript strips (a carry-over brief, a retry note, and
+ * the mention line when the owner @mentioned members of a group). The bot's
+ * identity is not part of the turn: it is a system block built from the bot.
+ */
 export function rewriteEveTurnBody(
   raw: string,
-  bot: ShellBot | null,
   route: SessionRoute | null,
-  members: Speaker[] = [],
   /** App notes for the hidden prefix: a carry-over brief, a retry note. */
   notes: string[] = [],
 ): string {
   const json = JSON.parse(raw) as { message?: unknown };
   const message = parseTurnMessage(json.message);
   if (message === null) throw new Error("eve_message");
-  if ((!bot || bot.id === DEFAULT_BOT_ID) && notes.length === 0 && (route?.mentionNames ?? []).length === 0) {
-    return JSON.stringify({ message });
-  }
-  const identity = !bot || bot.id === DEFAULT_BOT_ID ? "" : threadPrefix({
-    bot: {
-      id: bot.id,
-      kind: bot.kind,
-      name: bot.name,
-      label: bot.label,
-      description: bot.description,
-    },
-    members: members.length > 0 ? members : undefined,
-  });
-  // A mention no longer tells the orchestrator to speak as the member. The
-  // line is an app note, so the transcript hides it with the rest.
   const mentioned = (route?.mentionNames ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter((name) => name.length > 0);
   const allNotes = mentioned.length > 0 ? [...notes, mentionLine(mentioned)] : notes;
-  const prefix = withSessionNotes(identity, allNotes);
+  if (allNotes.length === 0) return JSON.stringify({ message });
+  const prefix = withSessionNotes("", allNotes);
   if (typeof message === "string") {
     return JSON.stringify({ message: `${prefix}${message}` });
   }

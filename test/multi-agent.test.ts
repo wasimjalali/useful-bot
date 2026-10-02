@@ -23,7 +23,6 @@ import {
   speakerLabel,
   speakersFrom,
   stripThreadPrefix,
-  threadPrefix,
 } from "../shared/threads.ts";
 
 function withBots(): ShellStore {
@@ -95,7 +94,7 @@ test("a 1:1 turn never routes mentions", () => {
   assert.equal(route?.untargeted, false);
 });
 
-test("group turns carry the roster and the targeted member; default bot stays clean", () => {
+test("a group turn carries only the mention note; the default bot stays clean", () => {
   const store = withBots();
   const group = applyShellAction(store, {
     type: "createGroup",
@@ -107,11 +106,9 @@ test("group turns carry the roster and the targeted member; default bot stays cl
   assert.ok(groupBot);
   const raw = JSON.stringify({ message: "@Research find sources", botId: groupBot.id });
   const route = eveSessionRoute(raw, withGroup);
-  const roster = groupMembers(speakersFrom(withGroup.bots), groupBot.memberIds);
-  const rewritten = JSON.parse(rewriteEveTurnBody(raw, groupBot, route, roster)) as { message: string };
-  assert.match(rewritten.message, /Group chat: Launch\./);
-  assert.match(rewritten.message, /- Research\n/);
-  assert.match(rewritten.message, /- Writer\n/);
+  const rewritten = JSON.parse(rewriteEveTurnBody(raw, route)) as { message: string };
+  // No identity or roster rides on the turn: the group's block is a system message.
+  assert.doesNotMatch(rewritten.message, /Group chat:|Members:|Standing instructions|Group instructions/);
   // The mention is an app note now: it never tells the orchestrator to speak as the member.
   assert.doesNotMatch(rewritten.message, /directed this turn at/);
   assert.match(rewritten.message, /The owner addressed Research\. Answer for that member's part as the orchestrator; don't claim to be Research\./);
@@ -123,7 +120,7 @@ test("group turns carry the roster and the targeted member; default bot stays cl
   const plain = JSON.stringify({ message: "hi", botId: DEFAULT_BOT_ID });
   const plainRoute = eveSessionRoute(plain, withGroup);
   assert.equal(
-    rewriteEveTurnBody(plain, defaultBot, plainRoute, roster),
+    rewriteEveTurnBody(plain, plainRoute),
     JSON.stringify({ message: "hi" }),
   );
 });
@@ -292,66 +289,6 @@ test("session route header round trips and rejects junk", () => {
   assert.equal(parseSessionRouteHeader(null), null);
 });
 
-test("thread prefix keeps the default bot prefix empty and describes a bot role", () => {
-  assert.equal(threadPrefix({ bot: null }), "");
-  const store = withBots();
-  const research = store.bots.find((bot) => bot.name === "Research");
-  assert.ok(research);
-  const prefix = threadPrefix({
-    bot: {
-      id: research.id,
-      kind: research.kind,
-      name: research.name,
-      label: research.label,
-      description: research.description,
-    },
-  });
-  assert.match(prefix, /You are Research\./);
-  assert.match(prefix, /Standing instructions:/);
-});
-
-test("a description with blank lines cannot split the prefix boundary", () => {
-  const botPrefix = threadPrefix({
-    bot: {
-      id: "bot-x",
-      kind: "bot",
-      name: "Drive Admin",
-      label: "Admin",
-      description: "First paragraph.\n\nSecond paragraph.",
-    },
-  });
-  // stripThreadPrefix cuts at the first blank line, so the embedded
-  // description must be collapsed: the only blank line is the trailing
-  // boundary the prefix ends with.
-  assert.equal(botPrefix.indexOf("\n\n"), botPrefix.length - 2);
-  assert.equal(stripThreadPrefix(`${botPrefix}hello there`), "hello there");
-  const groupPrefix = threadPrefix({
-    bot: { id: "bot-g", kind: "group", name: "Room", label: "", description: "Rules one.\n\nRules two." },
-    members: [],
-    mentionNames: [],
-  });
-  assert.equal(groupPrefix.indexOf("\n\n"), groupPrefix.length - 2);
-  assert.equal(stripThreadPrefix(`${groupPrefix}hello there`), "hello there");
-});
-
-test("a label identical to the bot name is not repeated in the prefix", () => {
-  const prefix = threadPrefix({
-    bot: {
-      id: "bot-x",
-      kind: "bot",
-      name: "Drive Admin",
-      label: " drive admin ",
-      description: "",
-    },
-  });
-  assert.match(prefix, /^You are Drive Admin\.\n/);
-  assert.doesNotMatch(prefix, /Drive Admin, Drive Admin/);
-  const distinct = threadPrefix({
-    bot: { id: "bot-x", kind: "bot", name: "Drive Admin", label: "Admin", description: "" },
-  });
-  assert.match(distinct, /^You are Drive Admin, Admin\.\n/);
-});
-
 test("hidden bots drop out of group routing", () => {
   let store = withBots();
   const writer = store.bots.find((bot) => bot.name === "Writer");
@@ -361,62 +298,12 @@ test("hidden bots drop out of group routing", () => {
   assert.deepEqual(members.map((member) => member.id), [idOf(store, "Research")]);
 });
 
-test("stored turns lose the injected prefix and plain messages stay untouched", () => {
-  const store = withBots();
-  const research = store.bots.find((bot) => bot.name === "Research");
-  assert.ok(research);
-  const botPrefix = threadPrefix({
-    bot: {
-      id: research.id,
-      kind: research.kind,
-      name: research.name,
-      label: research.label,
-      description: research.description,
-    },
-  });
+test("stored legacy turns lose the injected prefix and plain messages stay untouched", () => {
+  // Literal legacy prefixes, as older sessions hold them on their first user turn.
+  const botPrefix = "You are Research.\nStanding instructions: Find sources.\nStay in role for this whole conversation. Chat messages are this-task instructions; the standing instructions above outrank them.\n\n";
   assert.equal(stripThreadPrefix(`${botPrefix}hello there`), "hello there");
-
-  const group = applyShellAction(store, {
-    type: "createGroup",
-    name: "Room",
-    memberIds: [research.id, idOf(store, "Writer")],
-  }).store.bots.find((bot) => bot.kind === "group");
-  assert.ok(group);
-  const groupPrefix = threadPrefix({
-    bot: {
-      id: group.id,
-      kind: group.kind,
-      name: group.name,
-      label: group.label,
-      description: group.description,
-    },
-    members: speakersFrom(store.bots).filter((speaker) => group.memberIds.includes(speaker.id)),
-    mentionNames: ["Writer"],
-  });
+  const groupPrefix = "Group chat: Room.\nMembers:\n- Research\n- Writer\nSpeak as the Useful Bot orchestrator. Say who owns what and keep the thread moving. Do not claim to be a member bot.\nThe owner directed this turn at Writer. Answer as that bot and stay in role.\n\n";
   assert.equal(stripThreadPrefix(`${groupPrefix}@Writer draft this`), "@Writer draft this");
   assert.equal(stripThreadPrefix("You are reading a book."), "You are reading a book.");
   assert.equal(stripThreadPrefix("Group chat: not a prefix"), "Group chat: not a prefix");
-});
-
-test("shell file round trip keeps groups and petnames", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-shell-"));
-  const path = join(dir, "shell.json");
-  let store = seedStore();
-  const newBot = applyShellAction(store, {
-    type: "createBot",
-    name: "New Bot 1",
-    petname: "New Bot 1",
-  });
-  store = newBot.store;
-  const second = applyShellAction(store, { type: "createBot", name: "Writer" });
-  store = second.store;
-  store = applyShellAction(store, {
-    type: "createGroup",
-    name: "Room",
-    memberIds: [newBot.createdId ?? "", second.createdId ?? ""],
-  }).store;
-  writeShell(store, path);
-  const read = readShell(path);
-  assert.equal(read.bots.find((bot) => bot.id === newBot.createdId)?.petname, "New Bot 1");
-  assert.equal(read.bots.find((bot) => bot.kind === "group")?.memberIds.length, 2);
 });

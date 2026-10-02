@@ -35,10 +35,9 @@ import {
   type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
-import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
-import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V2, orchestratorId, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V2, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
 import { eveOrigin } from "../../shared/stack.ts";
@@ -704,30 +703,6 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
 }
 
 /**
- * The identity prefix the eve proxy puts on a UI turn for this bot. Handoff
- * delivery and routine runs reach eve directly, not through the proxy, so
- * without it a teammate bot would answer as the default Useful Bot unless the
- * session already carried a prefix from an earlier owner turn.
- */
-function turnPrefixFor(bot: ShellBot): string {
-  // Only a group needs the roster: its member list is part of the prefix. A
-  // roster that will not read must not fail the turn, which never needed it
-  // before; the group then speaks without its member list.
-  let members: ReturnType<typeof groupMembers> = [];
-  if (bot.kind === "group") {
-    try {
-      members = groupMembers(speakersFrom(readShell().bots), bot.memberIds, orchestratorId(readShell()));
-    } catch {
-      members = [];
-    }
-  }
-  return threadPrefix({
-    bot: { id: bot.id, kind: bot.kind, name: bot.name, label: bot.label, description: bot.description },
-    members,
-  });
-}
-
-/**
  * Open (or reuse) a bot's eve session, send one message and wait for the reply.
  * Shared by handoff delivery and by routine runs so both reach eve the same
  * way: the same envelope-matched stream read, the same timeout, the same
@@ -797,10 +772,10 @@ async function runEveTurn(
   if (descriptionTooLong(current)) throw new Error("description_too_long");
   if (!admitTurn(current, readShell(), store).ok) throw new Error("context_too_large");
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
-  // The body the proxy would have built for this bot: identity prefix first,
-  // then the caller's text. readHandoffStream arms on this exact string,
+  // The body the proxy would have built for this bot: app notes first, then
+  // the caller's text. readHandoffStream arms on this exact string,
   // because eve echoes the turn as it was stored.
-  const sent = `${withSessionNotes(turnPrefixFor(bot), notes)}${message}`;
+  const sent = `${withSessionNotes("", notes)}${message}`;
   const controller = new AbortController();
   // Which of the two clocks ran out, for the error the caller reports. A bare
   // "This operation was aborted" was the whole explanation a cut-off routine
@@ -862,7 +837,7 @@ async function runEveTurn(
         }
         const brief = await continuationBriefFor(retired, jwt, undefined, undefined, briefMaxCharsFor(current, readShell(), store));
         if (!admitTurn(current, readShell(), store, brief.length).ok) throw new Error("context_too_large");
-        const carried = `${withSessionNotes(turnPrefixFor(bot), [brief, ...notes])}${message}`;
+        const carried = `${withSessionNotes("", [brief, ...notes])}${message}`;
         const retry = await fetch(`${EVE}/eve/v1/session`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },

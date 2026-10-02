@@ -32,10 +32,9 @@ import { authorizeEveCall, carryOverReader, type EveCallAuth } from "../../../..
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
-import { carryOverLineage, continueFromVerdict, orchestratorId, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
+import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { bindSession, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
-import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 import { eveOrigin } from "../../../../../shared/stack.ts";
 
 const EVE = eveOrigin();
@@ -329,10 +328,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
         }
         bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
-        const members = bot && bot.kind === "group"
-          ? groupMembers(speakersFrom(shell.bots), bot.memberIds, orchestratorId(shell))
-          : [];
-        body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members, notes));
+        body = new TextEncoder().encode(rewriteEveTurnBody(raw, route, notes));
         headers.set("content-type", "application/json");
       } catch (err) {
         // Routing and rewriting fail closed. Forwarding the original body

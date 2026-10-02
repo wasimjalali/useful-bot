@@ -104,6 +104,7 @@ test("a routine run carries the nobody-is-watching line as an app note the trans
     assert.equal(eve.sent.length, 1);
     assert.match(eve.sent[0], /Scheduled run of the routine Nightly scan\. Nobody is watching: don't ask questions or wait for a card\. Do what is safe and report what needs the owner\./);
     assert.equal(stripThreadPrefix(eve.sent[0]), "Scan the folder.", "the transcript shows only the instruction");
+    assert.doesNotMatch(eve.sent[0], /Standing instructions|You are Alpha/, "a teammate turn body carries no identity");
   });
 });
 
@@ -118,8 +119,7 @@ test("a handoff keeps its first two lines exactly, then says what it is and wher
     } finally {
       eve.restore();
     }
-    // Alpha's own prefix still comes first until the builders go (C8).
-    const lines = eve.sent[eve.sent.length - 1].slice(eve.sent[eve.sent.length - 1].indexOf("Handoff from")).split("\n");
+    const lines = eve.sent[eve.sent.length - 1].split("\n");
     assert.equal(lines[0], "Handoff from Beta.");
     assert.equal(lines[1], "This arrives in your own chat.");
     assert.equal(
@@ -150,7 +150,7 @@ test("a group handoff names the group on line two and has no hop line at depth z
       eve.restore();
     }
     const text = eve.sent[eve.sent.length - 1];
-    // The group's own prefix still comes first until the builders go (C8).
+    assert.match(text, /^Handoff from Beta\./, "no identity prefix ahead of the envelope");
     assert.match(text, /Handoff from Beta\.\nThis belongs to the group chat Launch\.\n/);
     assert.doesNotMatch(text, /Relay hop/);
     assert.match(text, /Draft it\.$/);
