@@ -448,7 +448,14 @@ export class MemoryStore {
     return excerpts;
   }
 
-  /** How many live notes a bot has, however many a page of them shows. */
+  /**
+   * How many live notes a bot has, however many a page of them shows. Counted
+   * from the index, where `list` also checks each note's file. They cannot
+   * diverge for long: every write puts the file first and the index second
+   * under one lock, and an open that finds the dirty marker rebuilds the index
+   * from the files, so the only gap is a note whose file is unreadable, which
+   * `list` skips and this still counts (an over-count by one, never under).
+   */
   countLive(botId: string): number {
     if (!botId) throw new Error("memory_bot_required");
     const row = this.db.prepare(

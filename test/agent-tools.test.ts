@@ -29,6 +29,7 @@ import listBots from "../agent/tools/list_bots.ts";
 import memorySearch from "../agent/tools/memory_search.ts";
 import memoryRead from "../agent/tools/memory_read.ts";
 import { seenOutside } from "../agent/lib/outside-content.ts";
+import { forgetRecallCache, recallNotes } from "../agent/memory/notes.ts";
 import memoryUpsert from "../agent/tools/memory_upsert.ts";
 import memoryDelete from "../agent/tools/memory_delete.ts";
 import readFile from "../agent/tools/read_file.ts";
@@ -780,6 +781,45 @@ test("reading a note written after outside content marks the turn, so it cannot 
     assert.equal(seenOutside(turn("t-search")), true);
     const copy = await run<{ id: string }>(memoryUpsert, note("Copy"), turn("t-read"));
     assert.equal(new MemoryStore(memoryRoot).readCard(copy.id, "bot-useful").source, "model-after-outside-content");
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("a recalled block that shows an outside-sourced note marks the turn, so a copy is stored as outside, also on a replay", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const store = new MemoryStore(memoryRoot);
+    store.upsert({
+      expectedRevision: null, title: "From a page", tags: [], body: "web text", botId: "bot-useful",
+      source: "model-after-outside-content", expiresAt: null, sessionId: "s",
+    });
+    const turn = (id: string) => ({ session: { id: "sess-home", turn: { id } } });
+    const recall = (operationId: string, turnId: string) => recallNotes({
+      operationId, session: { id: "sess-home" }, turn: { id: turnId }, memory: { scope: { value: "bot-useful" } },
+    }, () => store);
+    assert.equal(seenOutside(turn("t-r1")), false);
+    recall("op-launder-1", "t-r1");
+    assert.equal(seenOutside(turn("t-r1")), true, "the block carried an outside note");
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "copied", expiresAt: null });
+    const copy = await run<{ id: string }>(memoryUpsert, note("Copy"), turn("t-r1"));
+    assert.equal(store.readCard(copy.id, "bot-useful").source, "model-after-outside-content");
+    // A replay from the disk copy (the memory cache gone) marks a turn the same way.
+    forgetRecallCache();
+    recall("op-launder-1", "t-r2");
+    assert.equal(seenOutside(turn("t-r2")), true);
+    // A bot whose block shows only its own notes stays clean.
+    store.upsert({ expectedRevision: null, title: "Mine", tags: [], body: "x", botId: "bot-other", source: "model", expiresAt: null, sessionId: "s" });
+    recallNotes({ operationId: "op-clean", session: { id: "sess-home" }, turn: { id: "t-clean2" }, memory: { scope: { value: "bot-other" } } }, () => store);
+    assert.equal(seenOutside(turn("t-clean2")), false);
   } finally {
     if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
     else process.env.UB_MEMORY_ROOT = previousMemory;

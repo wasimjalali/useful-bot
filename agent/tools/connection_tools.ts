@@ -3,7 +3,6 @@ import { z } from "zod";
 import { connectionHeaders } from "../../shared/connection-auth.ts";
 import {
   activateSessionTools,
-  indexedToolBytes,
   mountedDescription,
   mountedToolName,
   readConnectionToolsStore,
@@ -11,12 +10,12 @@ import {
 import {
   onDemandConnections,
   searchConnectionTools,
-  splitMountedName,
+  selectMountedTools,
 } from "../../shared/connection-tools.ts";
 import { findConnectionById } from "../../shared/connections-store.ts";
 import { toolInputSchema } from "../../shared/json-schema-zod.ts";
 import { callMcpTool } from "../../shared/mcp-http.ts";
-import { MAX_SESSION_TOOL_BYTES, MAX_SESSION_TOOLS } from "../../shared/policy.ts";
+import { MAX_SESSION_TOOLS } from "../../shared/policy.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { mcpToolGate, mcpToolRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
@@ -127,22 +126,11 @@ export default defineDynamic({
       // activation was for the listing then, and a server that republished
       // fatter schemas since would otherwise walk the mounted set past the
       // router's byte wall with no call from the model at all.
-      let mountedCount = 0;
-      let mountedBytes = 0;
-      for (const name of store?.sessions[sessionId]?.tools ?? []) {
-        const split = splitMountedName(name);
-        if (!split) continue;
-        const entry = findConnectionById(split.connectionId);
-        if (!entry || entry.kind !== "mcp") continue;
-        // The owner can narrow a server's allow-list after a session picked
-        // a tool up; the activation does not outlive the permission.
-        if (entry.toolsAllow && !entry.toolsAllow.includes(split.tool)) continue;
-        const indexed = store?.index[split.connectionId]?.tools.find((tool) => tool.name === split.tool);
-        if (!indexed) continue;
-        const weight = indexedToolBytes(indexed, entry.id, entry.name);
-        if (mountedCount + 1 > MAX_SESSION_TOOLS || mountedBytes + weight > MAX_SESSION_TOOL_BYTES) continue;
-        mountedCount += 1;
-        mountedBytes += weight;
+      const picks = selectMountedTools(store?.sessions[sessionId]?.tools ?? [], {
+        connection: findConnectionById,
+        indexed: (connectionId, tool) => store?.index[connectionId]?.tools.find((item) => item.name === tool),
+      });
+      for (const { split, entry, indexed } of picks) {
         const { schema } = toolInputSchema(indexed.inputSchema);
         const connectionId = entry.id;
         const connectionName = entry.name;

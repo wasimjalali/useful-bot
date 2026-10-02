@@ -34,7 +34,7 @@ function fullEntry(note: NoteCard): string {
   const outside = note.source === "model-after-outside-content" ? ", written after reading outside content" : "";
   const body = note.body.length > NOTE_BODY_CAP ? `${note.body.slice(0, NOTE_BODY_CAP)}${MORE_BODY}` : note.body;
   // Continuation lines are indented so a body can't look like another note.
-  return `- ${flat(note.title, NOTE_TITLE_CAP)} (${day})${outside}: ${body.replace(/\r\n|[\r\u2028\u2029]/g, "\n").replace(/\n/g, "\n  ")}`;
+  return `- ${flat(note.title, NOTE_TITLE_CAP)} (${day})${outside}: ${body.replace(/\r\n|[\r\u0085\u000b\u000c\u2028\u2029]/g, "\n").replace(/\n/g, "\n  ")}`;
 }
 
 function titleEntry(note: NoteCard): string {

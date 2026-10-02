@@ -278,9 +278,9 @@ test("fence also escapes a closing tag with whitespace inside it", () => {
 
 test("a note body with CR, U+2028 or U+2029 stays indented under its note", () => {
   const card = (body: string): NoteCard => ({ id: "n1", title: "T", body, updatedAt: "2026-10-01T00:00:00Z" });
-  const text = renderNotesBlock([card("one\r\ntwo\rthree\u2028four\u2029five")]);
-  assert.match(text, /: one\n  two\n  three\n  four\n  five\n/);
-  assert.equal(/[\r\u2028\u2029]/.test(text), false);
+  const text = renderNotesBlock([card("one\r\ntwo\rthree\u2028four\u2029five\u0085six\u000bseven\u000ceight")]);
+  assert.match(text, /: one\n  two\n  three\n  four\n  five\n  six\n  seven\n  eight\n/);
+  assert.equal(/[\r\u0085\u000b\u000c\u2028\u2029]/.test(text), false);
 });
 
 test("\"N more\" counts against the live total when only a page of notes is passed", () => {

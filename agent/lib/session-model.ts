@@ -28,7 +28,13 @@ function registry(): Map<string, FrozenTurn> {
 
 /** The turn a session froze most recently, or null before its first step. */
 export function frozenTurnFor(eveSessionId: string): FrozenTurn | null {
-  return registry().get(eveSessionId) ?? null;
+  const map = registry();
+  const held = map.get(eveSessionId);
+  if (!held) return null;
+  // A read keeps the session alive, so an active turn is never the idlest key.
+  map.delete(eveSessionId);
+  map.set(eveSessionId, held);
+  return held;
 }
 
 function remember(eveSessionId: string, frozen: FrozenTurn): void {

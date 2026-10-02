@@ -9,6 +9,7 @@ import {
   type NoteCard,
 } from "../../shared/notes-block.ts";
 import { sharedMemoryStore, type MemoryStore } from "../lib/memory.ts";
+import { markOutside } from "../lib/outside-content.ts";
 import { boundBotId, type SnapshotCtx } from "../lib/turn-snapshot.ts";
 
 /**
@@ -37,7 +38,7 @@ export const NOTES_RECORD_ID = "bot-notes";
 const OPERATION_CAP = 256;
 
 /** The rendered block per operation, in memory: the fast path in front of the disk copy. */
-const byOperation = new Map<string, string>();
+const byOperation = new Map<string, Render>();
 
 /** Forget the in-memory renders, as a process restart does. The disk copies stay. */
 export function forgetRecallCache(): void {
@@ -53,9 +54,14 @@ function recallFile(store: MemoryStore, key: string): string {
   return join(recallDir(store), `${createHash("sha256").update(key).digest("hex")}.txt`);
 }
 
-function readPersisted(store: MemoryStore, key: string): string | undefined {
+/** What one recall rendered, and whether it showed a note written after outside content. */
+type Render = { content: string; outside: boolean };
+
+function readPersisted(store: MemoryStore, key: string): Render | undefined {
   try {
-    return readFileSync(recallFile(store, key), "utf8");
+    const parsed = JSON.parse(readFileSync(recallFile(store, key), "utf8")) as Partial<Render>;
+    if (typeof parsed.content !== "string" || typeof parsed.outside !== "boolean") throw new Error("recall_copy_invalid");
+    return { content: parsed.content, outside: parsed.outside };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw err;
@@ -63,13 +69,18 @@ function readPersisted(store: MemoryStore, key: string): string | undefined {
 }
 
 /** Write the render before it is returned, and keep the folder to the newest OPERATION_CAP files. */
-function persist(store: MemoryStore, key: string, content: string): void {
+function persist(store: MemoryStore, key: string, render: Render): void {
   const dir = recallDir(store);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = recallFile(store, key);
   const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(tmp, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, `${JSON.stringify(render)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    renameSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* nothing was written */ }
+    throw err;
+  }
   const files = readdirSync(dir).filter((name) => name.endsWith(".txt"));
   if (files.length <= OPERATION_CAP) return;
   const aged = files.map((name) => ({ name, at: statSync(join(dir, name)).mtimeMs })).sort((x, y) => x.at - y.at);
@@ -94,6 +105,10 @@ export async function notesScope(ctx: SnapshotCtx): Promise<string | null> {
  * count. Recall and admission sizing both call this one function.
  */
 export function renderNotesFor(botId: string, store: () => MemoryStore = sharedMemoryStore): string {
+  return renderNotes(botId, store).content;
+}
+
+function renderNotes(botId: string, store: () => MemoryStore): Render {
   const notes = store();
   const page = notes.list(botId, NOTES_FULL_COUNT + NOTES_TITLE_COUNT);
   // Same order the block uses, so the bodies loaded are the ones it shows in full.
@@ -108,12 +123,22 @@ export function renderNotesFor(botId: string, store: () => MemoryStore = sharedM
     updatedAt: card.updatedAt,
     source: card.source,
   }));
-  return renderNotesBlock(cards, notes.countLive(botId));
+  // Any outside-sourced note in the page marks the turn: shown in the block, it
+  // could be copied into a new note stored as the model's own.
+  return {
+    content: renderNotesBlock(cards, notes.countLive(botId)),
+    outside: cards.some((card) => card.source === "model-after-outside-content"),
+  };
 }
 
 /** The recall result for one operation. Never throws: a failure returns null. */
 export function recallNotes(
-  ctx: { operationId: string; memory: { scope: { value: string | readonly string[] } } },
+  ctx: {
+    operationId: string;
+    session?: { id: string };
+    turn?: { id: string } | null;
+    memory: { scope: { value: string | readonly string[] } };
+  },
   store: () => MemoryStore = sharedMemoryStore,
 ) {
   try {
@@ -122,23 +147,26 @@ export function recallNotes(
     if (typeof botId !== "string" || !botId) return null;
     // Keyed by bot too, so a cached render can never reach another bot.
     const key = `${botId}\u0000${ctx.operationId}`;
-    let content = byOperation.get(key);
-    if (content === undefined) {
+    let render = byOperation.get(key);
+    if (render === undefined) {
       const notes = store();
-      content = readPersisted(notes, key);
-      if (content === undefined) {
-        content = renderNotesFor(botId, () => notes);
+      render = readPersisted(notes, key);
+      if (render === undefined) {
+        render = renderNotes(botId, () => notes);
         try {
-          persist(notes, key, content);
+          persist(notes, key, render);
         } catch (err) {
           // Without the copy a replay could differ, but the turn is not worth failing for it.
           console.error("[memory] notes render not persisted", err instanceof Error ? err.message : err);
         }
       }
       if (byOperation.size >= OPERATION_CAP) byOperation.delete(byOperation.keys().next().value as string);
-      byOperation.set(key, content);
+      byOperation.set(key, render);
     }
-    return { messages: [{ id: NOTES_RECORD_ID, content }] };
+    // A block that shows an outside-sourced note marks this turn, on a fresh,
+    // cached or persisted render alike: the model could copy it into a new note.
+    if (render.outside && ctx.session) markOutside({ session: { id: ctx.session.id, turn: ctx.turn ? { id: ctx.turn.id } : undefined } });
+    return { messages: [{ id: NOTES_RECORD_ID, content: render.content }] };
   } catch (err) {
     console.error("[memory] notes recall failed", err instanceof Error ? err.message : err);
     return null;
