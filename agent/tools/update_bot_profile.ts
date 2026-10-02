@@ -14,7 +14,7 @@ import { DEFAULT_BOT_ID, DESCRIPTION_MAX } from "../../shared/shell-store.ts";
 
 export default defineTool({
   description:
-    "Propose edits to a bot profile (name, title, description, avatar). Use this when the owner asks you to shape a bot or fix its standing instructions. The owner confirms the card in the chat before anything is written. Prefer one focused proposal over a rewrite of standing rules they did not ask for.",
+    "Propose edits to a bot's name, title, description (its standing instructions) or avatar, when the owner asks you to shape a bot or fix its instructions. The owner confirms the card before anything is written. Prefer one focused change over rewriting rules they didn't ask about.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80).optional(),
     name: z.string().min(1).max(80).optional(),

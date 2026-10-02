@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { lenientNullableString } from "../lib/lenient-null.ts";
 import { approvalActor } from "../lib/approvals.ts";
 import { awaitActiveBotId } from "../lib/active-bot.ts";
 import { approvedWrite } from "../lib/write.ts";
@@ -8,11 +9,11 @@ import { isPagePath, recordPage } from "../../shared/media-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 
 export default defineTool({
-  description: "Write a UTF-8 file in the workspace this conversation works in. Gated by the conversation's permission. An .html file also goes into the owner's Library and shows in the chat as a preview they can open in their browser.",
+  description: "Write a UTF-8 file in the workspace, gated by the conversation's permission. An .html file also lands in the owner's Library with a browser preview in the chat. Leaving expectedSha256 out overwrites without the conflict check.",
   inputSchema: z.object({
     path: z.string(),
     content: z.string(),
-    expectedSha256: z.string().nullable(),
+    expectedSha256: lenientNullableString("SHA-256 of the file's current bytes; the write is refused if it changed. Omit to overwrite unchecked."),
   }),
   async execute(input, ctx) {
     const written = await approvedWrite({

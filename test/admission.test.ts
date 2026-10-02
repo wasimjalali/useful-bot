@@ -37,7 +37,15 @@ import {
 } from "../web/lib/agent-exec.ts";
 
 const GO = "opencode-go:plan";
-const WINDOW = 20_000;
+/**
+ * The small window every test runs against, derived from the constants so a
+ * re-measure of the shared prompt or the tool schemas moves it with them: the
+ * fixed parts, plus 2,100 tokens for a short context block (about 300) and
+ * about 1,800 spare. That is more than a one-line bot needs and less than the
+ * 2,286 an 8,000-character description adds, so a normal bot fits and a full
+ * one is refused, whatever the constants are.
+ */
+const WINDOW = estimateTokens(SHARED_PROMPT_CHARS) + estimateTokens(TOOL_SCHEMA_CHARS) + OUTPUT_RESERVE_TOKENS + 2_100;
 
 const KEYS = [
   "UB_PROVIDERS_PATH", "UB_MODELS_CACHE_PATH", "UB_SHELL_PATH", "UB_WORKSPACE_STORE_PATH", "UB_ROUTINES_PATH",
@@ -49,7 +57,7 @@ function row(id: string, contextTokens: number) {
   return { id, label: `Label ${id}`, efforts: ["low"], defaultEffort: "low", speeds: ["standard"], defaultSpeed: "standard", contextTokens };
 }
 
-/** Every store in a temp dir; one connection with a 20k-window model and a 1M one. */
+/** Every store in a temp dir; one connection with a small-window model and a 1M one. */
 async function withWorld<T>(fn: (world: { shell: string; dir: string }) => Promise<T> | T): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ub-admission-"));
   const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
@@ -118,7 +126,7 @@ function eveFetchCounter() {
 test("SHARED_PROMPT_CHARS is at least the size of agent/instructions.md", () => {
   const bytes = readFileSync(new URL("../agent/instructions.md", import.meta.url)).length;
   assert.ok(SHARED_PROMPT_CHARS >= bytes, `instructions.md is ${bytes} bytes, the constant says ${SHARED_PROMPT_CHARS}`);
-  assert.equal(TOOL_SCHEMA_CHARS, 30_483);
+  assert.equal(TOOL_SCHEMA_CHARS, 28_000);
   assert.equal(OUTPUT_RESERVE_TOKENS, 4096);
 });
 

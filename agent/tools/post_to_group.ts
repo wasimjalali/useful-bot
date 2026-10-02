@@ -8,7 +8,7 @@ import { groupMembers, speakersFrom } from "../../shared/threads.ts";
 
 export default defineTool({
   description:
-    "Post one message to a group chat. Every member bot receives it and the owner confirms the fan-out before anything is delivered, because this wakes several bots at once. Use it for kickoffs, status pushes and shared decisions. Confirm with the owner in chat first when the group is large.",
+    "Post one message to a group; every member bot receives it and the owner confirms the fan-out first. For kickoffs, status pushes and shared decisions. Confirm in chat first when the group is large.",
   inputSchema: z.object({
     groupId: z.string().min(1).max(80),
     message: z.string().min(1).max(2000),
@@ -27,7 +27,7 @@ export default defineTool({
       && (bot.id === requested || bot.name.toLowerCase() === requested.toLowerCase())
     )) ?? null;
     if (!group) {
-      return { status: "not_found", error: `no group matches ${requested}`, hint: "Call listBots for groups." };
+      return { status: "not_found", error: `no group matches ${requested}`, hint: "Call list_bots for groups." };
     }
     // A group session posts only into itself, to its own members. Plain bots
     // and the orchestrator post to any group (owner decision G1).

@@ -6,7 +6,7 @@ import { readRoutine, requestRoutineRun } from "../../shared/routines-store.ts";
 
 export default defineTool({
   description:
-    "Run a routine now, outside its schedule, the way the owner's Test run button does. The run starts within a few seconds and lands as a turn in the owning bot's chat, so do not wait for it here. A manual run does not consume the next scheduled slot. A paused routine stays paused from here: ask the owner to resume it rather than promising them a run. Call listRoutines for the id.",
+    "Run an active routine now, outside its schedule. It starts within seconds and answers in the owning bot's chat, so don't wait for it. It doesn't use up the next scheduled slot. A paused routine is refused: ask the owner to resume it. Call list_routines for the id.",
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
   }),
@@ -18,7 +18,7 @@ export default defineTool({
     if (!who.ok) return who.result;
     const routine = readRoutine(input.routineId);
     if (!routine) {
-      return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call listRoutines." };
+      return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call list_routines." };
     }
     // A routine resolves to its owner: a plain bot runs only its own.
     if (!mayActOn(who.caller, routine.botId)) return notAvailable(SELF_ONLY_HINT);
@@ -30,7 +30,7 @@ export default defineTool({
         status: "paused",
         routineId: routine.id,
         error: "that routine is paused",
-        hint: "Ask the owner to resume it, or call updateRoutine with active true once they agree.",
+        hint: "Ask the owner to resume it, or call update_routine with active true once they agree.",
       };
     }
     // The web server owns delivery; this only raises the request flag, which

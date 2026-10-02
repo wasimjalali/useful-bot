@@ -7,7 +7,7 @@ import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 export default defineTool({
   description:
-    "List the routines a bot runs on a schedule, with their next run time and the outcome of the last few runs. Read only, needs no approval. Defaults to this bot. Call it before updating or deleting a routine so you use the right id.",
+    "List a bot's routines with next run and recent outcomes. Read only. Defaults to this bot. Call before editing or deleting one, for the id.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80).optional(),
   }),
@@ -18,7 +18,7 @@ export default defineTool({
     const botId = input.botId?.trim() || who.caller.id;
     const bot = shell.bots.find((item) => item.id === botId) ?? null;
     if (!bot) {
-      return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call listBots for exact ids." };
+      return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call list_bots for exact ids." };
     }
     if (!mayActOn(who.caller, bot.id)) return notAvailable(SELF_ONLY_HINT);
     const now = new Date();

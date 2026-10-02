@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { lenientNullableNumber, lenientNullableString } from "../lib/lenient-null.ts";
 import { sharedMemoryStore } from "../lib/memory.ts";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -37,11 +38,11 @@ export default defineTool({
   description: "Create or update a memory note. Applies at once in Auto and Full access; refused in Read only.",
   inputSchema: z.object({
     id: z.string().regex(/^[A-Za-z0-9-]{1,80}$/).optional(),
-    expectedRevision: z.number().nullable(),
+    expectedRevision: lenientNullableNumber("The note's integer revision, or null to create."),
     title: z.string().max(120),
     tags: z.array(z.string().max(32)).max(8),
     body: z.string().max(8192),
-    expiresAt: z.string().datetime({ offset: true }).nullable(),
+    expiresAt: lenientNullableString("ISO-8601 time with offset, or null.", z.string().datetime({ offset: true })),
   }),
   execute: async (input, ctx) => {
     // The same size checks the store runs, but before the card: an invalid

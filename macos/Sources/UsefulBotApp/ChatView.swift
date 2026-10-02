@@ -2282,20 +2282,20 @@ struct StarterPrompt: Identifiable {
             prompt: "Find what's taking up the most space on my Mac. List the biggest folders and files with their sizes. Don't delete anything."
         ),
         StarterPrompt(
-            label: "Rename my screenshots by what's in them",
-            prompt: "Look at the screenshots on my Desktop and rename each one to describe what's in it. Show me the new names before you rename anything."
+            label: "Rename my screenshots by date",
+            prompt: "List the screenshots on my Desktop and rename each one to the date and time it was taken. Show me the new names before you rename anything."
         ),
         StarterPrompt(
-            label: "Pull my invoice totals into a spreadsheet",
-            prompt: "Read the PDF invoices in a folder I pick and put the vendor, date and total of each into a spreadsheet."
+            label: "Save a folder's file list as a spreadsheet",
+            prompt: "List the files in a folder I pick, with their sizes and dates, and save them as a CSV file I can open in Numbers."
         ),
         StarterPrompt(
             label: "Research a topic and save a report",
             prompt: "Research a topic I'll name, then save a short report with sources as a document on my Desktop."
         ),
         StarterPrompt(
-            label: "Create a bot that keeps Downloads tidy",
-            prompt: "Create a bot that keeps my Downloads folder tidy: it sorts new files into folders by type and tells me what it moved."
+            label: "Create a bot that plans a Downloads tidy-up",
+            prompt: "Create a bot that looks through my Downloads folder, tells me what is in there and proposes a tidy-up plan I can approve before anything moves."
         ),
         StarterPrompt(
             label: "Create a copywriter bot for my brand",

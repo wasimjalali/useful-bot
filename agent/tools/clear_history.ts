@@ -28,7 +28,7 @@ import { applyShellAction } from "../../shared/shell-store.ts";
  */
 export default defineTool({
   description:
-    "Clear the message history of a chat: this bot's own, another bot's, or every bot's at once. This cannot be undone, so in Auto the owner sees an approval card listing exactly which chats it will empty and nothing is cleared until they approve; Full access clears at once; Read only refuses. Confirm which chat they mean before calling it.",
+    "Empty a chat's messages: this bot's, another bot's (botId) or every bot's (all: true). Irreversible: in Auto the owner approves a card listing the exact chats, Full access clears at once, Read only refuses. Name the chats back to them before calling. Only the main bot can clear other bots' chats or all; a teammate can clear only its own.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80).optional(),
     all: z.boolean().optional(),

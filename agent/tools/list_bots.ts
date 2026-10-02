@@ -16,7 +16,7 @@ function summarize(text: string): string {
 
 export default defineTool({
   description:
-    "List every bot, section and group chat on this Mac with its id. Read only, needs no approval. Call it before sendToBot or postToGroup so you address the right teammate by id. Descriptions come as a short summary with their full length; pass botId to get one bot's full description.",
+    "List every bot, section and group on this Mac with ids. Read only. Call before send_to_bot, post_to_group or rail_action to address the right id. Descriptions come summarised with their full length; pass botId for one bot's full description.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80).optional(),
   }),

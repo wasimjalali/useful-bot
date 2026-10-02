@@ -27,7 +27,7 @@ import { applyShellAction, type ShellAction, type ShellStore } from "../../share
  */
 export default defineTool({
   description:
-    "Organise the owner's sidebar: pin or unpin a bot, hide or unhide it, move it into an existing section by sectionId (or out of one with null), create a section, rename one with updateSection, or remove an empty one with removeSection. Everything applies at once in Auto and Full access and is refused in Read only. removeSection removes an empty section by its id, and refuses while any bot is still in the section; move those bots out first. deleteBot leaves an emptied section in place, so call removeSection afterwards to tidy it. Call listBots first for exact bot and section ids.",
+    "Organise the sidebar: pin, unpin, hide or unhide a bot, move it into a section by sectionId (null takes it out), create a section, rename one (updateSection) or remove an empty one (removeSection, refused while a bot is in it). Applies at once in Auto and Full access, refused in Read only. delete_bot leaves an emptied section: call removeSection after it. Call list_bots first for ids. Only the main bot can change other bots or sections; a teammate acts only on itself and can't hide itself.",
   inputSchema: z.object({
     action: z.enum([
       "pin",
@@ -91,7 +91,7 @@ export default defineTool({
       }
       const target = byId ?? byName[0] ?? null;
       if (!target) {
-        return { status: "not_found", error: `no bot matches ${requested}`, hint: "Call listBots for exact ids." };
+        return { status: "not_found", error: `no bot matches ${requested}`, hint: "Call list_bots for exact ids." };
       }
       botId = target.id;
       // A plain bot or a group arranges only its own row; the rest of the
@@ -107,7 +107,7 @@ export default defineTool({
       const sectionId = input.sectionId ?? "";
       const section = shell.sections.find((item) => item.id === sectionId) ?? null;
       if (!section) {
-        return { status: "not_found", error: `no section with id ${sectionId}`, hint: "Call listBots for exact ids." };
+        return { status: "not_found", error: `no section with id ${sectionId}`, hint: "Call list_bots for exact ids." };
       }
       // Every bot in the section counts, hidden and pinned ones too: the
       // store would unassign them all, and the owner asked for an empty

@@ -1,6 +1,6 @@
 # UB-009: agent instructions and per-bot context, final plan
 
-Status: **approved by the owner** (2026-10-01). Step 0 merged (#174), PR A merged (#175), PR B in review (#176), PR C next.
+Status: **approved by the owner** (2026-10-01). Implemented: step 0 (#174), PR A (#175), PR B (#176) and PR C (#177). Evals: `evals/results/2026-10-02-ub009-prc.md`.
 
 Process and evidence: `docs/plan/UB-009-AGENT-CONTEXT-COUNCIL.md`, `docs/audit/UB-009-GENERALIST-PROMPT.md`,
 and `evals/results/2026-10-01-ub009-council/` (packet, round 1 from five seats, round 2 critiques,

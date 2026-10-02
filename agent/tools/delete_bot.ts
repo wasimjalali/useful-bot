@@ -22,7 +22,7 @@ import { removeSessionGrant } from "../../shared/workspace-store.ts";
 
 export default defineTool({
   description:
-    "Delete a teammate bot or group chat when the owner asks for it. It cannot be undone, so in Auto the owner sees an approval card and nothing is removed until they approve it; Full access deletes at once; Read only refuses. This also removes that bot's routines and recent chats, and it cannot be undone, so confirm which bot they mean before calling it. The section it sat in stays; call railAction removeSection to tidy an emptied one.",
+    "Delete a teammate bot or group with its routines and recent chats. Only the main bot can, and never itself; a teammate can't. Irreversible: in Auto the owner approves the exact bot on a card, Full access deletes at once, Read only refuses. Confirm which bot first. Its section stays: call rail_action removeSection to tidy an emptied one.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80),
     reason: z.string().max(300).optional(),
@@ -50,7 +50,7 @@ export default defineTool({
     }
     const target = byId ?? byName[0] ?? null;
     if (!target) {
-      return { status: "not_found", error: `no bot matches ${requested}`, hint: "Call listBots for exact ids." };
+      return { status: "not_found", error: `no bot matches ${requested}`, hint: "Call list_bots for exact ids." };
     }
     if (target.id === orchestratorId(shell)) {
       return { status: "refused", error: "the default Useful Bot runs this app and cannot be deleted" };

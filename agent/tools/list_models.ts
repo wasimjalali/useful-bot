@@ -28,7 +28,7 @@ function page(rows: Row[], query: string | undefined, limit: number) {
 
 export default defineTool({
   description:
-    "List the models on the owner's connected providers: chat models (and which one runs you right now) and image models (and which one generate_image uses by default). Read-only. Filter with `kind` and a `query` such as a vendor or family name; long lists come back capped with a total. You cannot switch your own chat model: the owner picks it in the composer. To draw with an image model other than the default, pass its id to generate_image as `model` (and its connectionId when two providers offer the same id).",
+    "List the chat and image models on the owner's connected providers, and which are in use. Read only. Call before naming or choosing a model. Filter with `kind` and `query`; long lists come capped with a total. You can't switch your own model, the owner picks it in the composer. For another image model, pass its id to generate_image as `model`.",
   inputSchema: z.object({
     kind: z.enum(["chat", "image", "all"]).optional(),
     query: z.string().min(1).max(100).optional(),
