@@ -51,7 +51,12 @@ import {
   seedFor,
   type Admission,
 } from "../../shared/admission.ts";
-import { renderNotesBlock, NOTES_BLOCK_CAP } from "../../shared/notes-block.ts";
+import { flat } from "../../shared/context-blocks.ts";
+import { NOTES_BLOCK_CAP } from "../../shared/notes-block.ts";
+import { renderNotesFor } from "../../agent/memory/notes.ts";
+import { eagerConnections, mountedToolBytes, splitMountedName } from "../../shared/connection-tools.ts";
+import { connectionIndex, indexedToolBytes, sessionTools } from "../../shared/connection-tools-store.ts";
+import { readConnectionsStore } from "../../shared/connections-store.ts";
 import { sharedMemoryStore } from "../../agent/lib/memory.ts";
 
 /**
@@ -95,17 +100,34 @@ const ROUTINE_IDLE_MS = 10 * 60_000;
  */
 export function notesCharsFor(botId: string): number {
   try {
-    const cards = sharedMemoryStore().list(botId, 100);
-    return renderNotesBlock(cards.map((card) => ({
-      id: card.id,
-      title: card.title,
-      body: card.body,
-      updatedAt: card.updatedAt,
-    }))).length;
+    return renderNotesFor(botId, sharedMemoryStore).length;
   } catch (err) {
     console.error("notes could not be read for admission; counted as a full block", err instanceof Error ? err.message : err);
     return NOTES_BLOCK_CAP;
   }
+}
+
+/**
+ * Characters of tool schemas mounted on top of the built-in set: the OpenAPI
+ * connections mounted every turn (already clamped to their budget) and the
+ * MCP tools this session picked up on demand, each weighed the way it is
+ * mounted. A new session holds none.
+ */
+export function mountedToolChars(sessionId: string | null): number {
+  let chars = 0;
+  for (const entry of eagerConnections()) chars += mountedToolBytes(entry) ?? 0;
+  if (sessionId) {
+    const connections = readConnectionsStore().connections;
+    for (const name of sessionTools(sessionId)) {
+      const split = splitMountedName(name);
+      if (!split) continue;
+      const entry = connections.find((item) => item.id === split.connectionId);
+      const indexed = connectionIndex(split.connectionId)?.tools.find((tool) => tool.name === split.tool);
+      if (!entry || !indexed) continue;
+      chars += indexedToolBytes(indexed, entry.id, entry.name);
+    }
+  }
+  return chars;
 }
 
 /**
@@ -120,7 +142,13 @@ export function botContextReport(botId: string) {
   const shell = readShell();
   const bot = shell.bots.find((item) => item.id === botId);
   if (!bot) return null;
-  const envelope = envelopeFor({ bot, shell, store, notesChars: notesCharsFor(bot.id) });
+  const envelope = envelopeFor({
+    bot,
+    shell,
+    store,
+    notesChars: notesCharsFor(bot.id),
+    mountedToolChars: mountedToolChars(bot.sessionId ?? null),
+  });
   return {
     descriptionChars: envelope.descriptionChars,
     max: DESCRIPTION_MAX,
@@ -132,14 +160,40 @@ export function botContextReport(botId: string) {
   };
 }
 
-/** Admission for one bot's turn, reading the notes it would carry. */
-export function admitTurn(bot: ShellBot, shell: { bots: ShellBot[] }, store: ProviderStore, briefChars = 0): Admission {
-  return admission({ bot, shell, store, notesChars: notesCharsFor(bot.id), briefChars });
+/**
+ * Admission for one bot's turn, reading the notes it would carry and the tool
+ * schemas mounted for its session. `hiddenChars` is the whole hidden prefix the
+ * turn adds (see `hiddenPrefixChars`). `sessionId` is the session the turn goes
+ * into, or null for a new one.
+ */
+export function admitTurn(
+  bot: ShellBot,
+  shell: { bots: ShellBot[] },
+  store: ProviderStore,
+  hiddenChars = 0,
+  sessionId: string | null = bot.sessionId ?? null,
+): Admission {
+  return admission({
+    bot,
+    shell,
+    store,
+    notesChars: notesCharsFor(bot.id),
+    briefChars: hiddenChars,
+    mountedToolChars: mountedToolChars(sessionId),
+  });
 }
 
 /** The most a carry-over brief may take for this bot's model. */
-export function briefMaxCharsFor(bot: ShellBot, shell: { bots: ShellBot[] }, store: ProviderStore): number {
-  return briefBudgetChars({ bot, shell, store, notesChars: notesCharsFor(bot.id) }, BRIEF_MAX_CHARS);
+export function briefMaxCharsFor(
+  bot: ShellBot,
+  shell: { bots: ShellBot[] },
+  store: ProviderStore,
+  sessionId: string | null = bot.sessionId ?? null,
+): number {
+  return briefBudgetChars(
+    { bot, shell, store, notesChars: notesCharsFor(bot.id), mountedToolChars: mountedToolChars(sessionId) },
+    BRIEF_MAX_CHARS,
+  );
 }
 
 /**
@@ -150,7 +204,8 @@ export function admissionRefusal(
   bot: ShellBot,
   shell: { bots: ShellBot[] },
   store: ProviderStore,
-  briefChars = 0,
+  hiddenChars = 0,
+  sessionId: string | null = bot.sessionId ?? null,
 ): Response | null {
   if (descriptionTooLong(bot)) {
     return Response.json(
@@ -158,7 +213,7 @@ export function admissionRefusal(
       { status: 409 },
     );
   }
-  const verdict = admitTurn(bot, shell, store, briefChars);
+  const verdict = admitTurn(bot, shell, store, hiddenChars, sessionId);
   if (verdict.ok) return null;
   return Response.json({ ok: false, error: verdict.code, message: verdict.message }, { status: 409 });
 }
@@ -260,7 +315,7 @@ function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
   try {
     // Providers store first, roster second: the web write order moves a pin in
     // the shell before the default in the store, so a fresh store implies a
-    // roster at least as fresh (the same order freezeTurnSelection reads in).
+    // roster at least as fresh (the same order the turn snapshot reads in).
     const store = readProviderStore();
     let bot: ShellBot | undefined;
     try {
@@ -680,12 +735,16 @@ export async function continuationBriefFor(
 }
 
 function handoffEnvelope(handoff: HandoffRecord): string {
+  // Names are flattened to one line: the transcript and the brief recognise a
+  // handoff by lines 1 and 2, and a newline in a name would break both.
+  const source = flat(handoff.sourceName) || "a bot";
+  const group = handoff.groupName ? flat(handoff.groupName) || "this group" : "";
   const lines = [
-    `Handoff from ${handoff.sourceName}.`,
-    handoff.groupName ? `This belongs to the group chat ${handoff.groupName}.` : "This arrives in your own chat.",
+    `Handoff from ${source}.`,
+    group ? `This belongs to the group chat ${group}.` : "This arrives in your own chat.",
     // Lines 1 and 2 above are parsed by the transcript (Swift isHandoffEnvelope,
     // continuation-brief.ts): keep them exactly.
-    `This is another bot on this Mac, not the owner. Do the part that fits your role and permission, and say what you declined. Your reply goes back to ${handoff.sourceName} and the owner reads both chats.`,
+    `This is another bot on this Mac, not the owner. Do the part that fits your role and permission, and say what you declined. Your reply goes back to ${source} and the owner reads both chats.`,
     ...(handoff.depth > 0 ? [`Relay hop ${handoff.depth} of ${HANDOFF_DEPTH_MAX}.`] : []),
     "",
     handoff.message,
@@ -763,14 +822,23 @@ async function runEveTurn(
   // The bot's own model has to be servable before the turn exists. The code is
   // the message, so a routine's failure note and a handoff's failure record
   // carry it as they do the other codes here. Never a substitute model.
-  // Providers store first, then the roster, as the freeze reads them.
-  const store = readProviderStore();
-  const current = readShell().bots.find((item) => item.id === bot.id) ?? bot;
-  if (!botSelectionUsable(current, store)) throw new Error("model_selection_unavailable");
-  // Refused before any eve call, never clipped: the stored instructions are
-  // over the cap, or the fixed envelope does not fit the bot's model window.
-  if (descriptionTooLong(current)) throw new Error("description_too_long");
-  if (!admitTurn(current, readShell(), store).ok) throw new Error("context_too_large");
+  // Checked against the stores as they are at the moment of each send, since
+  // every await between a check and its fetch lets the owner change the model,
+  // the instructions or the notes. Providers store first, then the roster, as
+  // the freeze reads them. Refused before any eve call, never clipped: the
+  // stored instructions are over the cap, or the fixed envelope (with the
+  // hidden prefix this very send carries) does not fit the bot's model window.
+  const admitFresh = (hiddenChars: number, intoSession: string | null): ShellBot => {
+    const freshStore = readProviderStore();
+    const freshShell = readShell();
+    const live = freshShell.bots.find((item) => item.id === bot.id) ?? bot;
+    if (!botSelectionUsable(live, freshStore)) throw new Error("model_selection_unavailable");
+    if (descriptionTooLong(live)) throw new Error("description_too_long");
+    if (!admitTurn(live, freshShell, freshStore, hiddenChars, intoSession).ok) throw new Error("context_too_large");
+    return live;
+  };
+  const hidden = withSessionNotes("", notes).length;
+  admitFresh(hidden, bot.sessionId ?? null);
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
   // The body the proxy would have built for this bot: app notes first, then
   // the caller's text. readHandoffStream arms on this exact string,
@@ -810,6 +878,8 @@ async function runEveTurn(
       if (owner !== bot.id) throw new Error(owner ? "session_owner_conflict" : "session_binding_ambiguous");
     }
     let historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
+    // Again after the history read: that await is where a pick or an edit lands.
+    admitFresh(hidden, sessionId || null);
     if (sessionId) syncSessionWorkspaceFresh(sessionId, bot.id);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
@@ -835,9 +905,18 @@ async function runEveTurn(
           if (idleTimer) clearTimeout(idleTimer);
           return await runEveTurn(live, message, budget, delivery, notes);
         }
-        const brief = await continuationBriefFor(retired, jwt, undefined, undefined, briefMaxCharsFor(current, readShell(), store));
-        if (!admitTurn(current, readShell(), store, brief.length).ok) throw new Error("context_too_large");
+        const sizing = admitFresh(hidden, null);
+        const brief = await continuationBriefFor(
+          retired,
+          jwt,
+          undefined,
+          undefined,
+          briefMaxCharsFor(sizing, readShell(), readProviderStore(), null),
+        );
+        // The whole hidden prefix of the carried send, and the stores as they
+        // are after the brief read, not the ones the first send was sized on.
         const carried = `${withSessionNotes("", [brief, ...notes])}${message}`;
+        admitFresh(carried.length - message.length, null);
         const retry = await fetch(`${EVE}/eve/v1/session`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },

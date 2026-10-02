@@ -37,8 +37,18 @@ export type AdmissionInput = {
   store: ProviderStore;
   /** Length of the rendered notes block. */
   notesChars: number;
-  /** Length of the carry-over brief; 0 when the turn carries none. */
+  /**
+   * Length of everything hidden the turn adds in front of the owner's message:
+   * the carry-over brief, a retry note, a mention or routine line, and the
+   * session-note framing around them. 0 when the turn carries none.
+   */
   briefChars?: number;
+  /**
+   * Characters of tool schemas mounted on top of the built-in set: the OpenAPI
+   * connections mounted every turn and the MCP tools this session already
+   * picked up on demand. 0 when none.
+   */
+  mountedToolChars?: number;
 };
 
 export type Admission =
@@ -111,7 +121,7 @@ export function envelopeFor(input: AdmissionInput): Envelope {
   const tokens = estimateTokens(SHARED_PROMPT_CHARS)
     + estimateTokens(context.length)
     + estimateTokens(input.notesChars)
-    + estimateTokens(TOOL_SCHEMA_CHARS)
+    + estimateTokens(TOOL_SCHEMA_CHARS + (input.mountedToolChars ?? 0))
     + estimateTokens(input.briefChars ?? 0)
     + OUTPUT_RESERVE_TOKENS;
   return { tokens, windowTokens, modelLabel, descriptionChars: input.bot.description.length };

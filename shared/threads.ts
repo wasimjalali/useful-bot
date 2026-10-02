@@ -200,7 +200,7 @@ export function stripThreadPrefix(text: string): string {
  */
 export function speakerLabel(input: {
   bot: { id: string; kind: BotKind; name: string; label: string } | null;
-  /** The orchestrator that answers for a group; the default name when absent. */
+  /** The orchestrator that answers for a group (see `orchestratorId`); with none given the group reply carries no name. */
   orchestrator?: { id: string; name: string } | null;
 }): { authorBotId: string | null; authorName: string | null } {
   const bot = input.bot;
@@ -209,6 +209,6 @@ export function speakerLabel(input: {
   const orchestrator = input.orchestrator ?? null;
   return {
     authorBotId: orchestrator && orchestrator.id !== DEFAULT_BOT_ID ? orchestrator.id : null,
-    authorName: orchestrator?.name ?? "Useful Bot",
+    authorName: orchestrator?.name ?? null,
   };
 }

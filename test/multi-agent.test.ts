@@ -246,8 +246,8 @@ test("a group reply is credited to the orchestrator, whoever the owner mentioned
   });
   const groupBot = group.store.bots.find((bot) => bot.id === group.createdId);
   assert.ok(groupBot);
-  // No orchestrator given: the default name, no member credited.
-  assert.deepEqual(speakerLabel({ bot: groupBot }), { authorBotId: null, authorName: "Useful Bot" });
+  // No orchestrator given: no name and no member credited, never a literal.
+  assert.deepEqual(speakerLabel({ bot: groupBot }), { authorBotId: null, authorName: null });
   // The default bot answers under its real name and carries no author id.
   assert.deepEqual(
     speakerLabel({ bot: groupBot, orchestrator: { id: DEFAULT_BOT_ID, name: "Generalist" } }),

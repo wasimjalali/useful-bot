@@ -21,9 +21,16 @@ import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
 import { listThreadEvents } from "../shared/agent-store.ts";
 import { MemoryStore } from "../agent/lib/memory.ts";
+import { recallNotes } from "../agent/memory/notes.ts";
+import { upsertConnection } from "../shared/connections-store.ts";
+import { activateSessionTools, indexedToolBytes, putConnectionIndex, putConnectionOperations } from "../shared/connection-tools-store.ts";
+import { bindSession } from "../shared/session-bindings.ts";
+import { hiddenPrefixChars, rewriteEveTurnBody, type SessionRoute } from "../shared/eve-proxy.ts";
+import { MOUNTED_TOOL_BYTE_BUDGET } from "../shared/policy.ts";
 import {
   admissionRefusal,
   botContextReport,
+  mountedToolChars,
   notesCharsFor,
   pumpHandoffs,
   startRoutineNow,
@@ -35,6 +42,7 @@ const WINDOW = 20_000;
 const KEYS = [
   "UB_PROVIDERS_PATH", "UB_MODELS_CACHE_PATH", "UB_SHELL_PATH", "UB_WORKSPACE_STORE_PATH", "UB_ROUTINES_PATH",
   "UB_AGENT_STORE_PATH", "UB_HANDOFF_DIR", "UB_CHANNEL_JWT", "UB_CHANNEL_JWT_SECRET", "UB_MEMORY_ROOT",
+  "UB_CONNECTIONS_PATH", "UB_CONNECTION_TOOLS_PATH", "UB_SESSION_OWNERS_PATH",
 ] as const;
 
 function row(id: string, contextTokens: number) {
@@ -53,6 +61,9 @@ async function withWorld<T>(fn: (world: { shell: string; dir: string }) => Promi
   process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
   process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
   process.env.UB_MEMORY_ROOT = join(dir, "memory");
+  process.env.UB_CONNECTIONS_PATH = join(dir, "connections.json");
+  process.env.UB_CONNECTION_TOOLS_PATH = join(dir, "connection-tools.json");
+  process.env.UB_SESSION_OWNERS_PATH = join(dir, "session-owners.json");
   process.env.UB_CHANNEL_JWT_SECRET = "test-channel-secret";
   delete process.env.UB_CHANNEL_JWT;
   writeFileSync(process.env.UB_PROVIDERS_PATH, JSON.stringify({
@@ -274,5 +285,107 @@ test("the counter report: numbers for any bot, the seed only for the Generalist"
     const over = teammate(shell, "x".repeat(DESCRIPTION_MAX + 1), "big");
     assert.equal(botContextReport(over)!.fits, false);
     assert.equal(envelopeFor({ bot: readShell(shell).bots.find((bot) => bot.id === over)!, shell: readShell(shell), store: readProviderStore(), notesChars: 0 }).descriptionChars, DESCRIPTION_MAX + 1);
+  });
+});
+
+test("mounted tool schemas count: an OpenAPI connection every turn and the MCP tools the session picked up", async () => {
+  await withWorld(({ shell }) => {
+    assert.equal(mountedToolChars(null), 0);
+    // A measured OpenAPI connection is mounted for every turn.
+    upsertConnection({
+      id: "orders", kind: "openapi", name: "Orders", url: "https://api.example.com/openapi.json", description: "Orders API",
+      authKind: "none", authHeader: null, toolsAllow: null, createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    putConnectionOperations("orders", { operations: 4, schemaBytes: 3000, textBytes: 1000, longestName: 12 });
+    const eager = mountedToolChars(null);
+    assert.ok(eager > 3000, `an OpenAPI connection weighs ${eager}`);
+    assert.ok(eager <= MOUNTED_TOOL_BYTE_BUDGET, "never past the enforced budget");
+    // An MCP tool the session activated counts for that session only.
+    upsertConnection({
+      id: "files", kind: "mcp", name: "Files", url: "https://mcp.example.com/mcp", description: "Files",
+      authKind: "none", authHeader: null, toolsAllow: null, createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    const tool = { name: "search", description: "Search the files.", inputSchema: { type: "object" }, inputSchemaBytes: 4000 };
+    putConnectionIndex("files", [tool]);
+    activateSessionTools("sess-held", ["files__search"], undefined, { files: "Files" });
+    const held = mountedToolChars("sess-held");
+    assert.equal(held, eager + indexedToolBytes(tool, "files", "Files"));
+    assert.equal(mountedToolChars("sess-other"), eager);
+
+    // A bot that fits without them is refused with them on a tight window.
+    const id = teammate(shell, "Watch rankings.");
+    const roster = readShell(shell);
+    const bot = roster.bots.find((item) => item.id === id)!;
+    const store = readProviderStore();
+    const base = admission({ bot, shell: roster, store, notesChars: 0 });
+    assert.ok(base.ok);
+    const room = (base.windowTokens - base.tokens) * 3.5;
+    assert.equal(admission({ bot, shell: roster, store, notesChars: 0, mountedToolChars: room - 100 }).ok, true);
+    assert.equal(admission({ bot, shell: roster, store, notesChars: 0, mountedToolChars: room + 100 }).ok, false);
+  });
+});
+
+test("the admission notes count equals what the notes slot renders, outside-content label and long bodies included", async () => {
+  await withWorld(({ shell }) => {
+    const id = teammate(shell, "Watch rankings.");
+    const memory = new MemoryStore();
+    for (let index = 0; index < 9; index += 1) {
+      memory.upsert({
+        expectedRevision: null, title: `Note ${index}`, tags: [], body: `${index} `.repeat(index === 0 ? 700 : 40), botId: id,
+        source: index === 8 ? "model-after-outside-content" : "owner", expiresAt: null, sessionId: "s1",
+      });
+    }
+    const rendered = recallNotes(
+      { operationId: "op-test", memory: { scope: { value: id } } },
+      () => memory,
+    );
+    assert.ok(rendered);
+    const slot = rendered.messages[0].content;
+    assert.match(slot, /written after reading outside content/);
+    assert.equal(notesCharsFor(id), slot.length);
+    memory.close();
+  });
+});
+
+test("the hidden prefix is sized whole: the mention line, a routine note and the framing", () => {
+  const route: SessionRoute = { threadId: "g1", kind: "group", mentionIds: ["b1"], mentionNames: ["Research"], untargeted: false };
+  const raw = JSON.stringify({ message: "@Research go", botId: "g1" });
+  const body = JSON.parse(rewriteEveTurnBody(raw, route, ["Retry note: the last try failed."])) as { message: string };
+  assert.equal(hiddenPrefixChars(route, ["Retry note: the last try failed."]), body.message.length - "@Research go".length);
+  assert.equal(hiddenPrefixChars(null, []), 0);
+  assert.ok(hiddenPrefixChars(route, []) > "The owner addressed Research.".length, "the mention line and the session-note lead count");
+});
+
+test("a pick or an edit that lands during a send's awaits is caught before the send, not after", async () => {
+  await withWorld(async ({ shell }) => {
+    const id = teammate(shell, "Watch rankings.", "big");
+    bindSession("sess-x", id);
+    updateShell((current) => ({
+      ...current,
+      bots: current.bots.map((bot) => (bot.id === id ? { ...bot, sessionId: "sess-x" } : bot)),
+    }), shell);
+    const original = globalThis.fetch;
+    let posts = 0;
+    let edited = false;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST") { posts += 1; return new Response("{}", { status: 200 }); }
+      // The history read: the owner pastes a huge description while it runs.
+      if (!edited && String(input).includes("/stream")) {
+        edited = true;
+        updateShell((current) => ({
+          ...current,
+          bots: current.bots.map((bot) => (bot.id === id ? { ...bot, description: "x".repeat(DESCRIPTION_MAX + 1) } : bot)),
+        }), shell);
+      }
+      return new Response("", { status: 200 });
+    }) as typeof globalThis.fetch;
+    try {
+      const routine = createRoutine({ botId: id, name: "Daily", instruction: "do it", schedules: [] });
+      await assert.rejects(startRoutineNow(routine.id), /description_too_long/);
+      assert.equal(edited, true);
+      assert.equal(posts, 0, "nothing was sent after the edit");
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

@@ -5,6 +5,7 @@ import {
   eveGetAllowed,
   evePostAllowed,
   eveSessionRoute,
+  hiddenPrefixChars,
   isEveSessionPost,
   parseTurnExtras,
   parseTurnMessage,
@@ -157,6 +158,11 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // a session nobody bound is refused before eve sees it (a turn eve
       // accepts and then fails retires the session).
       let bot: ShellBot | null = null;
+      // The session this turn goes into, whose mounted tools count against the
+      // window; a create holds none.
+      const intoSession = suffix === "session" ? null : suffix.split("/")[1] ?? null;
+      // Set once the body is rewritten; see the check right after it.
+      let finalRefusal: Response | null = null;
       // Outside the rewrite's catch on purpose: that one forwards the original
       // body when anything throws, and a carry-over that failed its check must
       // be refused, never relayed. Only a new session carries over, and only
@@ -232,7 +238,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       try {
         const refusal = sender === null
           ? null
-          : modelSelectionRefusal(sender, senderStore) ?? admissionRefusal(sender, readShell(), senderStore);
+          : modelSelectionRefusal(sender, senderStore) ?? admissionRefusal(sender, readShell(), senderStore, 0, intoSession);
         if (refusal) return refusal;
       } catch (err) {
         console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
@@ -255,7 +261,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           reader.jwt,
           undefined,
           request.signal,
-          sender ? briefMaxCharsFor(sender, readShell(), senderStore) : undefined,
+          sender ? briefMaxCharsFor(sender, readShell(), senderStore, null) : undefined,
         ));
       }
       if (suffix !== "session") {
@@ -299,7 +305,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
                 reader.jwt,
                 undefined,
                 request.signal,
-                sender ? briefMaxCharsFor(sender, readShell(), senderStore) : undefined,
+                sender ? briefMaxCharsFor(sender, readShell(), senderStore, target) : undefined,
               ));
             }
             else console.error("earlier session is not this bot's; its brief was not read");
@@ -307,16 +313,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       }
       if (extras.retry) notes.push(RETRY_NOTE);
-      // The envelope again, now with the brief this turn carries.
-      if (sender !== null && notes.length > 0) {
-        try {
-          const refusal = admissionRefusal(sender, readShell(), senderStore, notes.join("\n").length);
-          if (refusal) return refusal;
-        } catch (err) {
-          console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
-          return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
-        }
-      }
       let stampStore: ProviderStore | null = null;
       try {
         const raw = new TextDecoder().decode(body);
@@ -329,6 +325,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
         bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, route, notes));
+        // The definitive check, on the very bot, roster and providers store
+        // this turn is dispatched with, and the whole hidden prefix it carries
+        // (the brief, a retry note, the mention line and their framing). The
+        // earlier checks only spared a long carry-over read; the owner may have
+        // changed the model, the instructions or the notes during it.
+        if (bot) {
+          finalRefusal = modelSelectionRefusal(bot, stampStore)
+            ?? admissionRefusal(bot, shell, stampStore, hiddenPrefixChars(route, notes), intoSession);
+        }
         headers.set("content-type", "application/json");
       } catch (err) {
         // Routing and rewriting fail closed. Forwarding the original body
@@ -342,6 +347,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       if (!route) {
         return Response.json({ ok: false, error: "session_route_failed" }, { status: 503 });
       }
+      if (finalRefusal) return finalRefusal;
       if (suffix === "session") {
         // A create is made as the validated route bot, never as a bot the body
         // names but the roster does not hold (eveSessionRoute returned null for it).
