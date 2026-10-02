@@ -1,6 +1,8 @@
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
+  bindTurnBody,
+  turnRewriteFailure,
   eveGetAllowed,
   evePostAllowed,
   eveSessionRoute,
@@ -30,6 +32,7 @@ import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/a
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
+import { bindSession, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 import { eveOrigin } from "../../../../../shared/stack.ts";
 
@@ -119,6 +122,27 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       throw err;
     }
     if (isEveSessionPost(suffix)) {
+      // Identity first. A turn into an existing session belongs to the bot the
+      // durable binding names for that session id, never to the bot the body
+      // says: nothing else ties a session to a bot, and the body is the one
+      // field a client chooses. A body that names another bot is refused, and
+      // a session nobody bound is refused before eve sees it (a turn eve
+      // accepts and then fails retires the session).
+      if (suffix !== "session") {
+        const sessionId = suffix.split("/")[1] ?? "";
+        let bound: string | null;
+        try {
+          bound = resolveSessionBot(sessionId, readShell());
+        } catch (err) {
+          console.error("session binding could not be read", err instanceof Error ? err.message : err);
+          return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+        }
+        const turn = bindTurnBody(new TextDecoder().decode(body), bound);
+        if (!turn.ok) {
+          return Response.json({ ok: false, error: turn.error }, { status: 400 });
+        }
+        body = new TextEncoder().encode(turn.body);
+      }
       let bot: ShellBot | null = null;
       // Outside the rewrite's catch on purpose: that one forwards the original
       // body when anything throws, and a carry-over that failed its check must
@@ -134,7 +158,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         } catch {
           owner = null;
         }
-        const verdict = suffix === "session" && owner && extras.continueFrom
+        // A session another bot owns, or that two bots both point at, is never
+        // carried over into this bot (the ambiguity-aware resolver decides).
+        let ownsPrior = false;
+        try {
+          ownsPrior = Boolean(owner && extras.continueFrom && sessionCarriesOverFor(extras.continueFrom, owner.id, readShell()));
+        } catch {
+          ownsPrior = false;
+        }
+        const verdict = suffix === "session" && owner && extras.continueFrom && ownsPrior
           ? continueFromVerdict(owner, extras.continueFrom)
           : "refused";
         if (verdict === "moved") {
@@ -240,14 +272,17 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           : [];
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members, notes));
         headers.set("content-type", "application/json");
-      } catch {
-        // A carry-over or a retry note that could not be folded in is refused
-        // here: forwarding the original body would relay those fields to eve
-        // and record a carry-over the new session does not hold.
-        if (notes.length > 0) {
-          return Response.json({ ok: false, error: "eve_message_invalid" }, { status: 400 });
-        }
-        /* keep the original body: a malformed turn must fail at eve, not here */
+      } catch (err) {
+        // Routing and rewriting fail closed. Forwarding the original body
+        // would open a session this proxy never resolved a route for, which
+        // would stay unbound, and would relay carry-over fields eve must not
+        // see. A bad message is the caller's 400; a store failure is a 503.
+        console.error("turn could not be routed", err instanceof Error ? err.message : err);
+        const failure = turnRewriteFailure(err);
+        return Response.json({ ok: false, error: failure.error }, { status: failure.status });
+      }
+      if (!route) {
+        return Response.json({ ok: false, error: "session_route_failed" }, { status: 503 });
       }
       // Outside the body-rewrite try on purpose. The tools that run during
       // this turn read the workspace grant for the session, so it has to be
@@ -317,6 +352,19 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         created = (JSON.parse(text) as { sessionId?: string }).sessionId ?? "";
       } catch {
         /* a body this build cannot parse still belongs to the caller */
+      }
+      if (created && route) {
+        // The new session is bound to the bot before anything else happens to
+        // it, so every tool the first turn runs finds its owner. eve minted
+        // the id inside this call, so this is the earliest point it exists.
+        // A session that cannot be bound is stopped: it would run unowned.
+        try {
+          bindSession(created, route.threadId);
+        } catch (err) {
+          console.error("new session could not be bound", err instanceof Error ? err.message : err);
+          await cancelEveTurn(created, jwt ?? "");
+          return Response.json({ ok: false, error: "session_bind_failed" }, { status: 503 });
+        }
       }
       if (created && carriedFrom) {
         // Recorded here, not by the client: this is the one place that knows

@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { activeBotId } from "../lib/active-bot.ts";
+import { callerOf, notAvailable, ORCHESTRATOR_ONLY_HINT, orchestratorId } from "../lib/permission.ts";
 import { appendAgentEvent, createProposal, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { GROUP_MAX_MEMBERS, GROUP_MIN_MEMBERS, DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
@@ -15,9 +15,16 @@ export default defineTool({
     description: z.string().max(500).optional(),
     requestId: z.string().min(1).max(120).optional(),
   }),
-  execute(input, ctx) {
+  async execute(input, ctx) {
     const shell = readShell();
-    const members = groupMembers(speakersFrom(shell.bots), input.memberIds);
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
+    // Proposing a group is the orchestrator's alone.
+    if (who.caller.role !== "orchestrator") return notAvailable(ORCHESTRATOR_ONLY_HINT);
+    // The orchestrator answers untargeted group turns, so it is never a member.
+    const orchestrator = orchestratorId(shell);
+    const members = groupMembers(speakersFrom(shell.bots), input.memberIds)
+      .filter((member) => member.id !== orchestrator);
     if (members.length < GROUP_MIN_MEMBERS) {
       return {
         status: "invalid",
@@ -25,9 +32,8 @@ export default defineTool({
         hint: "Call listBots for exact ids. Groups cannot contain another group.",
       };
     }
-    const sourceId = activeBotId(shell, ctx);
-    const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
-    const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : null;
+    const source = who.caller.bot;
+    const sourceBotId = source.id !== DEFAULT_BOT_ID ? source.id : null;
     const requestId = input.requestId?.trim();
     if (requestId && !reserveSend("proposal", requestId)) {
       return { status: "duplicate", error: "that requestId was already proposed", requestId };
@@ -36,12 +42,13 @@ export default defineTool({
     try {
       proposal = createProposal({
         kind: "createGroup",
+        proposerId: who.caller.id,
         name: input.name.trim(),
         memberIds: members.map((member) => member.id),
         sourceBotId,
-        threadId: sourceBotId ?? shell.selectedBotId,
+        threadId: sourceBotId ?? who.caller.id,
       });
-      appendAgentEvent(sourceBotId ?? shell.selectedBotId, {
+      appendAgentEvent(sourceBotId ?? who.caller.id, {
         kind: "proposal",
         text: `Proposed group ${proposal.name} with ${members.map((member) => member.name).join(", ")}`,
         proposalId: proposal.id,

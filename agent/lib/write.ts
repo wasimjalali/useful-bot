@@ -1,11 +1,22 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, readFileSync, unlinkSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
 import { autoApproved, effectiveRoot, resolveWorkspacePath } from "./workspace.ts";
-import { WRITE_MAX_BYTES } from "../../shared/policy.ts";
+import { WRITE_MAX_BYTES, isPlantedConfigPath } from "../../shared/policy.ts";
 
 let store: ApprovalStore | null = null;
+
+/**
+ * Config a tool reads and then executes (shared/policy.ts PLANTED_CONFIG_NAMES).
+ * Refused in every mode, before a card is raised and again after the path is
+ * re-resolved, so the owner is never asked to approve it. Reads stay open.
+ */
+function assertNotPlantedConfig(target: string): void {
+  if (isPlantedConfigPath(target)) {
+    throw new Error("path_planted_config: this file is config that a tool runs, so a bot cannot write it in any mode. Tell the owner what to put there and let them edit it.");
+  }
+}
 
 const PREVIEW_MAX = 500;
 
@@ -48,6 +59,7 @@ export async function approvedWrite(input: {
   // Reject a bad path before it ever reaches the owner. Whether the target
   // already exists is what decides, under the owner's home, if Auto asks.
   const target = resolveWorkspacePath(input.path, root);
+  assertNotPlantedConfig(target);
   let targetExists = false;
   try {
     lstatSync(target);
@@ -102,6 +114,7 @@ export async function approvedWrite(input: {
     // that ran before the approval is not enough. Writing to the re-resolved
     // target closes that window.
     const target = resolveWorkspacePath(input.path, root);
+    assertNotPlantedConfig(target);
     // Under the home, Auto ran without a card because the file did not exist.
     // A file that appeared since is one the owner never agreed to replace.
     if (!targetExists && scope === "computer" && permission === "auto") {
@@ -171,6 +184,9 @@ function writeAtomically(target: string, root: string, content: string): { bytes
   if (!parentReal.startsWith(`${rootReal}/`) && parentReal !== rootReal) {
     throw new Error("path_escape");
   }
+  // The planted-config check on where the file really lands: a parent swapped
+  // for a link to a config folder after the lexical check cannot slip through.
+  assertNotPlantedConfig(join(parentReal, basename(target)));
   const tmp = join(
     parent,
     `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`,

@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { approvalActor } from "../lib/approvals.ts";
-import { activeBotId } from "../lib/active-bot.ts";
+import { awaitActiveBotId } from "../lib/active-bot.ts";
 import { approvedWrite } from "../lib/write.ts";
 import { appendAgentEvent } from "../../shared/agent-store.ts";
 import { isPagePath, recordPage } from "../../shared/media-store.ts";
@@ -22,7 +22,7 @@ export default defineTool({
       ...approvalActor(ctx),
     });
     if (!isPagePath(written.path)) return written;
-    return { ...written, note: showPage(written.path, input.content, ctx) };
+    return { ...written, note: await showPage(written.path, input.content, ctx) };
   },
 });
 
@@ -30,10 +30,12 @@ export default defineTool({
  * The file is written by now; this only files it. A failure here is told to
  * the bot, never thrown, so the turn does not retry a write that landed.
  */
-function showPage(path: string, html: string, ctx: { session?: { id?: string } }): string {
+async function showPage(path: string, html: string, ctx: { session?: { id?: string; parent?: unknown } }): Promise<string> {
   try {
     const shell = readShell();
-    const botId = activeBotId(shell, ctx);
+    // Waits for a just-created session's binding; an unbound one is
+    // bot_context_missing, caught below and told to the bot.
+    const botId = await awaitActiveBotId(shell, ctx);
     const botName = shell.bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot";
     const { item } = recordPage({ path, html, botId, botName });
     if (item.forgotten) return "The owner removed this page from their Library, so it is not shown again.";

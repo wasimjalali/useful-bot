@@ -2,13 +2,14 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
-import { commandRisk, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
-import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
-import { credentialPathsFor } from "../lib/cli-registry.ts";
+import { commandRisk, needsPathWrite, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
+import { approvedCommand, confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
+import { protectedPathHint } from "../lib/guard-hint.ts";
+import { credentialPathsFor, isRegisteredCliLine } from "../lib/cli-registry.ts";
 import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
-import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { FORBIDDEN_PATH_SUBSTRINGS, foldPath } from "../../shared/policy.ts";
 import { APP_STATE_DIR, mentionsAppState } from "../../shared/stack.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -47,9 +48,9 @@ const BLOCKED_COMMAND_SUBSTRINGS = [
 const SCOPED_COMMAND_SUBSTRINGS = [".."];
 
 function blockedReason(command: string, scoped: boolean): string | null {
-  const lowered = command.toLowerCase();
+  const lowered = foldPath(command);
   for (const part of scoped ? [...BLOCKED_COMMAND_SUBSTRINGS, ...SCOPED_COMMAND_SUBSTRINGS] : BLOCKED_COMMAND_SUBSTRINGS) {
-    if (lowered.includes(part.toLowerCase())) return `command references ${part}`;
+    if (lowered.includes(foldPath(part))) return `command references ${part}`;
   }
   // The app's own stores: approvals, the roster, the grants. read_file and
   // list_dir refuse the same names; a shell line must not be the way round.
@@ -171,16 +172,35 @@ export default defineTool({
       // write refused, an everyday line with writes kept inside the scope,
       // so a line the classifier misjudged still cannot write outside it.
       // Full access writes anywhere but into credential files and the
-      // app's own stores. A line the owner approved runs as they read it.
+      // app's own stores. A line the owner approved runs as they read it, under
+      // the planted-config and PATH write denies only.
       const unbounded = permission === "full_access" && !readOnly;
-      const args = askOwner
-        ? ["/bin/sh", "-c", input.command]
-        : confinedCommand(readOnly ? null : root, input.command, scope, unbounded, {
-            // The store of the CLI this line runs, and nothing for a line
-            // that runs anything else. An approved line skips this because
-            // it is not confined at all: the owner read it and said yes.
-            credentialPaths: unbounded ? credentialPathsFor(input.command) : [],
-          });
+      // A line the owner approved is not confined, but it is not bare either:
+      // it runs with everything allowed except writes to planted config and
+      // the PATH directories. If that profile cannot be built the line is
+      // refused, never run without it.
+      let args: string[];
+      if (askOwner) {
+        try {
+          // Only a single, plain global tool install the owner approved may
+          // write the PATH directories; every other approved line keeps the denies.
+          args = approvedCommand(input.command, { allowToolInstall: needsPathWrite(input.command) });
+        } catch (error) {
+          return {
+            status: "blocked",
+            error: "approved_line_profile_unavailable",
+            hint: `The approved line was not run: the write guard could not be set up (${error instanceof Error ? error.message : "unknown error"}). Nothing was changed.`,
+          };
+        }
+      } else {
+        args = confinedCommand(readOnly ? null : root, input.command, scope, unbounded, {
+          // The store of the CLI this line runs, and nothing for a line
+          // that runs anything else. An approved line skips this because
+          // credential stores are open to it anyway.
+          credentialPaths: unbounded ? credentialPathsFor(input.command) : [],
+          registeredCli: unbounded && isRegisteredCliLine(input.command),
+        });
+      }
       const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       // A line that exits non-zero (`grep` with no match, a failing test) is
       // a result, not a tool failure, and so is one the timeout killed: the
@@ -227,6 +247,9 @@ export default defineTool({
         // Named, so the model reads "this ran out of time" instead of
         // guessing at exit 124 and retrying the same line unchanged.
         ...(run.timedOut ? { timedOut: true, timeoutMs } : {}),
+        // The sandbox refused a write (an approved line or a confined one): name the
+        // path, so the model does not retry and the owner knows what to do.
+        ...(run.exitCode !== 0 ? protectedPathHint(run.stderr, root) : {}),
       };
     });
   },

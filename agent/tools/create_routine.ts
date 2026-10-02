@@ -1,9 +1,18 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
-import { activeBotId } from "../lib/active-bot.ts";
 import { getApprovalStore } from "../lib/write.ts";
-import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
+import {
+  callerOf,
+  inAppGate,
+  mayActOn,
+  mayStillActOn,
+  notAvailable,
+  READ_ONLY_BLOCKED,
+  SELF_ONLY_HINT,
+  sessionPermission,
+  settle,
+} from "../lib/permission.ts";
 import {
   createRoutine,
   hostTimeZone,
@@ -44,11 +53,15 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     const shell = readShell();
-    const botId = input.botId?.trim() || activeBotId(shell, ctx);
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
+    const botId = input.botId?.trim() || who.caller.id;
     const bot = shell.bots.find((item) => item.id === botId) ?? null;
     if (!bot) {
       return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call listBots for exact ids." };
     }
+    // A plain bot or a group schedules only its own routines.
+    if (!mayActOn(who.caller, bot.id)) return notAvailable(SELF_ONLY_HINT);
     if (input.timezone !== undefined && !isValidTimeZone(input.timezone)) {
       return { status: "invalid", error: `${input.timezone} is not an IANA timezone`, hint: "For example Europe/Berlin." };
     }
@@ -102,6 +115,7 @@ export default defineTool({
       if (!readShell().bots.some((item) => item.id === bot.id)) {
         return { status: "not_found", error: `no bot with id ${bot.id}` };
       }
+      if (!mayStillActOn(who.caller.id, bot.id)) return notAvailable(SELF_ONLY_HINT);
       let routine;
       try {
         routine = createRoutine(draft);

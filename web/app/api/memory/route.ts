@@ -19,6 +19,6 @@ export async function GET(request: Request) {
   if (isGateError(gate)) return gate.error;
   const botId = new URL(request.url).searchParams.get("botId")?.trim() ?? "";
   if (!botId) return NextResponse.json({ ok: true, notes: [] });
-  const notes = memoryStore().list("desktop", 100, botId);
+  const notes = memoryStore().list(botId, 100);
   return NextResponse.json({ ok: true, notes });
 }

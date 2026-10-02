@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { activeBotId } from "../lib/active-bot.ts";
+import { callerOf, notAvailable, ORCHESTRATOR_ONLY_HINT } from "../lib/permission.ts";
 import {
   appendAgentEvent,
   createProposal,
@@ -10,7 +10,6 @@ import {
   threadIdFor,
 } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
-import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 
 export default defineTool({
   description:
@@ -22,11 +21,14 @@ export default defineTool({
     brief: z.string().max(1000).optional(),
     requestId: z.string().min(1).max(120).optional(),
   }),
-  execute(input, ctx) {
+  async execute(input, ctx) {
     const shell = readShell();
-    const sourceId = activeBotId(shell, ctx);
-    const source = shell.bots.find((bot) => bot.id === sourceId);
-    const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : shell.selectedBotId;
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
+    // Proposing a new bot is the orchestrator's alone.
+    if (who.caller.role !== "orchestrator") return notAvailable(ORCHESTRATOR_ONLY_HINT);
+    const source = who.caller.bot;
+    const sourceBotId = source.id;
     const threadId = threadIdFor(sourceBotId);
     const requestId = input.requestId?.trim();
     if (requestId && !reserveSend("proposal", requestId)) {
@@ -36,6 +38,7 @@ export default defineTool({
     try {
       proposal = createProposal({
         kind: "createBot",
+        proposerId: who.caller.id,
         name: input.name.trim(),
         petname: nextPetname(shell),
         title: (input.title ?? "").trim(),
@@ -50,7 +53,7 @@ export default defineTool({
         text: `Proposed teammate ${proposal.name}`,
         proposalId: proposal.id,
         authorBotId: sourceBotId,
-        authorName: source?.name ?? null,
+        authorName: source.name,
       });
     } catch (err) {
       if (requestId) releaseSend("proposal", requestId);

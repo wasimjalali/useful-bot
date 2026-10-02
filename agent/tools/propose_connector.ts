@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { activeBotId } from "../lib/active-bot.ts";
+import { callerOf } from "../lib/permission.ts";
 import {
   appendAgentEvent,
   createProposal,
@@ -46,7 +46,9 @@ export default defineTool({
     if (row.connected) return { status: "already_connected", slug, name: row.name };
 
     const shell = readShell();
-    const botId = activeBotId(shell, ctx);
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
+    const botId = who.caller.id;
     const threadId = threadIdFor(botId);
     // One open connect card per bot: the instructions say one app per turn,
     // and this is what makes a second proposal in the same turn a no-op

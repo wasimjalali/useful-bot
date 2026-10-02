@@ -30,6 +30,7 @@ import { providerPendingPath } from "../shared/provider-oauth.ts";
 import { cataloguePath } from "../shared/composio-catalogue.ts";
 import { limitsPath } from "../shared/limits-store.ts";
 import { defaultOwnerPath } from "../agent/lib/session-owners.ts";
+import { defaultSessionOwnersPath } from "../shared/session-bindings.ts";
 import { connectionSecretService, keychainGet, keychainSet, memoryKeychain, setKeychainDriver } from "../shared/keychain.ts";
 import { isForbiddenChildSegment, isGrantableRootPath } from "../shared/shell-store.ts";
 import { assertSafeRoot, resolveWorkspacePath } from "../agent/lib/workspace.ts";
@@ -72,7 +73,7 @@ const STORE_OVERRIDES = [
   "UB_WEB_SESSIONS_PATH", "UB_HANDOFF_DIR", "UB_MEMORY_ROOT", "UB_WIDGETS_DIR", "UB_IMAGES_DIR",
   "UB_MEDIA_INDEX_PATH", "UB_PROVIDERS_PATH", "UB_MODELS_CACHE_PATH", "UB_CONNECTORS_PATH", "UB_CONNECTIONS_PATH",
   "UB_CONNECTION_TOOLS_PATH", "UB_OAUTH_PENDING_PATH", "UB_PROVIDER_OAUTH_PATH", "UB_CATALOGUE_PATH", "UB_LIMITS_PATH",
-  "UB_ROUTER_DB", "UB_ROUTER_CONFIG",
+  "UB_SESSION_OWNERS_PATH", "UB_ROUTER_DB", "UB_ROUTER_CONFIG",
 ];
 const STACK_VARS = [
   "UB_STACK", "UB_STATE_ROOT", "UB_ROUTER_PORT", "UB_WEB_PORT", "UB_EVE_PORT", "UB_KEYCHAIN_PREFIX", "UB_MEDIA_DIR",
@@ -148,6 +149,7 @@ const STORES: Array<{ name: string; path: () => string; tail: string; override: 
   { name: "provider-oauth", path: () => providerPendingPath(), tail: "provider-oauth.json", override: "UB_PROVIDER_OAUTH_PATH" },
   { name: "composio-catalogue", path: () => cataloguePath(), tail: "composio-catalogue.json", override: "UB_CATALOGUE_PATH" },
   { name: "limits-store", path: () => limitsPath(), tail: "limits.json", override: "UB_LIMITS_PATH" },
+  { name: "session bindings", path: () => defaultSessionOwnersPath(), tail: "session-owners.json", override: "UB_SESSION_OWNERS_PATH" },
   { name: "router usage db", path: () => routerDbPath(), tail: "router/usage.sqlite", override: "UB_ROUTER_DB" },
   { name: "router config", path: () => routerConfigPath(), tail: "config.json", override: "UB_ROUTER_CONFIG" },
   { name: "session owners", path: () => defaultOwnerPath(), tail: "policy.sqlite", override: null },

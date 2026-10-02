@@ -1,4 +1,7 @@
+import { foldPath } from "./fold-path.ts";
 import { DAILY } from "./stack.ts";
+
+export { foldPath };
 
 export type Alias = "workhorse" | "reviewer" | "image";
 export type Profile = "desktop" | "phone" | "reviewer" | "eval";
@@ -191,3 +194,144 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   "id_ecdsa",
   "id_ed25519",
 ] as const;
+
+/**
+ * Config that a tool reads and then executes, relative to the owner's home or
+ * to the folder a line runs in. A hook, skill, server or instruction planted in
+ * one of these runs the next time the owner starts that tool, the way a line
+ * planted in `.zshrc` would. This is the one list: the sandbox profile
+ * (agent/lib/sandbox.ts `toSbplRules`) and `isPlantedConfigPath` below both read
+ * it, so the kernel rule and the write tool's check cannot drift apart.
+ *
+ * Writes are refused in every posture. Reading stays open. Project
+ * `AGENTS.md` and `CLAUDE.md` are deliberately absent (owner decision F1:
+ * writable in Auto); only the ones under a tool's own config folder are here.
+ */
+export const PLANTED_CONFIG_NAMES = [
+  // Claude Code runs all of these, not just its settings file: a skill, a
+  // subagent, a plugin or a slash command planted here runs in the owner's
+  // own next session. `.claude.json` holds the MCP servers it launches.
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  ".claude/hooks",
+  ".claude/skills",
+  ".claude/agents",
+  ".claude/plugins",
+  ".claude/commands",
+  ".claude.json",
+  // The standing instructions each agent reads at startup. Denying a skill
+  // while leaving the file that tells the agent what to do is not a guard:
+  // both run in the owner's own next session.
+  ".claude/CLAUDE.md",
+  ".claude/global-rules.md",
+  ".codex/config.toml",
+  ".codex/AGENTS.md",
+  ".config/gh/config.yml",
+  // The whole directory, not one filename: the config is `opencode.jsonc` as
+  // often as `opencode.json`, and `plugin/` beside it is executed too. A
+  // suffix-matched name missed the file that actually exists on this Mac.
+  ".config/opencode",
+  ".gemini/settings.json",
+  ".gemini/GEMINI.md",
+  // A git config runs commands too, which is why the hooks alone are not the
+  // whole of it: `core.hooksPath` moves the hooks somewhere undenied, and
+  // `[alias] x = !sh -c`, `core.pager`, `core.sshCommand` and
+  // `credential.helper` are each a command the owner's next git run executes.
+  // Only the GLOBAL ones: a repository's own `.git/config` is written by
+  // `git init` and `git clone`, and denying it refuses both outright
+  // ("could not lock config file"), which is ordinary work for a bot in a
+  // folder the owner handed over.
+  ".gitconfig",
+  ".config/git/config",
+  // A workflow runs on the owner's CI, with the repository's secrets.
+  ".github/workflows",
+  // Files that launch servers on their own when the owner opens the project in
+  // an editor or agent (2026-10-01). Only the files, not whole directories.
+  ".mcp.json",
+  ".cursor/mcp.json",
+] as const;
+
+/**
+ * The same class, for entries the name shape above cannot express (SBPL regex
+ * source, which is also valid JavaScript regex source).
+ *
+ * A git hook has no extension; the templates `git init` writes are all
+ * `*.sample`. Denying the hooks DIRECTORY refuses `git init` and `git clone`
+ * outright, because both create it and fill it with those templates. Denying
+ * the hook names themselves leaves both working and still refuses a planted
+ * `post-checkout`.
+ */
+export const PLANTED_CONFIG_PATTERNS = [
+  "/\\.git/hooks($|/)",
+] as const;
+
+/**
+ * Allowed back after those denies, and nothing else: the templates `git init`
+ * and `git clone` fill the hooks directory with, which git never runs. A real
+ * hook has none of these names, so denying everything and naming the
+ * exceptions stays correct when git adds a hook nobody here thought of.
+ */
+export const PLANTED_CONFIG_WRITE_ALLOW = [
+  "/\\.git/hooks/[^/]+\\.sample$",
+] as const;
+
+/**
+ * The hooks directory itself, and ONLY the right to bring it into being
+ * (`git init` and `git clone` create it). SBPL only: a file write has no use
+ * for it.
+ */
+export const PLANTED_CONFIG_CREATE_ALLOW = [
+  "/\\.git/hooks$",
+] as const;
+
+/**
+ * A planted `settings.json` written into a folder called `stage` and then
+ * linked or renamed to `.claude` matches none of the per-file rules above, and
+ * the tool reads it through the new name. Two narrower denies cover that
+ * without breaking `git clone`, `tar -x` or a first-time `codex login`
+ * (owner decision, 2026-10-01, round 2):
+ *
+ * - a SYMLINK whose last component is one of these, anywhere, in both profiles
+ *   (nothing legitimate links to a tool's config folder);
+ * - creating one of these, or `.config/git` or `.config/gh`, directly under the
+ *   owner's home, in the confined profiles (Auto and Full access). Exempt: an
+ *   approved line, and at Full access a single plain line that runs a
+ *   registered coding-tool CLI (codex, claude, gemini, gh...), so a first-time
+ *   sign-in works. Planted files inside stay denied either way.
+ *
+ * Accepted residual: a script that renames a real directory to `.claude`
+ * inside a project is not caught by the kernel. In Auto the command card
+ * catches a direct `mv`, `git mv`, `cp -r`, `ln`, `rsync` or `ditto` to those
+ * names; Full access runs such a line without a card.
+ */
+export const PLANTED_CONFIG_SYMLINK_DENY_LEAVES = [".claude", ".codex", ".gemini", ".cursor", ".github"] as const;
+export const PLANTED_CONFIG_HOME_CREATE_DENY = [".claude", ".codex", ".gemini", ".cursor", ".github", ".config/git", ".config/gh"] as const;
+
+const PLANTED_NAME_TESTS = PLANTED_CONFIG_NAMES.map((name) => ({
+  name,
+  test: new RegExp(`(^|/)${foldPath(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[/.])`),
+}));
+const PLANTED_PATTERN_TESTS = PLANTED_CONFIG_PATTERNS.map((pattern) => new RegExp(pattern));
+const PLANTED_ALLOW_TESTS = PLANTED_CONFIG_WRITE_ALLOW.map((pattern) => new RegExp(pattern));
+
+/**
+ * The name of the planted-config entry an absolute path falls under, or null.
+ * Lowercased on both sides, so `.Claude/Settings.json` is caught on a volume
+ * that folds case. Same `(^|/)NAME($|[/.])` reading as the sandbox rules.
+ */
+export function plantedConfigMatch(absPath: string): string | null {
+  const lowered = foldPath(absPath);
+  for (const { name, test } of PLANTED_NAME_TESTS) {
+    if (test.test(lowered)) return name;
+  }
+  for (let i = 0; i < PLANTED_PATTERN_TESTS.length; i++) {
+    if (PLANTED_PATTERN_TESTS[i].test(lowered) && !PLANTED_ALLOW_TESTS.some((allow) => allow.test(lowered))) {
+      return PLANTED_CONFIG_PATTERNS[i];
+    }
+  }
+  return null;
+}
+
+export function isPlantedConfigPath(absPath: string): boolean {
+  return plantedConfigMatch(absPath) !== null;
+}

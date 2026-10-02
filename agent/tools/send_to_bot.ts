@@ -1,7 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permission.ts";
-import { activeBotId } from "../lib/active-bot.ts";
+import { callerOf, inAppGate, notAvailable, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permission.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import { listThreadEvents, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { HANDOFF_DEPTH_MAX, pendingHandoffCycle, readHandoff, waitForHandoff } from "../../shared/handoffs.ts";
@@ -26,6 +25,8 @@ export default defineTool({
     // Read only refuses it like every other change inside the app.
     if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const shell = readShell();
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
     const requested = input.botId.trim();
     const exact = shell.bots.find((bot) => bot.id === requested) ?? null;
     const named = exact
@@ -52,11 +53,16 @@ export default defineTool({
     if (target.hidden) {
       return { status: "invalid", error: `${target.name} is hidden; it cannot receive a handoff` };
     }
-    const sourceId = activeBotId(shell, ctx);
+    const sourceId = who.caller.id;
     if (target.id === sourceId) {
       return { status: "invalid", error: "that is this bot; answer directly instead" };
     }
-    const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
+    // A group session messages only its own members. Plain bots and the
+    // orchestrator reach any teammate (owner decision G1).
+    if (who.caller.role === "group" && !who.caller.bot.memberIds.includes(target.id)) {
+      return notAvailable("A group can message only its own members.");
+    }
+    const source = who.caller.bot;
     // A one-member group is still a group: the handoff carries the group so
     // the reply lands in the group thread instead of flipping its kind to a
     // plain bot chat.
@@ -98,7 +104,7 @@ export default defineTool({
     let record;
     try {
       record = sendHandoff({
-        source: source && source.id !== DEFAULT_BOT_ID ? { id: source.id, name: source.name } : null,
+        source: source.id !== DEFAULT_BOT_ID ? { id: source.id, name: source.name } : null,
         target: { id: target.id, name: target.name },
         group: handoffGroup,
         message: input.message.trim(),

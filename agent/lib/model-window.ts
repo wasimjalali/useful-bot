@@ -1,7 +1,7 @@
 import { catalogFor } from "../../shared/live-models.ts";
 import { exactModelOption } from "../../shared/models.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../../shared/policy.ts";
-import { readProviderStore, resolveUpstream, type ProviderStore } from "../../shared/providers.ts";
+import { readProviderStore, type ProviderStore } from "../../shared/providers.ts";
 import { botSelection, type ModelSelection, type TurnSelection } from "../../shared/session-selection.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import type { ShellBot, ShellStore } from "../../shared/shell-store.ts";
@@ -105,23 +105,3 @@ export async function awaitTurnStamp(eveSessionId: string, timeoutMs = STAMP_WAI
   }
 }
 
-/**
- * The reviewer sub-agent's window, from the model its role resolves to right
- * now, by the same lookup and the same unknown rule as the workhorse. A role
- * that cannot resolve (no credential yet) has no model to size from, and the
- * call itself then fails with the router's own error, so the conservative
- * window here hides nothing.
- */
-export function reviewerWindowTokens(): number {
-  try {
-    const resolved = resolveUpstream(readProviderStore(), "reviewer");
-    return windowTokensFor({
-      connectionId: resolved.connection.id,
-      modelId: resolved.modelId,
-      effort: resolved.effort,
-      speed: resolved.speed,
-    });
-  } catch {
-    return UNKNOWN_WINDOW_TOKENS;
-  }
-}

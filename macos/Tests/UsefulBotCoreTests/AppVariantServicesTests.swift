@@ -46,6 +46,62 @@ private final class StackRunner: ProcessRunner, @unchecked Sendable {
     }
 }
 
+/// The port frees the moment the listener is signalled, as Next's and eve's do,
+/// but the process (and a child under it) keeps running until it is let go.
+private final class DrainingRunner: ProcessRunner, @unchecked Sendable {
+    private let lock = NSLock()
+    var listening: [Int: [pid_t]] = [:]
+    var running: [OwnedProcess] = []
+    /// Processes that ignore SIGTERM and only die to SIGKILL.
+    var stubborn: Set<pid_t> = []
+    /// Processes that survive SIGKILL too (uninterruptible).
+    var unkillable: Set<pid_t> = []
+    /// How many SIGKILLs an unkillable process ignores before it dies.
+    var survivesKills = Int.max
+    /// A rescan finds the processes only once: their launcher parent is gone after that.
+    var hideAfterFirstScan = false
+    private var scans = 0
+    /// Checks of a TERMed process after which it exits (when not stubborn).
+    var exitAfterChecks = 2
+    private(set) var termed: [pid_t] = []
+    private(set) var killed: [pid_t] = []
+    private(set) var exitChecksWithPortFree = 0
+    private var checks: [pid_t: Int] = [:]
+
+    func start(_ command: ServiceCommand) {}
+    func portAccepting(_ port: Int) -> Bool { !(listening[port] ?? []).isEmpty }
+    func listeners(port: Int) -> [pid_t] { listening[port] ?? [] }
+    func stopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) { listening[port] = [] }
+    func forceStopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) { listening[port] = [] }
+    /// Found from the process table: listening or not.
+    func ownServiceProcesses(owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] {
+        lock.lock(); defer { lock.unlock() }
+        scans += 1
+        if hideAfterFirstScan, scans > 1 { return [] }
+        return running
+    }
+    func isStillRunning(_ process: OwnedProcess) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if listening.values.allSatisfy({ $0.isEmpty }) { exitChecksWithPortFree += 1 }
+        if termed.contains(process.pid), !stubborn.contains(process.pid) {
+            checks[process.pid, default: 0] += 1
+            if checks[process.pid]! >= exitAfterChecks { running.removeAll { $0 == process } }
+        }
+        return running.contains(process)
+    }
+    func signalProcess(_ process: OwnedProcess, force: Bool) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard running.contains(process) else { return false }
+        if force {
+            killed.append(process.pid)
+            if !unkillable.contains(process.pid) || killed.count > survivesKills { running.removeAll { $0 == process } }
+        } else {
+            termed.append(process.pid)
+        }
+        return true
+    }
+}
+
 /// A runner whose listeners carry a command line, so the ownership rule that
 /// `LocalServices` hands it is the one that decides.
 private final class LineRunner: ProcessRunner, @unchecked Sendable {
@@ -334,6 +390,97 @@ private final class ParentRunner: ProcessRunner, @unchecked Sendable {
         #expect(!runner.stopped.contains(4419))
         #expect(!runner.forceStopped.contains(4420))
         #expect(!runner.forceStopped.contains(4419))
+    }
+
+    @Test func stoppingServicesWaitsForTheProcessToExitNotJustThePort() async {
+        let runner = DrainingRunner()
+        runner.listening = [4420: [9001], 4419: [9002], 4421: [9003]]
+        // A listener and its child: the port frees at once, the processes drain later.
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1"), OwnedProcess(pid: 9004, args: "eve local-server-child", started: "t2")]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 5)
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .stopped)
+        #expect(runner.running.isEmpty, "returned while a process of the old version was still running")
+        #expect(runner.exitChecksWithPortFree >= 2, "the exit was awaited after the port had freed")
+        #expect(runner.killed.isEmpty, "a process that exited on SIGTERM is never SIGKILLed")
+        #expect(Set(runner.termed) == [9001, 9004])
+    }
+
+    @Test func aServiceAlreadyDrainingWithNoListenerIsStillStoppedAndAwaited() async {
+        let runner = DrainingRunner()
+        // Every port is already closed: the old writer is mid-drain and found only from the process table.
+        runner.listening = [:]
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1")]
+        runner.stubborn = [9001]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.2)
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .stopped)
+        #expect(runner.termed == [9001])
+        #expect(runner.killed == [9001])
+        #expect(runner.running.isEmpty)
+    }
+
+    @Test func aProcessThatIgnoresSigtermIsKilledAfterTheTimeoutAndAwaited() async {
+        let runner = DrainingRunner()
+        runner.listening = [4420: [9001]]
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1")]
+        runner.stubborn = [9001]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.3)
+        let started = Date()
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .stopped)
+        #expect(runner.killed == [9001], "SIGKILL follows the timeout")
+        #expect(runner.running.isEmpty)
+        #expect(Date().timeIntervalSince(started) >= 0.3, "SIGKILL came before the SIGTERM grace ran out")
+    }
+
+    @Test func aSurvivorOfSigkillIsReportedSoTheRuntimeIsNotReplaced() async {
+        let runner = DrainingRunner()
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1")]
+        runner.stubborn = [9001]
+        runner.unkillable = [9001]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.2)
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .wouldNotStop(["next-server (v15)"]))
+        #expect(result.didNotStop)
+        #expect(runner.killed.count >= 1)
+    }
+
+    @Test func aSurvivorWhoseParentIsGoneIsStillReportedNotDroppedByTheRescan() async {
+        let runner = DrainingRunner()
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1")]
+        runner.stubborn = [9001]
+        runner.unkillable = [9001]
+        runner.hideAfterFirstScan = true
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.2)
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .wouldNotStop(["next-server (v15)"]))
+    }
+
+    @Test func aSurvivorThatDiesInTheSecondRoundIsStopped() async {
+        let runner = DrainingRunner()
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1")]
+        runner.stubborn = [9001]
+        runner.unkillable = [9001]
+        runner.survivesKills = 1
+        runner.hideAfterFirstScan = true
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.2)
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .stopped)
+        #expect(runner.killed == [9001, 9001])
+        #expect(runner.running.isEmpty)
+    }
+
+    @Test func aForeignStackPortIsNotSignalledByTheListenerStop() async {
+        let runner = DrainingRunner()
+        runner.listening = [4420: [9001], 4419: [9002]]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "daily"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.3)
+        let result = await services.stopOwnServices(config: devConfig)
+        // Nothing of this install is running, and the other stack's listeners were left alone.
+        #expect(result == .stopped)
+        #expect(runner.listening[4420] == [9001])
+        #expect(runner.listening[4419] == [9002])
+        #expect(runner.termed.isEmpty)
     }
 
     // MARK: - The dev runtime payload and its setup

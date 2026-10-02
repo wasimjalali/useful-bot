@@ -7,6 +7,7 @@ import {
   type AvatarShape,
 } from "./bot-face.ts";
 import { parseModelSelection, type ModelSelection } from "./session-selection.ts";
+import { foldPath } from "./fold-path.ts";
 import { APP_STATE_DIR, isAppStateSegment, isRuntimeInstallPath } from "./stack.ts";
 
 /** Client-safe: this file must never pull in node builtins. */
@@ -99,6 +100,13 @@ export type ShellBot = {
    * leaves it null, and so does a roster from before this field.
    */
   model: ModelSelection | null;
+  /**
+   * Counts every write to the profile (name, label, description, avatar). A
+   * profile card the owner confirms is bound to the revision it was raised
+   * against, so a card that went stale because the profile moved on is
+   * refused instead of overwriting the newer text.
+   */
+  profileRevision: number;
 };
 
 export type BotProfilePatch = Partial<
@@ -250,6 +258,7 @@ export function seedStore(at = new Date()): ShellStore {
         permission: "auto",
         workspace: null,
         model: null,
+        profileRevision: 0,
       },
     ],
     recents: [],
@@ -323,6 +332,11 @@ function parseBot(raw: unknown): ShellBot {
       ?? "auto",
     workspace: parseWorkspace(rec.workspace),
     model: parseModelSelection(rec.model),
+    profileRevision: typeof rec.profileRevision === "number"
+      && Number.isInteger(rec.profileRevision)
+      && rec.profileRevision >= 0
+      ? rec.profileRevision
+      : 0,
   };
 }
 
@@ -492,7 +506,7 @@ export function isGrantableRootPath(path: string): boolean {
   for (const segment of path.split("/")) {
     if (!segment) continue;
     if (segment === "..") return false;
-    const lowered = segment.toLowerCase();
+    const lowered = foldPath(segment);
     if (isForbiddenGrantSegment(lowered)) return false;
   }
   return true;
@@ -626,8 +640,18 @@ export function parseShell(raw: unknown): ShellStore {
   };
 }
 
+const PROFILE_KEYS = ["name", "label", "description", "avatarShape", "avatarColor", "avatarImage"] as const;
+
 function touch(bot: ShellBot, at: string, patch: Partial<ShellBot>): ShellBot {
-  return { ...bot, ...patch, updatedAt: at };
+  // Every profile write bumps the revision the owner's profile card is bound
+  // to; a write that changes nothing does not.
+  const profileChanged = PROFILE_KEYS.some((key) => key in patch && patch[key] !== bot[key]);
+  return {
+    ...bot,
+    ...patch,
+    updatedAt: at,
+    ...(profileChanged ? { profileRevision: bot.profileRevision + 1 } : {}),
+  };
 }
 
 function uniqueName(store: ShellStore, base: string): string {
@@ -643,9 +667,48 @@ function nextOrder(store: ShellStore): number {
 }
 
 /**
- * A group member must be a real 1:1 bot: not the group itself, not the default
- * Useful Bot (which answers untargeted group turns), not another group, and not
- * a hidden bot. Order follows the caller so the roster stays stable.
+ * A profile card is current only while the bot still has the revision the
+ * card was raised against. A bot that is gone, or whose profile moved on, makes
+ * it stale, and confirming a stale card would overwrite newer text.
+ */
+export function profileCardIsCurrent(bot: Pick<ShellBot, "profileRevision"> | undefined, baseRevision: number): boolean {
+  return bot !== undefined && bot.profileRevision === baseRevision;
+}
+
+/**
+ * Whether the bot that raised a card may still have it applied: it must still
+ * exist and still hold the authority the proposal needs. Creating a bot or a
+ * group is the orchestrator's; a profile edit is the orchestrator's or the
+ * bot's own. A card with no recorded proposer is refused.
+ */
+export function proposerMayConfirm(
+  store: Pick<ShellStore, "bots">,
+  card: { kind: "createBot" | "createGroup" | "updateBotProfile"; proposerId?: string; botId?: string },
+): boolean {
+  const proposer = card.proposerId ? store.bots.find((bot) => bot.id === card.proposerId) : undefined;
+  if (!proposer) return false;
+  const orchestrator = proposer.kind === "bot" && proposer.id === orchestratorId(store);
+  if (card.kind === "updateBotProfile") return orchestrator || proposer.id === card.botId;
+  return orchestrator;
+}
+
+/**
+ * The bot with orchestrator authority: the default bot while it is present and
+ * visible, else the first visible 1:1 bot (the same rule the first-run flow
+ * lands on). Null only when no visible 1:1 bot exists. Every authority check
+ * (who may propose bots and groups, delete, hide, act on another bot) uses
+ * this one answer.
+ */
+export function orchestratorId(store: Pick<ShellStore, "bots">): string | null {
+  const visible = store.bots.filter((bot) => bot.kind === "bot" && !bot.hidden);
+  return visible.find((bot) => bot.id === DEFAULT_BOT_ID)?.id ?? visible[0]?.id ?? null;
+}
+
+/**
+ * A group member must be a real 1:1 bot: not the group itself, not the
+ * orchestrator (the default Useful Bot, which answers untargeted group turns),
+ * not another group, and not a hidden bot. Order follows the caller so the
+ * roster stays stable.
  */
 export function normalizeMembers(
   store: ShellStore,
@@ -653,10 +716,11 @@ export function normalizeMembers(
   selfId: string,
 ): string[] {
   const out: string[] = [];
+  const orchestrator = orchestratorId(store);
   for (const id of memberIds) {
     if (out.includes(id) || id === selfId) continue;
     const bot = store.bots.find((item) => item.id === id);
-    if (!bot || bot.kind !== "bot" || bot.id === DEFAULT_BOT_ID || bot.hidden) continue;
+    if (!bot || bot.kind !== "bot" || bot.id === orchestrator || bot.hidden) continue;
     out.push(id);
     if (out.length >= GROUP_MAX_MEMBERS) break;
   }
@@ -731,6 +795,7 @@ export function applyShellAction(
         permission: "auto",
         workspace: null,
         model: null,
+        profileRevision: 0,
       };
       return {
         store: { ...store, selectedBotId: id, bots: withNewBot(store.bots, bot) },
@@ -768,6 +833,7 @@ export function applyShellAction(
         permission: "auto",
         workspace: null,
         model: null,
+        profileRevision: 0,
       };
       return {
         store: { ...store, selectedBotId: id, bots: withNewBot(store.bots, group) },

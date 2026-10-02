@@ -1,8 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permission.ts";
-import { activeBotId } from "../lib/active-bot.ts";
+import { callerOf, inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permission.ts";
 import { toolRouterIds } from "../lib/router-identity.ts";
 import { appendAgentEvent, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { writeImage } from "../../shared/images-store.ts";
@@ -30,6 +29,10 @@ export default defineTool({
     if (input.connectionId && !input.model) {
       return { status: "failed", error: "connection_without_model", hint: "Pass the image model id as `model` with its connectionId, or neither for the default." };
     }
+    // The bot that will own the picture is resolved before the provider is
+    // paid: an unbound session is refused here, never after the bill.
+    const who = await callerOf(readShell(), ctx);
+    if (!who.ok) return who.result;
     const token = process.env.UB_ROUTER_DESKTOP_TOKEN;
     if (!token) {
       throw new Error("router token missing");
@@ -104,7 +107,7 @@ export default defineTool({
     let botName = "Useful Bot";
     try {
       const shell = readShell();
-      botId = activeBotId(shell, ctx);
+      botId = who.caller.id;
       botName = shell.bots.find((bot) => bot.id === botId)?.name ?? botName;
     } catch (err) {
       console.error(`[media] could not read the roster for image ${imageId}`, err);
