@@ -219,11 +219,16 @@ struct RootView: View {
                                 description: input.description,
                                 sectionId: createSectionId
                             ) { error in
+                                // The dialog can't be closed while it waits,
+                                // but if it is gone anyway the model shows
+                                // the failure instead.
+                                guard case .bot = createKind else { return false }
                                 finish(error)
                                 if error == nil {
                                     pickerOpen = false
                                     createKind = nil
                                 }
+                                return true
                             }
                         }
                     )
@@ -564,7 +569,7 @@ struct CreateBotDialog: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        NativeDialog(maxWidth: DesignTokens.Control.dialogFormWidth, ariaLabel: "Create bot", onClose: onClose) {
+        NativeDialog(maxWidth: DesignTokens.Control.dialogFormWidth, ariaLabel: "Create bot", onClose: { if !creating { onClose() } }) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Create bot")
                     .font(.system(size: DesignTokens.FontSize.dialogTitle, weight: .semibold))
@@ -623,7 +628,7 @@ struct CreateBotDialog: View {
                 }
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
-                    NativeButton("Cancel", kind: .secondary, small: true, action: onClose)
+                    NativeButton("Cancel", kind: .secondary, small: true, enabled: !creating, action: onClose)
                     NativeButton(
                         "Create bot",
                         kind: .primary,

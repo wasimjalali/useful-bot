@@ -15,6 +15,9 @@ struct InstructionsEditorView: View {
     /// The stored description this draft started from.
     @State private var base = ""
     @State private var confirmingDiscard = false
+    /// The Discard confirm was opened by Reload, so Discard takes the stored
+    /// text instead of closing.
+    @State private var reloadPending = false
     @State private var seeded = false
     @State private var context: BotContextInfo?
     @State private var saving = false
@@ -34,7 +37,7 @@ struct InstructionsEditorView: View {
     private var dirty: Bool { draft != base }
     /// The stored text moved since the editor opened (another window or a bot
     /// edited it), so a plain Save would overwrite that change.
-    private var changedElsewhere: Bool { seeded && (bot?.description ?? "") != base }
+    private var changedElsewhere: Bool { seeded && dirty && (bot?.description ?? "") != base }
 
     private var restoreText: String? {
         guard botId == Threads.defaultBotId, let seed = context?.seed, draft != seed.text else { return nil }
@@ -67,6 +70,13 @@ struct InstructionsEditorView: View {
         .onExitCommand(perform: cancel)
         .onAppear(perform: seed)
         .task { context = await model.botContext(botId: botId) }
+        .onChange(of: bot?.description) { _, live in
+            // A clean draft follows the stored text; only a dirty one has a
+            // change of its own to protect.
+            guard seeded, !saving, !dirty else { return }
+            let text = live ?? ""
+            if text != base { base = text; draft = text }
+        }
         .onChange(of: draft) { _, next in
             saveFailed = false
             confirmingDiscard = false
@@ -91,7 +101,7 @@ struct InstructionsEditorView: View {
             .padding(.trailing, 12)
             .frame(height: Self.headerHeight)
 
-            InstructionsTextView(text: $draft, height: $textHeight, onCancel: cancel)
+            InstructionsTextView(text: $draft, height: $textHeight, editable: !saving, onCancel: cancel)
                 .padding(.horizontal, 28)
                 .padding(.top, Self.textTop)
                 .frame(maxHeight: .infinity)
@@ -104,7 +114,7 @@ struct InstructionsEditorView: View {
         VStack(spacing: 0) {
             Hairline()
             HStack(spacing: 12) {
-                if let restoreText {
+                if let restoreText, !saving {
                     Button {
                         draft = restoreText
                     } label: {
@@ -121,7 +131,10 @@ struct InstructionsEditorView: View {
                 status
                 Spacer(minLength: 0)
                 if confirmingDiscard {
-                    NativeButton("Keep editing", kind: .secondary, small: true) { confirmingDiscard = false }
+                    NativeButton("Keep editing", kind: .secondary, small: true) {
+                        confirmingDiscard = false
+                        reloadPending = false
+                    }
                         .accessibilityIdentifier("instructions-keep")
                     NativeButton("Discard", kind: .danger, small: true, action: discard)
                         .accessibilityIdentifier("instructions-discard")
@@ -129,7 +142,7 @@ struct InstructionsEditorView: View {
                     NativeButton("Cancel", kind: .secondary, small: true, action: cancel)
                         .accessibilityIdentifier("instructions-cancel")
                     if changedElsewhere {
-                        NativeButton("Reload", kind: .secondary, small: true, action: reload)
+                        NativeButton("Reload", kind: .secondary, small: true, action: requestReload)
                             .accessibilityIdentifier("instructions-reload")
                     }
                     NativeButton(
@@ -197,13 +210,29 @@ struct InstructionsEditorView: View {
 
     /// Esc, the close button and Cancel: a dirty draft asks first.
     private func cancel() {
-        if confirmingDiscard { confirmingDiscard = false; return }
+        if confirmingDiscard { confirmingDiscard = false; reloadPending = false; return }
         if dirty { confirmingDiscard = true } else { onClose() }
     }
 
     private func discard() {
+        if reloadPending {
+            reloadPending = false
+            confirmingDiscard = false
+            reload()
+            return
+        }
         model.instructionDrafts[botId] = nil
         onClose()
+    }
+
+    /// Reload over a dirty draft asks first, through the Discard confirm.
+    private func requestReload() {
+        if dirty {
+            reloadPending = true
+            confirmingDiscard = true
+        } else {
+            reload()
+        }
     }
 
     /// Take the stored text over the draft.
@@ -239,6 +268,7 @@ struct InstructionsEditorView: View {
 private struct InstructionsTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
+    var editable = true
     var onCancel: () -> Void
 
     private static let font = NSFont.systemFont(ofSize: 14)
@@ -293,6 +323,7 @@ private struct InstructionsTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
+        if view.isEditable != editable { view.isEditable = editable }
         if view.string != text {
             // An outside change (Restore default). A keystroke already
             // matches, so typing never resets the caret.

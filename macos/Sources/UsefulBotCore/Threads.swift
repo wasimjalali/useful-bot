@@ -34,6 +34,14 @@ public enum Threads {
         }
     }
 
+    /// The server's orchestrator rule (shared/shell-store.ts orchestratorId):
+    /// the default bot while it is present and visible, else the first visible
+    /// 1:1 bot. Nil when no visible 1:1 bot exists.
+    public static func orchestrator(in speakers: [Speaker]) -> Speaker? {
+        let visible = speakers.filter { $0.kind == "bot" && !$0.hidden }
+        return visible.first { $0.id == defaultBotId } ?? visible.first
+    }
+
     /// The orchestrator is never a member; it defaults to the default bot.
     public static func groupMembers(
         _ speakers: [Speaker],

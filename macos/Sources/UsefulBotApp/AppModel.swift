@@ -529,6 +529,18 @@ final class AppModel: ObservableObject {
     /// Per-bot send failure, so a turn that died in the background still
     /// explains itself when the owner comes back.
     private var sendErrors: [String: SendFailure] = [:]
+    /// When each `sendErrors` entry was recorded, and when each bot's current
+    /// turn started, so a stale error never colours a later turn.
+    private var sendErrorAt: [String: Date] = [:]
+    private var turnStartedAt: [String: Date] = [:]
+    /// A handoff's bot preview and stamp when it began working: a turn that
+    /// left both unchanged produced no reply to announce.
+    private var handoffStartMarks: [String: HandoffMark] = [:]
+
+    private struct HandoffMark: Equatable {
+        var preview: String
+        var at: String?
+    }
     /// A send that never reached the server, on a bot the owner had already
     /// left. The composer was cleared when the turn was committed, so the text
     /// and its files wait here and go back when that chat is opened again.
@@ -1541,24 +1553,35 @@ final class AppModel: ObservableObject {
             if let ids = polled {
                 let next = Set(ids)
                 // Handoffs and routines run without a local stream, so their
-                // end is only seen here. The poll can't tell a reply from a
-                // failure, so a finished turn counts as a reply. An empty set
+                // end is only seen here. An empty set
                 // right after failed ticks is the service restarting, not
                 // replies, so that marks nothing.
                 let ended = self.handoffWorkingIds.subtracting(next)
                 let reset = next.isEmpty && self.lastTickFailed
                 if !reset {
-                    // The poll can't read the turn, so the evidence is what the
-                    // app holds: a recorded failure, and a preview to show.
+                    // The poll carries no turn status, so the evidence is what the
+                    // app holds: a failure recorded since the handoff began,
+                    // and a preview or stamp that moved since then. With
+                    // neither moved there is no reply to announce.
                     for botId in ended where !self.workingBotIds.contains(botId) {
-                        let preview = self.store?.bots.first { $0.id == botId }?.lastPreview ?? ""
-                        self.notifyTurnFinished(botId, failed: self.sendErrors[botId] != nil, hasReply: !preview.isEmpty)
+                        let bot = self.store?.bots.first { $0.id == botId }
+                        let now = HandoffMark(preview: bot?.lastPreview ?? "", at: bot?.lastAt)
+                        let moved = self.handoffStartMarks[botId].map { $0 != now } ?? !now.preview.isEmpty
+                        self.notifyTurnFinished(botId, failed: false, hasReply: moved && !now.preview.isEmpty)
                     }
                     for botId in ended where botId != self.selectedBotId
                         && botId != self.selectedAtLastTick
                         && !self.workingBotIds.contains(botId) {
                         self.markReplyReady(botId)
                     }
+                }
+                for botId in next.subtracting(self.handoffWorkingIds) {
+                    let bot = self.store?.bots.first { $0.id == botId }
+                    self.handoffStartMarks[botId] = HandoffMark(preview: bot?.lastPreview ?? "", at: bot?.lastAt)
+                    self.turnStartedAt[botId] = Date()
+                }
+                if !reset {
+                    for botId in ended { self.handoffStartMarks[botId] = nil }
                 }
                 if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             }
@@ -2153,6 +2176,7 @@ final class AppModel: ObservableObject {
         survivesReload: Bool = false
     ) {
         sendErrors[botId] = SendFailure(message: message, resendable: resendable, survivesReload: survivesReload)
+        sendErrorAt[botId] = Date()
         // A router cool-down is the one failure with a time on it. Holding the
         // deadline keeps Retry from firing back into the closed window, where
         // it fails in milliseconds and leaves a second copy of the owner's
@@ -2184,6 +2208,7 @@ final class AppModel: ObservableObject {
         var next = workingBotIds
         if running { next.insert(botId) } else { next.remove(botId) }
         if next != workingBotIds { workingBotIds = next }
+        if running, !wasWorking { turnStartedAt[botId] = Date() }
         if !running, runningModelLabels[botId] != nil { runningModelLabels[botId] = nil }
         if running {
             if replyReady.contains(botId) { replyReady.remove(botId) }
@@ -2210,6 +2235,13 @@ final class AppModel: ObservableObject {
     /// of sight. The decision is `TurnNotifyPolicy`.
     private var notifySuppressed = false
 
+    /// A recorded send failure counts only if it came after this turn began.
+    private func sendErrorSinceTurnStart(_ botId: String) -> Bool {
+        guard sendErrors[botId] != nil else { return false }
+        guard let at = sendErrorAt[botId], let start = turnStartedAt[botId] else { return true }
+        return at >= start
+    }
+
     private func notifyTurnFinished(_ botId: String, failed: Bool, hasReply: Bool) {
         guard !notifySuppressed, let bot = store?.bots.first(where: { $0.id == botId }) else { return }
         let screen = TurnNotifier.shared.appIsOnScreen
@@ -2218,7 +2250,7 @@ final class AppModel: ObservableObject {
             isSelected: botId == selectedBotId,
             appActive: screen.active,
             windowVisible: screen.windowVisible,
-            failed: failed || sendErrors[botId] != nil,
+            failed: failed || sendErrorSinceTurnStart(botId),
             hasAssistantReply: hasReply
         ) else { return }
         // The title says it all: no reply text on a lock screen.
@@ -2581,7 +2613,7 @@ final class AppModel: ObservableObject {
             rows.append(TranscriptRow(id: "live-\(widget.id)", kind: .widget, text: widget.id, at: Date()))
         }
         if let bot = selectedBot, bot.isGroup, let store {
-            let orchestrator = Threads.speakers(from: store.bots).first { $0.id == Threads.defaultBotId }
+            let orchestrator = Threads.orchestrator(in: Threads.speakers(from: store.bots))
             rows = Transcript.attributeGroupReplies(rows, group: bot, orchestrator: orchestrator)
         }
         // Nothing has loaded for this chat yet: a store echo that lands in
@@ -3365,11 +3397,11 @@ final class AppModel: ObservableObject {
 
     /// Serialise every shell mutation on one chain so rapid actions cannot
     /// land out of order and a stale echo cannot overwrite newer state.
-    private func enqueue(_ work: @escaping @MainActor () async -> Void) {
+    private func enqueue(onSkip: (@MainActor () -> Void)? = nil, _ work: @escaping @MainActor () async -> Void) {
         let previous = saveChain
         saveChain = Task { @MainActor in
             _ = await previous?.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { onSkip?(); return }
             await work()
         }
     }
@@ -3512,17 +3544,22 @@ final class AppModel: ObservableObject {
     }
 
     /// `onResult` gets nil once the server took the bot, or the failure copy;
-    /// the create dialog stays open until then. Without one the failure lands
-    /// in `saveError`.
+    /// the create dialog stays open until then. It always fires, including
+    /// when the queued work is skipped. It returns whether a dialog took the
+    /// result: a failure nobody took lands in `saveError`, as does one with no
+    /// `onResult`.
     func createBot(
         name: String,
         petname: String,
         label: String,
         description: String,
         sectionId: String?,
-        onResult: (@MainActor (String?) -> Void)? = nil
+        onResult: (@MainActor (String?) -> Bool)? = nil
     ) {
-        enqueue { [weak self] in
+        let skipped = "Create failed."
+        enqueue(onSkip: { [weak self] in
+            if let onResult, !onResult(skipped) { self?.saveError = skipped }
+        }) { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
             let action = ShellActions.createBot(
@@ -3534,7 +3571,7 @@ final class AppModel: ObservableObject {
             )
             do {
                 let next = try await self.client.shellAction(action)
-                onResult?(nil)
+                _ = onResult?(nil)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 // applyStore selects the new bot; switchToBot stashes any
                 // outgoing send so it keeps running.
@@ -3542,7 +3579,7 @@ final class AppModel: ObservableObject {
                 self.saveError = nil
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? "Create failed."
-                if let onResult { onResult(message) } else { self.saveError = message }
+                if onResult?(message) != true { self.saveError = message }
             }
         }
     }
@@ -3580,6 +3617,7 @@ final class AppModel: ObservableObject {
         removeSnapshot(botId, blockWrites: false)
         sendErrors[botId] = nil
         unsentDrafts[botId] = nil
+        instructionDrafts[botId] = nil
         forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
         let running = inflightSessions[botId]
         cancelSend(for: botId)

@@ -21,6 +21,18 @@ import Testing
         #expect(unknown.unknown == ["nobody"])
     }
 
+    @Test func orchestratorIsTheDefaultBotWhileVisibleElseTheFirstVisibleBot() {
+        let def = Speaker(id: Threads.defaultBotId, kind: "bot", name: "Useful Bot", title: "")
+        let group = Speaker(id: "g1", kind: "group", name: "Team", title: "")
+        let hiddenFirst = Speaker(id: "h1", kind: "bot", name: "Hidden", title: "", hidden: true)
+        let sam = Speaker(id: "b3", kind: "bot", name: "Sam", title: "")
+        #expect(Threads.orchestrator(in: [sam, def, group])?.id == Threads.defaultBotId)
+        #expect(Threads.orchestrator(in: [group, hiddenFirst, sam, def])?.id == Threads.defaultBotId)
+        let hiddenDefault = Speaker(id: Threads.defaultBotId, kind: "bot", name: "Useful Bot", title: "", hidden: true)
+        #expect(Threads.orchestrator(in: [group, hiddenDefault, hiddenFirst, sam])?.id == "b3")
+        #expect(Threads.orchestrator(in: [group, hiddenFirst]) == nil)
+    }
+
     @Test func aBotNamedSamDoesNotCatchSamantha() {
         let mentions = Threads.parseMentions("@Samantha hello", bots: speakers())
         #expect(mentions.mentionIds.isEmpty)
