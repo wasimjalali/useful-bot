@@ -14,7 +14,7 @@ const GENERATE_TIMEOUT_MS = 150_000;
 
 export default defineTool({
   description:
-    "Draw an image from a text prompt with the owner's image model, when they ask for a picture, illustration, icon or render. Needs an image provider key in Settings; if none, say so, don't retry. Pass `model` (an id from list_models, plus `connectionId` if two providers share it) only when asked, since some cost far more. The image appears in the chat and is saved in the Library (path in the result): answer in text, don't link or embed it. Copy it elsewhere only when the owner names that place, for this image or as a standing preference (an attached folder, Full access or an earlier file saved elsewhere is not such a request), and keep the Library copy.",
+    "Draw an image from a text prompt with the owner's image model, when they ask for a picture, illustration, icon or render. Needs an image provider key in Settings; without one, say so. Pass `model` (an id from list_models, plus `connectionId` if two providers share it) only when asked, since some cost far more. The image appears in the chat and is saved in the Library (path in the result): answer in text, don't link or embed it. Copy or move it elsewhere only when the owner names that place, for this image or as a standing preference (an attached folder, Full access or an earlier file saved elsewhere is not such a request), and keep the Library copy.",
   inputSchema: z.object({
     prompt: z.string().min(1).max(4000),
     size: z.enum(["square", "wide", "tall"]).optional(),

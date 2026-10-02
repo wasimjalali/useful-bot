@@ -31,11 +31,14 @@ test("no tool description, hint or error names a tool in camelCase", async () =>
   for (const file of files) {
     const mod = (await import(join(dir, file))) as { default?: { description?: string } };
     assert.equal(pattern.test(mod.default?.description ?? ""), false, `${file} description names a tool in camelCase`);
-    const lines = readFileSync(join(dir, file), "utf8")
-      .split("\n")
-      .filter((line) => /\b(hint|error):/.test(line) && !/^\s*(\/\/|\*)/.test(line));
-    for (const line of lines) {
-      assert.equal(pattern.test(line), false, `${file} has a hint or error naming a tool in camelCase: ${line.trim()}`);
+    // Every string literal the model can see (hints, errors, multi-line
+    // ternaries), not just lines that say hint: or error:. Code identifiers
+    // outside quotes are not text the model reads.
+    const source = readFileSync(join(dir, file), "utf8").replace(/^\s*(\/\/|\*).*$/gm, "");
+    for (const literal of source.match(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g) ?? []) {
+      // A bare identifier string (a shell action type such as "deleteBot") is code, not text the model reads.
+      if (!/\s/.test(literal)) continue;
+      assert.equal(pattern.test(literal), false, `${file} has a string naming a tool in camelCase: ${literal}`);
     }
   }
 });
