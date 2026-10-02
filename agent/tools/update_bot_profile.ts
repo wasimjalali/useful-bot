@@ -10,7 +10,7 @@ import {
 } from "../../shared/agent-store.ts";
 import { AVATAR_COLORS, AVATAR_SHAPES, isAvatarColor, isAvatarShape } from "../../shared/bot-face.ts";
 import { readShell } from "../../shared/shell-io.ts";
-import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, DESCRIPTION_MAX } from "../../shared/shell-store.ts";
 
 export default defineTool({
   description:
@@ -19,7 +19,7 @@ export default defineTool({
     botId: z.string().min(1).max(80).optional(),
     name: z.string().min(1).max(80).optional(),
     title: z.string().max(24).optional(),
-    description: z.string().max(500).optional(),
+    description: z.string().max(DESCRIPTION_MAX).optional(),
     avatarShape: z.string().max(20).optional(),
     avatarColor: z.string().max(20).optional(),
     reason: z.string().max(300).optional(),

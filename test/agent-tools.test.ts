@@ -3,11 +3,13 @@ import test from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { applyShellAction, DEFAULT_BOT_ID, seedStore, type ShellStore } from "../shared/shell-store.ts";
+import { applyShellAction, DEFAULT_BOT_ID, DESCRIPTION_MAX, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 import {
   appendAgentEvent,
+  createProposal,
   listThreadEvents,
+  parseAgentStore,
   readAgentStore,
   readProposal,
   sweepOrphanThreads,
@@ -2095,6 +2097,114 @@ test("Read only refuses handoffs, group posts and routine runs", async () => {
     assert.equal(readRoutine(routineId)?.manualRunRequested, false);
   } finally {
     home.restore();
+    box.restore();
+  }
+});
+
+// UB-009: description caps on the proposal tools and the stored cards.
+
+/** The description cap a tool's input schema declares, from its JSON schema. */
+function descriptionCap(tool: { inputSchema: unknown }): number {
+  const standard = (tool.inputSchema as { "~standard": { jsonSchema: { input(options: { target: string }): unknown } } })["~standard"];
+  const schema = standard.jsonSchema.input({ target: "draft-07" }) as { properties: { description: { maxLength: number } } };
+  return schema.properties.description.maxLength;
+}
+
+test("propose_bot caps the description at 2,000 characters", () => {
+  assert.equal(descriptionCap(proposeBot), 2000);
+});
+
+test("update_bot_profile and propose_group cap the description at 8,000 characters", () => {
+  assert.equal(descriptionCap(updateBotProfile), 8000);
+  assert.equal(descriptionCap(proposeGroup), 8000);
+});
+
+test("createProposal refuses an over-cap description for each card kind", () => {
+  const box = sandbox();
+  try {
+    const base = { sourceBotId: null, threadId: "t", proposerId: DEFAULT_BOT_ID };
+    assert.throws(
+      () => createProposal({ ...base, kind: "createBot", name: "N", petname: "P", title: "", description: "d".repeat(2001), sectionId: null, brief: "" }),
+      /shell_description_too_long/,
+    );
+    assert.throws(
+      () => createProposal({ ...base, kind: "createGroup", name: "G", memberIds: ["a", "b"], description: "d".repeat(DESCRIPTION_MAX + 1) }),
+      /shell_description_too_long/,
+    );
+    assert.throws(
+      () => createProposal({
+        ...base,
+        kind: "updateBotProfile",
+        botId: "x",
+        baseRevision: 0,
+        patch: { name: "N", petname: "", title: "", description: "d".repeat(DESCRIPTION_MAX + 1), avatarShape: null, avatarColor: null },
+      }),
+      /shell_description_too_long/,
+    );
+    assert.equal(readAgentStore().proposals.length, 0);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a stored card over its cap is dropped on read, never clipped", () => {
+  const card = (kind: string, extra: Record<string, unknown>) => ({
+    id: `p-${kind}`, kind, status: "pending", threadId: "t", sourceBotId: null,
+    createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(), ...extra,
+  });
+  const store = parseAgentStore({
+    schemaVersion: 1,
+    threads: [],
+    proposals: [
+      card("createBot", { name: "N", petname: "P", title: "", description: "d".repeat(2001), brief: "" }),
+      card("createGroup", { name: "G", memberIds: ["a", "b"], description: "d".repeat(8001) }),
+      card("createGroup", { name: "G2", memberIds: ["a", "b"], description: "d".repeat(8000) }),
+      card("createBot", { name: "N2", petname: "P", title: "", description: "d".repeat(2000), brief: "" }),
+    ],
+    reserves: [],
+  });
+  assert.deepEqual(store.proposals.map((item) => item.id), ["p-createGroup", "p-createBot"]);
+  assert.equal((store.proposals[0] as { description: string }).description.length, 8000);
+});
+
+test("propose_group stores the group description on the card", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["Research", "Writer"]);
+    const result = await run<{ status: string; proposalId: string }>(proposeGroup, {
+      name: "Launch",
+      memberIds: [idOf(store, "Research"), idOf(store, "Writer")],
+      description: "  Ship the launch together. Research owns sources.  ",
+    });
+    assert.equal(result.status, "awaiting_owner_confirmation");
+    const card = readProposal(result.proposalId);
+    assert.equal(card?.kind, "createGroup");
+    assert.equal((card as { description: string }).description, "Ship the launch together. Research owns sources.");
+  } finally {
+    box.restore();
+  }
+});
+
+test("listBots gives a 200-character summary with the length, and the full text for one botId", async () => {
+  const box = sandbox();
+  try {
+    const long = "L".repeat(500);
+    const created = applyShellAction(seedRoster(["Other"]), { type: "createBot", name: "Wordy", description: long });
+    writeShell(created.store);
+    const id = created.createdId ?? "";
+    const listing = await run<{ bots: Array<{ id: string; description: string; descriptionChars: number }> }>(listBots, {});
+    const wordy = listing.bots.find((bot) => bot.id === id);
+    assert.equal(wordy?.descriptionChars, 500);
+    assert.equal(wordy?.description.includes("L".repeat(200) + "..."), true);
+    assert.equal(wordy?.description.includes("L".repeat(201)), false);
+    assert.equal(wordy?.description.startsWith(UNTRUSTED_PREAMBLE), true);
+    const one = await run<{ bots: Array<{ id: string; description: string }> }>(listBots, { botId: id });
+    const full = one.bots.find((bot) => bot.id === id);
+    assert.equal(full?.description.includes(long), true);
+    assert.equal(full?.description.startsWith(UNTRUSTED_PREAMBLE), true);
+    const missing = await run<{ status: string }>(listBots, { botId: "nope" });
+    assert.equal(missing.status, "not_found");
+  } finally {
     box.restore();
   }
 });

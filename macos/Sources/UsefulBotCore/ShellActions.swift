@@ -132,6 +132,7 @@ public enum ProposalActions {
                 "type": "createGroup",
                 "name": name,
                 "memberIds": proposal.memberIds,
+                "description": proposal.description ?? "",
             ]
         case .updateBotProfile:
             // A missing patch must not become an all-empty profile wipe; the

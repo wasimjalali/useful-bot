@@ -10,6 +10,7 @@ import {
   threadIdFor,
 } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
+import { PROPOSE_DESCRIPTION_MAX } from "../../shared/shell-store.ts";
 
 export default defineTool({
   description:
@@ -17,7 +18,7 @@ export default defineTool({
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     title: z.string().max(24).optional(),
-    description: z.string().max(500).optional(),
+    description: z.string().max(PROPOSE_DESCRIPTION_MAX).optional(),
     brief: z.string().max(1000).optional(),
     requestId: z.string().min(1).max(120).optional(),
   }),

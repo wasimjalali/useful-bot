@@ -18,7 +18,7 @@ import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { unbindBot } from "../../../../shared/session-bindings.ts";
-import { applyShellAction, isGrantableRootPath, profileCardIsCurrent, proposerMayConfirm, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { applyShellAction, DESCRIPTION_MAX, isGrantableRootPath, profileCardIsCurrent, proposerMayConfirm, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
 import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
@@ -175,7 +175,8 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
     case "createGroup":
       return action.type === "createGroup"
         && sameName(action.name, proposal.name)
-        && sameSet(action.memberIds, proposal.memberIds);
+        && sameSet(action.memberIds, proposal.memberIds)
+        && (action.description ?? "") === proposal.description;
     case "updateBotProfile":
       return action.type === "updateBot"
         && action.botId === proposal.botId
@@ -527,6 +528,11 @@ export async function PUT(request: Request) {
     if (claimed) {
       try { reopenProposal(claimed.id); } catch { /* best effort */ }
     }
-    return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
+    const code = errorCode(err);
+    // The client keeps the owner's draft and shows the cap.
+    if (code === "shell_description_too_long") {
+      return NextResponse.json({ ok: false, error: code, max: DESCRIPTION_MAX }, { status: 400 });
+    }
+    return NextResponse.json({ ok: false, error: code }, { status: 400 });
   }
 }

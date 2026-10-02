@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultFaceFor, isAvatarColor, isAvatarShape } from "../shared/bot-face.ts";
 import {
   applyShellAction,
+  checkDescription,
   DEFAULT_BOT_ID,
+  DESCRIPTION_MAX,
+  PROPOSE_DESCRIPTION_MAX,
   parseShell,
   pinnedBots,
   searchBots,
@@ -438,4 +441,66 @@ test("setPermission is the bot's own setting, mirrored onto an attached folder",
     bots: seedStore().bots.map((bot) => ({ ...bot, permission: undefined, workspace: { path: "/tmp/p", permission: "read_only" } })),
   });
   assert.equal(legacy.bots[0].permission, "read_only");
+});
+
+// UB-009: a description is kept to 8,000 characters by refusing, never by clipping.
+
+test("the description caps are 8,000 and 2,000", () => {
+  assert.equal(DESCRIPTION_MAX, 8000);
+  assert.equal(PROPOSE_DESCRIPTION_MAX, 2000);
+});
+
+test("checkDescription trims, keeps 8,000 and refuses 8,001 without slicing", () => {
+  assert.equal(checkDescription(`  ${"a".repeat(8000)}\n`), "a".repeat(8000));
+  assert.throws(() => checkDescription("a".repeat(8001)), /shell_description_too_long/);
+  assert.throws(() => checkDescription("a".repeat(2001), 2000), /shell_description_too_long/);
+});
+
+test("every write path keeps 8,000 characters and refuses 8,001", () => {
+  const ok = "d".repeat(8000);
+  const over = "d".repeat(8001);
+  const base = seedStore();
+  const withBot = applyShellAction(applyShellAction(base, { type: "createBot", name: "A" }).store, { type: "createBot", name: "B" });
+  const store = withBot.store;
+  const [a, b] = store.bots.filter((bot) => bot.id !== DEFAULT_BOT_ID).map((bot) => bot.id);
+  const members = [a, b];
+
+  assert.equal(applyShellAction(base, { type: "createBot", name: "X", description: ok }).store.bots[1].description, ok);
+  assert.throws(() => applyShellAction(base, { type: "createBot", name: "X", description: over }), /shell_description_too_long/);
+
+  const grouped = applyShellAction(store, { type: "createGroup", name: "G", memberIds: members, description: ok });
+  assert.equal(grouped.store.bots.find((bot) => bot.id === grouped.createdId)?.description, ok);
+  assert.throws(() => applyShellAction(store, { type: "createGroup", name: "G", memberIds: members, description: over }), /shell_description_too_long/);
+
+  assert.equal(applyShellAction(store, { type: "nameBot", botId: a, name: "A", description: ok }).store.bots.find((bot) => bot.id === a)?.description, ok);
+  assert.throws(() => applyShellAction(store, { type: "nameBot", botId: a, name: "A", description: over }), /shell_description_too_long/);
+
+  assert.equal(applyShellAction(store, { type: "updateBot", botId: a, patch: { description: ok } }).store.bots.find((bot) => bot.id === a)?.description, ok);
+  assert.throws(() => applyShellAction(store, { type: "updateBot", botId: a, patch: { description: over } }), /shell_description_too_long/);
+});
+
+test("a refused update leaves the stored description and revision as they were", () => {
+  const created = applyShellAction(seedStore(), { type: "createBot", name: "A", description: "keep me" });
+  const id = created.createdId ?? "";
+  assert.throws(
+    () => applyShellAction(created.store, { type: "updateBot", botId: id, patch: { name: "Renamed", description: "z".repeat(8001) } }),
+    /shell_description_too_long/,
+  );
+  const bot = created.store.bots.find((item) => item.id === id);
+  assert.equal(bot?.description, "keep me");
+  assert.equal(bot?.name, "A");
+});
+
+test("a 9,000-character description in the file is read verbatim and the store is not reseeded", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-shell-"));
+  const path = join(dir, "shell.json");
+  const long = "w".repeat(9000);
+  const stored = applyShellAction(seedStore(), { type: "createBot", name: "Long", description: "short" }).store;
+  stored.bots = stored.bots.map((bot) => (bot.name === "Long" ? { ...bot, description: long } : bot));
+  writeFileSync(path, JSON.stringify(stored), "utf8");
+  const loaded = readShell(path);
+  assert.equal(loaded.bots.length, 2);
+  assert.equal(loaded.bots.find((bot) => bot.name === "Long")?.description, long);
+  assert.equal(existsSync(`${path}.reseeded`), false);
+  assert.equal(parseShell(JSON.parse(JSON.stringify(stored))).bots[1].description.length, 9000);
 });

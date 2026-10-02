@@ -33,7 +33,10 @@ export const GROUP_MAX_MEMBERS = 6;
 
 const NAME_MAX = 80;
 const LABEL_MAX = 24;
-const DESCRIPTION_MAX = 500;
+/** A bot's standing instructions. Over this is refused, never clipped. */
+export const DESCRIPTION_MAX = 8000;
+/** What a bot may put on a new teammate's card. The owner can grow it after. */
+export const PROPOSE_DESCRIPTION_MAX = 2000;
 
 export type BotKind = "bot" | "group";
 
@@ -207,6 +210,17 @@ function clip(value: string, max: number): string {
   return value.trim().slice(0, max);
 }
 
+/**
+ * The one check every write path runs on a description. Returns the trimmed
+ * text and throws `shell_description_too_long` over the cap: a silent clip
+ * would change the owner's instructions without telling anyone.
+ */
+export function checkDescription(value: string, max = DESCRIPTION_MAX): string {
+  const text = value.trim();
+  if (text.length > max) throw new Error("shell_description_too_long");
+  return text;
+}
+
 function requireName(value: string, max = NAME_MAX): string {
   const name = clip(value, max);
   if (!name) throw new Error("shell_name_required");
@@ -225,6 +239,54 @@ function withNewBot(bots: ShellBot[], bot: ShellBot): ShellBot[] {
   return [bot, ...bots];
 }
 
+/**
+ * Every description the shipped Generalist (`bot-useful`) has carried, so an
+ * untouched one can be recognised and moved to the current text. Append only:
+ * when a new text ships, the one it replaces goes here. Found with
+ * `git log -p -S` on shared/shell-store.ts, which is the only file that ever
+ * seeded it:
+ *  - 1f7b7e1, 322f22b, 950dfd7 (2026-09-13): the first shell, "Local personal
+ *    agent on this Mac." (name "Useful Bot")
+ *  - bd41eed (2026-09-13, #20): added "Creates other bots with a name and
+ *    instructions." (name "Useful Bot")
+ *  - 3d25c70, 6413804 (2026-09-28, #145): "The starter bot. ..." (name
+ *    "Generalist"; 6413804 carries the same change after a rebase)
+ */
+export const GENERALIST_SEEDS: readonly string[] = [
+  "Local personal agent on this Mac.",
+  "Local personal agent on this Mac. Creates other bots with a name and instructions.",
+  "The starter bot. General work on this Mac, and creates other bots with a name and instructions.",
+];
+
+/** The Generalist's shipped instructions today (`generalist-v2`). Owner-editable. */
+export const GENERALIST_SEED_V2 = `You're the owner's main assistant on this Mac: research, writing, files, small scripts, diagrams and work in their connected apps. You also help them build a small team of bots for jobs that recur.
+
+How to help:
+- Start by doing. Ask one question only when the goal or the target is unclear.
+- On longer work, keep the owner posted in short lines, then give the result on its own.
+- Be direct and brief. Say plainly when something failed or isn't possible, and what would help.
+
+Preferences:
+- Show a draft before anything goes out in the owner's name.
+- Say what you'll change before a large edit.
+- When the owner is new, explain the app only as far as their task needs.`;
+
+const squash = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/**
+ * A pure overlay for the Generalist only: a description that is still one of
+ * the shipped seeds reads as the current text, and a bot still named "Useful
+ * Bot" with a seed and no custom avatar reads as "Generalist". Nothing is
+ * written here; the change persists with the next normal write.
+ */
+function overlaySeed(bot: ShellBot): ShellBot {
+  if (bot.id !== DEFAULT_BOT_ID || bot.kind !== "bot") return bot;
+  const wanted = squash(bot.description);
+  if (!GENERALIST_SEEDS.some((seed) => squash(seed) === wanted)) return bot;
+  const rename = bot.name === "Useful Bot" && !bot.avatarCustom;
+  return { ...bot, description: GENERALIST_SEED_V2, ...(rename ? { name: "Generalist" } : {}) };
+}
+
 export function seedStore(at = new Date()): ShellStore {
   const stamp = nowIso(at);
   return {
@@ -240,7 +302,7 @@ export function seedStore(at = new Date()): ShellStore {
         name: "Generalist",
         petname: null,
         label: "",
-        description: "The starter bot. General work on this Mac, and creates other bots with a name and instructions.",
+        description: GENERALIST_SEED_V2,
         notify: false,
         pinned: true,
         hidden: false,
@@ -299,7 +361,10 @@ function parseBot(raw: unknown): ShellBot {
     name: clip(rec.name, NAME_MAX) || rec.id,
     petname: typeof rec.petname === "string" ? clip(rec.petname, NAME_MAX) || null : null,
     label: clip(rec.label, LABEL_MAX),
-    description: clip(rec.description, DESCRIPTION_MAX),
+    // Kept verbatim, whatever the length. A throw here makes readShell reseed
+    // the whole store; the cap is enforced when a description is written and
+    // when a turn is sent, not when the file is read.
+    description: rec.description.trim(),
     notify: rec.notify,
     pinned: rec.pinned,
     hidden: rec.hidden,
@@ -611,7 +676,7 @@ export function parseShell(raw: unknown): ShellStore {
   if (rec.schemaVersion !== SHELL_SCHEMA) throw new Error("shell_schema");
   if (!Array.isArray(rec.bots) || !Array.isArray(rec.sections)) throw new Error("shell_shape");
   if (rec.recents !== undefined && !Array.isArray(rec.recents)) throw new Error("shell_recents");
-  const bots = rec.bots.map(parseBot);
+  const bots = rec.bots.map(parseBot).map(overlaySeed);
   const sections = rec.sections.map(parseSection);
   const recents = (rec.recents ?? []).map(parseRecent);
   if (bots.length === 0) throw new Error("shell_empty");
@@ -775,7 +840,7 @@ export function applyShellAction(
         name: uniqueName(store, requireName(action.name)),
         petname: action.petname !== undefined ? clip(action.petname, NAME_MAX) || null : null,
         label: clip(action.label ?? "", LABEL_MAX),
-        description: clip(action.description ?? "", DESCRIPTION_MAX),
+        description: checkDescription(action.description ?? ""),
         notify: false,
         pinned: false,
         hidden: false,
@@ -813,7 +878,7 @@ export function applyShellAction(
         name: uniqueName(store, requireName(action.name)),
         petname: null,
         label: action.label !== undefined ? clip(action.label, LABEL_MAX) : "Group",
-        description: clip(action.description ?? "", DESCRIPTION_MAX),
+        description: checkDescription(action.description ?? ""),
         notify: false,
         pinned: false,
         hidden: false,
@@ -855,7 +920,7 @@ export function applyShellAction(
       if (!name) throw new Error("shell_name_required");
       const patch: Partial<ShellBot> = { name };
       if (action.label !== undefined) patch.label = clip(action.label, LABEL_MAX);
-      if (action.description !== undefined) patch.description = clip(action.description, DESCRIPTION_MAX);
+      if (action.description !== undefined) patch.description = checkDescription(action.description);
       if (action.avatarShape !== undefined && isAvatarShape(action.avatarShape)) {
         patch.avatarShape = action.avatarShape;
         patch.avatarCustom = true;
@@ -903,7 +968,7 @@ export function applyShellAction(
           : null;
       }
       if (action.patch.label !== undefined) patch.label = clip(action.patch.label, LABEL_MAX);
-      if (action.patch.description !== undefined) patch.description = clip(action.patch.description, DESCRIPTION_MAX);
+      if (action.patch.description !== undefined) patch.description = checkDescription(action.patch.description);
       if (action.patch.notify !== undefined) patch.notify = action.patch.notify;
       if (action.patch.lastPreview !== undefined) {
         patch.lastPreview = clip(action.patch.lastPreview, PREVIEW_MAX);
