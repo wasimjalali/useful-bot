@@ -277,17 +277,25 @@ public struct MemoryNote: Codable, Identifiable, Equatable, Sendable {
     public var body: String
     public var updatedAt: String
     public var truncated: Bool
+    public var revision: MemoryRevision?
+    /// "owner", "model" or "model-after-outside-content".
+    public var source: String
+
+    /// Written by the bot after it read content from outside.
+    public var afterOutsideContent: Bool { source == "model-after-outside-content" }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        revision = try? c.decodeIfPresent(MemoryRevision.self, forKey: .revision)
+        source = (try? c.decode(String.self, forKey: .source)) ?? ""
         title = (try? c.decode(String.self, forKey: .title)) ?? "Note"
         body = (try? c.decode(String.self, forKey: .body)) ?? ""
         updatedAt = (try? c.decode(String.self, forKey: .updatedAt)) ?? ""
         truncated = (try? c.decode(Bool.self, forKey: .truncated)) ?? false
     }
 
-    enum CodingKeys: String, CodingKey { case id, title, body, updatedAt, truncated }
+    enum CodingKeys: String, CodingKey { case id, title, body, updatedAt, truncated, revision, source }
 }
 
 /// `/api/providers` composer state, mirrored from `ComposerPublic`.

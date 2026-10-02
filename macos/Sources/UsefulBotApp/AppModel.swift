@@ -236,12 +236,15 @@ final class AppModel: ObservableObject {
     @Published var pane: Pane = .none {
         didSet {
             // The pane opens on the list, never on the row it showed last time.
-            if pane != .details { closeRoutineDetail() }
-            if pane == .details, let botId = selectedBotId {
+            if pane != oldValue { closeRoutineDetail() }
+            if routinesVisible, let botId = selectedBotId {
                 Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
             }
         }
     }
+
+    /// Both inline panes list the bot's routines.
+    private var routinesVisible: Bool { pane == .details || pane == .settings }
 
     /// Routines for the open bot, plus the pane's own navigation state.
     @Published private(set) var routines: [Routine] = []
@@ -255,6 +258,9 @@ final class AppModel: ObservableObject {
     @Published var openRoutineId: String?
     /// The pane is showing the create form.
     @Published var routineCreating = false
+
+    /// The bot whose instructions the wide editor is open on, if any.
+    @Published var instructionsEditorBotId: String?
 
     /// Inline settings pane, opened from the details pane's gear.
     var settingsOpen: Bool {
@@ -312,6 +318,8 @@ final class AppModel: ObservableObject {
         // DesktopEndpointPolicy never rejects; the throws exists so iOS
         // policies can refuse an endpoint (spec 4.7).
         self.client = try! BackendClient(base: config.baseURL)
+        TurnNotifier.shared.onOpenChat = { [weak self] botId in self?.select(botId) }
+        TurnNotifier.shared.start()
         if let perf = PerfHarness.shared {
             for botId in perf.snapshotsToDrop { snapshots.remove(botId: botId) }
         }
@@ -1472,7 +1480,7 @@ final class AppModel: ObservableObject {
             await refreshComposer()
             // Only while the pane is open: a routine run that lands mid-poll
             // has to show up without the owner reopening the pane.
-            if pane == .details { await loadRoutines(botId: bot.id) }
+            if routinesVisible { await loadRoutines(botId: bot.id) }
             pollAuthFailures = 0
         } catch let error as BackendError where error == .unauthorized {
             // Never leave the shell silently stuck on a rejected session.
@@ -1531,6 +1539,11 @@ final class AppModel: ObservableObject {
                 let ended = self.handoffWorkingIds.subtracting(next)
                 let reset = next.isEmpty && self.lastTickFailed
                 if !reset {
+                    // The poll can't tell a reply from a failure, so a
+                    // finished handoff or routine counts as a reply here too.
+                    for botId in ended where !self.workingBotIds.contains(botId) {
+                        self.notifyTurnFinished(botId, reply: nil, failed: false, hasReply: true)
+                    }
                     for botId in ended where botId != self.selectedBotId
                         && botId != self.selectedAtLastTick
                         && !self.workingBotIds.contains(botId) {
@@ -2163,6 +2176,12 @@ final class AppModel: ObservableObject {
             if replyReady.contains(botId) { replyReady.remove(botId) }
         } else {
             if backgroundActivities[botId] != nil { backgroundActivities[botId] = nil }
+            if wasWorking {
+                let proj = botId == selectedBotId ? projection : backgroundProjections[botId]
+                let last = proj?.messages.last
+                let reply = (proj?.pending == false && last?.role == .assistant) ? last?.text : nil
+                notifyTurnFinished(botId, reply: reply, failed: proj?.failed ?? false, hasReply: reply != nil)
+            }
             // A turn that ended with an assistant message and no failure. A
             // stopped send drops its projection first, so it never counts; a
             // stream that died mid-turn is still pending, so it doesn't either.
@@ -2173,6 +2192,26 @@ final class AppModel: ObservableObject {
                 markReplyReady(botId)
             }
         }
+    }
+
+    /// Posts "NAME finished" for a bot with notifications on whose chat is out
+    /// of sight. The decision is `TurnNotifyPolicy`.
+    private func notifyTurnFinished(_ botId: String, reply: String?, failed: Bool, hasReply: Bool) {
+        guard let bot = store?.bots.first(where: { $0.id == botId }) else { return }
+        let screen = TurnNotifier.shared.appIsOnScreen
+        guard TurnNotifyPolicy.shouldNotify(
+            notifyOn: bot.notify,
+            isSelected: botId == selectedBotId,
+            appActive: screen.active,
+            windowVisible: screen.windowVisible,
+            failed: failed,
+            hasAssistantReply: hasReply
+        ) else { return }
+        TurnNotifier.shared.post(
+            botId: botId,
+            botName: bot.name,
+            body: TurnNotifyPolicy.body(from: reply ?? bot.lastPreview)
+        )
     }
 
     /// A reply is waiting in a chat the owner isn't looking at: the rail face
@@ -3327,16 +3366,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func patchBot(botId: String, _ patch: [String: Any?]) {
+    /// `onResult` reports whether the server took the write, for a caller that
+    /// keeps a draft until it did (the instructions editor).
+    func patchBot(botId: String, _ patch: [String: Any?], onResult: (@MainActor (Bool) -> Void)? = nil) {
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
             do {
                 let next = try await self.client.shellAction(ShellActions.updateBot(botId: botId, patch: patch))
+                onResult?(true)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.applyStore(next)
                 self.saveError = nil
             } catch {
+                onResult?(false)
                 // The pane shows one saveError for whichever bot is open, so a
                 // save that fails after a switch must not land on the new one.
                 guard epoch == self.storeEpoch, botId == self.selectedBotId else { return }
@@ -4211,8 +4254,9 @@ final class AppModel: ObservableObject {
             let notes = try await client.memoryNotes(botId: botId)
             // A slow response from the previous bot must not land on this one.
             guard botId == selectedBotId else { return }
-            memoryNotes = notes
-            memoryError = nil
+            // The pane polls: an unchanged list must not redraw it.
+            if memoryNotes != notes { memoryNotes = notes }
+            if memoryError != nil { memoryError = nil }
         } catch is CancellationError {
             return
         } catch {
@@ -4221,6 +4265,28 @@ final class AppModel: ObservableObject {
             guard botId == selectedBotId else { return }
             memoryError = "Could not load memory."
         }
+    }
+
+    /// The full text of a note the list shows cut short.
+    func fullMemoryNote(botId: String, id: String) async -> MemoryNote? {
+        try? await client.memoryNote(botId: botId, id: id)
+    }
+
+    /// Deletes one note, then re-reads the list. False when the server refused.
+    func deleteMemoryNote(botId: String, note: MemoryNote) async -> Bool {
+        do {
+            try await client.deleteMemoryNote(botId: botId, id: note.id, revision: note.revision)
+            await loadMemory(botId: botId)
+            return true
+        } catch {
+            memoryError = "Could not delete that note."
+            return false
+        }
+    }
+
+    /// The instructions' cost and the shipped default, for the editor's Restore.
+    func botContext(botId: String) async -> BotContextInfo? {
+        try? await client.botContext(botId: botId)
     }
 
     // MARK: - Routines
@@ -4243,7 +4309,7 @@ final class AppModel: ObservableObject {
         routinesError = nil
         routineBusy = []
         // A pane left open on a bot switch would sit empty until the next poll.
-        if pane == .details, let botId = selectedBotId {
+        if routinesVisible, let botId = selectedBotId {
             Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
         }
     }

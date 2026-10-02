@@ -124,6 +124,7 @@ struct RootView: View {
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: libraryOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
+        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.instructionsEditorBotId)
     }
 
     /// Into the first chat: the rail slides in from the left, the stage lifts
@@ -197,6 +198,11 @@ struct RootView: View {
                     model.appSettingsOpen = false
                 }
                 .transition(.opacity)
+            }
+
+            if let botId = model.instructionsEditorBotId {
+                InstructionsEditorView(botId: botId) { model.instructionsEditorBotId = nil }
+                    .transition(.opacity)
             }
 
             if let kind = createKind {
