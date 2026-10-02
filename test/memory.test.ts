@@ -508,3 +508,18 @@ test("readCard returns the whole note with revision and source, and refuses anot
   assert.throws(() => store.readCard(a.id, B), /memory_forbidden/);
   assert.equal(store.list(A)[0].revision, 1, "the list carries the revision too");
 });
+
+test("an id that differs only in case from an existing note is refused on a case-insensitive disk", () => {
+  const { root, store } = fresh();
+  const probe = join(root, "Case-Probe");
+  writeFileSync(probe, "x");
+  const insensitive = existsSync(join(root, "case-probe"));
+  put(store, { id: "case-note", title: "Lower" });
+  if (insensitive) {
+    assert.throws(() => put(store, { id: "CASE-NOTE", expectedRevision: 1, title: "Upper" }), /memory_id_conflict/);
+    assert.equal(store.list(A).length, 1, "the index gained no second row");
+  } else {
+    // A case-sensitive disk keeps two separate files, so there is nothing to collide.
+    assert.equal(put(store, { id: "CASE-NOTE", title: "Upper" }).id, "CASE-NOTE");
+  }
+});

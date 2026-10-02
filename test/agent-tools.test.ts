@@ -826,6 +826,18 @@ test("an outside-sourced note shows no body in the recalled block and does not m
     assert.equal(store.readCard(chosen.id, "bot-useful").title, "Chosen");
     const edited = await run<{ id: string; revision: number }>(memoryUpsert, { ...note("Chosen"), id: chosen.id, expectedRevision: chosen.revision, body: "edited" }, turn("t-deliberate"));
     assert.equal(edited.id, chosen.id, "an edit keeps the id");
+    // An edit of a note that is not there (stale, archived, mistyped) is refused, never turned into a new note.
+    await assert.rejects(
+      run(memoryUpsert, { ...note("Ghost"), id: "no-such-note", expectedRevision: 1 }, turn("t-deliberate")),
+      /memory_not_found/,
+    );
+    assert.throws(() => store.readCard("no-such-note", "bot-useful"), /memory_not_found/);
+    // An id that differs only in case is not the existing note: on any disk it becomes a new note with its own id.
+    const upperId = chosen.id.toUpperCase();
+    const viaCase = await run<{ id: string }>(memoryUpsert, { ...note("Case"), id: upperId }, turn("t-deliberate"));
+    assert.notEqual(viaCase.id, upperId);
+    assert.notEqual(viaCase.id, chosen.id);
+    assert.equal(store.list("bot-useful").filter((card) => card.id.toLowerCase() === chosen.id).length, 1, "no second row for the same id");
     // A clean turn keeps the id the model picked.
     const cleanPick = await run<{ id: string }>(memoryUpsert, { ...note("Clean pick"), id: "my-clean-id" }, turn("t-clean-pick"));
     assert.equal(cleanPick.id, "my-clean-id");

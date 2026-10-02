@@ -10,6 +10,8 @@ export type OutsideCtx = { session?: { id?: string; turn?: { id?: string } } };
  * `model-after-outside-content`, so Settings can show it and the owner can
  * delete it in one click. The marker is per session and turn and lives in this
  * process only: a restart mid-turn forgets it, and the next turn starts clean.
+ * Notes saved before this mark existed carry source "model", whatever they were
+ * written from.
  */
 const REGISTRY_KEY = Symbol.for("useful-bot.outside-content");
 const CAP = 256;

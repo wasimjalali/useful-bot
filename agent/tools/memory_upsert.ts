@@ -10,14 +10,20 @@ import { seenOutside } from "../lib/outside-content.ts";
 
 const PREVIEW_MAX = 300;
 
-/** Whether the bot already has a live note under this id. Another bot's note counts as existing: the store refuses it. */
+/**
+ * Whether the bot already has a live note under exactly this id. Another bot's
+ * note counts as existing (the store refuses it). A case-insensitive disk can
+ * answer for an id that differs only in case, so the id read back must match.
+ * Anything but "not found" and "not yours" is a real failure and is rethrown.
+ */
 function noteExists(botId: string, id: string): boolean {
   try {
-    sharedMemoryStore().readCard(id, botId);
-    return true;
+    return sharedMemoryStore().readCard(id, botId).id === id;
   } catch (err) {
-    if (err instanceof Error && err.message === "memory_not_found") return false;
-    return true;
+    const message = err instanceof Error ? err.message : "";
+    if (message === "memory_not_found") return false;
+    if (message === "memory_forbidden") return true;
+    throw err;
   }
 }
 
@@ -98,7 +104,12 @@ export default defineTool({
       // as given so the store refuses it as it always has.
       const outside = seenOutside(ctx);
       let id = input.id;
-      if (outside && id !== undefined && !noteExists(botId, id)) id = randomUUID();
+      if (outside && id !== undefined && !noteExists(botId, id)) {
+        // An edit was meant (a revision was given) of a note that is not there:
+        // archived, expired, mistyped or stale. Never turn that into a new note.
+        if (input.expectedRevision !== null) throw new Error("memory_not_found");
+        id = randomUUID();
+      }
       return sharedMemoryStore().upsert({
         id,
         expectedRevision: input.expectedRevision,

@@ -305,13 +305,15 @@ test("an outside note in the title list or demoted by the cap shows its id only,
   const text = renderNotesBlock(seventh);
   assert.equal(text.includes(CANARY), false);
   assert.ok(text.includes("- s03: (written after reading outside content; open with memory_read only if you need it)"));
-  // Demoted from a full slot by the 6,000 cap: bodies are big, so the newest notes fall back to titles.
+  // Demoted from a full slot by the 6,000 cap: bodies are big, so the sixth newest (the first
+  // full slot the cap removes) falls back to the title list. b2 is the sixth newest of eight.
   const big = Array.from({ length: 8 }, (_, index): NoteCard => ({
-    id: `b${index}`, title: index === 7 ? CANARY : `T${index}`, body: "x".repeat(1100), updatedAt: day(index),
-    ...(index === 7 ? { source: "model-after-outside-content" } : {}),
+    id: `b${index}`, title: index === 2 ? CANARY : `T${index}`, body: "x".repeat(1190), updatedAt: day(index),
+    ...(index === 2 ? { source: "model-after-outside-content" } : {}),
   }));
   const demoted = renderNotesBlock(big);
   assert.equal(demoted.includes(CANARY), false);
   assert.ok(demoted.includes("Other notes (open with memory_read):"), "the cap really demoted notes to titles");
-  assert.ok(demoted.includes("- b7: (written after reading outside content"));
+  const line = demoted.indexOf("- b2: (written after reading outside content");
+  assert.ok(line > demoted.indexOf("Other notes (open with memory_read):"), "the demoted outside note sits in the title list");
 });

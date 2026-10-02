@@ -575,6 +575,9 @@ export class MemoryStore {
       const now = new Date().toISOString();
       if (existsSync(existingPath)) {
         const prev = parseNote(readFileSync(existingPath, "utf8"));
+        // A case-insensitive disk finds `abc.md` for the id `ABC`; writing it
+        // would index a second row. Ids differing only in case are refused.
+        if (prev.meta.id !== id) throw new Error("memory_id_conflict");
         // Ownership is the first check, under the write lock and before the
         // revision check, so a bot that guessed another bot's id learns
         // nothing about its revision and cannot overwrite it. A note is
