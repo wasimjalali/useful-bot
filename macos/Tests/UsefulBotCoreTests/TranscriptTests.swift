@@ -45,55 +45,43 @@ import Testing
         #expect(rows.first?.text == "final text")
     }
 
-    @Test func groupRepliesAreAttributedByTheMentionThatProducedThem() {
-        let user = TranscriptRow(id: "u1", kind: .user, text: "@Writer tighten this")
-        let reply = TranscriptRow(id: "a1", kind: .assistant, text: "done")
+    @Test func groupRepliesAreCreditedToTheOrchestratorWhoeverWasMentioned() {
+        let group = ShellBot.sample(id: "g1", kind: "group", name: "Launch")
+        let generalist = Speaker(id: "bot-useful", kind: "bot", name: "Generalist", title: "")
         let rows = Transcript.attributeGroupReplies(
-            [user, reply],
-            roster: [
-                Speaker(id: "b1", kind: "bot", name: "Writer", title: ""),
-                Speaker(id: "b2", kind: "bot", name: "Research", title: ""),
-            ]
+            [
+                TranscriptRow(id: "u1", kind: .user, text: "@Writer tighten this"),
+                TranscriptRow(id: "a1", kind: .assistant, text: "done"),
+            ],
+            group: group,
+            orchestrator: generalist
         )
-        #expect(rows[1].authorBotId == "b1")
-        #expect(rows[1].author == "Writer")
+        // The default bot answers: its name, no member id.
+        #expect(rows[1].authorBotId == nil)
+        #expect(rows[1].author == "Generalist")
     }
 
-    @Test func attributionFollowsTheNewestUserTurnAcrossARunOfReplies() {
-        let roster = [
-            Speaker(id: "b1", kind: "bot", name: "Writer", title: ""),
-            Speaker(id: "b2", kind: "bot", name: "Research", title: ""),
-        ]
-        var tagged = TranscriptRow(id: "a3", kind: .assistant, text: "mine")
+    @Test func aFallbackOrchestratorIsCreditedByIdAndAnExplicitAuthorIsKept() {
+        let group = ShellBot.sample(id: "g1", kind: "group", name: "Launch")
+        let fallback = Speaker(id: "b9", kind: "bot", name: "Lead", title: "")
+        var tagged = TranscriptRow(id: "a2", kind: .assistant, text: "mine")
         tagged.authorBotId = "b2"
         tagged.author = "Research"
         let rows = Transcript.attributeGroupReplies(
             [
-                TranscriptRow(id: "a0", kind: .assistant, text: "before any user turn"),
-                TranscriptRow(id: "u1", kind: .user, text: "@Writer tighten this"),
-                TranscriptRow(id: "a1", kind: .assistant, text: "one"),
-                TranscriptRow(id: "n1", kind: .note, text: "a note in between"),
-                TranscriptRow(id: "a2", kind: .assistant, text: "two"),
+                TranscriptRow(id: "u1", kind: .user, text: "@Research check it"),
+                TranscriptRow(id: "a1", kind: .assistant, text: "checked"),
                 tagged,
-                TranscriptRow(id: "u2", kind: .user, text: "@Writer and @Research both"),
-                TranscriptRow(id: "a4", kind: .assistant, text: "two mentions"),
-                TranscriptRow(id: "u3", kind: .user, text: "@Research check it"),
-                TranscriptRow(id: "a5", kind: .assistant, text: "checked"),
+                TranscriptRow(id: "n1", kind: .note, text: "a note"),
             ],
-            roster: roster
+            group: group,
+            orchestrator: fallback
         )
-        #expect(rows.map(\.authorBotId) == [nil, nil, "b1", nil, "b1", "b2", nil, nil, nil, "b2"])
-        #expect(rows[5].author == "Research")
-    }
-
-    @Test func untargetedGroupRepliesStayUnattributed() {
-        let user = TranscriptRow(id: "u1", kind: .user, text: "kick off")
-        let reply = TranscriptRow(id: "a1", kind: .assistant, text: "on it")
-        let rows = Transcript.attributeGroupReplies(
-            [user, reply],
-            roster: [Speaker(id: "b1", kind: "bot", name: "Writer", title: "")]
-        )
-        #expect(rows[1].authorBotId == nil)
+        #expect(rows[1].authorBotId == "b9")
+        #expect(rows[1].author == "Lead")
+        #expect(rows[2].authorBotId == "b2")
+        #expect(rows[3].authorBotId == nil)
+        #expect(rows[3].author == nil)
     }
 
     @Test func durableAttributionSurvivesTheMerge() throws {

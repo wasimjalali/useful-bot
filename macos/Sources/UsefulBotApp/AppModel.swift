@@ -23,6 +23,11 @@ struct OAuthPending: Equatable {
 /// its rows, so it is logged rather than surfaced.
 private let snapshotLog = Logger(subsystem: AppVariant.current.logSubsystem, category: "chat-snapshot")
 
+struct InstructionDraft: Equatable {
+    let base: String
+    let text: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
@@ -258,6 +263,10 @@ final class AppModel: ObservableObject {
     @Published var openRoutineId: String?
     /// The pane is showing the create form.
     @Published var routineCreating = false
+
+    /// Unsaved instruction edits per bot, with the stored text each started
+    /// from. They outlive the editor and the window until saved or discarded.
+    var instructionDrafts: [String: InstructionDraft] = [:]
 
     /// The bot whose instructions the wide editor is open on, if any.
     @Published var instructionsEditorBotId: String?
@@ -1539,10 +1548,11 @@ final class AppModel: ObservableObject {
                 let ended = self.handoffWorkingIds.subtracting(next)
                 let reset = next.isEmpty && self.lastTickFailed
                 if !reset {
-                    // The poll can't tell a reply from a failure, so a
-                    // finished handoff or routine counts as a reply here too.
+                    // The poll can't read the turn, so the evidence is what the
+                    // app holds: a recorded failure, and a preview to show.
                     for botId in ended where !self.workingBotIds.contains(botId) {
-                        self.notifyTurnFinished(botId, reply: nil, failed: false, hasReply: true)
+                        let preview = self.store?.bots.first { $0.id == botId }?.lastPreview ?? ""
+                        self.notifyTurnFinished(botId, failed: self.sendErrors[botId] != nil, hasReply: !preview.isEmpty)
                     }
                     for botId in ended where botId != self.selectedBotId
                         && botId != self.selectedAtLastTick
@@ -2098,7 +2108,10 @@ final class AppModel: ObservableObject {
             sendTasks[id] = nil
             inflightSessions[id] = nil
             backgroundProjections[id] = nil
+            // A stopped turn is not a finished one.
+            notifySuppressed = true
             markWorking(id, false)
+            notifySuppressed = false
             if sendBotId == id { sendBotId = nil }
             if activeSession?.botId == id { activeSession = nil }
         }
@@ -2178,9 +2191,8 @@ final class AppModel: ObservableObject {
             if backgroundActivities[botId] != nil { backgroundActivities[botId] = nil }
             if wasWorking {
                 let proj = botId == selectedBotId ? projection : backgroundProjections[botId]
-                let last = proj?.messages.last
-                let reply = (proj?.pending == false && last?.role == .assistant) ? last?.text : nil
-                notifyTurnFinished(botId, reply: reply, failed: proj?.failed ?? false, hasReply: reply != nil)
+                let hasReply = proj?.pending == false && proj?.messages.last?.role == .assistant
+                notifyTurnFinished(botId, failed: proj?.failed ?? false, hasReply: hasReply)
             }
             // A turn that ended with an assistant message and no failure. A
             // stopped send drops its projection first, so it never counts; a
@@ -2196,22 +2208,21 @@ final class AppModel: ObservableObject {
 
     /// Posts "NAME finished" for a bot with notifications on whose chat is out
     /// of sight. The decision is `TurnNotifyPolicy`.
-    private func notifyTurnFinished(_ botId: String, reply: String?, failed: Bool, hasReply: Bool) {
-        guard let bot = store?.bots.first(where: { $0.id == botId }) else { return }
+    private var notifySuppressed = false
+
+    private func notifyTurnFinished(_ botId: String, failed: Bool, hasReply: Bool) {
+        guard !notifySuppressed, let bot = store?.bots.first(where: { $0.id == botId }) else { return }
         let screen = TurnNotifier.shared.appIsOnScreen
         guard TurnNotifyPolicy.shouldNotify(
             notifyOn: bot.notify,
             isSelected: botId == selectedBotId,
             appActive: screen.active,
             windowVisible: screen.windowVisible,
-            failed: failed,
+            failed: failed || sendErrors[botId] != nil,
             hasAssistantReply: hasReply
         ) else { return }
-        TurnNotifier.shared.post(
-            botId: botId,
-            botName: bot.name,
-            body: TurnNotifyPolicy.body(from: reply ?? bot.lastPreview)
-        )
+        // The title says it all: no reply text on a lock screen.
+        TurnNotifier.shared.post(botId: botId, botName: bot.name)
     }
 
     /// A reply is waiting in a chat the owner isn't looking at: the rail face
@@ -2570,11 +2581,8 @@ final class AppModel: ObservableObject {
             rows.append(TranscriptRow(id: "live-\(widget.id)", kind: .widget, text: widget.id, at: Date()))
         }
         if let bot = selectedBot, bot.isGroup, let store {
-            let roster = Threads.groupMembers(
-                Threads.speakers(from: store.bots),
-                memberIds: bot.memberIds
-            )
-            rows = Transcript.attributeGroupReplies(rows, roster: roster)
+            let orchestrator = Threads.speakers(from: store.bots).first { $0.id == Threads.defaultBotId }
+            rows = Transcript.attributeGroupReplies(rows, group: bot, orchestrator: orchestrator)
         }
         // Nothing has loaded for this chat yet: a store echo that lands in
         // that window must not wipe the rows the switch put back.
@@ -3503,7 +3511,17 @@ final class AppModel: ObservableObject {
         memoryError = nil
     }
 
-    func createBot(name: String, petname: String, label: String, description: String, sectionId: String?) {
+    /// `onResult` gets nil once the server took the bot, or the failure copy;
+    /// the create dialog stays open until then. Without one the failure lands
+    /// in `saveError`.
+    func createBot(
+        name: String,
+        petname: String,
+        label: String,
+        description: String,
+        sectionId: String?,
+        onResult: (@MainActor (String?) -> Void)? = nil
+    ) {
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
@@ -3516,13 +3534,15 @@ final class AppModel: ObservableObject {
             )
             do {
                 let next = try await self.client.shellAction(action)
+                onResult?(nil)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 // applyStore selects the new bot; switchToBot stashes any
                 // outgoing send so it keeps running.
                 self.applyStore(next)
-            self.saveError = nil
+                self.saveError = nil
             } catch {
-                self.saveError = (error as? LocalizedError)?.errorDescription ?? "Create failed."
+                let message = (error as? LocalizedError)?.errorDescription ?? "Create failed."
+                if let onResult { onResult(message) } else { self.saveError = message }
             }
         }
     }
@@ -4279,7 +4299,16 @@ final class AppModel: ObservableObject {
             await loadMemory(botId: botId)
             return true
         } catch {
-            memoryError = "Could not delete that note."
+            // The list may be why it failed (changed or gone): re-read it.
+            await loadMemory(botId: botId)
+            guard botId == selectedBotId else { return false }
+            if case BackendError.http(409) = error {
+                memoryError = "That note changed. Try again."
+            } else if case BackendError.http(404) = error {
+                memoryError = "That note is already gone."
+            } else {
+                memoryError = "Could not delete that note."
+            }
             return false
         }
     }

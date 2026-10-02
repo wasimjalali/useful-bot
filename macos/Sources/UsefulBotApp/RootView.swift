@@ -211,16 +211,20 @@ struct RootView: View {
                     CreateBotDialog(
                         sectionName: model.store?.sections.first { $0.id == createSectionId }?.name,
                         onClose: { createKind = nil },
-                        onSubmit: { input in
+                        onSubmit: { input, finish in
                             model.createBot(
                                 name: input.name,
                                 petname: input.name,
                                 label: input.label,
                                 description: input.description,
                                 sectionId: createSectionId
-                            )
-                            pickerOpen = false
-                            createKind = nil
+                            ) { error in
+                                finish(error)
+                                if error == nil {
+                                    pickerOpen = false
+                                    createKind = nil
+                                }
+                            }
                         }
                     )
                     .transition(.opacity)
@@ -549,11 +553,14 @@ struct CreateGroupInput {
 struct CreateBotDialog: View {
     let sectionName: String?
     let onClose: () -> Void
-    let onSubmit: (CreateBotInput) -> Void
+    /// Calls `finish` with nil once the bot exists, or with the failure copy.
+    let onSubmit: (CreateBotInput, @escaping @MainActor (String?) -> Void) -> Void
 
     @State private var name = ""
     @State private var label = ""
     @State private var description = ""
+    @State private var creating = false
+    @State private var failure: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -591,18 +598,48 @@ struct CreateBotDialog: View {
                                     .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
                             )
                             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
+                        switch InstructionsLimit.footer(for: description) {
+                        case .none:
+                            EmptyView()
+                        case .near(let text):
+                            Text(text)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .monospacedDigit()
+                        case .over(let text):
+                            Text(text)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.C.danger)
+                                .monospacedDigit()
+                        }
                     }
                 }
                 .padding(.top, 16)
+                if let failure {
+                    Text(failure)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.danger)
+                        .padding(.top, 12)
+                }
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     NativeButton("Cancel", kind: .secondary, small: true, action: onClose)
-                    NativeButton("Create bot", kind: .primary, small: true, enabled: !trimmedName.isEmpty) {
+                    NativeButton(
+                        "Create bot",
+                        kind: .primary,
+                        small: true,
+                        enabled: !trimmedName.isEmpty && InstructionsLimit.canSave(description) && !creating
+                    ) {
+                        creating = true
+                        failure = nil
                         onSubmit(CreateBotInput(
                             name: trimmedName,
                             label: label.trimmingCharacters(in: .whitespacesAndNewlines),
                             description: description.trimmingCharacters(in: .whitespacesAndNewlines)
-                        ))
+                        )) { error in
+                            creating = false
+                            failure = error
+                        }
                     }
                 }
                 .padding(.top, 20)

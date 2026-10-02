@@ -265,7 +265,9 @@ private struct AvatarColorPicker: View {
                 .accessibilityIdentifier("avatar-reset")
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 10), spacing: 8) {
+            // Cells are 28 pt so every hit target clears 24; the swatch inside keeps
+            // its 21 pt look.
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 10), spacing: 0) {
                 ForEach(FacePalette.gridColors, id: \.self) { color in
                     swatch(color)
                 }
@@ -291,7 +293,9 @@ private struct AvatarColorPicker: View {
                     Circle().strokeBorder(Theme.C.ink, lineWidth: 1.5).padding(-3.5)
                         .opacity(selected ? 1 : 0)
                 )
-                .contentShape(Circle())
+                .padding(3.6)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .pointerOnHover()

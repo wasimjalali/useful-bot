@@ -50,11 +50,10 @@ final class TurnNotifier: NSObject, UNUserNotificationCenterDelegate {
         return await center.notificationSettings().authorizationStatus == .denied
     }
 
-    func post(botId: String, botName: String, body: String) {
+    func post(botId: String, botName: String) {
         guard let center else { return }
         let content = UNMutableNotificationContent()
         content.title = "\(botName) finished"
-        content.body = body
         content.sound = .default
         content.userInfo = ["botId": botId]
         center.add(UNNotificationRequest(identifier: "turn-\(botId)", content: content, trigger: nil))

@@ -57,9 +57,9 @@ import Testing
     @Test func aGroupReplyIsCreditedToTheOrchestratorNeverTheMember() {
         let group = ShellBot.sample(id: "g1", kind: "group", name: "Launch")
         let roster = speakers()
-        // No orchestrator named: the default name, no bot id.
+        // No orchestrator named: no name and no bot id, never a made-up one.
         let plain = Threads.speakerLabel(bot: group)
-        #expect(plain.authorName == "Useful Bot")
+        #expect(plain.authorName == nil)
         #expect(plain.authorBotId == nil)
         // The default bot as orchestrator: its real name, still no bot id.
         let generalist = Speaker(id: "bot-useful", kind: "bot", name: "Generalist", title: "")

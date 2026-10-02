@@ -12,7 +12,9 @@ struct InstructionsEditorView: View {
     let onClose: () -> Void
 
     @State private var draft = ""
-    @State private var original = ""
+    /// The stored description this draft started from.
+    @State private var base = ""
+    @State private var confirmingDiscard = false
     @State private var seeded = false
     @State private var context: BotContextInfo?
     @State private var saving = false
@@ -29,7 +31,10 @@ struct InstructionsEditorView: View {
 
     private var bot: ShellBot? { model.store?.bots.first { $0.id == botId } }
     private var name: String { bot?.name ?? "Bot" }
-    private var dirty: Bool { draft != original }
+    private var dirty: Bool { draft != base }
+    /// The stored text moved since the editor opened (another window or a bot
+    /// edited it), so a plain Save would overwrite that change.
+    private var changedElsewhere: Bool { seeded && (bot?.description ?? "") != base }
 
     private var restoreText: String? {
         guard botId == Threads.defaultBotId, let seed = context?.seed, draft != seed.text else { return nil }
@@ -62,7 +67,13 @@ struct InstructionsEditorView: View {
         .onExitCommand(perform: cancel)
         .onAppear(perform: seed)
         .task { context = await model.botContext(botId: botId) }
-        .onChange(of: draft) { _, _ in saveFailed = false }
+        .onChange(of: draft) { _, next in
+            saveFailed = false
+            confirmingDiscard = false
+            // Kept in the model until saved or discarded, so closing the
+            // window or the editor never loses it.
+            if seeded { model.instructionDrafts[botId] = next == base ? nil : InstructionDraft(base: base, text: next) }
+        }
     }
 
     private func dialog(height: CGFloat, chrome: CGFloat) -> some View {
@@ -109,16 +120,27 @@ struct InstructionsEditorView: View {
                 }
                 status
                 Spacer(minLength: 0)
-                NativeButton("Cancel", kind: .secondary, small: true, action: cancel)
-                    .accessibilityIdentifier("instructions-cancel")
-                NativeButton(
-                    saveFailed ? "Try again" : "Save",
-                    kind: .primary,
-                    small: true,
-                    enabled: InstructionsLimit.canSave(draft, max: limit) && !saving,
-                    action: save
-                )
-                .accessibilityIdentifier("instructions-save")
+                if confirmingDiscard {
+                    NativeButton("Keep editing", kind: .secondary, small: true) { confirmingDiscard = false }
+                        .accessibilityIdentifier("instructions-keep")
+                    NativeButton("Discard", kind: .danger, small: true, action: discard)
+                        .accessibilityIdentifier("instructions-discard")
+                } else {
+                    NativeButton("Cancel", kind: .secondary, small: true, action: cancel)
+                        .accessibilityIdentifier("instructions-cancel")
+                    if changedElsewhere {
+                        NativeButton("Reload", kind: .secondary, small: true, action: reload)
+                            .accessibilityIdentifier("instructions-reload")
+                    }
+                    NativeButton(
+                        saveFailed ? "Try again" : (changedElsewhere ? "Save anyway" : "Save"),
+                        kind: .primary,
+                        small: true,
+                        enabled: InstructionsLimit.canSave(draft, max: limit) && !saving,
+                        action: save
+                    )
+                    .accessibilityIdentifier("instructions-save")
+                }
             }
             .padding(.leading, 22)
             .padding(.trailing, 20)
@@ -130,10 +152,18 @@ struct InstructionsEditorView: View {
 
     @ViewBuilder
     private var status: some View {
-        if saveFailed {
+        if confirmingDiscard {
+            Text("Discard changes?")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.ink)
+        } else if saveFailed {
             Text("Couldn't save. Your text is kept here.")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.C.danger)
+        } else if changedElsewhere {
+            Text("This changed since you opened it.")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.warning)
         } else {
             switch InstructionsLimit.footer(for: draft, max: limit) {
             case .none:
@@ -154,12 +184,35 @@ struct InstructionsEditorView: View {
 
     private func seed() {
         guard !seeded else { return }
-        original = bot?.description ?? ""
-        draft = original
+        let live = bot?.description ?? ""
+        if let kept = model.instructionDrafts[botId] {
+            base = kept.base
+            draft = kept.text
+        } else {
+            base = live
+            draft = live
+        }
         seeded = true
     }
 
-    private func cancel() { onClose() }
+    /// Esc, the close button and Cancel: a dirty draft asks first.
+    private func cancel() {
+        if confirmingDiscard { confirmingDiscard = false; return }
+        if dirty { confirmingDiscard = true } else { onClose() }
+    }
+
+    private func discard() {
+        model.instructionDrafts[botId] = nil
+        onClose()
+    }
+
+    /// Take the stored text over the draft.
+    private func reload() {
+        let live = bot?.description ?? ""
+        base = live
+        draft = live
+        model.instructionDrafts[botId] = nil
+    }
 
     private func save() {
         guard !saving else { return }
@@ -168,7 +221,12 @@ struct InstructionsEditorView: View {
         saveFailed = false
         model.patchBot(botId: botId, ["description": draft]) { ok in
             saving = false
-            if ok { onClose() } else { saveFailed = true }
+            if ok {
+                model.instructionDrafts[botId] = nil
+                onClose()
+            } else {
+                saveFailed = true
+            }
         }
     }
 }

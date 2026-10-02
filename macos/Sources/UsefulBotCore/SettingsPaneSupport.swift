@@ -18,19 +18,11 @@ public enum TurnNotifyPolicy {
         let onScreen = isSelected && appActive && windowVisible
         return !onScreen
     }
-
-    /// The start of the reply as one line, capped with an ellipsis.
-    public static func body(from reply: String, limit: Int = 120) -> String {
-        let flat = reply
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-        guard flat.count > limit else { return flat }
-        return String(flat.prefix(limit)).trimmingCharacters(in: .whitespaces) + "..."
-    }
 }
 
 /// The instructions editor's footer text and save rule. The server counts
-/// JavaScript string length, which is UTF-16 code units.
+/// JavaScript string length, which is UTF-16 code units, after trimming
+/// whitespace at both ends, so the count is of what would be stored.
 public enum InstructionsLimit {
     public static let max = 8_000
     public static let showCounterFrom = 7_000
@@ -41,7 +33,9 @@ public enum InstructionsLimit {
         case over(String)
     }
 
-    public static func count(_ text: String) -> Int { text.utf16.count }
+    public static func count(_ text: String) -> Int {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count
+    }
 
     public static func canSave(_ text: String, max limit: Int = max) -> Bool {
         count(text) <= limit

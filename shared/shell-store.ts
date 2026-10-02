@@ -279,11 +279,13 @@ const squash = (text: string) => text.replace(/\s+/g, " ").trim();
  * Bot" with a seed and no custom avatar reads as "Generalist". Nothing is
  * written here; the change persists with the next normal write.
  */
-function overlaySeed(bot: ShellBot): ShellBot {
+function overlaySeed(bot: ShellBot, all: readonly ShellBot[]): ShellBot {
   if (bot.id !== DEFAULT_BOT_ID || bot.kind !== "bot") return bot;
   const wanted = squash(bot.description);
   if (!GENERALIST_SEEDS.some((seed) => squash(seed) === wanted)) return bot;
-  const rename = bot.name === "Useful Bot" && !bot.avatarCustom;
+  // Never a second "Generalist": another bot may already carry the name.
+  const nameTaken = all.some((other) => other.id !== bot.id && other.name.toLowerCase() === "generalist");
+  const rename = bot.name === "Useful Bot" && !bot.avatarCustom && !nameTaken;
   return { ...bot, description: GENERALIST_SEED_V2, ...(rename ? { name: "Generalist" } : {}) };
 }
 
@@ -676,7 +678,8 @@ export function parseShell(raw: unknown): ShellStore {
   if (rec.schemaVersion !== SHELL_SCHEMA) throw new Error("shell_schema");
   if (!Array.isArray(rec.bots) || !Array.isArray(rec.sections)) throw new Error("shell_shape");
   if (rec.recents !== undefined && !Array.isArray(rec.recents)) throw new Error("shell_recents");
-  const bots = rec.bots.map(parseBot).map(overlaySeed);
+  const parsed = rec.bots.map(parseBot);
+  const bots = parsed.map((bot) => overlaySeed(bot, parsed));
   const sections = rec.sections.map(parseSection);
   const recents = (rec.recents ?? []).map(parseRecent);
   if (bots.length === 0) throw new Error("shell_empty");

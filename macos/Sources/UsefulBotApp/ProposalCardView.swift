@@ -76,6 +76,13 @@ struct ProposalCardView: View {
                     }
                 }
                 .padding(.top, 8)
+                if let description = proposal.description, !description.isEmpty {
+                    Text(description)
+                        .font(.system(size: 13))
+                        .lineSpacing(3)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .padding(.top, 8)
+                }
                 actions(confirm: "Create group", dismiss: "Not now")
             }
         case .updateBotProfile:

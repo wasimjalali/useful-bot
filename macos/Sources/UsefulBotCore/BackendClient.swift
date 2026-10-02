@@ -135,6 +135,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "Give the routine an instruction."
         case "routine_limit":
             return "This bot already has the maximum number of routines."
+        case "shell_description_too_long":
+            return "Instructions can be up to \(InstructionsLimit.grouped(InstructionsLimit.max)) characters."
         case "agent_credential_missing":
             return "Routines need the agent credential. Restart the local services."
         default:

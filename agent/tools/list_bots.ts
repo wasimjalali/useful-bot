@@ -9,7 +9,9 @@ const SUMMARY_CHARS = 200;
 
 /** The first 200 characters; `descriptionChars` beside it says how much was left out. */
 function summarize(text: string): string {
-  return text.length > SUMMARY_CHARS ? `${text.slice(0, SUMMARY_CHARS)}...` : text;
+  // By code point, so an emoji at the cut is never split in half.
+  const points = Array.from(text);
+  return points.length > SUMMARY_CHARS ? `${points.slice(0, SUMMARY_CHARS).join("")}...` : text;
 }
 
 export default defineTool({

@@ -125,6 +125,6 @@ public enum Threads {
         guard let bot, bot.id != defaultBotId else { return (nil, nil) }
         if bot.kind != "group" { return (bot.id, bot.name) }
         let id = orchestrator.flatMap { $0.id == defaultBotId ? nil : $0.id }
-        return (id, orchestrator?.name ?? "Useful Bot")
+        return (id, orchestrator?.name)
     }
 }

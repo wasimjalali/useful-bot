@@ -78,15 +78,6 @@ import Testing
         #expect(decide(reply: false) == false)                     // no assistant reply
     }
 
-    @Test func notificationBodyIsOneCappedLine() {
-        #expect(TurnNotifyPolicy.body(from: "Done.\n\nThe report is   ready.") == "Done. The report is ready.")
-        let long = String(repeating: "word ", count: 80)
-        let body = TurnNotifyPolicy.body(from: long, limit: 40)
-        #expect(body.count <= 43)
-        #expect(body.hasSuffix("..."))
-        #expect(TurnNotifyPolicy.body(from: "") == "")
-    }
-
     // MARK: Counter
 
     @Test func counterShowsOnlyNearTheLimit() {
@@ -99,12 +90,22 @@ import Testing
             == .over("8,120 of 8,000. Shorten by 120 to save."))
     }
 
+    @Test func theCountIsOfTheTrimmedText() {
+        #expect(InstructionsLimit.count("  \n abc \n") == 3)
+        #expect(InstructionsLimit.canSave("  " + String(repeating: "a", count: 8_000) + "\n\n"))
+    }
+
     @Test func saveIsRefusedOnlyOverTheLimit() {
         #expect(InstructionsLimit.canSave(String(repeating: "a", count: 8_000)))
         #expect(!InstructionsLimit.canSave(String(repeating: "a", count: 8_001)))
         // The server counts UTF-16 units: one emoji is two.
         #expect(InstructionsLimit.count("🙂") == 2)
         #expect(!InstructionsLimit.canSave(String(repeating: "🙂", count: 4_001)))
+    }
+
+    @Test func aTooLongDescriptionHasPlainCopy() {
+        #expect(BackendError.shell("shell_description_too_long").errorDescription
+            == "Instructions can be up to 8,000 characters.")
     }
 
     // MARK: Memory
