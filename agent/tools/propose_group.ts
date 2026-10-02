@@ -8,7 +8,7 @@ import { groupMembers, speakersFrom } from "../../shared/threads.ts";
 
 export default defineTool({
   description:
-    "Propose a group chat of 2 to 6 teammate bots (only the main bot, the Generalist, can), for work that should happen in the open (a kickoff, who owns what). The owner confirms the card before the room exists. The default bot orchestrates but is never a member.",
+    "Propose a group chat of 2 to 6 teammate bots (only the main bot can), for work that should happen in the open (a kickoff, who owns what). The owner confirms the card before the room exists. The main bot orchestrates but is never a member.",
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     memberIds: z.array(z.string().min(1).max(80)).min(GROUP_MIN_MEMBERS).max(GROUP_MAX_MEMBERS),

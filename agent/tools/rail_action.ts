@@ -27,7 +27,7 @@ import { applyShellAction, type ShellAction, type ShellStore } from "../../share
  */
 export default defineTool({
   description:
-    "Organise the sidebar: pin, unpin, hide or unhide a bot, move it into a section by sectionId (null takes it out), create a section, rename one (updateSection) or remove an empty one (removeSection, refused while a bot is in it). Applies at once in Auto and Full access, refused in Read only. delete_bot leaves an emptied section: call removeSection after it. Call list_bots first for ids. Only the main bot (the Generalist) can change other bots or sections; a teammate can only act on itself.",
+    "Organise the sidebar: pin, unpin, hide or unhide a bot, move it into a section by sectionId (null takes it out), create a section, rename one (updateSection) or remove an empty one (removeSection, refused while a bot is in it). Applies at once in Auto and Full access, refused in Read only. delete_bot leaves an emptied section: call removeSection after it. Call list_bots first for ids. Only the main bot can change other bots or sections; a teammate acts only on itself and can't hide itself.",
   inputSchema: z.object({
     action: z.enum([
       "pin",

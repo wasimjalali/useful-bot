@@ -22,7 +22,7 @@ import { removeSessionGrant } from "../../shared/workspace-store.ts";
 
 export default defineTool({
   description:
-    "Delete a teammate bot or group with its routines and recent chats. Only the main bot (the Generalist) can; a teammate can't. Irreversible: in Auto the owner approves the exact bot on a card, Full access deletes at once, Read only refuses. Confirm which bot first. Its section stays: call rail_action removeSection to tidy an emptied one.",
+    "Delete a teammate bot or group with its routines and recent chats. Only the main bot can, and never itself; a teammate can't. Irreversible: in Auto the owner approves the exact bot on a card, Full access deletes at once, Read only refuses. Confirm which bot first. Its section stays: call rail_action removeSection to tidy an emptied one.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80),
     reason: z.string().max(300).optional(),
