@@ -28,10 +28,10 @@ const KIND = z.enum(["mcp", "openapi"]);
  */
 export default defineTool({
   description:
-    "Ask the owner to connect an MCP server or OpenAPI document outside the catalogue; shows a Connect server card. Look for the official MCP server first, then an OpenAPI document. One server per turn, then end the turn. Prefer propose_connector for catalogue apps. Afterwards find_tools reaches MCP tools and connection_search OpenAPI ones.",
+    "Ask the owner to connect an MCP server or OpenAPI document outside the catalogue; shows a Connect server card. Use only a URL the owner gave or an official source documents, never a placeholder; ask for it when missing. Look for the official MCP server first, then an OpenAPI document. One server per turn, then end the turn. Prefer propose_connector for catalogue apps. Afterwards find_tools reaches MCP tools and connection_search OpenAPI ones.",
   inputSchema: z.object({
     kind: KIND,
-    url: z.string().min(8).max(2048),
+    url: z.string().min(8).max(2048).describe("The URL the owner gave or an official source documents. Never a placeholder."),
     name: z.string().min(1).max(80),
     description: z.string().min(3).max(400),
     authKind: AUTH,

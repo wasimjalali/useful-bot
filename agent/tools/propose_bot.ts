@@ -14,7 +14,7 @@ import { PROPOSE_DESCRIPTION_MAX } from "../../shared/shell-store.ts";
 
 export default defineTool({
   description:
-    "Propose a new teammate bot when a job needs a long-lived owner. Writes a profile card the owner must confirm; it never creates the bot itself. Name it for the job and put standing rules and boundaries in description. Confirm once with the owner before proposing several.",
+    "Propose a new teammate bot when a job needs a long-lived owner. Only the main bot (the Generalist) can. Writes a profile card the owner must confirm; it never creates the bot itself. Name it for the job and put standing rules and boundaries in description. Confirm once with the owner before proposing several.",
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     title: z.string().max(24).optional(),
