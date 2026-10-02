@@ -39,7 +39,7 @@ const schedule = z.object({
 
 export default defineTool({
   description:
-    "Edit one routine: rename it, change its instruction or schedule, or pause and resume with active. Applies at once in Auto and Full access, refused in Read only. `schedules` replaces the whole list: send every schedule to keep. Call list_routines first for the id and current schedule.",
+    "Edit one routine, only when the owner asks: rename it, change its instruction or schedule, or pause and resume with active. Applies at once in Auto and Full access, refused in Read only. `schedules` replaces the whole list: send every schedule to keep. Call list_routines first for the id and current schedule.",
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
     name: z.string().min(1).max(80).optional(),
