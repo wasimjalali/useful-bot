@@ -1,6 +1,6 @@
 # UB-009: agent instructions and per-bot context, final plan
 
-Status: **approved by the owner** (2026-10-01). Implementation in progress.
+Status: **approved by the owner** (2026-10-01). Step 0 merged (#174), PR A merged (#175), PR B in review (#176), PR C next.
 
 Process and evidence: `docs/plan/UB-009-AGENT-CONTEXT-COUNCIL.md`, `docs/audit/UB-009-GENERALIST-PROMPT.md`,
 and `evals/results/2026-10-01-ub009-council/` (packet, round 1 from five seats, round 2 critiques,
@@ -203,3 +203,14 @@ Records are in `evals/results/2026-10-01-ub009-spikes/`. All were verified in ev
 ## 13. Final check
 
 Fable 5.1 (high), 2026-10-01: **ready with fixes**, 0 critical, 3 high, 6 medium, 8 low (`final/fable-5.1-check.md`). All 17 are applied above and in `final/`. Fable confirmed two premises the plan relied on: custom JWT claims reach `auth.current.attributes`, and eve's connection `approval` takes a custom async policy.
+
+## 14. PR B as built (2026-10-02)
+
+Where the build differs from the sections above, and why:
+
+- **Refusal at write and send, not in `parseShell`.** A throw while parsing the shell store reseeds it, which loses data, so a stored description over 8,000 characters is read verbatim and refused when it is written and when a turn is sent.
+- **Handoff envelope.** Its first two lines stay exactly as before, because the Swift and TS parsers match them; the new sentences and the relay-hop line follow.
+- **Admission.** Tokens are estimated at 3.5 characters each. The envelope counts the shared prompt, the rendered context and notes blocks, the 30,483-character tool baseline plus the OpenAPI and MCP tools that would actually mount for the session, the output reserve and the hidden notes and carry-over brief. A tool mounted mid-turn, and a model pick in the milliseconds between the last check and eve's turn start, are not covered. Today's envelope is about 18.6k tokens for the Generalist, so small-window models are refused until PR C trims the tool descriptions.
+- **Notes.** Renders are persisted per bot and operation (`recall/` beside the notes, newest 256) so a replay after a restart returns the same bytes. A turn that shows an outside-sourced note is marked, so a copy of it is marked too.
+- **"This chat" line.** Permission and folder come from the session grant the tools enforce, so a brand new chat shows Read only until its grant is stamped, which matches what its first tool calls do.
+- **Settings.** Routines also appear in Settings (the Details pane keeps its list). Notification banners say only "NAME finished", with no reply text, for lock-screen privacy.
