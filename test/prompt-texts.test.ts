@@ -10,7 +10,13 @@ const WORD_CAP = 950;
 
 test("a prompt over the word cap fails", () => {
   const bad = Array.from({ length: WORD_CAP + 1 }, () => "word").join(" ");
-  assert.ok(wordCount(bad) > WORD_CAP);
+  assert.equal(overWordCap(bad), true);
+  assert.equal(overWordCap(bad.split(" ").slice(1).join(" ")), false);
+});
+
+test("a made-up single-word or camelCase tool name in backticks is reported", () => {
+  const known = new Set(["bash"]);
+  assert.deepEqual(unknownIdentifiers("Use `bash`, `mystery` and `runEverything`; `timeoutMs` is a parameter.", known), ["mystery", "runEverything"]);
 });
 
 test("a tool name with no tool file is reported", () => {
@@ -40,8 +46,8 @@ test("an unknown mounted prefix is reported", () => {
 // The real checks.
 
 test("agent/instructions.md is at most 950 words", () => {
-  const words = wordCount(read("agent/instructions.md"));
-  assert.ok(words <= WORD_CAP, `instructions.md is ${words} words, the cap is ${WORD_CAP}`);
+  const text = read("agent/instructions.md");
+  assert.equal(overWordCap(text), false, `instructions.md is ${wordCount(text)} words, the cap is ${WORD_CAP}`);
 });
 
 test("every tool name in the instructions and skills is a real, enabled tool", () => {
@@ -50,6 +56,20 @@ test("every tool name in the instructions and skills is a real, enabled tool", (
   assert.ok(files.length >= 3, "expected the instructions and both skills");
   for (const file of files) {
     assert.deepEqual(unknownToolNames(read(file), known), [], `${file} names a tool that does not exist or is disabled`);
+  }
+});
+
+test("no backticked identifier in the instructions, skills or tool descriptions is made up", async () => {
+  const known = knownTools();
+  const dir = join(ROOT, "agent/tools");
+  const texts: [string, string][] = ["agent/instructions.md", ...skillFiles()].map((file) => [file, read(file)]);
+  for (const file of readdirSync(dir).filter((name) => name.endsWith(".ts"))) {
+    const mod = (await import(join(dir, file))) as { default?: { description?: string } };
+    texts.push([`agent/tools/${file}`, mod.default?.description ?? ""]);
+  }
+  for (const [file, text] of texts) {
+    assert.deepEqual(unknownIdentifiers(text, known), [], `${file} backticks an identifier that is not a known tool, parameter or allowed term`);
+    assert.deepEqual(unknownToolNames(text, known), [], `${file} names a tool that does not exist or is disabled`);
   }
 });
 
@@ -65,6 +85,10 @@ test("known tools include find_tools and drop the disabled ones", () => {
 
 function read(path: string): string {
   return readFileSync(join(ROOT, path), "utf8");
+}
+
+function overWordCap(text: string): boolean {
+  return wordCount(text) > WORD_CAP;
 }
 
 function wordCount(text: string): number {
@@ -107,6 +131,30 @@ function unknownToolNames(text: string, known: Set<string>): string[] {
     const token = match[1]!;
     if (known.has(token) || STATUS_TOKENS.has(token)) continue;
     if (MOUNTED_PREFIXES.some((prefix) => token.startsWith(prefix))) continue;
+    found.add(token);
+  }
+  return [...found];
+}
+
+/**
+ * Backticked single words and camelCase identifiers are tool names, parameters,
+ * enum values, command-line tools or file names. Anything else is a made-up name.
+ */
+const ALLOWED_IDENTIFIERS = new Set<string>([
+  // parameters, enum values and result fields
+  "botId", "timeoutMs", "timedOut", "exitCode", "status", "blocked", "active", "schedules", "model", "connectionId", "kind", "query",
+  "updateSection", "removeSection", "list", "install", "todos", "sectionId", "all", "format", "text", "markdown", "html",
+  // commands and tools on the owner's Mac
+  "ls", "cat", "grep", "find", "git", "gh", "npm", "codex", "claude", "curl", "python", "node", "make", "brew", "textutil", "sips", "mdls", "pip", "rm", "sh",
+  // modes, files and folders
+  "main", "Library", "Documents", "secrets",
+]);
+
+function unknownIdentifiers(text: string, known: Set<string>): string[] {
+  const found = new Set<string>();
+  for (const match of text.matchAll(/`([a-z][A-Za-z0-9]*)`/g)) {
+    const token = match[1]!;
+    if (known.has(token) || ALLOWED_IDENTIFIERS.has(token)) continue;
     found.add(token);
   }
   return [...found];

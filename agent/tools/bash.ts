@@ -62,7 +62,7 @@ function blockedReason(command: string, scoped: boolean): string | null {
 }
 
 export default defineTool({
-  description: "Run a shell command in the attached folder, or under the owner's home when none. The owner's own PATH and home apply, so CLIs they've signed in to (codex, claude, gh, npm) run as in their terminal. Not a login shell, stdin closed: use non-interactive flags (codex exec, claude -p). Default timeout 30s; pass timeoutMs for long runs, and timedOut: true means out of time, not failed. Run a CLI on a line of its own: a chained line gets no sign-in. gh keeps its token in the keychain, so a card-free run reads signed out: say so and offer a run they approve. Reads run at once; the owner's permission governs the rest.",
+  description: "Run a shell command in the attached folder, or under the owner's home when none. The owner's own PATH and home apply, so CLIs they've signed in to (codex, claude, gh, npm) run as in their terminal. Not a login shell, stdin closed: use non-interactive flags (codex exec, claude -p). Default timeout 30s; pass timeoutMs for long runs, and timedOut: true means out of time, not failed. Run a CLI on a line of its own: a chained line gets no sign-in. gh and claude keep their token in the keychain, so a card-free run reads signed out: say so and offer a run they approve. Reads run at once; the owner's permission governs the rest.",
   inputSchema: z.object({
     command: z.string().min(1).max(8192),
     timeoutMs: z.number().int().min(1).max(MAX_TIMEOUT_MS).optional(),

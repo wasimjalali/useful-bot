@@ -2294,8 +2294,8 @@ struct StarterPrompt: Identifiable {
             prompt: "Research a topic I'll name, then save a short report with sources as a document on my Desktop."
         ),
         StarterPrompt(
-            label: "Create a bot that keeps Downloads tidy",
-            prompt: "Create a bot that keeps my Downloads folder tidy: it sorts new files into folders by type and tells me what it moved."
+            label: "Create a bot that plans a Downloads tidy-up",
+            prompt: "Create a bot that looks through my Downloads folder, tells me what is in there and proposes a tidy-up plan I can approve before anything moves."
         ),
         StarterPrompt(
             label: "Create a copywriter bot for my brand",

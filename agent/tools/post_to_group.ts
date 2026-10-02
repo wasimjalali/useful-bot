@@ -27,7 +27,7 @@ export default defineTool({
       && (bot.id === requested || bot.name.toLowerCase() === requested.toLowerCase())
     )) ?? null;
     if (!group) {
-      return { status: "not_found", error: `no group matches ${requested}`, hint: "Call listBots for groups." };
+      return { status: "not_found", error: `no group matches ${requested}`, hint: "Call list_bots for groups." };
     }
     // A group session posts only into itself, to its own members. Plain bots
     // and the orchestrator post to any group (owner decision G1).

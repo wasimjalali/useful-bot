@@ -1,10 +1,10 @@
 tool                    words    desc  schema   total   delta
+generate_image            119     658     405    1063    -511
 create_routine             61     337     716    1053     -61
-generate_image            114     643     405    1048    -526
-update_routine             47     284     715     999     -54
+update_routine             52     310     715    1025     -28
 propose_connection         52     337     627     964     118
 memory_upsert              18      94     816     910       0
-bash                      114     616     232     848      30
+bash                      116     628     232     860      42
 rail_action                66     387     444     831    -196
 todo                       51     262     502     764     764
 update_bot_profile         46     278     485     763     -21
@@ -21,12 +21,11 @@ propose_connector          33     191     291     482      17
 clear_history              42     250     212     462     -87
 connector_catalog          49     290     165     455     103
 run_routine                48     264     174     438    -115
+delete_routine             37     214     217     431      13
 write_file                 35     191     233     424     -28
 read_file                  23     144     267     411      80
-delete_routine             32     188     217     405     -13
 list_bots                  38     241     144     385     -40
 memory_delete              20     105     275     380       0
-load_skill                 28     158     209     367     367
 connector_search           27     169     172     341      18
 web_search                 18      99     217     316      28
 review                     23     137     165     302       0
@@ -34,12 +33,12 @@ list_routines              25     138     144     282     -91
 list_dir                   10      58     167     225       0
 memory_read                12      55     130     185       0
 memory_search               6      35     136     171       0
-TOTAL                    1496    8524   10879   19403    -906
-tools: 35
+TOTAL                    1485    8445   10670   19115   -1194
+tools: 34
 
 eve defaults as shipped (the app replaces any with a same-name file under agent/tools)
 todo                      139     836     654    1490
 ask_question               24     134     915    1049
 load_skill                 51     303     209     512
-eve defaults not overridden: ask_question
-GRAND TOTAL (authored + eve defaults not overridden): 20452
+eve defaults not overridden: ask_question, load_skill
+GRAND TOTAL (authored + eve defaults not overridden): 20676
