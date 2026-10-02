@@ -9,7 +9,6 @@ import {
   type NoteCard,
 } from "../../shared/notes-block.ts";
 import { sharedMemoryStore, type MemoryStore } from "../lib/memory.ts";
-import { markOutside } from "../lib/outside-content.ts";
 import { boundBotId, type SnapshotCtx } from "../lib/turn-snapshot.ts";
 
 /**
@@ -54,14 +53,19 @@ function recallFile(store: MemoryStore, key: string): string {
   return join(recallDir(store), `${createHash("sha256").update(key).digest("hex")}.txt`);
 }
 
-/** What one recall rendered, and whether it showed a note written after outside content. */
-type Render = { content: string; outside: boolean };
+/** What one recall rendered. */
+type Render = { content: string };
 
 function readPersisted(store: MemoryStore, key: string): Render | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(recallFile(store, key), "utf8")) as Partial<Render>;
-    if (typeof parsed.content !== "string" || typeof parsed.outside !== "boolean") throw new Error("recall_copy_invalid");
-    return { content: parsed.content, outside: parsed.outside };
+    const text = readFileSync(recallFile(store, key), "utf8");
+    try {
+      const parsed = JSON.parse(text) as { content?: unknown };
+      if (typeof parsed?.content === "string") return { content: parsed.content };
+    } catch {
+      /* an older copy is the plain block text */
+    }
+    return { content: text };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw err;
@@ -119,24 +123,20 @@ function renderNotes(botId: string, store: () => MemoryStore): Render {
   const cards: NoteCard[] = sorted.map((card, index) => ({
     id: card.id,
     title: card.title,
-    body: index < NOTES_FULL_COUNT ? notes.readCard(card.id, botId).body : card.body,
+    // An outside-sourced note shows no body, so none is loaded for it.
+    body: index < NOTES_FULL_COUNT && card.source !== "model-after-outside-content"
+      ? notes.readCard(card.id, botId).body
+      : card.body,
     updatedAt: card.updatedAt,
     source: card.source,
   }));
-  // Any outside-sourced note in the page marks the turn: shown in the block, it
-  // could be copied into a new note stored as the model's own.
-  return {
-    content: renderNotesBlock(cards, notes.countLive(botId)),
-    outside: cards.some((card) => card.source === "model-after-outside-content"),
-  };
+  return { content: renderNotesBlock(cards, notes.countLive(botId)) };
 }
 
 /** The recall result for one operation. Never throws: a failure returns null. */
 export function recallNotes(
   ctx: {
     operationId: string;
-    session?: { id: string };
-    turn?: { id: string } | null;
     memory: { scope: { value: string | readonly string[] } };
   },
   store: () => MemoryStore = sharedMemoryStore,
@@ -163,9 +163,6 @@ export function recallNotes(
       if (byOperation.size >= OPERATION_CAP) byOperation.delete(byOperation.keys().next().value as string);
       byOperation.set(key, render);
     }
-    // A block that shows an outside-sourced note marks this turn, on a fresh,
-    // cached or persisted render alike: the model could copy it into a new note.
-    if (render.outside && ctx.session) markOutside({ session: { id: ctx.session.id, turn: ctx.turn ? { id: ctx.turn.id } : undefined } });
     return { messages: [{ id: NOTES_RECORD_ID, content: render.content }] };
   } catch (err) {
     console.error("[memory] notes recall failed", err instanceof Error ? err.message : err);

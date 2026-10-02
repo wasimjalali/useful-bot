@@ -30,6 +30,13 @@ const EMPTY = "No notes yet. Use memory_upsert to keep something worth rememberi
 const MORE_BODY = "... open with memory_read";
 
 function fullEntry(note: NoteCard): string {
+  // A note written after outside content never shows its body inline: the
+  // text came from outside, and a bot that reads it on purpose (memory_read)
+  // marks its turn. It still takes one of the full slots, so the order and the
+  // block stay deterministic.
+  if (note.source === "model-after-outside-content") {
+    return `- ${flat(note.id)}: ${flat(note.title, NOTE_TITLE_CAP)} (written after reading outside content; open with memory_read)`;
+  }
   const day = new Date(note.updatedAt).toISOString().slice(0, 10);
   const outside = note.source === "model-after-outside-content" ? ", written after reading outside content" : "";
   const body = note.body.length > NOTE_BODY_CAP ? `${note.body.slice(0, NOTE_BODY_CAP)}${MORE_BODY}` : note.body;

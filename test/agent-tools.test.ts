@@ -789,7 +789,7 @@ test("reading a note written after outside content marks the turn, so it cannot 
   }
 });
 
-test("a recalled block that shows an outside-sourced note marks the turn, so a copy is stored as outside, also on a replay", async () => {
+test("an outside-sourced note shows no body in the recalled block and does not mark the turn; a deliberate read does", async () => {
   const box = sandbox();
   const home = homeFixture("auto");
   const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
@@ -798,28 +798,28 @@ test("a recalled block that shows an outside-sourced note marks the turn, so a c
   resetMemoryDir(memoryRoot);
   try {
     const store = new MemoryStore(memoryRoot);
-    store.upsert({
-      expectedRevision: null, title: "From a page", tags: [], body: "web text", botId: "bot-useful",
+    const outside = store.upsert({
+      expectedRevision: null, title: "From a page", tags: [], body: "web-body-canary", botId: "bot-useful",
       source: "model-after-outside-content", expiresAt: null, sessionId: "s",
     });
+    store.upsert({ expectedRevision: null, title: "Mine", tags: [], body: "clean-body", botId: "bot-useful", source: "model", expiresAt: null, sessionId: "s" });
     const turn = (id: string) => ({ session: { id: "sess-home", turn: { id } } });
-    const recall = (operationId: string, turnId: string) => recallNotes({
-      operationId, session: { id: "sess-home" }, turn: { id: turnId }, memory: { scope: { value: "bot-useful" } },
-    }, () => store);
-    assert.equal(seenOutside(turn("t-r1")), false);
-    recall("op-launder-1", "t-r1");
-    assert.equal(seenOutside(turn("t-r1")), true, "the block carried an outside note");
-    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "copied", expiresAt: null });
-    const copy = await run<{ id: string }>(memoryUpsert, note("Copy"), turn("t-r1"));
-    assert.equal(store.readCard(copy.id, "bot-useful").source, "model-after-outside-content");
-    // A replay from the disk copy (the memory cache gone) marks a turn the same way.
+    const text = recallNotes({ operationId: "op-block", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content ?? "";
+    assert.match(text, /clean-body/);
+    assert.doesNotMatch(text, /web-body-canary/);
+    assert.match(text, new RegExp(`- ${outside.id}: From a page \\(written after reading outside content; open with memory_read\\)`));
+    // The block alone marks nothing: a note written in this turn is the model's own.
+    assert.equal(seenOutside(turn("t-block")), false);
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "fresh", expiresAt: null });
+    const fresh = await run<{ id: string }>(memoryUpsert, note("Fresh"), turn("t-block"));
+    assert.equal(store.readCard(fresh.id, "bot-useful").source, "model");
+    // Reading the outside note on purpose marks the turn, and what is written after it.
+    await run(memoryRead, { id: outside.id }, turn("t-deliberate"));
+    const after = await run<{ id: string }>(memoryUpsert, note("After the read"), turn("t-deliberate"));
+    assert.equal(store.readCard(after.id, "bot-useful").source, "model-after-outside-content");
+    // An older persisted copy (plain text, or JSON with a stale flag) is replayed, not thrown on.
     forgetRecallCache();
-    recall("op-launder-1", "t-r2");
-    assert.equal(seenOutside(turn("t-r2")), true);
-    // A bot whose block shows only its own notes stays clean.
-    store.upsert({ expectedRevision: null, title: "Mine", tags: [], body: "x", botId: "bot-other", source: "model", expiresAt: null, sessionId: "s" });
-    recallNotes({ operationId: "op-clean", session: { id: "sess-home" }, turn: { id: "t-clean2" }, memory: { scope: { value: "bot-other" } } }, () => store);
-    assert.equal(seenOutside(turn("t-clean2")), false);
+    assert.equal(recallNotes({ operationId: "op-block", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content, text);
   } finally {
     if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
     else process.env.UB_MEMORY_ROOT = previousMemory;
