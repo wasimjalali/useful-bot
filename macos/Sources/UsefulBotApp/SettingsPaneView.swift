@@ -419,7 +419,12 @@ private struct NotifyRow: View {
                 Text("Notify when \(bot.name) finishes")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.C.ink)
-                Spacer(minLength: 0)
+                    // One line: the label takes the row before the spacer does,
+                    // and a long name truncates instead of wrapping.
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 NativeSwitch(isOn: bot.notify) {
                     // Resolve the live flag so a double tap cannot send !old twice.
                     let live = model.store?.bots.first { $0.id == bot.id } ?? bot
