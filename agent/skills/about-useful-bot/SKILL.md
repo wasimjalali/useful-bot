@@ -1,5 +1,5 @@
 ---
-description: Use when the owner asks about Useful Bot itself: privacy, where data is stored, the license, which models it works with or whether it can run locally.
+description: "Use when the owner asks about Useful Bot itself: privacy, where data is stored, the license, which models it works with or whether it can run locally."
 ---
 
 # About Useful Bot

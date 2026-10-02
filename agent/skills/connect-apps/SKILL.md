@@ -1,5 +1,5 @@
 ---
-description: Use when the owner wants to connect an app or server, an app is not connected, connector_catalog says connectors_not_set_up, or an app is outside the catalogue.
+description: "Use when the owner wants to connect an app or server, an app is not connected, connector_catalog says connectors_not_set_up, or an app is outside the catalogue."
 ---
 
 # Connect apps
