@@ -8,7 +8,7 @@ import {
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { libraryDrawingIds } from "../../shared/media-store.ts";
 import { parseEveStreamLine, takeStreamLines, type EveEvent as StreamEvent } from "../../shared/eve-stream.ts";
-import { buildContinuationBrief, settledByBriefTurn, withSessionNotes } from "../../shared/continuation-brief.ts";
+import { BRIEF_MAX_CHARS, buildContinuationBrief, settledByBriefTurn, withSessionNotes } from "../../shared/continuation-brief.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
 import {
@@ -38,10 +38,22 @@ import { peekShell, readShell, shellWasReseeded, updateShell } from "../../share
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
-import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V2, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
 import { eveOrigin } from "../../shared/stack.ts";
+import {
+  admission,
+  briefBudgetChars,
+  CONTEXT_TOO_LARGE_TEXT,
+  DESCRIPTION_TOO_LONG_TEXT,
+  descriptionTooLong,
+  envelopeFor,
+  seedFor,
+  type Admission,
+} from "../../shared/admission.ts";
+import { renderNotesBlock, NOTES_BLOCK_CAP } from "../../shared/notes-block.ts";
+import { sharedMemoryStore } from "../../agent/lib/memory.ts";
 
 /**
  * Handoff delivery. The sending agent tool only writes a queue record, so a
@@ -75,6 +87,82 @@ const ROUTINE_TIMEOUT_MS = 60 * 60_000;
  * not coming back rather than one taking its time.
  */
 const ROUTINE_IDLE_MS = 10 * 60_000;
+
+/**
+ * Length of the notes block this bot's turn carries, read from the memory
+ * store without writing. A store that will not read counts as a full block:
+ * admission stays conservative and the failure is logged, so a notes outage
+ * never fails a chat and never makes a send look smaller than it is.
+ */
+export function notesCharsFor(botId: string): number {
+  try {
+    const cards = sharedMemoryStore().list(botId, 100);
+    return renderNotesBlock(cards.map((card) => ({
+      id: card.id,
+      title: card.title,
+      body: card.body,
+      updatedAt: card.updatedAt,
+    }))).length;
+  } catch (err) {
+    console.error("notes could not be read for admission; counted as a full block", err instanceof Error ? err.message : err);
+    return NOTES_BLOCK_CAP;
+  }
+}
+
+/**
+ * What the Settings counter shows for one bot (GET /api/bots/context): its
+ * instructions' length, the fixed envelope of a turn against the model's
+ * window, and for the Generalist the shipped text with whether the saved one
+ * differs. Null when the bot is not on the roster. Providers first, then the
+ * roster, the order the freeze reads them in.
+ */
+export function botContextReport(botId: string) {
+  const store = readProviderStore();
+  const shell = readShell();
+  const bot = shell.bots.find((item) => item.id === botId);
+  if (!bot) return null;
+  const envelope = envelopeFor({ bot, shell, store, notesChars: notesCharsFor(bot.id) });
+  return {
+    descriptionChars: envelope.descriptionChars,
+    max: DESCRIPTION_MAX,
+    envelopeTokens: envelope.tokens,
+    windowTokens: envelope.windowTokens,
+    modelLabel: envelope.modelLabel,
+    fits: envelope.tokens <= envelope.windowTokens && envelope.descriptionChars <= DESCRIPTION_MAX,
+    seed: seedFor(bot, GENERALIST_SEED_V2),
+  };
+}
+
+/** Admission for one bot's turn, reading the notes it would carry. */
+export function admitTurn(bot: ShellBot, shell: { bots: ShellBot[] }, store: ProviderStore, briefChars = 0): Admission {
+  return admission({ bot, shell, store, notesChars: notesCharsFor(bot.id), briefChars });
+}
+
+/** The most a carry-over brief may take for this bot's model. */
+export function briefMaxCharsFor(bot: ShellBot, shell: { bots: ShellBot[] }, store: ProviderStore): number {
+  return briefBudgetChars({ bot, shell, store, notesChars: notesCharsFor(bot.id) }, BRIEF_MAX_CHARS);
+}
+
+/**
+ * The 409 a proxy send gets back when the bot's stored instructions are over
+ * the cap, or the fixed envelope does not fit its model. Null when it fits.
+ */
+export function admissionRefusal(
+  bot: ShellBot,
+  shell: { bots: ShellBot[] },
+  store: ProviderStore,
+  briefChars = 0,
+): Response | null {
+  if (descriptionTooLong(bot)) {
+    return Response.json(
+      { ok: false, error: "description_too_long", message: DESCRIPTION_TOO_LONG_TEXT },
+      { status: 409 },
+    );
+  }
+  const verdict = admitTurn(bot, shell, store, briefChars);
+  if (verdict.ok) return null;
+  return Response.json({ ok: false, error: verdict.code, message: verdict.message }, { status: 409 });
+}
 
 /**
  * Stamp — or revoke — the workspace grant a turn's tools will read. Called
@@ -579,10 +667,12 @@ export async function continuationBriefFor(
   jwt: string,
   reason?: string,
   signal?: AbortSignal,
+  /** The most the brief may take, sized from the bot's window (see briefMaxCharsFor). */
+  maxChars?: number,
 ): Promise<string> {
   try {
     const read = await readSessionEvents(sessionId, jwt, signal);
-    return buildContinuationBrief(read.events, { reason, skipped: read.skipped, cut: read.cut });
+    return buildContinuationBrief(read.events, { reason, skipped: read.skipped, cut: read.cut, maxChars });
   } catch {
     return buildContinuationBrief([], {
       reason: `${reason ?? "the previous session stopped"}; its conversation could not be read back, so tell the owner you lost the earlier context and ask what to pick up`,
@@ -698,6 +788,10 @@ async function runEveTurn(
   const store = readProviderStore();
   const current = readShell().bots.find((item) => item.id === bot.id) ?? bot;
   if (!botSelectionUsable(current, store)) throw new Error("model_selection_unavailable");
+  // Refused before any eve call, never clipped: the stored instructions are
+  // over the cap, or the fixed envelope does not fit the bot's model window.
+  if (descriptionTooLong(current)) throw new Error("description_too_long");
+  if (!admitTurn(current, readShell(), store).ok) throw new Error("context_too_large");
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
   // The body the proxy would have built for this bot: identity prefix first,
   // then the caller's text. readHandoffStream arms on this exact string,
@@ -762,7 +856,8 @@ async function runEveTurn(
           if (idleTimer) clearTimeout(idleTimer);
           return await runEveTurn(live, message, budget, delivery);
         }
-        const brief = await continuationBriefFor(retired, jwt);
+        const brief = await continuationBriefFor(retired, jwt, undefined, undefined, briefMaxCharsFor(current, readShell(), store));
+        if (!admitTurn(current, readShell(), store, brief.length).ok) throw new Error("context_too_large");
         const carried = `${withSessionNotes(turnPrefixFor(bot), [brief])}${message}`;
         const retry = await fetch(`${EVE}/eve/v1/session`, {
           method: "POST",
@@ -969,9 +1064,15 @@ async function pumpOnce(limit: number): Promise<{
     } catch (err) {
       const message = err instanceof Error ? err.message : "handoff_failed";
       if (message === "claim_lost") return;
-      // A gone model is not fixed by trying again: that failure is terminal at once.
-      const modelGone = message === "model_selection_unavailable";
-      const shown = modelGone ? MODEL_UNAVAILABLE_TEXT : message;
+      // Neither a gone model nor a refused size is fixed by trying again.
+      const modelGone = message === "model_selection_unavailable"
+        || message === "context_too_large"
+        || message === "description_too_long";
+      const shown = message === "model_selection_unavailable"
+        ? MODEL_UNAVAILABLE_TEXT
+        : message === "context_too_large"
+          ? CONTEXT_TOO_LARGE_TEXT
+          : message === "description_too_long" ? DESCRIPTION_TOO_LONG_TEXT : message;
       const next = markFailed(record.id, message, undefined, claimToken, modelGone);
       const terminal = next && next.status === "failed" && (modelGone || next.attempts >= HANDOFF_ATTEMPTS_MAX);
       if (terminal) {
@@ -1134,6 +1235,8 @@ function routineFailureText(err: unknown): string {
     return "the bot went quiet part way through and the run was stopped.";
   }
   if (code === "model_selection_unavailable") return MODEL_UNAVAILABLE_TEXT;
+  if (code === "context_too_large") return CONTEXT_TOO_LARGE_TEXT;
+  if (code === "description_too_long") return DESCRIPTION_TOO_LONG_TEXT;
   return code;
 }
 

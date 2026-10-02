@@ -19,6 +19,8 @@ import { exactModelOption, modelSeesImages } from "../../../../../shared/models.
 import { readProviderStore, type ProviderStore } from "../../../../../shared/providers.ts";
 import { botSelection, lastPick } from "../../../../../shared/session-selection.ts";
 import {
+  admissionRefusal,
+  briefMaxCharsFor,
   cancelEveTurn,
   channelJwt,
   continuationBriefFor,
@@ -229,7 +231,9 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // a quiet switch to another model. A cheap refusal too, so it sits above
       // the carry-over read.
       try {
-        const refusal = sender === null ? null : modelSelectionRefusal(sender, senderStore);
+        const refusal = sender === null
+          ? null
+          : modelSelectionRefusal(sender, senderStore) ?? admissionRefusal(sender, readShell(), senderStore);
         if (refusal) return refusal;
       } catch (err) {
         console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
@@ -247,7 +251,13 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           return Response.json({ ok: false, error: missing ? "channel_credential_missing" : "workspace_unavailable" }, { status: 503 });
         }
         if (!reader.ok) return Response.json({ ok: false, error: reader.error }, { status: reader.status });
-        notes.push(await continuationBriefFor(carriedFrom, reader.jwt, undefined, request.signal));
+        notes.push(await continuationBriefFor(
+          carriedFrom,
+          reader.jwt,
+          undefined,
+          request.signal,
+          sender ? briefMaxCharsFor(sender, readShell(), senderStore) : undefined,
+        ));
       }
       if (suffix !== "session") {
         // A send into the session a carry-over opened, before that session
@@ -284,12 +294,30 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
             } catch (err) {
               console.error("earlier session could not be authorised", err instanceof Error ? err.message : err);
             }
-            if (reader?.ok) notes.push(await continuationBriefFor(previous, reader.jwt, undefined, request.signal));
+            if (reader?.ok) {
+              notes.push(await continuationBriefFor(
+                previous,
+                reader.jwt,
+                undefined,
+                request.signal,
+                sender ? briefMaxCharsFor(sender, readShell(), senderStore) : undefined,
+              ));
+            }
             else console.error("earlier session is not this bot's; its brief was not read");
           }
         }
       }
       if (extras.retry) notes.push(RETRY_NOTE);
+      // The envelope again, now with the brief this turn carries.
+      if (sender !== null && notes.length > 0) {
+        try {
+          const refusal = admissionRefusal(sender, readShell(), senderStore, notes.join("\n").length);
+          if (refusal) return refusal;
+        } catch (err) {
+          console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
+          return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+        }
+      }
       let stampStore: ProviderStore | null = null;
       try {
         const raw = new TextDecoder().decode(body);
