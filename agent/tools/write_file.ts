@@ -8,7 +8,7 @@ import { isPagePath, recordPage } from "../../shared/media-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 
 export default defineTool({
-  description: "Write a UTF-8 file in the workspace this conversation works in. Gated by the conversation's permission. An .html file also goes into the owner's Library and shows in the chat as a preview they can open in their browser.",
+  description: "Write a UTF-8 file in the workspace, gated by the conversation's permission. An .html file also lands in the owner's Library and shows in the chat as a preview they can open in their browser.",
   inputSchema: z.object({
     path: z.string(),
     content: z.string(),

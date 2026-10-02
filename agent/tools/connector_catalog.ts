@@ -12,7 +12,7 @@ import { markOutside } from "../lib/outside-content.ts";
  */
 export default defineTool({
   description:
-    "Search the catalogue of apps the owner can connect (Gmail, Notion, Slack, GitHub and 1500 more, MCP variants included). Returns whether each is connected. Use it before propose_connector.",
+    "Search the catalogue of apps the owner can connect (Gmail, Notion, Slack, GitHub and 1500 more); says whether each is connected. Many list twice, a plain connector and an MCP variant: prefer the plain one unless the owner asks for MCP or its tools fall short. Call before propose_connector.",
   inputSchema: z.object({
     query: z.string().min(3).max(80),
   }),

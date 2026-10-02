@@ -21,7 +21,7 @@ import { readShell } from "../../shared/shell-io.ts";
  */
 export default defineTool({
   description:
-    "Ask the owner to connect an app from the catalogue so you can use it. Shows a card with Authorize. Call connector_catalog first; propose one app per turn, then end your turn.",
+    "Ask the owner to connect a catalogue app; shows an Authorize card. Call connector_catalog first. One app per turn, then end your turn with one line, and never propose a different app instead.",
   inputSchema: z.object({
     slug: z.string().min(1).max(80),
     purpose: z.string().min(3).max(120),

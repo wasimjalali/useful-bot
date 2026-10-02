@@ -19,7 +19,7 @@ const BUFFER_MAX_BYTES = 256 * 1024;
 
 export default defineTool({
   description:
-    "Look up which command-line tools this Mac has, and install one the owner asks for. `list` reports every known CLI, where it resolves on the owner's PATH and whether it holds a sign-in; it only reads, so it runs in every mode. `install` takes one name from that list and runs its exact install command: Read only refuses, Auto shows the owner an approval card with the command on it, Full access runs it. Use `list` before telling the owner a tool is missing, and before guessing a package name. A CLI that is not in the list is still installable through bash, where the owner reads the whole line.",
+    "List the command-line tools this Mac has, or install one. `list` shows each known CLI, where it resolves and whether a sign-in is stored (not proof it still works: if a tool is signed out, point the owner at its own login, don't authenticate it yourself); it runs in every mode. Call it before saying a tool is missing. `install` runs the exact command for a listed name: Read only refuses, Auto shows a card, Full access runs it. A CLI not on the list goes through bash; name the package so the owner sees what they approve.",
   inputSchema: z.object({
     action: z.enum(["list", "install"]),
     /** Required for install; ignored by list. */

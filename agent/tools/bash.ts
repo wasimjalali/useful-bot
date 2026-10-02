@@ -62,7 +62,7 @@ function blockedReason(command: string, scoped: boolean): string | null {
 }
 
 export default defineTool({
-  description: "Run a shell command on this Mac, in the attached folder or under the owner's home when none is attached. The owner's own PATH and home directory apply, so a CLI they have installed and signed in to (codex, claude, gh, npm...) runs the way it does in their terminal. Lines that only read run at once; what else runs without asking depends on the owner's permission: Full access runs everything, anywhere on the Mac, and asks only before a wipe. Not a login shell, and stdin is closed: pass a non-interactive flag. Default timeout 30s; pass timeoutMs for a command that works for minutes.",
+  description: "Run a shell command in the attached folder, or under the owner's home when none. The owner's own PATH and home apply, so CLIs they've signed in to (codex, claude, gh, npm) run as in their terminal. Not a login shell, stdin closed: use non-interactive flags (codex exec, claude -p). Default timeout 30s; pass timeoutMs for long runs, and timedOut: true means out of time, not failed. Run a CLI on a line of its own: a chained line gets no sign-in. gh keeps its token in the keychain, so a card-free run reads signed out: say so and offer a run they approve. Reads run at once; the owner's permission governs the rest.",
   inputSchema: z.object({
     command: z.string().min(1).max(8192),
     timeoutMs: z.number().int().min(1).max(MAX_TIMEOUT_MS).optional(),

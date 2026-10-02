@@ -8,7 +8,7 @@ import { groupMembers, speakersFrom } from "../../shared/threads.ts";
 
 export default defineTool({
   description:
-    "Propose a group chat with 2 to 6 teammate bots. Use it when work should happen in the open instead of in one bot's chat, for example a kickoff with who owns what. The owner confirms the card before the room exists.",
+    "Propose a group chat of 2 to 6 teammate bots, for work that should happen in the open (a kickoff, who owns what). The owner confirms the card before the room exists. The default bot orchestrates but is never a member.",
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     memberIds: z.array(z.string().min(1).max(80)).min(GROUP_MIN_MEMBERS).max(GROUP_MAX_MEMBERS),
@@ -29,7 +29,7 @@ export default defineTool({
       return {
         status: "invalid",
         error: `a group needs ${GROUP_MIN_MEMBERS} to ${GROUP_MAX_MEMBERS} real bots; matched ${members.length}`,
-        hint: "Call listBots for exact ids. Groups cannot contain another group.",
+        hint: "Call list_bots for exact ids. Groups cannot contain another group.",
       };
     }
     const source = who.caller.bot;

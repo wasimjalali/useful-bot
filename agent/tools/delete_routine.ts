@@ -18,7 +18,7 @@ import { deleteRoutine, readRoutine } from "../../shared/routines-store.ts";
 
 export default defineTool({
   description:
-    "Delete a routine for good, including its run history. It applies at once in Auto and Full access and is refused in Read only. Prefer updateRoutine with active false when the owner only wants it paused.",
+    "Delete a routine for good, run history included. Applies at once in Auto and Full access, refused in Read only. Prefer update_routine with active false when the owner only wants it paused.",
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
     reason: z.string().max(300).optional(),
@@ -28,7 +28,7 @@ export default defineTool({
     if (!who.ok) return who.result;
     const routine = readRoutine(input.routineId);
     if (!routine) {
-      return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call listRoutines." };
+      return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call list_routines." };
     }
     // A routine resolves to its owner: a plain bot deletes only its own.
     if (!mayActOn(who.caller, routine.botId)) return notAvailable(SELF_ONLY_HINT);

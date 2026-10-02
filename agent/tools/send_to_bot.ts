@@ -15,7 +15,7 @@ const HANDOFF_WAIT_DEFAULT_MS = 180_000;
 
 export default defineTool({
   description:
-    "Message one teammate bot and wait for their reply. The question lands in their chat as an incoming message, they work (including while the owner is in another chat), and their answer comes back here as this tool's result and as a message in both transcripts. Use it when another bot owns the deliverable or should review your work. One recipient only: use postToGroup for several at once, which asks the owner first.",
+    "Message one teammate bot and wait for their reply. It lands in their chat, they work even if the owner is elsewhere, and the answer returns as this result and in both transcripts. Use when another bot owns the deliverable or should review your work. One recipient: use post_to_group for several. Call list_bots first.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80),
     message: z.string().min(1).max(4000),
@@ -48,7 +48,7 @@ export default defineTool({
       return {
         status: "not_found",
         error: `no teammate matches ${requested}`,
-        hint: "Call listBots for exact ids.",
+        hint: "Call list_bots for exact ids.",
       };
     }
     if (target.hidden) {
@@ -76,7 +76,7 @@ export default defineTool({
       if (members.length > 1) {
         return {
           status: "needs_post_to_group",
-          error: "groups need postToGroup so the owner confirms the fan-out",
+          error: "groups need post_to_group so the owner confirms the fan-out",
           memberCount: members.length,
         };
       }
