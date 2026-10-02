@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -818,9 +819,18 @@ test("an outside-sourced note shows no body in the recalled block and does not m
     await run(memoryRead, { id: outside.id }, turn("t-deliberate"));
     const after = await run<{ id: string }>(memoryUpsert, note("After the read"), turn("t-deliberate"));
     assert.equal(store.readCard(after.id, "bot-useful").source, "model-after-outside-content");
-    // An older persisted copy (plain text, or JSON with a stale flag) is replayed, not thrown on.
+    // A replay reads the persisted copy back, byte for byte.
     forgetRecallCache();
     assert.equal(recallNotes({ operationId: "op-block", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content, text);
+    // A copy in an older format may show what the block now withholds, so it is
+    // rendered again rather than replayed.
+    const legacyKey = "bot-useful\u0000op-legacy";
+    const legacyFile = join(dirname(store.notesDir), "recall", `${createHash("sha256").update(legacyKey).digest("hex")}.txt`);
+    writeFileSync(legacyFile, "- legacy-canary body from an old renderer\n");
+    forgetRecallCache();
+    const fresh2 = recallNotes({ operationId: "op-legacy", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content ?? "";
+    assert.doesNotMatch(fresh2, /legacy-canary/);
+    assert.doesNotMatch(fresh2, /web-body-canary/);
   } finally {
     if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
     else process.env.UB_MEMORY_ROOT = previousMemory;

@@ -56,16 +56,23 @@ function recallFile(store: MemoryStore, key: string): string {
 /** What one recall rendered. */
 type Render = { content: string };
 
+/**
+ * The format of a persisted render. Bump it whenever the block's rules change:
+ * a copy from an older renderer may show what the current one withholds (an
+ * outside-sourced note's body), so it is rendered again instead of replayed.
+ */
+const RECALL_FORMAT = 2;
+
 function readPersisted(store: MemoryStore, key: string): Render | undefined {
   try {
     const text = readFileSync(recallFile(store, key), "utf8");
     try {
-      const parsed = JSON.parse(text) as { content?: unknown };
-      if (typeof parsed?.content === "string") return { content: parsed.content };
+      const parsed = JSON.parse(text) as { v?: unknown; content?: unknown };
+      if (parsed?.v === RECALL_FORMAT && typeof parsed.content === "string") return { content: parsed.content };
     } catch {
-      /* an older copy is the plain block text */
+      /* not this format */
     }
-    return { content: text };
+    return undefined;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw err;
@@ -79,7 +86,7 @@ function persist(store: MemoryStore, key: string, render: Render): void {
   const path = recallFile(store, key);
   const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   try {
-    writeFileSync(tmp, `${JSON.stringify(render)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    writeFileSync(tmp, `${JSON.stringify({ v: RECALL_FORMAT, content: render.content })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     renameSync(tmp, path);
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* nothing was written */ }
