@@ -66,3 +66,42 @@ test("write_file reads a missing, empty or 'null' expectedSha256 as null", async
   const hash = "a".repeat(64);
   assert.equal(schema.safeParse({ path: "a.txt", content: "x", expectedSha256: hash }).data?.expectedSha256, hash);
 });
+
+test("only plain integer strings count as numbers, and whitespace means none", async () => {
+  const del = await schemaOf("memory_delete");
+  for (const bad of ["0x10", "1e2", "  ", "1.0", "+3"]) {
+    assert.equal(del.safeParse({ id: "a", expectedRevision: bad }).success, false, JSON.stringify(bad));
+  }
+  assert.equal(del.safeParse({ id: "a", expectedRevision: " -2 " }).data?.expectedRevision, -2);
+  const up = await schemaOf("memory_upsert");
+  for (const bad of ["0x10", "1e2"]) {
+    assert.equal(up.safeParse({ ...note, expectedRevision: bad }).success, false, bad);
+  }
+  const blank = up.safeParse({ ...note, expectedRevision: "  ", expiresAt: "   " });
+  assert.equal(blank.data?.expectedRevision, null);
+  assert.equal(blank.data?.expiresAt, null);
+});
+
+test("the JSON schema the model sees keeps the types, optionality and a description", async () => {
+  const { z } = await import("zod");
+  const jsonOf = async (tool: string) => {
+    const mod = (await import(join(import.meta.dirname, `../agent/tools/${tool}.ts`))) as { default: { inputSchema: never } };
+    return z.toJSONSchema(mod.default.inputSchema, { io: "input" }) as {
+      properties: Record<string, { type?: string[]; description?: string }>;
+      required?: string[];
+    };
+  };
+  const upsert = await jsonOf("memory_upsert");
+  assert.deepEqual(upsert.properties.expectedRevision?.type, ["number", "string", "null"]);
+  assert.deepEqual(upsert.properties.expiresAt?.type, ["string", "null"]);
+  const del = await jsonOf("memory_delete");
+  assert.deepEqual(del.properties.expectedRevision?.type, ["number", "string"]);
+  const write = await jsonOf("write_file");
+  assert.deepEqual(write.properties.expectedSha256?.type, ["string", "null"]);
+  for (const [schema, field] of [[upsert, "expectedRevision"], [upsert, "expiresAt"], [write, "expectedSha256"], [del, "expectedRevision"]] as const) {
+    assert.ok(schema.properties[field]?.description, `${field} lost its description`);
+  }
+  for (const field of ["expectedRevision", "expiresAt"]) assert.ok(!upsert.required?.includes(field), `${field} must be optional`);
+  assert.ok(!write.required?.includes("expectedSha256"));
+  assert.ok(del.required?.includes("expectedRevision"));
+});

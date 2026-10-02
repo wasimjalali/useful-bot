@@ -7,13 +7,18 @@ import { z } from "zod";
  * field optional; the transform only runs when the tool parses the call.
  */
 const isNone = (value: unknown): boolean =>
-  value === null || value === undefined || value === "" || (typeof value === "string" && value.trim().toLowerCase() === "null");
+  value === null || value === undefined || (typeof value === "string" && ["", "null"].includes(value.trim().toLowerCase()));
+
+/** Only a plain integer string counts as a number: no hex, exponent or fraction. */
+const INTEGER_TEXT = /^-?\d+$/;
+const toNumber = (value: unknown): unknown => (typeof value === "string" ? (INTEGER_TEXT.test(value.trim()) ? Number(value.trim()) : NaN) : value);
 
 /** A string or null: "null", "" and a missing value become null. */
-export const lenientNullableString = (check: z.ZodString = z.string()) =>
+export const lenientNullableString = (describe: string, check: z.ZodString = z.string()) =>
   z
     .union([z.string(), z.null()])
     .optional()
+    .describe(describe)
     .transform((value, ctx) => {
       if (isNone(value)) return null;
       const parsed = check.safeParse(value);
@@ -25,26 +30,26 @@ export const lenientNullableString = (check: z.ZodString = z.string()) =>
     });
 
 /** A number or null: "null", "" and a missing value become null, a numeric string becomes a number. */
-export const lenientNullableNumber = () =>
+export const lenientNullableNumber = (describe: string) =>
   z
     .union([z.number(), z.string(), z.null()])
     .optional()
+    .describe(describe)
     .transform((value, ctx) => {
       if (isNone(value)) return null;
-      const number = typeof value === "string" ? Number(value.trim()) : value;
+      const number = toNumber(value);
       if (typeof number !== "number" || !Number.isFinite(number)) {
-        ctx.addIssue({ code: "custom", message: "expected a number or null" });
+        ctx.addIssue({ code: "custom", message: "expected an integer or null" });
         return z.NEVER;
       }
       return number;
     });
 
 /** A required number the model may send as a numeric string. */
-export const lenientNumber = (check: z.ZodNumber = z.number()) =>
-  z.union([z.number(), z.string()]).transform((value, ctx) => {
-    const number = typeof value === "string" ? Number(value.trim()) : value;
-    const parsed = value === "" ? null : check.safeParse(number);
-    if (!parsed || !parsed.success) {
+export const lenientNumber = (describe: string, check: z.ZodNumber = z.number()) =>
+  z.union([z.number(), z.string()]).describe(describe).transform((value, ctx) => {
+    const parsed = check.safeParse(toNumber(value));
+    if (!parsed.success) {
       ctx.addIssue({ code: "custom", message: "expected a number" });
       return z.NEVER;
     }

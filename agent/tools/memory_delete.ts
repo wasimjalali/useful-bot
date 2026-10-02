@@ -11,7 +11,7 @@ export default defineTool({
   description: "Delete one of this bot's own memory notes. Applies at once in Auto and Full access; refused in Read only.",
   inputSchema: z.object({
     id: z.string().regex(/^[A-Za-z0-9-]{1,80}$/),
-    expectedRevision: lenientNumber(z.number().int()),
+    expectedRevision: lenientNumber("The note's integer revision.", z.number().int()),
   }),
   execute: async (input, ctx) => {
     // The acting bot comes from the session binding; there is no way to name
