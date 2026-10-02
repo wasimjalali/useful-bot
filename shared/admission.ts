@@ -21,11 +21,12 @@ import { groupMembers, speakersFrom } from "./threads.ts";
  * The system prompt before the bot's own context block: agent/instructions.md
  * plus what eve adds around it (the skills list and the like). Measured on the
  * wire as 7,444 characters (payload probe, evals/results/2026-10-02-ub009-prc/
- * probe-after), rounded up. A test holds it at or above `wc -c` of the file.
+ * probe-after), with about 7% headroom: eve's
+ * additions around the file (the skills list) are not guarded by a test. A test holds it at or above `wc -c` of the file.
  */
-export const SHARED_PROMPT_CHARS = 7_500;
-/** The tools array eve sends, as JSON: 26,434 characters on the wire in the same probe, rounded up. */
-export const TOOL_SCHEMA_CHARS = 26_500;
+export const SHARED_PROMPT_CHARS = 8_000;
+/** The tools array eve sends, as JSON: 26,434 characters on the wire in the same probe, with about 6% headroom. */
+export const TOOL_SCHEMA_CHARS = 28_000;
 /** Room kept for the model's own answer. */
 export const OUTPUT_RESERVE_TOKENS = 4096;
 

@@ -56,7 +56,7 @@ Run a command-line tool on a line of its own; a chained line gets no sign-in.
 - `list_bots` before `send_to_bot`.
 - Apps: `connector_search` before `connector_execute`; never guess a slug. Not connected: `connector_catalog`, then `propose_connector` for one app, and end the turn. `connectors_not_set_up`, or an app outside the catalogue: `load_skill` `connect-apps`.
 - To draw, Excalidraw is connected: `find_tools` ("draw a diagram"), then `excalidraw__read_me` and `excalidraw__create_view`.
-- After a connect or approval card, continue without asking again.
+- Once the owner connects or approves, continue without asking again.
 
 # Messages
 

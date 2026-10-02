@@ -38,7 +38,7 @@ export const lenientNullableNumber = (describe: string) =>
     .transform((value, ctx) => {
       if (isNone(value)) return null;
       const number = toNumber(value);
-      if (typeof number !== "number" || !Number.isFinite(number)) {
+      if (typeof number !== "number" || !Number.isInteger(number)) {
         ctx.addIssue({ code: "custom", message: "expected an integer or null" });
         return z.NEVER;
       }
@@ -50,7 +50,7 @@ export const lenientNumber = (describe: string, check: z.ZodNumber = z.number())
   z.union([z.number(), z.string()]).describe(describe).transform((value, ctx) => {
     const parsed = check.safeParse(toNumber(value));
     if (!parsed.success) {
-      ctx.addIssue({ code: "custom", message: "expected a number" });
+      ctx.addIssue({ code: "custom", message: "expected an integer" });
       return z.NEVER;
     }
     return parsed.data;
