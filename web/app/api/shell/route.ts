@@ -182,7 +182,8 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
         && action.botId === proposal.botId
         && (action.patch?.name ?? "") === proposal.patch.name
         && (action.patch?.label ?? "") === proposal.patch.title
-        && (action.patch?.description ?? "") === proposal.patch.description
+        // An absent description means "unchanged" on both sides.
+        && action.patch?.description === proposal.patch.description
         && (action.patch?.avatarShape ?? null) === proposal.patch.avatarShape
         && (action.patch?.avatarColor ?? null) === proposal.patch.avatarColor;
     case "fanout":

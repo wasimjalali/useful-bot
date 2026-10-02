@@ -78,7 +78,8 @@ export type BotProfileDraft = {
   name: string;
   petname: string;
   title: string;
-  description: string;
+  /** Absent means the description is unchanged: the card leaves it alone. */
+  description?: string;
   avatarShape: string | null;
   avatarColor: string | null;
 };
@@ -374,7 +375,10 @@ function parseProposal(raw: unknown): Proposal | null {
   }
   if (rec.kind === "updateBotProfile") {
     const patchRaw = (rec.patch ?? {}) as Record<string, unknown>;
-    const description = descriptionWithin(patchRaw.description, DESCRIPTION_MAX);
+    // Present only when the card changes it; an absent one stays absent.
+    const description = typeof patchRaw.description === "string"
+      ? descriptionWithin(patchRaw.description, DESCRIPTION_MAX)
+      : undefined;
     if (description === null) return null;
     return {
       ...base,
@@ -390,7 +394,7 @@ function parseProposal(raw: unknown): Proposal | null {
         name: clip(patchRaw.name, 80),
         petname: clip(patchRaw.petname, 80),
         title: clip(patchRaw.title, 24),
-        description,
+        ...(description !== undefined ? { description } : {}),
         avatarShape: typeof patchRaw.avatarShape === "string" ? patchRaw.avatarShape : null,
         avatarColor: typeof patchRaw.avatarColor === "string" ? patchRaw.avatarColor : null,
       },
@@ -705,7 +709,9 @@ function assertProposalDescription(payload: ProposalPayload): void {
   };
   if (payload.kind === "createBot") check(payload.description, PROPOSE_DESCRIPTION_MAX);
   else if (payload.kind === "createGroup") check(payload.description, DESCRIPTION_MAX);
-  else if (payload.kind === "updateBotProfile") check(payload.patch.description, DESCRIPTION_MAX);
+  else if (payload.kind === "updateBotProfile") {
+    if (payload.patch.description !== undefined) check(payload.patch.description, DESCRIPTION_MAX);
+  }
 }
 
 export function createProposal<P extends ProposalPayload>(

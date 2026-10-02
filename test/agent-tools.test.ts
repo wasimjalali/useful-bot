@@ -401,13 +401,41 @@ test("updateBotProfile proposes the edit and reports no_change honestly", async 
     assert.equal(proposed.status, "awaiting_owner_confirmation");
     const proposal = readProposal(proposed.proposalId);
     assert.equal(proposal?.kind, "updateBotProfile");
-    assert.equal(proposal?.kind === "updateBotProfile" ? proposal.patch.description.length > 0 : false, true);
+    // A card that changes the description round-trips it exactly.
+    assert.equal(
+      proposal?.kind === "updateBotProfile" ? proposal.patch.description : null,
+      "Own pricing research. Never publish without approval.",
+    );
     assert.equal(readShell().bots.find((bot) => bot.id === research)?.description, "");
 
     const unchanged = await run<{ status: string }>(updateBotProfile, { botId: research });
     assert.equal(unchanged.status, "no_change");
     const missing = await run<{ status: string }>(updateBotProfile, { botId: "nope", name: "x" });
     assert.equal(missing.status, "not_found");
+  } finally {
+    box.restore();
+  }
+});
+
+test("a rename proposal for a bot with an over-cap description leaves the description out", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO", "Research"]);
+    const research = idOf(store, "Research");
+    const long = "x".repeat(9000);
+    writeShell({
+      ...store,
+      bots: store.bots.map((bot) => (bot.id === research ? { ...bot, description: long } : bot)),
+    });
+    const proposed = await run<{ status: string; proposalId: string }>(updateBotProfile, {
+      botId: research,
+      name: "Analyst",
+    });
+    assert.equal(proposed.status, "awaiting_owner_confirmation");
+    const proposal = readProposal(proposed.proposalId);
+    assert.equal(proposal?.kind, "updateBotProfile");
+    assert.equal(proposal?.kind === "updateBotProfile" ? "description" in proposal.patch : true, false);
+    assert.equal(proposal?.kind === "updateBotProfile" ? proposal.patch.name : "", "Analyst");
   } finally {
     box.restore();
   }

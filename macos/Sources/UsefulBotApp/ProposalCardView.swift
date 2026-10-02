@@ -91,11 +91,9 @@ struct ProposalCardView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     patchRow("Name", before: target?.name ?? "", after: proposal.patch?.name ?? "")
                     patchRow("Title", before: target?.label ?? "", after: proposal.patch?.title ?? "")
-                    patchRow(
-                        "Description",
-                        before: target?.description ?? "",
-                        after: proposal.patch?.description ?? ""
-                    )
+                    if let description = proposal.patch?.description {
+                        patchRow("Description", before: target?.description ?? "", after: description)
+                    }
                 }
                 actions(confirm: "Apply profile", dismiss: "Keep as is")
             }

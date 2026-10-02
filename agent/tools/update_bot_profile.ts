@@ -50,13 +50,16 @@ export default defineTool({
       // bot is being onboarded.
       petname: target.petname ?? "",
       title: (input.title ?? target.label).trim(),
-      description: (input.description ?? target.description).trim(),
+      // Only a description the proposal changes goes in the card: an
+      // unchanged one (even an over-cap stored one) is left out, so a rename
+      // still confirms.
+      ...(input.description !== undefined ? { description: input.description.trim() } : {}),
       avatarShape: input.avatarShape ?? null,
       avatarColor: input.avatarColor ?? null,
     };
     const changed = patch.name !== target.name
       || patch.title !== target.label
-      || patch.description !== target.description
+      || (patch.description !== undefined && patch.description !== target.description)
       || patch.avatarShape !== null
       || patch.avatarColor !== null;
     if (!changed) {

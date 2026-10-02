@@ -142,8 +142,10 @@ public enum ProposalActions {
             var patch: [String: Any?] = [
                 "name": proposalPatch.name,
                 "label": proposalPatch.title,
-                "description": proposalPatch.description,
             ]
+            // Only a card that changes the description sends one; the server
+            // matches an absent description to an absent one.
+            if let description = proposalPatch.description { patch["description"] = description }
             if let shape = proposalPatch.avatarShape, FacePalette.isShape(shape) {
                 patch["avatarShape"] = shape
             }
