@@ -49,12 +49,16 @@ export function recallNotes(
   store: () => MemoryStore = sharedMemoryStore,
 ) {
   try {
-    const botId = String(ctx.memory.scope.value);
-    let content = byOperation.get(ctx.operationId);
+    // The scope is the bot id the slot resolved; anything else is not a bot.
+    const botId = ctx.memory.scope.value;
+    if (typeof botId !== "string" || !botId) return null;
+    // Keyed by bot too, so a cached render can never reach another bot.
+    const key = `${botId}\u0000${ctx.operationId}`;
+    let content = byOperation.get(key);
     if (content === undefined) {
       content = renderNotesBlock(loadCards(store(), botId));
       if (byOperation.size >= OPERATION_CAP) byOperation.delete(byOperation.keys().next().value as string);
-      byOperation.set(ctx.operationId, content);
+      byOperation.set(key, content);
     }
     return { messages: [{ id: NOTES_RECORD_ID, content }] };
   } catch (err) {
