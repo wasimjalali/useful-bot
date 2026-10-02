@@ -17,10 +17,15 @@ import type { ProviderStore } from "./providers.ts";
 import { DESCRIPTION_MAX, DEFAULT_BOT_ID, orchestratorId, type ShellBot, type ShellStore } from "./shell-store.ts";
 import { groupMembers, speakersFrom } from "./threads.ts";
 
-/** Bytes of agent/instructions.md. A test holds this at or above `wc -c`. */
-export const SHARED_PROMPT_CHARS = 17_089;
-/** Characters of the 39 tool schemas eve sends (spike payload baseline, 2026-10-01). */
-export const TOOL_SCHEMA_CHARS = 30_483;
+/**
+ * The system prompt before the bot's own context block: agent/instructions.md
+ * plus what eve adds around it (the skills list and the like). Measured on the
+ * wire as 7,444 characters (payload probe, evals/results/2026-10-02-ub009-prc/
+ * probe-after), rounded up. A test holds it at or above `wc -c` of the file.
+ */
+export const SHARED_PROMPT_CHARS = 7_500;
+/** The tools array eve sends, as JSON: 26,434 characters on the wire in the same probe, rounded up. */
+export const TOOL_SCHEMA_CHARS = 26_500;
 /** Room kept for the model's own answer. */
 export const OUTPUT_RESERVE_TOKENS = 4096;
 
