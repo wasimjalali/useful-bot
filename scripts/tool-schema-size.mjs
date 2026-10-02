@@ -30,9 +30,27 @@ export async function measureTools() {
   return rows;
 }
 
+// eve's own default tools, measured from its definitions (what a turn carries
+// when nothing under agent/tools/ replaces them). connection_search is a dynamic
+// tool whose schemas eve builds at run time, and agent and task_cancel are
+// disabled in this app, so none of the three can be weighed here.
+export const EVE_DEFAULTS = ["todo", "ask_question", "load_skill"];
+
+export async function measureEveDefaults() {
+  const rows = [];
+  for (const name of EVE_DEFAULTS) {
+    const tool = (await import(`eve/tools/${name}`)).default;
+    const description = String(tool.description ?? "");
+    const schema = JSON.stringify(z.toJSONSchema(tool.inputSchema, { io: "input" }));
+    rows.push({ name, words: description.split(/\s+/).filter(Boolean).length, descChars: description.length, schemaChars: schema.length, chars: description.length + schema.length });
+  }
+  return rows;
+}
+
 export function parseTable(text) {
   const out = new Map();
   for (const line of text.split("\n")) {
+    if (line === "") break;
     const match = /^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/.exec(line);
     if (match && match[1] !== "TOTAL") out.set(match[1], Number(match[5]));
   }
@@ -53,4 +71,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const beforeTotal = before ? [...before.values()].reduce((a, b) => a + b, 0) : 0;
   console.log(`${"TOTAL".padEnd(22)}${pad(sum("words"), 7)}${pad(sum("descChars"), 8)}${pad(sum("schemaChars"), 8)}${pad(sum("chars"), 8)}${before ? pad(sum("chars") - beforeTotal, 8) : ""}`);
   console.log(`tools: ${rows.length}`);
+  // The eve defaults as eve ships them, and what the app mounts of them now.
+  const eve = await measureEveDefaults();
+  console.log("\neve defaults as shipped (the app replaces any with a same-name file under agent/tools)");
+  for (const row of eve) console.log(`${row.name.padEnd(22)}${pad(row.words, 7)}${pad(row.descChars, 8)}${pad(row.schemaChars, 8)}${pad(row.chars, 8)}`);
+  const authored = new Set(rows.map((row) => row.name));
+  const mounted = eve.filter((row) => !authored.has(row.name));
+  const grand = sum("chars") + mounted.reduce((total, row) => total + row.chars, 0);
+  console.log(`eve defaults not overridden: ${mounted.map((row) => row.name).join(", ") || "none"}`);
+  console.log(`GRAND TOTAL (authored + eve defaults not overridden): ${grand}`);
 }

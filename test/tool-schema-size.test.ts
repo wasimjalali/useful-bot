@@ -38,3 +38,33 @@ test("the script prints a table with a total", () => {
   assert.match(out, /^TOTAL\s+\d+\s+\d+\s+\d+\s+\d+$/m);
   assert.match(out, /^bash\s+/m);
 });
+
+// An override that re-declares eve's schema must not drift from it: if eve
+// tightens a field, this fails instead of our copy silently validating less.
+function withoutDescriptions(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutDescriptions);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => key !== "description")
+        .map(([key, inner]) => [key, withoutDescriptions(inner)]),
+    );
+  }
+  return value;
+}
+
+for (const [name, eveModule] of [
+  ["web_fetch", "eve/tools/web_fetch"],
+  ["todo", "eve/tools/todo"],
+  ["load_skill", "eve/tools/load_skill"],
+] as const) {
+  test(`${name} override keeps eve's schema apart from description text`, async () => {
+    const { z } = await import("zod");
+    const { join } = await import("node:path");
+    const ours = (await import(join(import.meta.dirname, `../agent/tools/${name}.ts`))) as { default: { inputSchema: never } };
+    const theirs = (await import(eveModule)) as { default: { inputSchema: never } };
+    const a = z.toJSONSchema(ours.default.inputSchema, { io: "input" });
+    const b = z.toJSONSchema(theirs.default.inputSchema, { io: "input" });
+    assert.deepEqual(withoutDescriptions(a), withoutDescriptions(b));
+  });
+}
