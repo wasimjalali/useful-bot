@@ -23,7 +23,7 @@ type Put = {
   tags?: string[];
   body?: string;
   expiresAt?: string | null;
-  source?: "owner" | "model";
+  source?: "owner" | "model" | "model-after-outside-content";
 };
 
 function put(store: MemoryStore, input: Put = {}) {
@@ -437,4 +437,74 @@ test("a legacy offset expiry is normalised to UTC, so a note already past in UTC
   const meta = (id: string) => JSON.parse(readFileSync(join(root, "notes", `${id}.md`), "utf8").split("\n")[1]) as { expiresAt: string };
   assert.equal(meta("offset-future").expiresAt, "2099-01-01T11:00:00.000Z");
   assert.equal(meta("offset-past").expiresAt, past.toISOString());
+});
+
+// MARK: - archive, source and readCard (UB-009)
+
+test("archive refuses another bot's note, before the revision is looked at", () => {
+  const { store } = fresh();
+  const a = put(store, { botId: A, title: "Alpha" });
+  assert.throws(() => store.archive(a.id, B, a.revision), /memory_forbidden/);
+  assert.throws(() => store.archive(a.id, B, 99), /memory_forbidden/, "a wrong revision learns nothing either");
+  assert.equal(store.read(a.id, A).title, "Alpha", "the note is untouched");
+  assert.throws(() => store.archive("nope", A, 1), /memory_not_found/);
+  assert.throws(() => store.archive("../x", A, 1), /memory_id_invalid/);
+});
+
+test("archive refuses a stale revision and leaves the note", () => {
+  const { store } = fresh();
+  const a = put(store, { title: "v1" });
+  put(store, { id: a.id, expectedRevision: 1, title: "v2" });
+  assert.throws(() => store.archive(a.id, A, 1), /memory_revision_conflict/);
+  assert.equal(store.read(a.id, A).title, "v2");
+});
+
+test("an archived note is gone from list, search and read, in the file and the index, and survives a rebuild", () => {
+  const { root, store } = fresh();
+  const a = put(store, { title: "Gone soon", body: "findable-word" });
+  const keep = put(store, { title: "Kept", body: "findable-word" });
+  const out = store.archive(a.id, A, a.revision);
+  assert.equal(out.revision, 2);
+  assert.deepEqual(store.list(A).map((card) => card.id), [keep.id]);
+  assert.deepEqual(store.search("findable-word", A).map((hit) => hit.id), [keep.id]);
+  assert.throws(() => store.read(a.id, A), /memory_forbidden|memory_not_found/);
+  assert.throws(() => store.readCard(a.id, A), /memory_not_found/);
+  assert.match(readFileSync(join(root, "notes", `${a.id}.md`), "utf8"), /"status":"archived"/);
+  const db = new DatabaseSync(join(root, "index.sqlite"));
+  assert.equal((db.prepare("SELECT status FROM notes WHERE id = ?").get(a.id) as { status: string }).status, "archived");
+  db.close();
+  store.rebuildIndex();
+  assert.deepEqual(store.list(A).map((card) => card.id), [keep.id]);
+  // An archived id is never brought back by a write, and archiving twice is a not-found.
+  assert.throws(() => put(store, { id: a.id, expectedRevision: 2 }), /memory_not_found/);
+  assert.throws(() => store.archive(a.id, A, 2), /memory_not_found/);
+});
+
+test("the outside-content source is kept on the card and stays until the owner writes", () => {
+  const { store } = fresh();
+  const n = store.upsert({
+    expectedRevision: null, title: "From a page", tags: [], body: "x", botId: A,
+    source: "model-after-outside-content", expiresAt: null, sessionId: "s",
+  });
+  assert.equal(store.list(A)[0].source, "model-after-outside-content");
+  // The model editing it in a clean turn keeps the mark.
+  put(store, { id: n.id, expectedRevision: 1, body: "y", source: "model" });
+  assert.equal(store.readCard(n.id, A).source, "model-after-outside-content");
+  // The owner's edit clears it.
+  put(store, { id: n.id, expectedRevision: 2, body: "z", source: "owner" });
+  assert.equal(store.readCard(n.id, A).source, "owner");
+  const plain = put(store, { title: "Plain" });
+  assert.equal(store.readCard(plain.id, A).source, "model");
+});
+
+test("readCard returns the whole note with revision and source, and refuses another bot", () => {
+  const { store } = fresh();
+  const long = "w".repeat(3000);
+  const a = put(store, { body: long });
+  const card = store.readCard(a.id, A);
+  assert.equal(card.body, long);
+  assert.equal(card.revision, 1);
+  assert.equal(card.truncated, false);
+  assert.throws(() => store.readCard(a.id, B), /memory_forbidden/);
+  assert.equal(store.list(A)[0].revision, 1, "the list carries the revision too");
 });

@@ -4,6 +4,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { effectiveRoot, resolveWorkspacePath } from "../lib/workspace.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 const LIST_MAX_ENTRIES = 500;
 
@@ -20,6 +21,7 @@ export default defineTool({
     limit: z.number().int().min(1).max(LIST_MAX_ENTRIES).optional(),
   }),
   execute(input, ctx) {
+    markOutside(ctx);
     const { root } = effectiveRoot(ctx?.session?.id);
     const target = resolveWorkspacePath(input.path || ".", root);
     let stat;

@@ -13,6 +13,7 @@ import { FORBIDDEN_PATH_SUBSTRINGS, foldPath } from "../../shared/policy.ts";
 import { APP_STATE_DIR, mentionsAppState } from "../../shared/stack.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 const OUTPUT_MAX_BYTES = 32 * 1024;
 const INPUT_MAX_BYTES = 1024 * 1024;
@@ -67,6 +68,7 @@ export default defineTool({
     timeoutMs: z.number().int().min(1).max(MAX_TIMEOUT_MS).optional(),
   }),
   async execute(input, ctx) {
+    markOutside(ctx);
     // One grant read for root AND permission: two reads could pair a root
     // from before a permission change with the permission after it. A
     // grant whose folder is gone still answers a tripwired line with the

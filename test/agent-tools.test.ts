@@ -28,6 +28,7 @@ import bash from "../agent/tools/bash.ts";
 import listBots from "../agent/tools/list_bots.ts";
 import memorySearch from "../agent/tools/memory_search.ts";
 import memoryUpsert from "../agent/tools/memory_upsert.ts";
+import memoryDelete from "../agent/tools/memory_delete.ts";
 import readFile from "../agent/tools/read_file.ts";
 import proposeBot from "../agent/tools/propose_bot.ts";
 import proposeGroup from "../agent/tools/propose_group.ts";
@@ -655,6 +656,69 @@ test("memory_upsert writes at once in Auto with the card text recorded, and Read
     }, home.ctx);
     assert.equal(refused.status, "blocked");
     assert.equal(refused.error, "workspace_read_only");
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("memory_delete runs at once in Auto, is refused in Read only, and a stale revision is refused", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null });
+    const first = await run<{ id: string; revision: number }>(memoryUpsert, note("Delete me"), home.ctx);
+    const second = await run<{ id: string; revision: number }>(memoryUpsert, note("Keep me"), home.ctx);
+
+    // A stale revision is refused and the note stays.
+    await assert.rejects(run(memoryDelete, { id: first.id, expectedRevision: 7 }, home.ctx), /memory_revision_conflict/);
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const refused = await run<{ status: string; error: string }>(memoryDelete, { id: first.id, expectedRevision: first.revision }, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
+    assert.equal(new MemoryStore(memoryRoot).list("bot-useful").length, 2, "Read only deleted nothing");
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const removed = await run<{ id: string }>(memoryDelete, { id: first.id, expectedRevision: first.revision }, home.ctx);
+    assert.equal(removed.id, first.id);
+    assert.equal(home.approvals.listPending().length, 0, "Auto raised no card to wait on");
+    assert.deepEqual(new MemoryStore(memoryRoot).list("bot-useful").map((card) => card.id), [second.id]);
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("memory_upsert marks a note written after outside content, and the mark stays through the model's own edits", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const note = (title: string, extra: Record<string, unknown> = {}) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null, ...extra });
+    const clean = await run<{ id: string }>(memoryUpsert, note("Clean"), home.ctx);
+    // Reading a directory counts as outside content for this turn.
+    await run(listDir, { path: "Desktop" }, home.ctx);
+    const marked = await run<{ id: string }>(memoryUpsert, note("After a read"), home.ctx);
+    const store = new MemoryStore(memoryRoot);
+    assert.equal(store.readCard(clean.id, "bot-useful").source, "model");
+    assert.equal(store.readCard(marked.id, "bot-useful").source, "model-after-outside-content");
+    // A later turn that read nothing edits the marked note: the mark stays.
+    const laterCtx = { session: { id: "sess-home", turn: { id: "later-turn" } } };
+    await run(memoryUpsert, note("After a read", { id: marked.id, expectedRevision: 1, body: "edited" }), laterCtx);
+    assert.equal(store.readCard(marked.id, "bot-useful").source, "model-after-outside-content");
+    assert.equal(store.readCard(marked.id, "bot-useful").body, "edited");
   } finally {
     if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
     else process.env.UB_MEMORY_ROOT = previousMemory;

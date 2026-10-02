@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { effectiveRoot, resolveWorkspacePath } from "../lib/workspace.ts";
 import { READ_MAX_BYTES } from "../../shared/policy.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 export default defineTool({
   description: "Read a UTF-8 file from the workspace this conversation works in.",
@@ -13,6 +14,7 @@ export default defineTool({
     limit: z.number().int().min(0).optional(),
   }),
   execute(input, ctx) {
+    markOutside(ctx);
     const { root } = effectiveRoot(ctx?.session?.id);
     const target = resolveWorkspacePath(input.path, root);
     let raw: string;

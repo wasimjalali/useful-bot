@@ -22,6 +22,7 @@ import { mcpToolGate, mcpToolRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { sessionPermission } from "../lib/permission.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 /**
  * The tools of connected MCP servers, mounted only once a bot has asked for
@@ -74,6 +75,7 @@ export default defineDynamic({
               .describe("What you want to do, in a few words: \"send a slack message\"."),
           }),
           async execute(input, toolCtx) {
+            markOutside(toolCtx);
             const id = toolCtx.session?.id ?? "";
             if (!id) return { status: "blocked", error: "no_session" };
             const hits = await searchConnectionTools(input.query, MAX_HITS);
@@ -153,6 +155,7 @@ export default defineDynamic({
           description: mountedDescription(indexed, connectionId, connectionName),
           inputSchema: schema,
           async execute(input: unknown, toolCtx) {
+            markOutside(toolCtx);
             // Read the row again rather than closing over it: eve snapshots a
             // callback's closure when the call is made, and the owner can
             // change or disconnect a server in between. Only strings are

@@ -5,6 +5,7 @@ import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals
 import { getApprovalStore } from "../lib/write.ts";
 import { callerOf, inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import { readShell } from "../../shared/shell-io.ts";
+import { seenOutside } from "../lib/outside-content.ts";
 
 const PREVIEW_MAX = 300;
 
@@ -87,7 +88,9 @@ export default defineTool({
         body: input.body,
         botId,
         // The tool is the model's hand. Owner writes come from the Settings API.
-        source: "model",
+        // A turn that already read outside content (a page, an app result, a
+        // file, a handoff) marks what it writes, so the owner can see it.
+        source: seenOutside(ctx) ? "model-after-outside-content" : "model",
         expiresAt: input.expiresAt,
         sessionId: actor.sessionId,
       });

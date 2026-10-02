@@ -37,6 +37,7 @@ import updateRoutine from "../agent/tools/update_routine.ts";
 import memoryRead from "../agent/tools/memory_read.ts";
 import memorySearch from "../agent/tools/memory_search.ts";
 import memoryUpsert from "../agent/tools/memory_upsert.ts";
+import memoryDelete from "../agent/tools/memory_delete.ts";
 import { resetMemoryDir } from "../agent/lib/memory.ts";
 
 type Tool = { execute: (input: never, context: never) => unknown };
@@ -443,6 +444,9 @@ test("memory tools keep each bot's notes to itself, even by a guessed id", async
         run(memoryUpsert, { ...note("Taken", "alpha was here"), id: betaNote.id, expectedRevision: 1 }, w.ctx.alpha),
         /memory_forbidden/,
       );
+      // Nor can it delete it, at the right revision or not.
+      await assert.rejects(run(memoryDelete, { id: betaNote.id, expectedRevision: 1 }, w.ctx.alpha), /memory_forbidden/);
+      await assert.rejects(run(memoryDelete, { id: betaNote.id, expectedRevision: 9 }, w.ctx.alpha), /memory_forbidden/);
       const betaRead = await run<{ body: string }>(memoryRead, { id: betaNote.id }, w.ctx.beta);
       assert.match(betaRead.body, /beta-canary-8830/);
       assert.doesNotMatch(betaRead.body, /alpha was here/);
