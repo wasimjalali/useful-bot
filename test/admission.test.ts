@@ -23,7 +23,7 @@ import { listThreadEvents } from "../shared/agent-store.ts";
 import { MemoryStore } from "../agent/lib/memory.ts";
 import { recallNotes } from "../agent/memory/notes.ts";
 import { upsertConnection } from "../shared/connections-store.ts";
-import { activateSessionTools, indexedToolBytes, putConnectionIndex, putConnectionOperations } from "../shared/connection-tools-store.ts";
+import { activateSessionTools, indexedToolBytes, putConnectionIndex, putConnectionOperations, updateConnectionToolsStore } from "../shared/connection-tools-store.ts";
 import { bindSession } from "../shared/session-bindings.ts";
 import { hiddenPrefixChars, rewriteEveTurnBody, type SessionRoute } from "../shared/eve-proxy.ts";
 import { MOUNTED_TOOL_BYTE_BUDGET } from "../shared/policy.ts";
@@ -311,6 +311,37 @@ test("mounted tool schemas count: an OpenAPI connection every turn and the MCP t
     const held = mountedToolChars("sess-held");
     assert.equal(held, eager + indexedToolBytes(tool, "files", "Files"));
     assert.equal(mountedToolChars("sess-other"), eager);
+
+    // The resolver mounts only what the owner's allow-list still names, inside
+    // the session limits; a tool it would not mount is not charged.
+    const big = { name: "dump", description: "Dump everything.", inputSchema: { type: "object" }, inputSchemaBytes: 12_000 };
+    const huge = { name: "firehose", description: "Everything.", inputSchema: { type: "object" }, inputSchemaBytes: 45_000 };
+    const files = (toolsAllow: string[] | null) => upsertConnection({
+      id: "files", kind: "mcp", name: "Files", url: "https://mcp.example.com/mcp", description: "Files",
+      authKind: "none", authHeader: null, toolsAllow, createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    putConnectionIndex("files", [tool, big, huge]);
+    updateConnectionToolsStore((store) => {
+      store.sessions["sess-two"] = { updatedAt: new Date().toISOString(), tools: ["files__search", "files__dump", "files__firehose"] };
+    });
+    // No allow-list: search and dump mount; firehose is past the byte limit and is not charged.
+    files(null);
+    const wide = mountedToolChars("sess-two");
+    assert.equal(wide, eager + indexedToolBytes(tool, "files", "Files") + indexedToolBytes(big, "files", "Files"));
+    // The owner narrows the list: the large tool no longer mounts and no longer counts.
+    files(["search"]);
+    const narrow = mountedToolChars("sess-two");
+    assert.equal(narrow, eager + indexedToolBytes(tool, "files", "Files"));
+    // A bot that fits only without the excluded tool is admitted once it is excluded.
+    const mate = teammate(shell, "Watch rankings.");
+    const roster2 = readShell(shell);
+    const bot2 = roster2.bots.find((item) => item.id === mate)!;
+    const store2 = readProviderStore();
+    const base2 = admission({ bot: bot2, shell: roster2, store: store2, notesChars: 0 });
+    assert.ok(base2.ok);
+    // The same bot, on the same window: admitted with the narrowed set's tools, refused with the wide set's.
+    assert.equal(admission({ bot: bot2, shell: roster2, store: store2, notesChars: 0, mountedToolChars: narrow - eager }).ok, true);
+    assert.equal(admission({ bot: bot2, shell: roster2, store: store2, notesChars: 0, mountedToolChars: wide - eager }).ok, false);
 
     // A bot that fits without them is refused with them on a tight window.
     const id = teammate(shell, "Watch rankings.");

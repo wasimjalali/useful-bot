@@ -57,6 +57,7 @@ import { renderNotesFor } from "../../agent/memory/notes.ts";
 import { eagerConnections, mountedToolBytes, splitMountedName } from "../../shared/connection-tools.ts";
 import { connectionIndex, indexedToolBytes, sessionTools } from "../../shared/connection-tools-store.ts";
 import { readConnectionsStore } from "../../shared/connections-store.ts";
+import { MAX_SESSION_TOOLS, MAX_SESSION_TOOL_BYTES } from "../../shared/policy.ts";
 import { sharedMemoryStore } from "../../agent/lib/memory.ts";
 
 /**
@@ -117,14 +118,25 @@ export function mountedToolChars(sessionId: string | null): number {
   let chars = 0;
   for (const entry of eagerConnections()) chars += mountedToolBytes(entry) ?? 0;
   if (sessionId) {
+    let mountedCount = 0;
+    let mountedBytes = 0;
     const connections = readConnectionsStore().connections;
     for (const name of sessionTools(sessionId)) {
       const split = splitMountedName(name);
       if (!split) continue;
       const entry = connections.find((item) => item.id === split.connectionId);
       const indexed = connectionIndex(split.connectionId)?.tools.find((tool) => tool.name === split.tool);
-      if (!entry || !indexed) continue;
-      chars += indexedToolBytes(indexed, entry.id, entry.name);
+      // The same selection the resolver mounts with (agent/tools/connection_tools.ts):
+      // MCP only, inside the owner's allow-list as it is now, and clamped by the
+      // same cumulative count and byte limits, in the order the session took them.
+      // A tool that would not mount is not charged.
+      if (!entry || entry.kind !== "mcp" || !indexed) continue;
+      if (entry.toolsAllow && !entry.toolsAllow.includes(split.tool)) continue;
+      const weight = indexedToolBytes(indexed, entry.id, entry.name);
+      if (mountedCount + 1 > MAX_SESSION_TOOLS || mountedBytes + weight > MAX_SESSION_TOOL_BYTES) continue;
+      mountedCount += 1;
+      mountedBytes += weight;
+      chars += weight;
     }
   }
   return chars;
