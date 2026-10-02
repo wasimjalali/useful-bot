@@ -1166,7 +1166,7 @@ public struct FoundationProcessRunner: ProcessRunner {
                 )
                 continue
             }
-            if !signalProcess(process, force: signal == SIGKILL) {
+            if kill(pid, signal) != 0 {
                 Self.appendEvent(
                     "kill(\(signal)) failed for pid \(pid) on port \(port): \(String(cString: strerror(errno)))",
                     to: Self.supervisorLogURL
