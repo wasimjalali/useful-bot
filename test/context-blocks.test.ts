@@ -239,7 +239,7 @@ test("a note written after outside content shows a title-only line with the mark
     note(2, { source: "model", updatedAt: "2026-08-01T00:00:00.000Z" }),
     note(3, { source: "owner", updatedAt: "2026-08-02T00:00:00.000Z" }),
   ]);
-  assert.ok(text.includes("- note-001: Title 1 (written after reading outside content; open with memory_read)"));
+  assert.ok(text.includes("- note-001: (a note written after reading outside content; open with memory_read)"));
   assert.equal(text.includes("Body 1"), false, "no body for an outside note");
   assert.equal(text.match(/written after reading outside content/g)?.length, 1);
   assert.ok(text.includes("Body 2") && text.includes("Body 3"), "clean notes keep their bodies");

@@ -807,7 +807,8 @@ test("an outside-sourced note shows no body in the recalled block and does not m
     const text = recallNotes({ operationId: "op-block", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content ?? "";
     assert.match(text, /clean-body/);
     assert.doesNotMatch(text, /web-body-canary/);
-    assert.match(text, new RegExp(`- ${outside.id}: From a page \\(written after reading outside content; open with memory_read\\)`));
+    assert.doesNotMatch(text, /From a page/);
+    assert.match(text, new RegExp(`- ${outside.id}: \\(a note written after reading outside content; open with memory_read\\)`));
     // The block alone marks nothing: a note written in this turn is the model's own.
     assert.equal(seenOutside(turn("t-block")), false);
     const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "fresh", expiresAt: null });

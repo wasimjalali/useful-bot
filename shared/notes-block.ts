@@ -35,7 +35,8 @@ function fullEntry(note: NoteCard): string {
   // marks its turn. It still takes one of the full slots, so the order and the
   // block stay deterministic.
   if (note.source === "model-after-outside-content") {
-    return `- ${flat(note.id)}: ${flat(note.title, NOTE_TITLE_CAP)} (written after reading outside content; open with memory_read)`;
+    // No title either: it was written from outside text too. The id is a slug.
+    return `- ${flat(note.id)}: (a note written after reading outside content; open with memory_read)`;
   }
   const day = new Date(note.updatedAt).toISOString().slice(0, 10);
   const outside = note.source === "model-after-outside-content" ? ", written after reading outside content" : "";
