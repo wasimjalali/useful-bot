@@ -596,7 +596,9 @@ struct CreateBotDialog: View {
                             .scrollContentBackground(.hidden)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 6)
-                            .frame(minHeight: 80)
+                            // Capped: an uncapped TextEditor takes every point the
+                            // window offers and pushes the dialog to its edges.
+                            .frame(minHeight: 96, maxHeight: 200)
                             .background(Theme.C.surface)
                             .overlay(
                                 RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
