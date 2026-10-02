@@ -1,4 +1,5 @@
 import { defineTool } from "eve/tools";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { sharedMemoryStore } from "../lib/memory.ts";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
@@ -8,6 +9,17 @@ import { readShell } from "../../shared/shell-io.ts";
 import { seenOutside } from "../lib/outside-content.ts";
 
 const PREVIEW_MAX = 300;
+
+/** Whether the bot already has a live note under this id. Another bot's note counts as existing: the store refuses it. */
+function noteExists(botId: string, id: string): boolean {
+  try {
+    sharedMemoryStore().readCard(id, botId);
+    return true;
+  } catch (err) {
+    if (err instanceof Error && err.message === "memory_not_found") return false;
+    return true;
+  }
+}
 
 /** Fit the body onto the approval card without hiding that it was cut. */
 function clipPreview(value: string): string {
@@ -80,8 +92,15 @@ export default defineTool({
       if (!readShell().bots.some((item) => item.id === botId)) {
         throw new Error("memory_bot_missing");
       }
+      // After outside content a NEW note's id is the server's, never the
+      // model's: the block prints ids, and an id is text the model chose. An
+      // edit of an existing note keeps its id, and another bot's id is left
+      // as given so the store refuses it as it always has.
+      const outside = seenOutside(ctx);
+      let id = input.id;
+      if (outside && id !== undefined && !noteExists(botId, id)) id = randomUUID();
       return sharedMemoryStore().upsert({
-        id: input.id,
+        id,
         expectedRevision: input.expectedRevision,
         title: input.title,
         tags: input.tags,
@@ -90,7 +109,7 @@ export default defineTool({
         // The tool is the model's hand. Owner writes come from the Settings API.
         // A turn that already read outside content (a page, an app result, a
         // file, a handoff) marks what it writes, so the owner can see it.
-        source: seenOutside(ctx) ? "model-after-outside-content" : "model",
+        source: outside ? "model-after-outside-content" : "model",
         expiresAt: input.expiresAt,
         sessionId: actor.sessionId,
       });

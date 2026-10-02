@@ -61,7 +61,7 @@ type Render = { content: string };
  * a copy from an older renderer may show what the current one withholds (an
  * outside-sourced note's body), so it is rendered again instead of replayed.
  */
-const RECALL_FORMAT = 2;
+const RECALL_FORMAT = 3;
 
 function readPersisted(store: MemoryStore, key: string): Render | undefined {
   try {
@@ -72,6 +72,9 @@ function readPersisted(store: MemoryStore, key: string): Render | undefined {
     } catch {
       /* not this format */
     }
+    // The copy is from an older build: this render is made again, which can
+    // differ from what that turn first saw. Logged so a retired session traces back.
+    console.error("[memory] a persisted notes render is not the current format; rendering it again");
     return undefined;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;

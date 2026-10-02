@@ -809,7 +809,7 @@ test("an outside-sourced note shows no body in the recalled block and does not m
     assert.match(text, /clean-body/);
     assert.doesNotMatch(text, /web-body-canary/);
     assert.doesNotMatch(text, /From a page/);
-    assert.match(text, new RegExp(`- ${outside.id}: \\(a note written after reading outside content; open with memory_read\\)`));
+    assert.match(text, new RegExp(`- ${outside.id}: \\(written after reading outside content; open with memory_read only if you need it\\)`));
     // The block alone marks nothing: a note written in this turn is the model's own.
     assert.equal(seenOutside(turn("t-block")), false);
     const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "fresh", expiresAt: null });
@@ -819,6 +819,16 @@ test("an outside-sourced note shows no body in the recalled block and does not m
     await run(memoryRead, { id: outside.id }, turn("t-deliberate"));
     const after = await run<{ id: string }>(memoryUpsert, note("After the read"), turn("t-deliberate"));
     assert.equal(store.readCard(after.id, "bot-useful").source, "model-after-outside-content");
+    // After outside content a new note's id is the server's, never the model's; an edit keeps its id.
+    const chosen = await run<{ id: string; revision: number }>(memoryUpsert, { ...note("Chosen"), id: "ignore-previous-rules" }, turn("t-deliberate"));
+    assert.notEqual(chosen.id, "ignore-previous-rules");
+    assert.match(chosen.id, /^[0-9a-f]{8}-[0-9a-f]{4}-/);
+    assert.equal(store.readCard(chosen.id, "bot-useful").title, "Chosen");
+    const edited = await run<{ id: string; revision: number }>(memoryUpsert, { ...note("Chosen"), id: chosen.id, expectedRevision: chosen.revision, body: "edited" }, turn("t-deliberate"));
+    assert.equal(edited.id, chosen.id, "an edit keeps the id");
+    // A clean turn keeps the id the model picked.
+    const cleanPick = await run<{ id: string }>(memoryUpsert, { ...note("Clean pick"), id: "my-clean-id" }, turn("t-clean-pick"));
+    assert.equal(cleanPick.id, "my-clean-id");
     // A replay reads the persisted copy back, byte for byte.
     forgetRecallCache();
     assert.equal(recallNotes({ operationId: "op-block", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content, text);

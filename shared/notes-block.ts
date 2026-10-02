@@ -29,23 +29,32 @@ const HEADER = "# Your notes\n\nYour own memory, written by you in earlier chats
 const EMPTY = "No notes yet. Use memory_upsert to keep something worth remembering.";
 const MORE_BODY = "... open with memory_read";
 
+const OUTSIDE_SOURCE = "model-after-outside-content";
+
+/**
+ * The only line an outside-sourced note gets, in a full slot and in the title
+ * list alike: no title and no body, since both were written from outside text.
+ * The id is a server-generated slug when the note was created after outside
+ * content (agent/tools/memory_upsert.ts).
+ */
+function outsideEntry(note: NoteCard): string {
+  return `- ${flat(note.id)}: (written after reading outside content; open with memory_read only if you need it)`;
+}
+
 function fullEntry(note: NoteCard): string {
   // A note written after outside content never shows its body inline: the
   // text came from outside, and a bot that reads it on purpose (memory_read)
   // marks its turn. It still takes one of the full slots, so the order and the
   // block stay deterministic.
-  if (note.source === "model-after-outside-content") {
-    // No title either: it was written from outside text too. The id is a slug.
-    return `- ${flat(note.id)}: (a note written after reading outside content; open with memory_read)`;
-  }
+  if (note.source === OUTSIDE_SOURCE) return outsideEntry(note);
   const day = new Date(note.updatedAt).toISOString().slice(0, 10);
-  const outside = note.source === "model-after-outside-content" ? ", written after reading outside content" : "";
   const body = note.body.length > NOTE_BODY_CAP ? `${note.body.slice(0, NOTE_BODY_CAP)}${MORE_BODY}` : note.body;
   // Continuation lines are indented so a body can't look like another note.
-  return `- ${flat(note.title, NOTE_TITLE_CAP)} (${day})${outside}: ${body.replace(/\r\n|[\r\u0085\u000b\u000c\u2028\u2029]/g, "\n").replace(/\n/g, "\n  ")}`;
+  return `- ${flat(note.title, NOTE_TITLE_CAP)} (${day}): ${body.replace(/\r\n|[\r\u0085\u000b\u000c\u2028\u2029]/g, "\n").replace(/\n/g, "\n  ")}`;
 }
 
 function titleEntry(note: NoteCard): string {
+  if (note.source === OUTSIDE_SOURCE) return outsideEntry(note);
   return `- ${flat(note.id)}: ${flat(note.title, NOTE_TITLE_CAP)}`;
 }
 
