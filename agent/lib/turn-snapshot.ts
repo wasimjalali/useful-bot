@@ -1,0 +1,288 @@
+import { basename } from "node:path";
+import type { ContextSnapshot } from "../../shared/context-blocks.ts";
+import { accountFullName, ownerName } from "../../shared/operator.ts";
+import { botComposerState, publicProviders, readProviderStore, type ProviderStore } from "../../shared/providers.ts";
+import { botSelection, type TurnSelection } from "../../shared/session-selection.ts";
+import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
+import { peekShell } from "../../shared/shell-io.ts";
+import { DEFAULT_BOT_ID, orchestratorId, type BotKind, type ShellStore } from "../../shared/shell-store.ts";
+import { readSessionGrant, type WorkspacePermission } from "../../shared/workspace-store.ts";
+import { BINDING_WAIT_MS } from "./active-bot.ts";
+import { windowTokensFor } from "./model-window.ts";
+
+/** The slice of an eve resolver, hook or tool context the snapshot reads. */
+export type SnapshotCtx = {
+  session: {
+    id: string;
+    parent?: unknown;
+    auth?: { current?: { attributes?: Readonly<Record<string, unknown>> } | null } | null;
+  };
+  messages?: readonly { role?: string }[];
+};
+
+export type OkSnapshot = {
+  status: "ok";
+  sessionId: string;
+  turnId: string | undefined;
+  botId: string;
+  kind: BotKind;
+  profileRevision: number;
+  /** The selection every request of the turn sends, and the window compaction is sized from. */
+  selection: TurnSelection;
+  permission: WorkspacePermission;
+  folder: string | null;
+  /** True when the turn is a handoff: its input is another bot's text, so the turn starts after outside content. */
+  outside: boolean;
+  /** What "This turn" says about the model, and what list_models reports as current. */
+  model: { label: string; id: string; connection: string; connectionId: string };
+  image: { label: string; id: string; provider: string; connectionId: string | null } | null;
+  /** What the context block renders, read in the same pass as the selection. */
+  context: ContextSnapshot;
+};
+
+export type FailedSnapshot = {
+  status: "failed";
+  sessionId: string;
+  turnId: string | undefined;
+  botId: string | null;
+};
+
+export type TurnSnapshot = OkSnapshot | FailedSnapshot;
+
+/**
+ * Snapshots per session and turn, readable from any module in this process.
+ * eve may load an authored file as its own module instance, so a Map local to
+ * this file could be empty in another (see session-model.ts): the registry
+ * lives under a Symbol.for key.
+ */
+const REGISTRY_KEY = Symbol.for("useful-bot.turn-snapshots");
+const REGISTRY_CAP = 256;
+
+type Registry = { byTurn: Map<string, TurnSnapshot>; latest: Map<string, string> };
+
+function registry(): Registry {
+  const holder = globalThis as unknown as Record<symbol, Registry | undefined>;
+  return (holder[REGISTRY_KEY] ??= { byTurn: new Map(), latest: new Map() });
+}
+
+function keyOf(sessionId: string, turnId: string | undefined): string {
+  return `${sessionId}\u0000${turnId ?? ""}`;
+}
+
+function remember(snapshot: TurnSnapshot): void {
+  const reg = registry();
+  const key = keyOf(snapshot.sessionId, snapshot.turnId);
+  // Insertion order is age, so the oldest key is the idlest turn.
+  reg.byTurn.delete(key);
+  reg.byTurn.set(key, snapshot);
+  reg.latest.delete(snapshot.sessionId);
+  reg.latest.set(snapshot.sessionId, key);
+  if (reg.byTurn.size > REGISTRY_CAP) reg.byTurn.delete(reg.byTurn.keys().next().value as string);
+  if (reg.latest.size > REGISTRY_CAP) reg.latest.delete(reg.latest.keys().next().value as string);
+}
+
+/**
+ * The snapshot of one turn, or the session's latest when no turn id is given
+ * (a tool whose context carries none). A failed snapshot is returned as it is:
+ * callers check `status`.
+ */
+export function turnSnapshot(sessionId: string, turnId?: string): TurnSnapshot | null {
+  const reg = registry();
+  if (turnId !== undefined) return reg.byTurn.get(keyOf(sessionId, turnId)) ?? null;
+  const latest = reg.latest.get(sessionId);
+  return latest ? reg.byTurn.get(latest) ?? null : null;
+}
+
+/** Record that this turn's context could not be built, so the model resolver refuses the turn. */
+export function markSnapshotFailed(sessionId: string, turnId: string | undefined, botId: string | null = null): void {
+  remember({ status: "failed", sessionId, turnId, botId });
+}
+
+/** The string `botId` claim of the current request, or null. eve projects only string claims. */
+export function claimedBotId(ctx: SnapshotCtx): string | null {
+  const value = ctx.session.auth?.current?.attributes?.botId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** How the current request was delivered, from the `delivery` claim. */
+export function deliveryClaim(ctx: SnapshotCtx): "owner" | "handoff" | "routine" | null {
+  const value = ctx.session.auth?.current?.attributes?.delivery;
+  return value === "owner" || value === "handoff" || value === "routine" ? value : null;
+}
+
+function refusal(sessionId: string, reason: string): null {
+  console.warn(JSON.stringify({ event: "bot_context_refused", sessionId, reason }));
+  return null;
+}
+
+/**
+ * The bot a turn is for. The request's claim comes first, then the durable
+ * session binding. A claim and a binding that name different bots, a child
+ * session, and a session with neither are refused (null). A claim with no
+ * binding yet binds the session to the claimed bot (a create's first turn can
+ * run before the proxy writes the row). With no claim at all (a turn eve
+ * starts itself on a session from before claims), the binding is waited for,
+ * bounded.
+ */
+export async function boundBotId(
+  ctx: SnapshotCtx,
+  timeoutMs = Number(process.env.UB_BINDING_WAIT_MS ?? BINDING_WAIT_MS),
+): Promise<string | null> {
+  const sessionId = ctx.session.id;
+  if (ctx.session.parent) return refusal(sessionId, "child_session");
+  const claim = claimedBotId(ctx);
+  const deadline = Date.now() + (Number.isFinite(timeoutMs) ? timeoutMs : BINDING_WAIT_MS);
+  for (;;) {
+    const bound = resolveSessionBot(sessionId);
+    if (claim) {
+      if (bound === null) {
+        try {
+          bindSession(sessionId, claim);
+        } catch (err) {
+          console.error("[turn-snapshot] could not bind the session to its claim", err instanceof Error ? err.message : err);
+          return refusal(sessionId, "claim_unbindable");
+        }
+        return claim;
+      }
+      return bound === claim ? claim : refusal(sessionId, "claim_binding_mismatch");
+    }
+    if (bound) return bound;
+    if (Date.now() >= deadline) return refusal(sessionId, "unbound");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+let cachedOwner: string | undefined;
+
+/**
+ * The owner by the account's own name. Only a name read from the account is
+ * kept: a fallback from a slow directory at login is tried again next turn.
+ */
+function ownerNames(): { owner: string; first: string } {
+  cachedOwner ??= accountFullName() ?? undefined;
+  const owner = cachedOwner ?? ownerName();
+  return { owner, first: owner.split(/\s+/)[0] || owner };
+}
+
+/**
+ * One consistent read for one turn: the providers store FIRST, then the
+ * roster (the web process moves a pick in the shell before the default in the
+ * store, so store-first never pairs a fresh default with a stale pin). Throws
+ * when the roster is unreadable or no longer has the bot.
+ */
+export function buildSnapshot(
+  botId: string,
+  ctx: SnapshotCtx,
+  turnId: string | undefined,
+  now = new Date(),
+  reads: { store: () => ProviderStore; shell: () => ShellStore | null } = { store: readProviderStore, shell: peekShell },
+): OkSnapshot {
+  const sessionId = ctx.session.id;
+  const store = reads.store();
+  const shell = reads.shell();
+  if (!shell) throw new Error("shell_unreadable");
+  const bot = shell.bots.find((item) => item.id === botId);
+  if (!bot) throw new Error("bot_missing");
+
+  // A step with no turn id cannot be told from the turn before it, so it
+  // re-reads. That re-read prefers the grant (written once, at turn start)
+  // over the owner's live pick, so a pick made mid-turn cannot split the turn.
+  const grantPick = turnId === undefined ? readSessionGrant(sessionId)?.selection ?? null : null;
+  const picked = grantPick ?? botSelection(bot, store);
+  const selection: TurnSelection = { ...picked, windowTokens: windowTokensFor(picked) };
+  const composer = botComposerState(store, picked);
+  const image = publicProviders(store).roles.image;
+
+  const isGroup = bot.kind === "group";
+  const members = isGroup
+    ? bot.memberIds.flatMap((id) => {
+        const member = shell.bots.find((item) => item.id === id);
+        return member ? [{ name: member.name, label: member.label }] : [];
+      })
+    : null;
+  const { owner, first } = ownerNames();
+  const firstChat = !(ctx.messages ?? []).some((message) => message.role === "assistant")
+    && (bot.previousSessionIds ?? []).length === 0;
+  const model = {
+    label: composer.modelLabel || picked.modelId,
+    id: picked.modelId,
+    connection: composer.providerName || picked.connectionId,
+    connectionId: picked.connectionId,
+  };
+  const imageModel = image.modelId
+    ? { label: image.modelLabel, id: image.modelId, provider: image.connectionLabel, connectionId: image.connectionId }
+    : null;
+  return {
+    status: "ok",
+    sessionId,
+    turnId,
+    botId,
+    kind: bot.kind,
+    profileRevision: bot.profileRevision,
+    selection,
+    permission: bot.permission,
+    folder: bot.workspace ? basename(bot.workspace.path) : null,
+    outside: deliveryClaim(ctx) === "handoff",
+    model,
+    image: imageModel,
+    context: {
+      running: !isGroup && botId === orchestratorId(shell) ? { fallback: botId !== DEFAULT_BOT_ID } : null,
+      bot: { name: bot.name, label: bot.label, description: bot.description },
+      groupMembers: members,
+      turn: {
+        owner,
+        first,
+        date: now,
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        permission: bot.permission,
+        folder: bot.workspace ? basename(bot.workspace.path) : null,
+        model: { label: model.label, id: model.id, connection: model.connection },
+        image: imageModel ? { label: imageModel.label, id: imageModel.id } : null,
+        firstChat,
+      },
+    },
+  };
+}
+
+/**
+ * The snapshot of a turn for a bot already known, built once per session and
+ * turn and then held (so a pick made mid-turn waits for the next turn and the
+ * block, the model and list_models all read one selection). A turn with no id
+ * is rebuilt every call. A build that throws is recorded as failed and logged:
+ * the model resolver then refuses the turn.
+ */
+export function snapshotForBot(botId: string, ctx: SnapshotCtx, turnId: string | undefined): TurnSnapshot {
+  const sessionId = ctx.session.id;
+  if (turnId !== undefined) {
+    const held = registry().byTurn.get(keyOf(sessionId, turnId));
+    if (held) return held;
+  }
+  let snapshot: TurnSnapshot;
+  try {
+    snapshot = buildSnapshot(botId, ctx, turnId);
+  } catch (err) {
+    console.error("[turn-snapshot] could not build the turn snapshot", err instanceof Error ? err.message : err);
+    snapshot = { status: "failed", sessionId, turnId, botId };
+  }
+  remember(snapshot);
+  return snapshot;
+}
+
+/**
+ * The turn's snapshot for whoever the request is for: null when the session is
+ * unbound, the claim and the binding disagree, or it is a child session. This
+ * is the one entry point for the context block, the model resolver and the
+ * tools, and it rebuilds a missing snapshot (a process restart mid-turn).
+ */
+export async function ensureTurnSnapshot(ctx: SnapshotCtx, turnId: string | undefined): Promise<TurnSnapshot | null> {
+  const botId = await boundBotId(ctx);
+  if (!botId) return null;
+  return snapshotForBot(botId, ctx, turnId);
+}
+
+/** The frozen selection of a turn the resolver already ensured. Throws `bot_context_missing` otherwise. */
+export function frozenSelection(sessionId: string, turnId: string | undefined): TurnSelection {
+  const snapshot = turnSnapshot(sessionId, turnId);
+  if (!snapshot || snapshot.status !== "ok") throw new Error("bot_context_missing");
+  return snapshot.selection;
+}

@@ -69,7 +69,7 @@ let warnedNoTurnId = false;
 export function perSessionModel<M>(
   build: (ids: () => RouterIds, selection: () => TurnSelection | null) => M,
   cap = 64,
-  freeze?: (eveSessionId: string, grantFirst: boolean) => TurnSelection,
+  freeze?: (eveSessionId: string, eveTurnId: string | undefined) => TurnSelection,
 ): (eveSessionId: string, eveTurnId: string | undefined) => M {
   type Entry = { model: M; turnId: string | undefined; frozen: TurnSelection | null };
   const entries = new Map<string, Entry>();
@@ -112,7 +112,7 @@ export function perSessionModel<M>(
       // owner's live selection, so a pick made mid-turn cannot split the turn.
       const sameTurn = entry.frozen !== null && eveTurnId !== undefined && entry.turnId === eveTurnId;
       if (!sameTurn) {
-        entry.frozen = freeze(eveSessionId, eveTurnId === undefined);
+        entry.frozen = freeze(eveSessionId, eveTurnId);
         remember(eveSessionId, { turnId: eveTurnId, selection: entry.frozen });
       }
     }
