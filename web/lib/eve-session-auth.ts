@@ -172,7 +172,27 @@ export function createChildVerifier(options: ChildVerifierOptions = {}) {
     return rec;
   };
 
-  /** One read of the parent's stream from `start` to its tail; merges what it found only once it has read to the end. */
+  /**
+   * The index of the parent stream's last durable event. A negative start is
+   * resolved by eve against a tail it may move past, so it is used for this
+   * alone (the header, then the body is dropped); every scan starts at an
+   * absolute index taken from the answer.
+   */
+  const readTail = async (parent: string, jwt: string, signal: AbortSignal): Promise<number> => {
+    const url = `${eveOrigin()}/eve/v1/session/${encodeURIComponent(parent)}/stream?startIndex=-1&includeTailIndex=1`;
+    const res = await fetchImpl(url, { headers: { authorization: `Bearer ${jwt}` }, signal });
+    if (!res.ok || !res.body) throw new Error(`eve_stream_${res.status}`);
+    await res.body.cancel().catch(() => undefined);
+    const header = Number(res.headers.get("x-eve-stream-tail-index"));
+    if (!res.headers.has("x-eve-stream-tail-index") || !Number.isInteger(header)) throw new Error("eve_stream_tail_unknown");
+    return header;
+  };
+
+  /**
+   * One read of the parent's stream from the absolute index `start` to its
+   * tail. Nothing is merged unless every event up to the tail was read: a
+   * stream that ends early throws `eve_stream_short` and leaves the record as it was.
+   */
   const readFrom = async (parent: string, jwt: string, start: number, signal: AbortSignal): Promise<void> => {
     const url = `${eveOrigin()}/eve/v1/session/${encodeURIComponent(parent)}/stream?startIndex=${start}&includeTailIndex=1`;
     const res = await fetchImpl(url, { headers: { authorization: `Bearer ${jwt}` }, signal });
@@ -182,7 +202,7 @@ export function createChildVerifier(options: ChildVerifierOptions = {}) {
       await res.body.cancel().catch(() => undefined);
       throw new Error("eve_stream_tail_unknown");
     }
-    const first = start < 0 ? Math.max(0, header + 1 + start) : start;
+    const first = start;
     const total = Math.max(0, header + 1 - first);
     const found: string[] = [];
     if (total > 0) {
@@ -220,6 +240,7 @@ export function createChildVerifier(options: ChildVerifierOptions = {}) {
           buf += decoder.decode();
           scan(buf);
         }
+        if (consumed < total) throw new Error("eve_stream_short");
       } finally {
         await reader.cancel().catch(() => undefined);
       }
@@ -243,7 +264,11 @@ export function createChildVerifier(options: ChildVerifierOptions = {}) {
     try {
       if (signal.aborted) throw new Error("aborted");
       const known = records.get(parent);
-      const start = full ? 0 : known ? known.next : window > 0 ? -window : 0;
+      let start = 0;
+      if (!full) {
+        if (known) start = known.next;
+        else if (window > 0) start = Math.max(0, (await readTail(parent, jwt, signal)) + 1 - window);
+      }
       await readFrom(parent, jwt, start, signal);
     } finally {
       release();
@@ -261,7 +286,7 @@ export function createChildVerifier(options: ChildVerifierOptions = {}) {
     const key = `${parent}\u0000${full ? "full" : "next"}`;
     let entry = inflight.get(key);
     let started = false;
-    if (!entry || entry.seq <= minSeq) {
+    if (!entry || entry.seq <= minSeq || entry.controller.signal.aborted) {
       const controller = new AbortController();
       const hard = setTimeout(() => controller.abort(), VERIFY_HARD_MS);
       const scan: Scan = { seq: ++seq, controller, waiters: 0, promise: Promise.resolve() };
@@ -287,10 +312,17 @@ export function createChildVerifier(options: ChildVerifierOptions = {}) {
       settled = true;
     } finally {
       scan.waiters -= 1;
-      if (scan.waiters === 0 && !settled) scan.controller.abort();
+      if (scan.waiters === 0 && !settled) {
+        scan.controller.abort();
+        // A scan nobody waits on is gone: no later caller may join it.
+        if (inflight.get(key) === scan) inflight.delete(key);
+      }
     }
     return { started };
   };
+
+  /** A cancellation or a read cut short says nothing about the child, so it is never remembered. */
+  const isTransient = (err: Error) => err.name === "AbortError" || err.message === "aborted" || err.message === "eve_stream_short";
 
   return async (parent: string, child: string, jwt: string, signal?: AbortSignal): Promise<boolean> => {
     if (signal?.aborted) throw new Error("aborted");
@@ -327,7 +359,7 @@ export function createChildVerifier(options: ChildVerifierOptions = {}) {
       noteMiss({ until: now() + ttl });
       return false;
     } catch (err) {
-      if (!signal?.aborted && err instanceof Error) noteMiss({ until: now() + ttl, error: err });
+      if (!signal?.aborted && err instanceof Error && !isTransient(err)) noteMiss({ until: now() + ttl, error: err });
       throw err;
     }
   };

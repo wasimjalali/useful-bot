@@ -394,16 +394,16 @@ test("a long parent verifies from a tail window, then only the new events, and w
   const feed = streams(table);
   const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 10, negativeTtlMs: 0 });
   assert.equal(await verify("p", "kid-1", "jwt"), true);
-  // kid-1 sits 6 events from the tail: the window found it, no widening.
-  assert.equal(feed.log.length, 1);
-  assert.equal(feed.log[0].start, -10);
+  // The tail is read first (-1), then the window from an absolute index:
+  // kid-1 sits 6 events from the tail, so no widening.
+  assert.deepEqual(feed.log.map((entry) => entry.start), [-1, 27]);
   // A known child needs no read at all.
   assert.equal(await verify("p", "kid-1", "jwt"), true);
-  assert.equal(feed.log.length, 1);
+  assert.equal(feed.log.length, 2);
   // A child older than the window: widen to the start once.
   assert.equal(await verify("p", "kid-old", "jwt"), true);
   // (an incremental look past the window's end first, then the widening)
-  assert.deepEqual(feed.log.map((entry) => entry.start), [-10, 37, 0]);
+  assert.deepEqual(feed.log.map((entry) => entry.start), [-1, 27, 37, 0]);
   // After a full read, a new child is looked for only past what was read.
   table.p.events.push(called("p", "kid-2"));
   const before = feed.log.length;
@@ -445,7 +445,7 @@ test("concurrent checks of one parent share a scan, scans are bounded, a miss is
   table.p0.events.push(...Array.from({ length: 5 }, (_, i) => called("p0", `extra${i}`)));
   const same = await Promise.all(["k0", "extra0", "extra1", "extra2", "extra3", "extra4"].map((id) => verify("p0", id, "jwt")));
   assert.deepEqual(same, [true, true, true, true, true, true]);
-  assert.equal(feed.log.length, 1);
+  assert.equal(feed.log.filter((entry) => entry.start >= 0).length, 1);
   // Eight parents at once: never more than two reads in flight.
   const many = await Promise.all(Array.from({ length: 8 }, (_, i) => verify(`p${i}`, `k${i}`, "jwt")));
   assert.deepEqual(many, Array(8).fill(true));
@@ -457,10 +457,10 @@ test("concurrent checks of one parent share a scan, scans are bounded, a miss is
   const timed = createChildVerifier({ fetch: miss.impl, windowEvents: 100, negativeTtlMs: 10_000, now: () => clock });
   assert.equal(await timed("q", "nope", "jwt"), false);
   assert.equal(await timed("q", "nope", "jwt"), false);
-  assert.equal(miss.log.length, 1);
+  assert.equal(miss.log.filter((entry) => entry.start >= 0).length, 1);
   clock += 10_001;
   assert.equal(await timed("q", "nope", "jwt"), false);
-  assert.equal(miss.log.length, 2);
+  assert.equal(miss.log.filter((entry) => entry.start >= 0).length, 2);
 
   // A failed read is loud, and is remembered for the TTL too.
   let calls = 0;
@@ -487,4 +487,70 @@ test("concurrent checks of one parent share a scan, scans are bounded, a miss is
   const before = slow.log.length;
   await assert.rejects(aborting("z", "k2", "jwt", gone.signal), /aborted/);
   assert.equal(slow.log.length, before);
+});
+
+// Round 2 failure modes: a stream that ends before its advertised tail must not
+// move the cursor or mark the parent complete, and is not a remembered miss; the
+// window starts from an absolute index taken from a tail read, never from a
+// negative one eve resolves against a different tail; a scan cancelled while it
+// waited for a slot must not be joined by the next caller or cached as a failure.
+
+test("a short read commits nothing and is not remembered as a miss", async () => {
+  const events = [called("p", "kid-a"), called("p", "kid-b")];
+  const starts: number[] = [];
+  let calls = 0;
+  const fetching = (async (url: string) => {
+    const start = Number(/startIndex=(-?\d+)/.exec(String(url))?.[1]);
+    starts.push(start);
+    const from = start < 0 ? Math.max(0, events.length + start) : start;
+    calls += 1;
+    // The first scan is cut off after event 0, though the header says the tail is 1.
+    const body = calls === 2 ? events.slice(from, 1) : events.slice(from);
+    return new Response(body.map((event) => JSON.stringify(event)).join("\n") + "\n", { headers: { "x-eve-stream-tail-index": String(events.length - 1) } });
+  }) as unknown as typeof fetch;
+  const verify = createChildVerifier({ fetch: fetching, windowEvents: 100, negativeTtlMs: 10_000 });
+  await assert.rejects(verify("p", "kid-b", "jwt"), /eve_stream_short/);
+  // Nothing was committed: the next call starts over from the same place and finds the child.
+  assert.equal(await verify("p", "kid-b", "jwt"), true);
+  assert.equal(starts[starts.length - 1], 0);
+});
+
+test("the window starts at an absolute index from the tail, and completeness is known only from index 0", async () => {
+  const table: Record<string, Stream> = { p: { events: [called("p", "early"), ...filler(298), called("p", "late")] } };
+  const feed = streams(table);
+  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 100, negativeTtlMs: 0 });
+  assert.equal(await verify("p", "late", "jwt"), true);
+  // Only the tail probe is negative; the scan is absolute (300 events, window 100).
+  assert.deepEqual(feed.log.map((entry) => entry.start), [-1, 200]);
+  // The window did not reach the start, so an older child widens to 0.
+  table.p.events.push(...filler(20));
+  assert.equal(await verify("p", "early", "jwt"), true);
+  assert.deepEqual(feed.log.map((entry) => entry.start).filter((start, i) => i > 1 && start < 0), []);
+  assert.equal(feed.log[feed.log.length - 1].start, 0);
+});
+
+test("a scan cancelled while queued is not joined by the next caller and is never cached as a failure", async () => {
+  const table: Record<string, Stream> = { a: { events: [called("a", "ka")] }, b: { events: [called("b", "kb")] } };
+  const feed = streams(table);
+  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 100, maxConcurrent: 1, negativeTtlMs: 10_000 });
+  const busy = verify("a", "ka", "jwt");
+  const gone = new AbortController();
+  const queued = verify("b", "kb", "jwt", gone.signal);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  gone.abort();
+  await assert.rejects(queued, /aborted/);
+  // A replacement caller (no abort of its own) gets a real scan, not the dead one.
+  assert.equal(await verify("b", "kb", "jwt"), true);
+  assert.equal(await busy, true);
+  assert.ok(feed.log.some((entry) => entry.parent === "b" && entry.start >= 0));
+  // And the cancellation was not remembered against the same pair.
+  const other = streams({ c: { events: [called("c", "kc")] } });
+  const v2 = createChildVerifier({ fetch: other.impl, windowEvents: 100, maxConcurrent: 1, negativeTtlMs: 10_000 });
+  const hold = v2("c", "nope", "jwt");
+  const c2 = new AbortController();
+  const waiting = v2("c2", "kc", "jwt", c2.signal);
+  c2.abort();
+  await assert.rejects(waiting, /aborted/);
+  await hold;
+  assert.equal(await v2("c", "kc", "jwt"), true);
 });
