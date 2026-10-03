@@ -94,10 +94,10 @@ import Testing
     /// one changes what an old file means. This list failing is the reminder
     /// to bump `ChatSnapshot.formatVersion` and then update it.
     @Test func theStoredShapeIsPinnedToTheFormatVersion() {
-        #expect(ChatSnapshot.formatVersion == 8)
+        #expect(ChatSnapshot.formatVersion == 9)
         let stored = Mirror(reflecting: StreamProjection()).children.compactMap(\.label).sorted()
         #expect(stored == [
-            "activity", "callBriefs", "callTurns", "childSessions", "compactionMarks", "continuationRowId", "currentTurnId", "discardedUserMessageId", "droppedMessageIds", "failed", "failure", "failureMarks", "firstSession", "heldOrder",
+            "activeSession", "activity", "callBriefs", "callTurns", "childSessions", "compactionMarks", "continuationRowId", "currentTurnId", "discardedUserMessageId", "droppedMessageIds", "failed", "failure", "failureMarks", "firstSession", "heldOrder", "heldOrigins",
             "indexById", "journalBase", "journalSession", "journalTop", "liveFailureMarkId", "messages", "minted", "newestTurnStart",
             "pending", "pendingRequests", "questions", "queuedMessageIds", "replayOpen", "replayTurn", "rowJournal", "runningTasks", "searchHits", "seen", "seenCursor", "seenOrder",
             "settledTasks", "subagentRuns", "taskAgents", "taskReplyRowIds", "tasksSession", "turn", "turnOrder", "turnStartedAt", "turns", "widgets",
@@ -111,7 +111,7 @@ import Testing
         func labels(_ value: Any) -> [String] {
             Mirror(reflecting: value).children.compactMap(\.label).sorted()
         }
-        #expect(ChatSnapshot.formatVersion == 8)
+        #expect(ChatSnapshot.formatVersion == 9)
         let turn = try #require(Mirror(reflecting: StreamProjection()).children.first { $0.label == "turn" }?.value)
         #expect(labels(turn) == [
             "assistantId", "carriedUserMessageId", "ended", "fromTask", "lastRowId", "openUserRows",
@@ -129,7 +129,7 @@ import Testing
             == ["allowFreeform", "id", "options", "prompt"])
         #expect(labels(OwnerQuestion.Option(id: "o", label: "l", detail: "d")) == ["detail", "id", "label"])
         #expect(labels(SubagentRun(agentId: "a", taskId: "t", title: "x", groupId: "g"))
-            == ["agentId", "childSessionId", "groupId", "result", "startedAt", "state", "taskId", "title"])
+            == ["agentId", "childSessionId", "groupId", "result", "startedAt", "state", "taskId", "taskStartedAt", "title"])
         #expect(labels(PendingRequest(id: "r", kind: "k", prompt: "p", options: [])) == ["id", "kind", "options", "prompt"])
         #expect(labels(PendingRequest.Option(id: "o", label: "l")) == ["id", "label", "style"])
         // An enum's payloads are its stored shape.

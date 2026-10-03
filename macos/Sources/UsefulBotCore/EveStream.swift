@@ -978,6 +978,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// its replay. `replayTurn` is that turn once it has begun; its end is
     /// when rows it did not include are judged dropped.
     private var replayOpen = false
+    /// Held rows whose own turn raised the request: eve never replays these.
+    private var heldOrigins: Set<String> = []
+    /// The session the last event came from. A different one is a new chat.
+    private var activeSession: String?
     private var replayTurn: String?
     /// The brief of each sub-agent call, by call id, until its receipt claims it.
     private var callBriefs: [String: String] = [:]
@@ -1512,6 +1516,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // Steered again: one row, back to work.
             if subagentRuns[index].taskId != task {
                 subagentRuns[index].taskId = task
+                subagentRuns[index].taskStartedAt = stamp
                 subagentRuns[index].state = .working
                 subagentRuns[index].result = nil
             }
@@ -1552,6 +1557,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         let id = messages[index].id
         queuedMessageIds.insert(id)
         if !heldOrder.contains(id) { heldOrder.append(id) }
+        if record.raisedRequest { heldOrigins.insert(id) }
     }
 
     /// The held rows are gone for good: the answer was Stop, or eve went on
@@ -1559,6 +1565,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     public mutating func dropHeldMessages() {
         for id in heldOrder { droppedMessageIds.insert(id) }
         heldOrder = []
+        heldOrigins = []
         queuedMessageIds = []
         replayOpen = false
         replayTurn = nil
@@ -1579,8 +1586,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     private mutating func attachReplay(_ text: String, within: Bool, at stamp: Date?) -> Bool {
         guard replayOpen, pendingRequests.isEmpty, !heldOrder.isEmpty else { return false }
         let here = currentTurnId ?? ""
-        if replayTurn == nil { replayTurn = here }
-        guard replayTurn == here else { return false }
+        // Once a turn has been taken for the replay, no other turn is.
+        if let taken = replayTurn, taken != here { return false }
         let texts = heldOrder.map { id in indexById[id].map { Self.replayKey(messages[$0].text) } ?? "" }
         let wanted = Self.replayKey(text)
         var matched: [Int] = []
@@ -1591,9 +1598,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             }
         }
         if matched.isEmpty, within {
-            matched = texts.indices.filter { !texts[$0].isEmpty && wanted.contains(texts[$0]) }
+            // Inside a merged report turn the held text stands as its own
+            // blank-line-separated segment, never as a word inside another's.
+            let segments = Set(text.components(separatedBy: "\n\n").map(Self.replayKey))
+            matched = texts.indices.filter { !texts[$0].isEmpty && segments.contains(texts[$0]) }
         }
         guard !matched.isEmpty else { return false }
+        replayTurn = here
         let attached = matched.map { heldOrder[$0] }
         heldOrder = heldOrder.enumerated().filter { !matched.contains($0.offset) }.map(\.element)
         queuedMessageIds = Set(heldOrder)
@@ -1679,6 +1690,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 abandonRuns()
                 tasksSession = nil
             }
+            // Another session is another chat: what the last one was waiting
+            // on, and the rows it held, will never be answered or replayed.
+            if let active = activeSession, active != session {
+                pendingRequests = []
+                dropHeldMessages()
+            }
+            activeSession = session
             if firstSession == nil { firstSession = session }
             if session != firstSession, let turnId = event.turnId, !turnId.isEmpty {
                 event.turnId = "\(session)/\(turnId)"
@@ -2280,7 +2298,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             if stopped {
                 dropHeldMessages()
             } else if pendingRequests.isEmpty, !heldOrder.isEmpty {
-                replayOpen = true
+                // eve never replays the message whose turn raised the request:
+                // it is gone now, and the owner can send it again.
+                for id in heldOrigins { droppedMessageIds.insert(id) }
+                heldOrder.removeAll { heldOrigins.contains($0) }
+                queuedMessageIds.subtract(heldOrigins)
+                heldOrigins = []
+                replayOpen = !heldOrder.isEmpty
                 replayTurn = nil
             }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":

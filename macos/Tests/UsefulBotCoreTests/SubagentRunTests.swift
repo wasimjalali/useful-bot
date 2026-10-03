@@ -401,15 +401,62 @@ import Testing
         #expect(p.droppedMessageIds == [users(p)[0].id])
     }
 
-    @Test func aReplayThatIncludesTheOriginDropsNothing() throws {
+    /// eve never replays the message whose turn raised the request, so it is
+    /// dropped the moment the request is answered.
+    @Test func theOriginIsDroppedAsSoonAsTheRequestIsAnswered() throws {
         var p = StreamProjection()
         for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
         for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
         p.apply(try line(resolved))
-        for event in try replayTurn("turn_18", text: "Probe 18\n\nProbe 19") { p.apply(event) }
-        #expect(users(p).count == 2)
-        #expect(p.droppedMessageIds.isEmpty)
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+        // The queued one still waits for its replay.
+        #expect(p.queuedMessageIds == [users(p)[1].id])
+    }
+
+    @Test func aReportOnlyTurnBeforeTheReplayDoesNotCloseTheWindow() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        p.apply(try line(resolved))
+        let report = "Background task task_aaa (agent) is completed.\n\nResult:\nFine."
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"message.received","data":{"message":\#(json(report)),"kind":"\#(EveStream.backgroundTaskKind)","turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        #expect(p.queuedMessageIds == [users(p)[1].id])
+        for event in try replayTurn("turn_19", text: "Probe 19") { p.apply(event) }
+        #expect(users(p).map(\.text) == ["Probe 18", "Probe 19"])
         #expect(p.queuedMessageIds.isEmpty)
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+    }
+
+    @Test func aShortHeldTextIsOnlyFoundAsItsOwnSegment() throws {
+        func run(_ merged: String) throws -> StreamProjection {
+            var p = StreamProjection()
+            p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+            for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+            for event in try queuedTurn("turn_17", text: "yes") { p.apply(event) }
+            p.apply(try line(resolved))
+            p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+            p.apply(try line(#"{"type":"message.received","data":{"message":\#(json(merged)),"kind":"\#(EveStream.backgroundTaskKind)","turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+            return p
+        }
+        let inside = try run("Background task task_aaa (agent) is completed.\n\nResult:\nYesterday it said yes sir.")
+        #expect(inside.queuedMessageIds.count == 1)
+        let own = try run("Background task task_aaa (agent) is completed.\n\nResult:\nFine.\n\nyes")
+        #expect(own.queuedMessageIds.isEmpty)
+    }
+
+    @Test func aSessionChangeClearsRequestsAndHeldRows() throws {
+        var p = StreamProjection()
+        func feed(_ events: [EveEvent], session: String) { for var e in events { e.sessionId = session; p.apply(e) } }
+        feed(try originTurn("turn_16", text: "Probe 18"), session: "ses_a")
+        feed(try queuedTurn("turn_17", text: "Probe 19"), session: "ses_a")
+        #expect(p.pendingRequests.count == 1)
+        feed(try queuedTurn("turn_1", text: "Fresh"), session: "ses_b")
+        #expect(p.pendingRequests.isEmpty)
+        #expect(p.queuedMessageIds.isEmpty)
+        #expect(p.droppedMessageIds.count == 2)
     }
 
     @Test func aDifferentMessageAfterTheAnswerDropsTheHeldRows() throws {
@@ -473,13 +520,15 @@ import Testing
         var p = StreamProjection()
         for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
         for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        for event in try queuedTurn("turn_18", text: "Probe 20") { p.apply(event) }
         p.apply(try line(resolved))
-        let replay = try replayTurn("turn_18", text: "Probe 19")
+        let replay = try replayTurn("turn_19", text: "Probe 19")
         for event in replay.dropLast() { p.apply(event) }
-        // Mid-turn: nothing is judged yet.
-        #expect(p.droppedMessageIds.isEmpty)
-        p.apply(replay.last!)
+        // Mid-turn: the unreplayed 20 is not judged yet (the origin went at the answer).
         #expect(p.droppedMessageIds == [users(p)[0].id])
+        #expect(p.queuedMessageIds == [users(p)[2].id])
+        p.apply(replay.last!)
+        #expect(p.droppedMessageIds == [users(p)[0].id, users(p)[2].id])
     }
 
     @Test func stopInTheResolutionDropsEveryHeldRowOnReplayToo() throws {
@@ -501,7 +550,8 @@ import Testing
         var other = StreamProjection()
         for event in events.dropLast() { other.apply(event) }
         other.apply(try line(resolved))
-        #expect(other.droppedMessageIds.isEmpty)
+        // Only the message whose turn raised the request is gone.
+        #expect(other.droppedMessageIds.count == 1)
     }
 
     @Test func heldRowsSurviveASnapshotBetweenTheAnswerAndTheReplay() throws {

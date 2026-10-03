@@ -20,6 +20,9 @@ public struct SubagentRun: Identifiable, Codable, Equatable, Sendable {
     public var title: String
     /// The first receipt's event time; a relaunch keeps it.
     public var startedAt: Date?
+    /// When the task it is on now was admitted. A relaunch moves it, so the
+    /// child's earlier end is not taken for this task's.
+    public var taskStartedAt: Date?
     public var state: State
     /// The report's text, once it has reported.
     public var result: String?
@@ -32,6 +35,7 @@ public struct SubagentRun: Identifiable, Codable, Equatable, Sendable {
         taskId: String,
         title: String,
         startedAt: Date? = nil,
+        taskStartedAt: Date? = nil,
         state: State = .working,
         result: String? = nil,
         groupId: String
@@ -41,6 +45,7 @@ public struct SubagentRun: Identifiable, Codable, Equatable, Sendable {
         self.taskId = taskId
         self.title = title
         self.startedAt = startedAt
+        self.taskStartedAt = taskStartedAt ?? startedAt
         self.state = state
         self.result = result
         self.groupId = groupId

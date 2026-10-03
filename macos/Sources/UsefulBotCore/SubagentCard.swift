@@ -33,15 +33,23 @@ public struct ChildTracker: Sendable {
 
     public init(taskId: String) { progress = ChildProgress(taskId: taskId) }
 
+    // One of each, made once: a child can send thousands of events.
+    private nonisolated(unsafe) static let fractionalStamp: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private nonisolated(unsafe) static let plainStamp = ISO8601DateFormatter()
+
     private static func parseStamp(_ text: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+        fractionalStamp.date(from: text) ?? plainStamp.date(from: text)
     }
 
     public mutating func apply(_ event: EveEvent, at now: Date) {
-        progress.lastEventAt = now
         let stamp = event.metaAt.flatMap(Self.parseStamp) ?? now
+        // The event's own time when it is older: a tail read after a relaunch
+        // must not make an idle child look fresh. One ahead of the clock is skew.
+        progress.lastEventAt = min(now, stamp)
         switch event.type {
         case "turn.started", "message.received":
             // The child went on to another turn: what ended the last one is over.
@@ -136,8 +144,14 @@ public enum SubagentStatus {
                 statuses.append(.stopped); finishes.append(at)
             case .working:
                 // Progress of an earlier task of the same agent says nothing about this one.
-                guard let p = progress(run), p.taskId == run.taskId, p.lastEventAt != nil else {
+                guard var p = progress(run), p.taskId == run.taskId, p.lastEventAt != nil else {
                     statuses.append(.working(label: nil)); finishes.append(nil); continue
+                }
+                // An end the child reached before this task began is the
+                // earlier task's.
+                if let since = run.taskStartedAt {
+                    if let at = p.finishedAt, at < since { p.finishedAt = nil; p.finalAnswer = nil }
+                    if let at = p.endedAt, at < since { p.endedAt = nil; p.failure = nil; p.cancelled = false }
                 }
                 if let reason = p.failure {
                     statuses.append(.failed(reason: plainFailure(reason))); finishes.append(p.endedAt)
@@ -162,6 +176,31 @@ public enum SubagentStatus {
             }
         }
         return result
+    }
+
+    /// Whether any run is still out, by what its card would show: working or
+    /// quiet. A finished child awaiting its report is not.
+    public static func hasActiveWork(
+        runs: [SubagentRun],
+        progress: (SubagentRun) -> ChildProgress?,
+        parentBusy: Bool,
+        now: Date
+    ) -> Bool {
+        resolveAll(runs: runs, progress: progress, parentBusy: parentBusy, now: now).contains { $0.isWorking }
+    }
+
+    /// Whether the card still needs a clock: something is working, or a
+    /// finished child may yet turn into "not delivered".
+    public static func needsClock(
+        runs: [SubagentRun],
+        progress: (SubagentRun) -> ChildProgress?,
+        parentBusy: Bool,
+        now: Date
+    ) -> Bool {
+        resolveAll(runs: runs, progress: progress, parentBusy: parentBusy, now: now).contains {
+            if case .awaitingReport = $0 { return true }
+            return $0.isWorking
+        }
     }
 
     /// The row's end: the child's own finish when its stream says one, else

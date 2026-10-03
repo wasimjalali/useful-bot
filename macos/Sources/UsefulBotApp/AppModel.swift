@@ -162,6 +162,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var droppedRowIds: Set<String> = []
     /// Dropped rows already sent again; their button is gone.
     @Published private(set) var resentRowIds: Set<String> = []
+    /// What was sent again, by projection message id, which a durable twin
+    /// replacing a live row does not change. Kept for the life of the app, as
+    /// are the next two: they belong to ids, not to the chat on screen.
+    private var resentMessageIds: Set<String> = []
+    /// The projection message behind each dropped row.
+    private var droppedMessageForRow: [String: String] = [:]
     /// Sub-agent tasks whose report the owner handed to the bot.
     @Published private(set) var handedOverTasks: Set<String> = []
     /// Requests hidden here only: dead ones, or ones with no way to answer.
@@ -176,6 +182,8 @@ final class AppModel: ObservableObject {
     /// Bots with a sub-agent still out, selected or not. Keeps the rail face
     /// moving after the bot's own turn is over.
     @Published private(set) var subagentWorkingBotIds: Set<String> = []
+    /// Bots with an open request, as far as this app has their projection.
+    @Published private(set) var waitingBotIds: Set<String> = []
     /// What the live turn is doing, shown in the working row until the reply
     /// takes its place.
     @Published private(set) var activity: TurnActivity = .thinking
@@ -355,6 +363,10 @@ final class AppModel: ObservableObject {
         TurnNotifier.shared.onOpenChat = { [weak self] botId in self?.select(botId) }
         TurnNotifier.shared.start()
         observeAppActivity()
+        subagentProgress.onChange = { [weak self] in
+            guard let self else { return }
+            self.refreshRailFlags(self.selectedBotId ?? "")
+        }
         if let perf = PerfHarness.shared {
             for botId in perf.snapshotsToDrop { snapshots.remove(botId: botId) }
         }
@@ -2238,10 +2250,7 @@ final class AppModel: ObservableObject {
     private var retryNotBefore: [String: Date] = [:]
 
     private func markWorking(_ botId: String, _ running: Bool) {
-        let withRuns = Self.hasWorkingSubagents(botId == selectedBotId ? projection : backgroundProjections[botId])
-        if withRuns != subagentWorkingBotIds.contains(botId) {
-            if withRuns { subagentWorkingBotIds.insert(botId) } else { subagentWorkingBotIds.remove(botId) }
-        }
+        refreshRailFlags(botId)
         let wasWorking = workingBotIds.contains(botId)
         var next = workingBotIds
         if running { next.insert(botId) } else { next.remove(botId) }
@@ -2785,15 +2794,34 @@ final class AppModel: ObservableObject {
 
     // MARK: - Sub-agent cards and waiting requests
 
-    /// Whether a bot has a sub-agent still out, by what its projection holds.
-    /// A report that never came (eve lost it) stops counting after the same
-    /// patience the working row has.
-    private static func hasWorkingSubagents(_ projection: StreamProjection?) -> Bool {
-        let cutoff = Date().addingTimeInterval(-subagentPatience)
-        return projection?.subagentRuns.contains { run in
-            guard run.state == .working else { return false }
-            return (run.startedAt ?? Date()) > cutoff
-        } ?? false
+    /// Whether a bot has a sub-agent still out and whether it waits on the
+    /// owner, by what its projection holds. A sub-agent counts by what its
+    /// card shows (working or quiet), so a finished one awaiting a lost report
+    /// does not keep the rail moving. A report that never came stops counting
+    /// after the same patience the working row has. Only the open chat has
+    /// child progress; another bot's runs read as working until they report.
+    private func refreshRailFlags(_ botId: String) {
+        let isOpen = botId == selectedBotId
+        guard let proj = isOpen ? projection : backgroundProjections[botId] else { return }
+        let cutoff = Date().addingTimeInterval(-Self.subagentPatience)
+        let now = Date()
+        let busy = isOpen && (pending || backgroundWorking)
+        let working = proj.subagentBatches.contains { batch in
+            let live = batch.runs.filter { $0.state != .working || ($0.startedAt ?? now) > cutoff }
+            return SubagentStatus.hasActiveWork(
+                runs: live,
+                progress: { run in isOpen ? run.childSessionId.flatMap { self.subagentProgress.progress[$0] } : nil },
+                parentBusy: busy,
+                now: now
+            )
+        }
+        if working != subagentWorkingBotIds.contains(botId) {
+            if working { subagentWorkingBotIds.insert(botId) } else { subagentWorkingBotIds.remove(botId) }
+        }
+        let waiting = proj.pendingRequests.contains { !dismissedRequestIds.contains($0.id) }
+        if waiting != waitingBotIds.contains(botId) {
+            if waiting { waitingBotIds.insert(botId) } else { waitingBotIds.remove(botId) }
+        }
     }
 
     /// The open chat's cards, requests and queued rows, from its projection.
@@ -2813,7 +2841,7 @@ final class AppModel: ObservableObject {
         // Marked only while the request is open: once it is answered eve runs
         // those messages, and "queued" would be wrong.
         var queued = Set<String>()
-        if !projection.pendingRequests.isEmpty {
+        if !requests.isEmpty {
             for id in projection.queuedMessageIds {
                 guard let message = projection.messages.first(where: { $0.id == id }),
                       let row = Transcript.rowId(forMessage: message, in: rows) else { continue }
@@ -2822,12 +2850,18 @@ final class AppModel: ObservableObject {
         }
         if queued != queuedRowIds { queuedRowIds = queued }
         var dropped = Set<String>()
+        var forRow: [String: String] = [:]
         for id in projection.droppedMessageIds {
             guard let message = projection.messages.first(where: { $0.id == id }),
                   let row = Transcript.rowId(forMessage: message, in: rows) else { continue }
             dropped.insert(row)
+            forRow[row] = id
         }
+        droppedMessageForRow = forRow
         if dropped != droppedRowIds { droppedRowIds = dropped }
+        let resent = Set(forRow.filter { resentMessageIds.contains($0.value) }.keys)
+        if resent != resentRowIds { resentRowIds = resent }
+        refreshRailFlags(selectedBotId ?? "")
         syncChildFollows()
     }
 
@@ -2852,6 +2886,8 @@ final class AppModel: ObservableObject {
                 // The session is gone, and the request with it.
                 self.busyRequests.remove(request.id)
                 self.dismissedRequestIds.insert(request.id)
+                // Nothing held will ever be replayed: those rows offer Send again.
+                if self.selectedBotId == botId { self.projection.dropHeldMessages() }
                 self.publishSubagents(rows: self.transcript)
                 self.recordSendError(botId, "This chat ended. Send a message to start a new one.", resendable: false)
             } catch {
@@ -2877,7 +2913,9 @@ final class AppModel: ObservableObject {
 
     /// Send a dropped message again, once.
     func resendDropped(rowId: String, text: String) {
-        guard !resentRowIds.contains(rowId), !pending else { return }
+        let message = droppedMessageForRow[rowId] ?? rowId
+        guard !resentMessageIds.contains(message), !pending else { return }
+        resentMessageIds.insert(message)
         resentRowIds.insert(rowId)
         sendFromCard(text)
     }
@@ -2887,6 +2925,7 @@ final class AppModel: ObservableObject {
     private struct ChildFollow {
         /// Names this task, so one that ends only clears its own entry.
         let token: UUID
+        let generation: Int
         let task: Task<Void, Never>
     }
 
@@ -2939,14 +2978,16 @@ final class AppModel: ObservableObject {
         let wanted = Set(ChildFollowPlanner.targets(runs: projection.subagentRuns).filter {
             !finishedFollows.contains($0) && (childRetryAt[$0] ?? .distantPast) <= now
         })
-        for (target, follow) in childFollows where !wanted.contains(target) {
+        let generation = loadGeneration
+        // A reload bumps the generation and the old task is about to end on
+        // its own: it is replaced now, not waited for.
+        for (target, follow) in childFollows where !wanted.contains(target) || follow.generation != generation {
             follow.task.cancel()
             childFollows[target] = nil
         }
-        let generation = loadGeneration
         for target in wanted where childFollows[target] == nil {
             let token = UUID()
-            childFollows[target] = ChildFollow(token: token, task: Task { @MainActor [weak self] in
+            childFollows[target] = ChildFollow(token: token, generation: generation, task: Task { @MainActor [weak self] in
                 await self?.followChild(target, parent: parent, generation: generation, token: token)
             })
         }
@@ -2987,10 +3028,22 @@ final class AppModel: ObservableObject {
     private func followChild(_ target: ChildFollowTarget, parent: String, generation: Int, token: UUID) async {
         // Whatever ends this task, its entry goes with it, so the next
         // publish can start it again (a reload cancels it without a word).
-        defer { if childFollows[target]?.token == token { childFollows[target] = nil } }
+        // A task that ends on its own (not cancelled by a sync, which already
+        // took its entry) asks for a sync, so a chat with nothing new to say
+        // still gets its follow back.
+        defer {
+            if childFollows[target]?.token == token {
+                childFollows[target] = nil
+                syncChildFollows()
+            }
+        }
         let child = target.childSessionId
         var refusals = 0
+        // Consecutive reads that failed: drives a capped backoff. A quiet
+        // child ends its read cleanly and is reopened at the usual pace.
+        var barren = 0
         while !Task.isCancelled, generation == loadGeneration {
+            var errored = false
             do {
                 let cursor = childCursors[child]
                 for try await event in client.stream(
@@ -3021,15 +3074,21 @@ final class AppModel: ObservableObject {
                     retryChild(target, after: 60)
                     return
                 }
+            } catch BackendError.decoding where childCursors[child] == nil {
+                // No tail header (an older eve): read from the start, once.
+                NSLog("Useful Bot: no stream tail for %@; reading from the start", child)
+                childCursors[child] = 0
             } catch {
-                // The link dropped: reopen from the cursor.
+                // The link dropped: reopen from the cursor, slower each time.
                 NSLog("Useful Bot: sub-agent stream dropped: %@", String(describing: error))
+                errored = true
             }
             if subagentProgress.hasEnded(child: child, taskId: target.taskId) {
                 finishedFollows.insert(target)
                 return
             }
-            try? await Task.sleep(nanoseconds: UInt64(min(30, 2 * (refusals + 1))) * 1_000_000_000)
+            barren = errored ? barren + 1 : 0
+            try? await Task.sleep(nanoseconds: UInt64(min(30, 2 << min(barren, 4))) * 1_000_000_000)
         }
     }
 
@@ -4443,8 +4502,7 @@ final class AppModel: ObservableObject {
         queuedRowIds = []
         droppedRowIds = []
         resentRowIds = []
-        handedOverTasks = []
-        dismissedRequestIds = []
+        droppedMessageForRow = [:]
         subagentCards = []
         resetChildFollows()
         activity = .thinking

@@ -17,6 +17,8 @@ final class SubagentProgressStore: ObservableObject {
     /// By child session id.
     @Published private(set) var progress: [String: ChildProgress] = [:]
     private var trackers: [String: ChildTracker] = [:]
+    /// Called after each flush, so the rail can follow what the cards show.
+    var onChange: (() -> Void)?
     private var lastFlush = Date.distantPast
     private var flushTask: Task<Void, Never>?
 
@@ -66,7 +68,10 @@ final class SubagentProgressStore: ObservableObject {
     private func flush() {
         lastFlush = Date()
         let next = trackers.mapValues(\.progress)
-        if next != progress { progress = next }
+        if next != progress {
+            progress = next
+            onChange?()
+        }
     }
 }
 
@@ -82,20 +87,30 @@ struct SubagentGroupCard: View {
 
     private var expanded: Bool { model.expandedSubagentCards.contains(card.id) }
 
-    private var anyWorking: Bool {
-        card.runs.contains { $0.state == .working }
+    /// Set when a tick finds nothing left that needs a clock; any new
+    /// progress or run change gives the clock back.
+    @State private var clockStopped = false
+
+    private func progressOf(_ run: SubagentRun) -> ChildProgress? {
+        run.childSessionId.flatMap { store.progress[$0] }
     }
 
     var body: some View {
-        if anyWorking {
-            // One timeline for the whole card: the header and every row read
-            // their clock from it.
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                content(now: context.date)
+        let live = SubagentStatus.needsClock(runs: card.runs, progress: progressOf, parentBusy: parentBusy, now: Date())
+        Group {
+            if live && !clockStopped {
+                // One timeline for the whole card: the header and every row
+                // read their clock from it.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    content(now: context.date)
+                }
+            } else {
+                content(now: Date())
             }
-        } else {
-            content(now: Date())
         }
+        .onChange(of: store.progress) { _, _ in clockStopped = false }
+        .onChange(of: card) { _, _ in clockStopped = false }
+        .onChange(of: parentBusy) { _, _ in clockStopped = false }
     }
 
     private func content(now: Date) -> some View {
@@ -106,6 +121,12 @@ struct SubagentGroupCard: View {
             now: now
         )
         let header = SubagentCardCopy.header(statuses: statuses, botName: bot.name)
+        let anyWorking = statuses.contains { $0.isWorking }
+        if !clockStopped,
+           !SubagentStatus.needsClock(runs: card.runs, progress: progressOf, parentBusy: parentBusy, now: now) {
+            // Nothing left to count: stop the timeline after this frame.
+            DispatchQueue.main.async { clockStopped = true }
+        }
         let started = card.runs.compactMap(\.startedAt).min()
         return VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -406,7 +427,7 @@ struct WaitingCard: View {
             if request.options.isEmpty {
                 // Nothing to press: it can only be answered in words, or hidden.
                 HStack(spacing: 8) {
-                    Text("Reply below to answer.")
+                    Text("This can't be answered here. Dismiss hides the card.")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.C.inkMuted)
                     Spacer(minLength: 0)

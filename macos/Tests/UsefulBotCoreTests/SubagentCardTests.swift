@@ -236,6 +236,46 @@ private extension ChildProgress {
         #expect(out == [.notDelivered, .failed(reason: "Stopped: it hit an error")])
     }
 
+    @Test func aFinishBeforeTheCurrentTaskStartedIsNotThisTasks() {
+        var r = run(task: "task_2")
+        r.taskStartedAt = t0 + 100
+        var old = finished("1", at: t0 + 50).with(task: "task_2")
+        old.lastEventAt = t0 + 120
+        #expect(resolve([r], ["agent_1": old], now: t0 + 130) == [.working(label: "Thinking")])
+        var failedOld = busyChild("1", at: t0 + 120).with(task: "task_2")
+        failedOld.failure = "boom"
+        failedOld.endedAt = t0 + 50
+        #expect(resolve([r], ["agent_1": failedOld], now: t0 + 130) == [.working(label: "Thinking")])
+        // After the start it counts.
+        var fresh = finished("1", at: t0 + 110).with(task: "task_2")
+        fresh.lastEventAt = t0 + 110
+        #expect(resolve([r], ["agent_1": fresh], now: t0 + 130) == [.awaitingReport(answer: "Report 1.")])
+    }
+
+    @Test func activeWorkReadsTheResolvedStatuses() {
+        let a = sibling("a"), b = sibling("b"), c = sibling("c")
+        // a finished (awaiting), b quiet, c lost with no stream at all.
+        let p = ["a": finished("a", at: t0 + 10), "b": busyChild("b", at: t0)]
+        #expect(SubagentStatus.hasActiveWork(runs: [a], progress: { p[$0.agentId] }, parentBusy: false, now: t0 + 20) == false)
+        #expect(SubagentStatus.hasActiveWork(runs: [a, b], progress: { p[$0.agentId] }, parentBusy: false, now: t0 + 400) == true)
+        #expect(SubagentStatus.hasActiveWork(runs: [a, c], progress: { p[$0.agentId] }, parentBusy: false, now: t0 + 20) == true)
+        // Everything settled or delivered: nothing ticks.
+        #expect(SubagentStatus.needsClock(runs: [a], progress: { p[$0.agentId] }, parentBusy: false, now: t0 + 20) == true)
+        #expect(SubagentStatus.needsClock(runs: [a], progress: { p[$0.agentId] }, parentBusy: false, now: t0 + 200) == false)
+        #expect(SubagentStatus.needsClock(runs: [sibling("r", .reported(at: t0 + 5))], progress: { _ in nil }, parentBusy: false, now: t0 + 200) == false)
+    }
+
+    @Test func lastEventTimeIsTheEventsOwnStampWhenOlder() throws {
+        var tracker = ChildTracker(taskId: "task_1")
+        let stamp = ISO8601DateFormatter().date(from: "2026-10-01T20:49:01Z")!
+        // Read long after it happened (a tail read after a relaunch).
+        try tracker.apply(event("turn.started"), at: stamp + 3600)
+        #expect(tracker.progress.lastEventAt == stamp)
+        // A stamp ahead of the clock is clock skew: arrival time wins.
+        try tracker.apply(event("turn.started"), at: stamp - 5)
+        #expect(tracker.progress.lastEventAt == stamp - 5)
+    }
+
     // MARK: Light tracker
 
     @Test func theTrackerKeepsOnlyTheStepFromTheEvents() throws {

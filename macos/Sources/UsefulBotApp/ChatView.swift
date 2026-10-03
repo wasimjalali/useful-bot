@@ -553,13 +553,6 @@ struct ChatView: View {
         }
     }
 
-    /// A card with a run still out (working, or done and waiting for its
-    /// report) covers the sub-agent work; a finished one does not, so a later
-    /// background task still gets its working row.
-    private var hasActiveCard: Bool {
-        model.subagentCards.contains { $0.runs.contains { $0.state == .working } }
-    }
-
     private func subagentCard(_ card: SubagentCardData, bot: ShellBot) -> some View {
         SubagentGroupCard(
             card: card,
@@ -596,9 +589,17 @@ struct ChatView: View {
                   let block = window.blocks.first(where: { $0.holds(rowId: anchor) }) else { return }
             found[block.id, default: []].append(card)
         }
+        // Only a card with no anchor, or whose anchor is nowhere in the chat,
+        // goes to the tail. One whose block is merely above the mounted window
+        // waits for "Show earlier" to mount it.
         let tailCards = model.subagentCards.filter { card in
             guard let anchor = card.anchorRowId else { return true }
-            return !window.blocks.contains { $0.holds(rowId: anchor) }
+            return !model.transcriptBlocks.contains { $0.holds(rowId: anchor) }
+        }
+        // A card covers the sub-agent work only when it is on screen and has a
+        // run still out; an old card scrolled out of the window does not.
+        let hasActiveCard = (tailCards + cardsByBlock.values.flatMap { $0 }).contains {
+            $0.runs.contains { $0.state == .working }
         }
         var afterCard = Set<String>()
         for (above, below) in zip(window.blocks, window.blocks.dropFirst()) where cardsByBlock[above.id] != nil {
