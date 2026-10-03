@@ -490,12 +490,35 @@ public struct ChildCancelTarget: Equatable, Sendable {
 }
 
 public enum SubagentCancel {
+    private static func childEnded(_ run: SubagentRun, _ progress: ChildProgress?) -> Bool {
+        guard let progress, progress.taskId == run.taskId else { return false }
+        return progress.finishedAt != nil || progress.failure != nil || progress.cancelled
+    }
+
+    /// Working runs Stop cannot name yet (no child session, or no call site):
+    /// they become targetable once `subagent.called` arrives.
+    public static func untargetable(
+        runs: [SubagentRun],
+        fallbackParent: String? = nil,
+        progress: (SubagentRun) -> ChildProgress? = { _ in nil }
+    ) -> Int {
+        let named = Set(targets(runs: runs, fallbackParent: fallbackParent, progress: progress).map(\.taskId))
+        return runs.filter { $0.state == .working && !childEnded($0, progress($0)) && !named.contains($0.taskId) }.count
+    }
+
     /// Every working run that can be named to the proxy: it has a child
     /// session and the call site on its parent's stream.
     /// A call site that names no session was read off the open chat's own.
-    public static func targets(runs: [SubagentRun], fallbackParent: String? = nil) -> [ChildCancelTarget] {
+    /// A run whose child has already finished, failed or been cancelled (by
+    /// its own stream) is not stopped again.
+    public static func targets(
+        runs: [SubagentRun],
+        fallbackParent: String? = nil,
+        progress: (SubagentRun) -> ChildProgress? = { _ in nil }
+    ) -> [ChildCancelTarget] {
         runs.compactMap { run in
-            guard run.state == .working, let child = run.childSessionId, !child.isEmpty,
+            guard run.state == .working, !childEnded(run, progress(run)),
+                  let child = run.childSessionId, !child.isEmpty,
                   let site = run.childCall, let parent = site.sessionId ?? fallbackParent, !parent.isEmpty else { return nil }
             return ChildCancelTarget(agentId: run.agentId, taskId: run.taskId, title: run.title, childSessionId: child, parentSessionId: parent, calledAt: site.index)
         }
@@ -509,14 +532,12 @@ public enum SubagentCancel {
 /// end it before the model acts.
 public struct StoppedRunGuard: Sendable {
     public private(set) var stoppedTasks: Set<String> = []
-    public private(set) var stoppedAgents: Set<String> = []
     private var handledTurns: Set<String> = []
 
     public init() {}
 
-    public mutating func stop(taskId: String, agentId: String) {
+    public mutating func stop(taskId: String) {
         stoppedTasks.insert(taskId)
-        stoppedAgents.insert(agentId)
     }
 
     /// Whether a message that opens a parent turn is nothing but cancellations

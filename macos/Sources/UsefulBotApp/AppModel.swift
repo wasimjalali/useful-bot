@@ -2154,10 +2154,18 @@ final class AppModel: ObservableObject {
         guard let bot = selectedBot else { return }
         // Sub-agents still out are stopped whether or not the bot's own turn
         // is live; each one is named to the proxy by its parent and call site.
-        let children = SubagentCancel.targets(runs: projection.subagentRuns, fallbackParent: bot.sessionId)
+        let progressOf: (SubagentRun) -> ChildProgress? = { run in
+            run.childSessionId.flatMap { self.subagentProgress.progress[$0] }
+        }
+        let children = SubagentCancel.targets(runs: projection.subagentRuns, fallbackParent: bot.sessionId, progress: progressOf)
+        let unnamed = SubagentCancel.untargetable(runs: projection.subagentRuns, fallbackParent: bot.sessionId, progress: progressOf)
+        if unnamed > 0 {
+            // They can be named once `subagent.called` arrives.
+            recordSendError(bot.id, "Couldn't stop \(unnamed) sub-agent\(unnamed == 1 ? "" : "s") yet. Try Stop again.", resendable: false)
+        }
         for child in children {
             stoppedByYou.insert(child.taskId)
-            stopGuards[bot.id, default: StoppedRunGuard()].stop(taskId: child.taskId, agentId: child.agentId)
+            stopGuards[bot.id, default: StoppedRunGuard()].stop(taskId: child.taskId)
         }
         if !children.isEmpty {
             let botId = bot.id
@@ -2170,6 +2178,8 @@ final class AppModel: ObservableObject {
                             botId: botId, childSessionId: child.childSessionId,
                             parentSessionId: child.parentSessionId, at: child.calledAt, agentId: child.agentId
                         )
+                    } catch BackendError.http(let status) where [404, 409, 410].contains(status) {
+                        // Already settled: nothing left to stop.
                     } catch {
                         NSLog("Useful Bot: stopping a sub-agent failed: %@", String(describing: error))
                         failed.append(child.title)

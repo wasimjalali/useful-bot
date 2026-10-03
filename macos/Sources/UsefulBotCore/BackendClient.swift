@@ -1187,7 +1187,7 @@ public actor BackendClient {
                 URLQueryItem(name: "parent", value: parentSessionId),
                 URLQueryItem(name: "at", value: String(at)),
             ]
-            // Names the agent, so the server can later keep it from relaunching.
+            // The server uses it to keep the stopped agent from being relaunched.
             if let agentId { components?.queryItems?.append(URLQueryItem(name: "agentId", value: agentId)) }
             guard let url = components?.url else { throw BackendError.decoding }
             var request = URLRequest(url: url)

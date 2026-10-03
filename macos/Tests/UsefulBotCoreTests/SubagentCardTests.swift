@@ -617,7 +617,7 @@ private extension ChildProgress {
 
     private func guardWith(_ tasks: String...) -> StoppedRunGuard {
         var g = StoppedRunGuard()
-        for (i, task) in tasks.enumerated() { g.stop(taskId: task, agentId: "ag_agent:\(i)") }
+        for task in tasks { g.stop(taskId: task) }
         return g
     }
 
@@ -659,9 +659,54 @@ private extension ChildProgress {
         #expect(ask(&g, cancelled("task_a"), "turn_2"))
     }
 
-    @Test func theStopRecordsTheAgentToo() {
+    @Test func theStopRecordsTheTask() {
         let g = guardWith("task_a")
-        #expect(g.stoppedAgents == ["ag_agent:0"])
         #expect(g.stoppedTasks == ["task_a"])
+    }
+}
+
+@Suite struct StopTargetingTests {
+    private func run(_ id: String, state: SubagentRun.State = .working, child: String? = "ses_\(1)", call: SubagentCallSite? = SubagentCallSite(sessionId: "ses_p", index: 7)) -> SubagentRun {
+        SubagentRun(agentId: id, childSessionId: child, childCall: call, taskId: "task_\(id)", title: "R \(id)", state: state, groupId: "g")
+    }
+
+    private func ended(_ id: String) -> ChildProgress {
+        var p = ChildProgress(taskId: "task_\(id)")
+        p.lastEventAt = Date()
+        p.finishedAt = Date()
+        p.finalAnswer = "done"
+        return p
+    }
+
+    @Test func aChildThatAlreadyFinishedIsNotStoppedAgain() {
+        let runs = [run("a"), run("b")]
+        let progress: (SubagentRun) -> ChildProgress? = { $0.agentId == "a" ? self.ended("a") : nil }
+        #expect(SubagentCancel.targets(runs: runs, progress: progress).map(\.taskId) == ["task_b"])
+        // Another task's finish says nothing about this one.
+        let stale: (SubagentRun) -> ChildProgress? = { _ in self.ended("zzz") }
+        #expect(SubagentCancel.targets(runs: runs, progress: stale).count == 2)
+    }
+
+    @Test func runsStopCannotNameYetAreCounted() {
+        let runs = [run("a"), run("b", child: nil), run("c", call: nil), run("d", state: .reported(at: nil)), run("e")]
+        #expect(SubagentCancel.untargetable(runs: runs) == 2)
+        #expect(SubagentCancel.untargetable(runs: [run("a")]) == 0)
+        // A finished one that cannot be named is not waiting on anything.
+        let progress: (SubagentRun) -> ChildProgress? = { $0.agentId == "b" ? self.ended("b") : nil }
+        #expect(SubagentCancel.untargetable(runs: [run("b", child: nil)], progress: progress) == 0)
+    }
+
+    private func decode(_ json: String) throws -> ApprovalItem {
+        try JSONDecoder().decode(ApprovalItem.self, from: Data(json.utf8))
+    }
+
+    @Test func aSubagentCardFromAnotherChatSaysSo() throws {
+        let item = try decode(#"{"id":"a","tool":"bash","botName":"Generalist","subagent":true,"rootSessionId":"ses_root"}"#)
+        #expect(item.originLabel(openBotId: "b", openSessionId: "ses_root") == "Sub-agent of Generalist")
+        #expect(item.originLabel(openBotId: "b", openSessionId: "ses_other") == "Sub-agent of Generalist, from another chat")
+        // Unknown on either side: no claim.
+        #expect(item.originLabel(openBotId: "b", openSessionId: nil) == "Sub-agent of Generalist")
+        let old = try decode(#"{"id":"a","tool":"bash","botName":"G","subagent":true}"#)
+        #expect(old.originLabel(openBotId: "b", openSessionId: "ses_other") == "Sub-agent of G")
     }
 }

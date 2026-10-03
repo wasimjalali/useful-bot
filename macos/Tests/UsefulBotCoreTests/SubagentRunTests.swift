@@ -653,7 +653,9 @@ import Testing
         guard case .failed(_, let message) = p.subagentRuns[1].state else { Issue.record("should fail"); return }
         #expect(message == "upstream_timeout")
         #expect(EveStream.isCancellation("The agent invocation was cancelled."))
-        #expect(EveStream.isCancellation("Run was canceled by user"))
+        // Only eve's own sentence counts.
+        #expect(!EveStream.isCancellation("Run was canceled by user"))
+        #expect(!EveStream.isCancellation("The request was cancelled by the network"))
         #expect(!EveStream.isCancellation("upstream_timeout"))
     }
 

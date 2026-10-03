@@ -293,7 +293,7 @@ struct ChatView: View {
             // approval is the normal way this app works, and a yellow panel
             // over the composer reads as something having gone wrong.
             .foregroundStyle(Theme.C.inkMuted)
-            if let origin = item.originLabel(openBotId: model.selectedBotId) {
+            if let origin = item.originLabel(openBotId: model.selectedBotId, openSessionId: model.selectedBot?.sessionId) {
                 Text(origin)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkFaint)
