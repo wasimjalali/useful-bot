@@ -20,6 +20,11 @@ import listModels from "../agent/tools/list_models.ts";
 
 process.env.UB_ROUTER_DESKTOP_TOKEN ??= "test-router-token";
 const { default: agent } = await import("../agent/agent.ts");
+test("the agent leaves eve's per-session input cap off", () => {
+  // eve's 40M default paused long chats; the router budgets are the spend guard.
+  assert.equal((agent as { limits?: { maxInputTokensPerSession?: unknown } }).limits?.maxInputTokensPerSession, false);
+});
+
 const { default: contextResolver } = await import("../agent/instructions/context.ts");
 
 const GO = "opencode-go:plan";

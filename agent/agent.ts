@@ -175,6 +175,11 @@ export default defineAgent({
   // heavier than that, so at 0.9 the summary call itself could overrun a
   // small window after the owner switched models mid-task.
   compaction: { thresholdPercent: 0.75 },
+  // No per-session input cap. The router's daily budgets are the spend guard.
+  // eve's 40M default counts cache reads, so a long-lived bot chat reaches it
+  // in days, and the pause it raises stalls the chat. An uncapped parent also
+  // delegates uncapped sub-agents.
+  limits: { maxInputTokensPerSession: false },
   // Resolved at every step, but the selection and its window are frozen on the
   // first step of a turn (agent/lib/session-model.ts): the owner can pick a
   // different model for this bot while a turn runs, and that applies to the
