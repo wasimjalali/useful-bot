@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHmac } from "node:crypto";
 import { channelAuth } from "../agent/lib/channel-auth.ts";
-import { authorizeChildStream, authorizeEveCall, carryOverReader, streamHasSubagentCall, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
+import { authorizeChildStream, authorizeEveCall, carryOverReader, childWriteRefusal, createChildVerifier, streamHasSubagentCall, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
 import { channelJwt } from "../web/lib/agent-exec.ts";
 import type { ShellStore } from "../shared/shell-store.ts";
 
@@ -327,4 +327,164 @@ test("the parent's stream is scanned for a subagent.called naming this parent an
   }) as unknown as typeof fetch);
   assert.match(seen, /\/eve\/v1\/session\/p1\/stream\?startIndex=0&includeTailIndex=1$/);
   assert.equal(auth, "Bearer jwt-x");
+});
+
+// MARK: - review round 1
+//
+// Failure modes: (1) a send into a child that was unbound when the request
+// arrived but is recorded by the time it is authorised, and a cancel into a
+// child, must be refused by the authorisation itself, in whatever order the
+// requests land; (2) a long parent must still verify a new child (a window
+// from the tail, then only new events), and only an exact subagent.called
+// raised by the parent may add to its record; (3) many concurrent checks
+// share one scan, scans are bounded globally, a miss is remembered briefly,
+// and a client that went away stops the read.
+
+test("a send or cancel into a recorded child is refused by the authorisation, whatever the order", async () => {
+  await withSecret(() => {
+    const resolve = (id: string) => (id === "kid" || id === "sess-a" ? "bot-a" : null);
+    let recorded = false;
+    const isChild = (id: string) => id === "kid" && recorded;
+    const body = JSON.stringify({ message: "hi" });
+    // The send arrives while the child is unbound-as-child (passes the early guard) ...
+    assert.equal(childWriteRefusal("POST", "session/kid", isChild), null);
+    // ... a GET records it, and the authorisation that follows the slow body read refuses.
+    recorded = true;
+    const late = authorizeEveCall("POST", "session/kid", body, resolve, isChild);
+    assert.deepEqual(late, { ok: false, status: 403, error: "child_session_readonly" });
+    assert.deepEqual(authorizeEveCall("POST", "session/kid/cancel", "", resolve, isChild), { ok: false, status: 403, error: "child_session_readonly" });
+    assert.deepEqual(authorizeEveCall("POST", "session/kid", JSON.stringify({ inputResponses: [{ requestId: "r", optionId: "stop" }] }), resolve, isChild), { ok: false, status: 403, error: "child_session_readonly" });
+    // The same check just before forwarding.
+    assert.deepEqual(childWriteRefusal("POST", "session/kid/cancel", isChild), { status: 403, error: "child_session_readonly" });
+    // A root session and a read are not affected.
+    assert.ok(authorizeEveCall("POST", "session/sess-a", body, resolve, isChild).ok);
+    assert.equal(childWriteRefusal("GET", "session/kid/stream", isChild), null);
+    assert.equal(childWriteRefusal("POST", "session", isChild), null);
+    // A store that cannot be read is loud, not "not a child".
+    assert.throws(() => authorizeEveCall("POST", "session/sess-a", body, resolve, () => { throw new Error("session_owners_locked"); }), /session_owners_locked/);
+  });
+});
+
+type Stream = { events: unknown[] };
+function streams(table: Record<string, Stream>) {
+  const log: Array<{ parent: string; start: number; signal: AbortSignal | null | undefined }> = [];
+  let live = 0;
+  let peak = 0;
+  const impl = (async (url: string, init: RequestInit) => {
+    const m = /session\/([^/]+)\/stream\?startIndex=(-?\d+)&includeTailIndex=1$/.exec(String(url));
+    assert.ok(m, String(url));
+    const parent = m[1];
+    const start = Number(m[2]);
+    log.push({ parent, start, signal: init.signal });
+    const events = table[parent]?.events ?? [];
+    const from = start < 0 ? Math.max(0, events.length + start) : start;
+    live += 1;
+    peak = Math.max(peak, live);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    live -= 1;
+    const lines = events.slice(from).map((event) => JSON.stringify(event)).join("\n");
+    return new Response(lines ? `${lines}\n` : "", { headers: { "x-eve-stream-tail-index": String(events.length - 1) } });
+  }) as unknown as typeof fetch;
+  return { impl, log, peak: () => peak };
+}
+const filler = (n: number) => Array.from({ length: n }, () => ({ type: "message.appended", data: {} }));
+
+test("a long parent verifies from a tail window, then only the new events, and widens once", async () => {
+  const table: Record<string, Stream> = { p: { events: [called("p", "kid-old"), ...filler(30), called("p", "kid-1"), ...filler(5)] } };
+  const feed = streams(table);
+  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 10, negativeTtlMs: 0 });
+  assert.equal(await verify("p", "kid-1", "jwt"), true);
+  // kid-1 sits 6 events from the tail: the window found it, no widening.
+  assert.equal(feed.log.length, 1);
+  assert.equal(feed.log[0].start, -10);
+  // A known child needs no read at all.
+  assert.equal(await verify("p", "kid-1", "jwt"), true);
+  assert.equal(feed.log.length, 1);
+  // A child older than the window: widen to the start once.
+  assert.equal(await verify("p", "kid-old", "jwt"), true);
+  // (an incremental look past the window's end first, then the widening)
+  assert.deepEqual(feed.log.map((entry) => entry.start), [-10, 37, 0]);
+  // After a full read, a new child is looked for only past what was read.
+  table.p.events.push(called("p", "kid-2"));
+  const before = feed.log.length;
+  assert.equal(await verify("p", "kid-2", "jwt"), true);
+  assert.equal(feed.log.length, before + 1);
+  assert.equal(feed.log[before].start, table.p.events.length - 1);
+  // An unknown child costs one incremental read and is a refusal, not a widening.
+  assert.equal(await verify("p", "kid-ghost", "jwt"), false);
+  assert.equal(feed.log.length, before + 2);
+  assert.equal(feed.log[before + 1].start, table.p.events.length);
+});
+
+test("only an exact subagent.called raised by the parent adds to its record", async () => {
+  const table: Record<string, Stream> = {
+    p: {
+      events: [
+        called("kid-1", "grand"),
+        { type: "subagent.completed", data: { sessionId: "p", childSessionId: "fake-1" } },
+        { type: "message.completed", data: { sessionId: "p", childSessionId: "fake-2" } },
+        { type: "subagent.called", data: { childSessionId: "fake-3" } },
+        { type: "subagent.called", data: { sessionId: "p" } },
+        { type: "subagent.called", data: { sessionId: "p", childSessionId: 7 } },
+        called("other", "fake-4"),
+        called("p", "real"),
+      ],
+    },
+  };
+  const verify = createChildVerifier({ fetch: streams(table).impl, windowEvents: 100, negativeTtlMs: 0 });
+  for (const id of ["grand", "fake-1", "fake-2", "fake-3", "fake-4", "7"]) assert.equal(await verify("p", id, "jwt"), false, id);
+  assert.equal(await verify("p", "real", "jwt"), true);
+});
+
+test("concurrent checks of one parent share a scan, scans are bounded, a miss is remembered and an abort stops the read", async () => {
+  const table: Record<string, Stream> = {};
+  for (let i = 0; i < 8; i++) table[`p${i}`] = { events: [called(`p${i}`, `k${i}`), ...filler(3)] };
+  const feed = streams(table);
+  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 100, maxConcurrent: 2, negativeTtlMs: 0 });
+  // Many children asked of one parent at once: one read.
+  table.p0.events.push(...Array.from({ length: 5 }, (_, i) => called("p0", `extra${i}`)));
+  const same = await Promise.all(["k0", "extra0", "extra1", "extra2", "extra3", "extra4"].map((id) => verify("p0", id, "jwt")));
+  assert.deepEqual(same, [true, true, true, true, true, true]);
+  assert.equal(feed.log.length, 1);
+  // Eight parents at once: never more than two reads in flight.
+  const many = await Promise.all(Array.from({ length: 8 }, (_, i) => verify(`p${i}`, `k${i}`, "jwt")));
+  assert.deepEqual(many, Array(8).fill(true));
+  assert.ok(feed.peak() <= 2, `peak ${feed.peak()}`);
+
+  // A miss is remembered for the TTL, then looked up again.
+  let clock = 1000;
+  const miss = streams({ q: { events: filler(2) } });
+  const timed = createChildVerifier({ fetch: miss.impl, windowEvents: 100, negativeTtlMs: 10_000, now: () => clock });
+  assert.equal(await timed("q", "nope", "jwt"), false);
+  assert.equal(await timed("q", "nope", "jwt"), false);
+  assert.equal(miss.log.length, 1);
+  clock += 10_001;
+  assert.equal(await timed("q", "nope", "jwt"), false);
+  assert.equal(miss.log.length, 2);
+
+  // A failed read is loud, and is remembered for the TTL too.
+  let calls = 0;
+  const broken = createChildVerifier({
+    fetch: (async () => { calls += 1; return new Response("no", { status: 500 }); }) as unknown as typeof fetch,
+    negativeTtlMs: 10_000,
+    now: () => clock,
+  });
+  await assert.rejects(broken("q", "x", "jwt"), /eve_stream_500/);
+  await assert.rejects(broken("q", "x", "jwt"), /eve_stream_500/);
+  assert.equal(calls, 1);
+
+  // The caller went away: its wait ends and, with nobody left, the eve read is aborted.
+  const slow = streams({ z: { events: filler(2) } });
+  const aborting = createChildVerifier({ fetch: slow.impl, negativeTtlMs: 0 });
+  const gone = new AbortController();
+  const pending = aborting("z", "k", "jwt", gone.signal);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  gone.abort();
+  await assert.rejects(pending, /aborted/);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(slow.log[0]?.signal?.aborted, true);
+  // An already-aborted caller never starts a read.
+  const before = slow.log.length;
+  await assert.rejects(aborting("z", "k2", "jwt", gone.signal), /aborted/);
+  assert.equal(slow.log.length, before);
 });

@@ -32,7 +32,7 @@ import {
   sessionHasCompletedTurn,
   syncSessionWorkspace,
 } from "../../../../lib/agent-exec";
-import { authorizeChildStream, authorizeEveCall, carryOverReader, childStreamDeps, type EveCallAuth } from "../../../../lib/eve-session-auth";
+import { authorizeChildStream, authorizeEveCall, carryOverReader, childStreamDeps, childWriteRefusal, type EveCallAuth } from "../../../../lib/eve-session-auth";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
@@ -146,7 +146,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     if (sessionPath && child?.present) {
       if (child.parent === null) return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
       try {
-        auth = await authorizeChildStream(child.parent, sessionPath[1], childStreamDeps());
+        auth = await authorizeChildStream(child.parent, sessionPath[1], childStreamDeps(), request.signal);
       } catch (err) {
         console.error("child stream could not be verified", err instanceof Error ? err.message : err);
         const missing = err instanceof Error && err.message === "channel_credential_missing";
@@ -438,6 +438,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       }
     }
+  }
+  // A child can be recorded while this request was being read and prepared:
+  // one last look, right before anything reaches eve.
+  try {
+    const readOnly = childWriteRefusal(method, suffix, (id) => readSessionParent(id) !== null);
+    if (readOnly) return Response.json({ ok: false, error: readOnly.error }, { status: readOnly.status });
+  } catch (err) {
+    console.error("child session check failed", err instanceof Error ? err.message : err);
+    return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
   }
   try {
     const signal = method === "GET"
