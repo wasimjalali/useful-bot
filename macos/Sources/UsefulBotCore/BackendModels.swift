@@ -441,23 +441,59 @@ public struct ApprovalItem: Codable, Identifiable, Equatable, Sendable {
     public let actionSha256: String
     public let preview: String
     public let tool: String
+    /// Who raised it, when the server says (older servers do not).
+    public let botId: String?
+    public let botName: String?
+    /// The session that raised it.
+    public let sessionId: String?
+    /// Raised by a sub-agent rather than the bot itself.
+    public let subagent: Bool
+    /// The chat's own session, which a sub-agent's card can differ from.
+    public let rootSessionId: String?
+
+    /// What the card says about where it came from: a sub-agent's, or another
+    /// bot's when the chat open is not that bot's. Nil for the open bot's own.
+    public func originLabel(openBotId: String?, openSessionId: String? = nil) -> String? {
+        let name = (botName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if subagent {
+            var label = name.isEmpty ? "Sub-agent" : "Sub-agent of \(name)"
+            if let root = rootSessionId, !root.isEmpty, let open = openSessionId, root != open { label += ", from another chat" }
+            return label
+        }
+        if !name.isEmpty, let botId, botId != openBotId { return name }
+        return nil
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        botId = try? c.decodeIfPresent(String.self, forKey: .botId)
+        botName = try? c.decodeIfPresent(String.self, forKey: .botName)
+        sessionId = try? c.decodeIfPresent(String.self, forKey: .sessionId)
+        subagent = (try? c.decodeIfPresent(Bool.self, forKey: .subagent)) ?? false
+        rootSessionId = try? c.decodeIfPresent(String.self, forKey: .rootSessionId)
         actionSha256 = (try? c.decode(String.self, forKey: .actionSha256)) ?? ""
         preview = (try? c.decode(String.self, forKey: .preview)) ?? ""
         tool = (try? c.decode(String.self, forKey: .tool)) ?? ""
     }
 
-    public init(id: String, actionSha256: String, preview: String, tool: String) {
+    public init(
+        id: String, actionSha256: String, preview: String, tool: String,
+        botId: String? = nil, botName: String? = nil, sessionId: String? = nil, subagent: Bool = false,
+        rootSessionId: String? = nil
+    ) {
+        self.rootSessionId = rootSessionId
+        self.botId = botId
+        self.botName = botName
+        self.sessionId = sessionId
+        self.subagent = subagent
         self.id = id
         self.actionSha256 = actionSha256
         self.preview = preview
         self.tool = tool
     }
 
-    enum CodingKeys: String, CodingKey { case id, actionSha256, preview, tool }
+    enum CodingKeys: String, CodingKey { case id, actionSha256, preview, tool, botId, botName, sessionId, subagent, rootSessionId }
 }
 
 /// `/api/providers` row, mirrored from `ProviderPublic`. Legacy shape, kept so

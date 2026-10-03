@@ -21,12 +21,19 @@ import { groupMembers, speakersFrom } from "./threads.ts";
  * The system prompt before the bot's own context block: agent/instructions.md
  * plus what eve adds around it (the skills list and the like). Measured on the
  * wire as 7,444 characters (payload probe, evals/results/2026-10-02-ub009-prc/
- * probe-after), with about 7% headroom: eve's
- * additions around the file (the skills list) are not guarded by a test. A test holds it at or above `wc -c` of the file.
+ * probe-after), with agent and task_cancel switched off. Switching them on adds
+ * eve's "Agent messaging" block (1,017 characters, read from eve's prompt
+ * composer, eve 0.54): about 8,460, with about 7% headroom. eve's additions
+ * around the file (the skills list) are not guarded by a test. A test holds it at or above `wc -c` of the file.
  */
-export const SHARED_PROMPT_CHARS = 8_000;
-/** The tools array eve sends, as JSON: 26,434 characters on the wire in the same probe, with about 6% headroom. */
-export const TOOL_SCHEMA_CHARS = 28_000;
+export const SHARED_PROMPT_CHARS = 9_100;
+/**
+ * The tools array eve sends, as JSON: 26,434 characters on the wire in the same
+ * probe (agent and task_cancel off), plus the two sub-agent tools as eve defines
+ * them (agent 1,463, task_cancel 482, measured by scripts/tool-schema-size.mjs):
+ * about 28,380, with about 6% headroom.
+ */
+export const TOOL_SCHEMA_CHARS = 30_000;
 /** Room kept for the model's own answer. */
 export const OUTPUT_RESERVE_TOKENS = 4096;
 

@@ -1508,7 +1508,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 subagentRuns[index].state = .reported(at: stamp)
                 subagentRuns[index].result = cutReplayedOwnerText(detail.body)
             case .failed:
-                subagentRuns[index].state = .failed(at: stamp, message: detail.body)
+                // eve words an owner's Stop as a failure; it is a stop.
+                subagentRuns[index].state = EveStream.isCancellation(detail.body)
+                    ? .cancelled(at: stamp)
+                    : .failed(at: stamp, message: detail.body)
             case .cancelled:
                 subagentRuns[index].state = .cancelled(at: stamp)
             case .other:

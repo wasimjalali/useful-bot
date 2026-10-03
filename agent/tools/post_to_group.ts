@@ -17,10 +17,10 @@ export default defineTool({
   async execute(input, ctx) {
     // A handoff or a run starts a teammate turn and writes transcripts, so
     // Read only refuses it like every other change inside the app.
-    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const shell = readShell();
     const who = await callerOf(shell, ctx);
     if (!who.ok) return who.result;
+    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const requested = input.groupId.trim();
     const group = shell.bots.find((bot) => (
       bot.kind === "group"

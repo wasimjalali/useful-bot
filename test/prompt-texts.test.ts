@@ -73,12 +73,12 @@ test("no backticked identifier in the instructions, skills or tool descriptions 
   }
 });
 
-test("known tools include find_tools and drop the disabled ones", () => {
+test("known tools include find_tools and eve's sub-agent tools", () => {
   const known = knownTools();
   assert.ok(known.has("find_tools"));
   assert.ok(known.has("connection_search"));
-  assert.ok(!known.has("task_cancel"));
-  assert.ok(!known.has("agent"));
+  assert.ok(known.has("task_cancel"));
+  assert.ok(known.has("agent"));
 });
 
 // Helpers.
@@ -95,8 +95,8 @@ function wordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
-/** Eve's default tools this agent keeps. `agent` and `task_cancel` are disabled in agent/tools. */
-const EVE_BUILT_INS = ["bash", "read_file", "write_file", "web_fetch", "web_search", "todo", "ask_question", "load_skill", "connection_search"];
+/** Eve's default tools this agent keeps. */
+const EVE_BUILT_INS = ["bash", "read_file", "write_file", "web_fetch", "web_search", "todo", "ask_question", "load_skill", "connection_search", "agent", "task_cancel"];
 /** Backticked snake_case words that name a result status, not a tool. */
 const STATUS_TOKENS = new Set(["connectors_not_set_up", "not_connected", "no_connectors"]);
 /** Tools mounted from a connection are named `<connection>__<tool>`. */

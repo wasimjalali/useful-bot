@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { lenientNullableString } from "../lib/lenient-null.ts";
 import { approvalActor } from "../lib/approvals.ts";
-import { awaitActiveBotId } from "../lib/active-bot.ts";
+import { authoritySessionId, awaitActiveBotId, BOT_CONTEXT_MISSING, isBotContextMissing, isSubAgent } from "../lib/active-bot.ts";
 import { approvedWrite } from "../lib/write.ts";
 import { appendAgentEvent } from "../../shared/agent-store.ts";
 import { isPagePath, recordPage } from "../../shared/media-store.ts";
@@ -16,13 +16,24 @@ export default defineTool({
     expectedSha256: lenientNullableString("SHA-256 of the file's current bytes; the write is refused if it changed. Omit to overwrite unchecked."),
   }),
   async execute(input, ctx) {
+    let grantSessionId: string | undefined;
+    try {
+      grantSessionId = authoritySessionId(ctx);
+    } catch (error) {
+      if (isBotContextMissing(error)) return BOT_CONTEXT_MISSING;
+      throw error;
+    }
     const written = await approvedWrite({
       path: input.path,
       content: input.content,
       expectedSha256: input.expectedSha256,
       ...approvalActor(ctx),
+      // A sub-agent writes under its root session's grant, never one of its own.
+      grantSessionId,
     });
     if (!isPagePath(written.path)) return written;
+    // A sub-agent files nothing in the owner's Library or chat: its root reports.
+    if (isSubAgent(ctx)) return { ...written, note: "The page is written. A sub-agent adds nothing to the owner's Library or chat, so say where the file is in your report." };
     return { ...written, note: await showPage(written.path, input.content, ctx) };
   },
 });

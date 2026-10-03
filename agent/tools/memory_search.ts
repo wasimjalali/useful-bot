@@ -10,7 +10,7 @@ export const search = defineTool({
   description: "Search this bot's own memory notes.",
   inputSchema: z.object({ query: z.string() }),
   async execute(input, ctx) {
-    const who = await callerOf(readShell(), ctx);
+    const who = await callerOf(readShell(), ctx, { readOnly: true });
     if (!who.ok) return who.result;
     const notes = sharedMemoryStore().search(input.query, who.caller.id);
     // See memory_read: a returned outside-sourced note marks the turn.

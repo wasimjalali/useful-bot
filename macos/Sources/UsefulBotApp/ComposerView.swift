@@ -456,7 +456,9 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var sendButton: some View {
-        if model.pending {
+        // Stop while the bot works, and while only sub-agents run and there is
+        // nothing typed to send.
+        if model.pending || (model.subagentsRunning && !canSend) {
             Button(action: model.cancel) {
                 ZStack {
                     Circle().fill(Theme.C.brand)

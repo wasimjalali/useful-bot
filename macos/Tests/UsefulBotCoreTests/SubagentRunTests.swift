@@ -640,6 +640,25 @@ import Testing
         #expect(p.subagentRuns[0].result == "Fine.\n\nProbe 19")
     }
 
+    @Test func anOwnerCancelledChildReportedAsFailedIsStopped() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try launched(call: "b", agent: "ag_agent:bbb", task: "task_bbb", turn: "turn_1"))
+        let text = "Background task task_aaa (agent) failed.\n\nError:\n{\"code\":\"SUBAGENT_EXECUTION_FAILED\",\"message\":\"The agent invocation was cancelled.\"}"
+        p.apply(try report(text, turn: "turn_2"))
+        guard case .cancelled = p.subagentRuns[0].state else { Issue.record("a cancel is not a failure"); return }
+        // A real failure still fails.
+        let boom = "Background task task_bbb (agent) failed.\n\nError:\n{\"code\":\"SUBAGENT_EXECUTION_FAILED\",\"message\":\"upstream_timeout\"}"
+        p.apply(try report(boom, turn: "turn_3"))
+        guard case .failed(_, let message) = p.subagentRuns[1].state else { Issue.record("should fail"); return }
+        #expect(message == "upstream_timeout")
+        #expect(EveStream.isCancellation("The agent invocation was cancelled."))
+        // Only eve's own sentence counts.
+        #expect(!EveStream.isCancellation("Run was canceled by user"))
+        #expect(!EveStream.isCancellation("The request was cancelled by the network"))
+        #expect(!EveStream.isCancellation("upstream_timeout"))
+    }
+
     @Test func heldRowsSurviveASnapshotBetweenTheAnswerAndTheReplay() throws {
         var head = StreamProjection()
         for event in try originTurn("turn_16", text: "Probe 18") { head.apply(event) }

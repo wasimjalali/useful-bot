@@ -22,7 +22,7 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     const shell = readShell();
-    const who = await callerOf(shell, ctx);
+    const who = await callerOf(shell, ctx, { readOnly: true });
     if (!who.ok) return who.result;
     if (input.botId !== undefined && !shell.bots.some((bot) => bot.id === input.botId)) {
       return { status: "not_found", error: `no bot with id ${input.botId}` };

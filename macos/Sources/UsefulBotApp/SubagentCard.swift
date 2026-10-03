@@ -186,6 +186,7 @@ struct SubagentGroupCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .pointerOnHover()
             .accessibilityLabel(SubagentCardCopy.accessibility(header))
             .accessibilityHint(expanded ? "Hides the sub-agents" : "Shows the sub-agents")
             .accessibilityIdentifier("subagent-card-header")
@@ -360,6 +361,7 @@ private struct SubagentRow: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Theme.C.link)
+                        .pointerOnHover()
                         .accessibilityLabel(showsReport ? "Hide the \(run.title) report" : "View the \(run.title) report")
                 }
             }
@@ -376,6 +378,7 @@ private struct SubagentRow: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Theme.C.link)
+                        .pointerOnHover()
                         .accessibilityLabel(showsReport ? "Hide the \(run.title) report" : "View the \(run.title) report")
                 }
             }
@@ -409,7 +412,7 @@ private struct SubagentRow: View {
                 Image(systemName: "minus.circle.fill")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkFaint)
-                Text("Stopped before it reported")
+                Text(model.stoppedByYou.contains(run.taskId) ? "Stopped by you" : "Stopped")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
             }

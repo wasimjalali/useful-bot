@@ -193,6 +193,9 @@ export function bodyHasInputResponses(raw: string): boolean {
   }
 }
 
+/** eve's agent ids, as the app sends them on a child cancel. */
+const CHILD_AGENT_ID = /^ag_agent:[a-z0-9]+$/;
+
 const CHILD_PARENT = new RegExp(`^${SESSION_ID}$`);
 
 /** The largest `at` a child stream read may name: far past any real session, small enough to stay exact. */
@@ -217,6 +220,24 @@ export function childStreamQuery(search: string): { present: false } | { present
   params.delete("at");
   const rest = params.toString();
   return { present: true, parent, at, search: rest ? `?${rest}` : "" };
+}
+
+/**
+ * The `parent` and `at` queries of a cancel into a sub-agent's child, read
+ * exactly like a child stream read (see `childStreamQuery`). Not present for
+ * any other request, a plain cancel included.
+ */
+export function childCancelQuery(method: string, suffix: string, search: string): { present: false } | (Extract<ReturnType<typeof childStreamQuery>, { present: true }> & { agentId: string | null; agentIdBad: boolean }) {
+  if (method.toUpperCase() !== "POST" || !SESSION_CANCEL.test(suffix)) return { present: false };
+  // The app may name the sub-agent being stopped; it is recorded, never relayed to eve.
+  const params = new URLSearchParams(search);
+  const agents = params.getAll("agentId");
+  const agentIdBad = agents.length > 1 || (agents.length === 1 && !CHILD_AGENT_ID.test(agents[0]));
+  params.delete("agentId");
+  const rest = params.toString();
+  const query = childStreamQuery(rest ? `?${rest}` : "");
+  if (!query.present) return { present: false };
+  return { ...query, agentId: agents.length === 1 && !agentIdBad ? agents[0] : null, agentIdBad };
 }
 
 /** The text of a turn: the string itself, or its text parts joined. */

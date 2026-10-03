@@ -477,6 +477,17 @@ private extension ChildProgress {
         #expect(SubagentStatus.duration(of: run(.cancelled(at: t0 + 90)), progress: stopped) == 4)
     }
 
+    @Test func aCancelledMessageReadsStoppedWhereverItCameFrom() {
+        // An older snapshot holds the cancel as a failure.
+        #expect(resolve([run(.failed(at: nil, message: "The agent invocation was cancelled."))], [:], now: t0) == [.stopped])
+        var child = busyChild("1", at: t0 + 3)
+        child.failure = "The agent invocation was cancelled."
+        child.endedAt = t0 + 3
+        #expect(resolve([run()], ["agent_1": child], now: t0 + 4) == [.stopped])
+        // Counted as stopped in the header, not failed.
+        #expect(header([.stopped, .stopped, work]) == SubagentHeader(title: "3 sub-agents", detail: "2 stopped · 1 working"))
+    }
+
     @Test func aRelaunchedRunCountsFromItsOwnStart() {
         var r = run(.reported(at: t0 + 130))
         r.taskStartedAt = t0 + 100
@@ -543,5 +554,159 @@ private extension ChildProgress {
         let group = try #require(projection.subagentRuns.first?.groupId)
         #expect(projection.subagentAnchor(forGroup: group) == "m1")
         #expect(projection.subagentAnchor(forGroup: "turn_unknown") == nil)
+    }
+}
+
+/// What Stop and approval cards need from the core.
+@Suite struct SubagentStopAndApprovalTests {
+    private func run(_ id: String, state: SubagentRun.State = .working, child: String? = "ses_c", call: SubagentCallSite? = SubagentCallSite(sessionId: "ses_p", index: 7)) -> SubagentRun {
+        SubagentRun(agentId: id, childSessionId: child, childCall: call, taskId: "task_\(id)", title: "Critic \(id)", state: state, groupId: "g")
+    }
+
+    @Test func stopNamesEveryWorkingRunThatCanBeNamed() {
+        let runs = [
+            run("a"),
+            run("b", state: .reported(at: nil)),
+            run("c", child: nil),
+            run("d", call: nil),
+            run("e", call: SubagentCallSite(sessionId: nil, index: 3)),
+        ]
+        #expect(SubagentCancel.targets(runs: runs) == [
+            ChildCancelTarget(agentId: "a", taskId: "task_a", title: "Critic a", childSessionId: "ses_c", parentSessionId: "ses_p", calledAt: 7),
+        ])
+        // A call site with no session falls back to the open chat's.
+        #expect(SubagentCancel.targets(runs: runs, fallbackParent: "ses_open").map(\.calledAt) == [7, 3])
+        #expect(SubagentCancel.targets(runs: []).isEmpty)
+    }
+
+    private func decode(_ json: String) throws -> ApprovalItem {
+        try JSONDecoder().decode(ApprovalItem.self, from: Data(json.utf8))
+    }
+
+    @Test func anOldServersCardStillDecodesAndSaysNothingOfItsOrigin() throws {
+        let item = try decode(#"{"id":"a1","actionSha256":"x","preview":"rm","tool":"bash"}"#)
+        #expect(!item.subagent)
+        #expect(item.botName == nil)
+        #expect(item.originLabel(openBotId: "bot_1") == nil)
+    }
+
+    @Test func aSubagentsCardSaysSo() throws {
+        let named = try decode(#"{"id":"a1","tool":"bash","botId":"bot_1","botName":"Generalist","sessionId":"ses_c","subagent":true}"#)
+        #expect(named.originLabel(openBotId: "bot_1") == "Sub-agent of Generalist")
+        let anonymous = try decode(#"{"id":"a1","tool":"bash","subagent":true}"#)
+        #expect(anonymous.originLabel(openBotId: "bot_1") == "Sub-agent")
+        let blank = try decode(#"{"id":"a1","tool":"bash","botName":"  ","subagent":true}"#)
+        #expect(blank.originLabel(openBotId: nil) == "Sub-agent")
+    }
+
+    @Test func anotherBotsOwnCardNamesTheBot() throws {
+        let other = try decode(#"{"id":"a1","tool":"bash","botId":"bot_2","botName":"Growth"}"#)
+        #expect(other.originLabel(openBotId: "bot_1") == "Growth")
+        #expect(other.originLabel(openBotId: "bot_2") == nil)
+    }
+}
+
+@Suite struct StoppedRunGuardTests {
+    private func cancelled(_ task: String) -> String {
+        "Background task \(task) (agent) failed.\n\nError:\n{\"code\":\"SUBAGENT_EXECUTION_FAILED\",\"message\":\"The agent invocation was cancelled.\"}"
+    }
+
+    private func ask(_ g: inout StoppedRunGuard, _ text: String, _ turn: String?) -> Bool {
+        g.shouldCancel(message: text, turnId: turn)
+    }
+
+    private func guardWith(_ tasks: String...) -> StoppedRunGuard {
+        var g = StoppedRunGuard()
+        for task in tasks { g.stop(taskId: task) }
+        return g
+    }
+
+    @Test func onlyCancellationsOfStoppedTasksEndTheTurn() {
+        var g = guardWith("task_a", "task_b")
+        #expect(ask(&g, cancelled("task_a"), "turn_1"))
+        // Several reports in one message, all stopped ones.
+        #expect(ask(&g, cancelled("task_a") + "\n\n" + cancelled("task_b"), "turn_2"))
+    }
+
+    @Test func aMixedMessageDoesNothing() {
+        var g = guardWith("task_a")
+        // Another task's cancellation.
+        #expect(!ask(&g, cancelled("task_a") + "\n\n" + cancelled("task_z"), "turn_1"))
+        // A real report beside it.
+        let done = "Background task task_a (agent) is completed.\n\nResult:\nFine."
+        #expect(!ask(&g, cancelled("task_a") + "\n\n" + done, "turn_2"))
+        // Owner text after it.
+        #expect(!ask(&g, cancelled("task_a") + "\n\nPlease carry on", "turn_3"))
+        // A real failure of a stopped task.
+        let boom = "Background task task_a (agent) failed.\n\nError:\n{\"message\":\"upstream_timeout\"}"
+        #expect(!ask(&g, boom, "turn_4"))
+    }
+
+    @Test func anUnknownTaskOrPlainOwnerTextDoesNothing() {
+        var g = guardWith("task_a")
+        #expect(!ask(&g, cancelled("task_zzz"), "turn_1"))
+        #expect(!ask(&g, "Stop please", "turn_2"))
+        var none = StoppedRunGuard()
+        #expect(!ask(&none, cancelled("task_a"), "turn_1"))
+        // No turn id to count it by.
+        #expect(!ask(&g, cancelled("task_a"), nil))
+    }
+
+    @Test func aTurnIsEndedOnlyOnce() {
+        var g = guardWith("task_a")
+        #expect(ask(&g, cancelled("task_a"), "turn_1"))
+        #expect(!ask(&g, cancelled("task_a"), "turn_1"))
+        #expect(ask(&g, cancelled("task_a"), "turn_2"))
+    }
+
+    @Test func theStopRecordsTheTask() {
+        let g = guardWith("task_a")
+        #expect(g.stoppedTasks == ["task_a"])
+    }
+}
+
+@Suite struct StopTargetingTests {
+    private func run(_ id: String, state: SubagentRun.State = .working, child: String? = "ses_\(1)", call: SubagentCallSite? = SubagentCallSite(sessionId: "ses_p", index: 7)) -> SubagentRun {
+        SubagentRun(agentId: id, childSessionId: child, childCall: call, taskId: "task_\(id)", title: "R \(id)", state: state, groupId: "g")
+    }
+
+    private func ended(_ id: String) -> ChildProgress {
+        var p = ChildProgress(taskId: "task_\(id)")
+        p.lastEventAt = Date()
+        p.finishedAt = Date()
+        p.finalAnswer = "done"
+        return p
+    }
+
+    @Test func aChildThatAlreadyFinishedIsNotStoppedAgain() {
+        let runs = [run("a"), run("b")]
+        let progress: (SubagentRun) -> ChildProgress? = { $0.agentId == "a" ? self.ended("a") : nil }
+        #expect(SubagentCancel.targets(runs: runs, progress: progress).map(\.taskId) == ["task_b"])
+        // Another task's finish says nothing about this one.
+        let stale: (SubagentRun) -> ChildProgress? = { _ in self.ended("zzz") }
+        #expect(SubagentCancel.targets(runs: runs, progress: stale).count == 2)
+    }
+
+    @Test func runsStopCannotNameYetAreCounted() {
+        let runs = [run("a"), run("b", child: nil), run("c", call: nil), run("d", state: .reported(at: nil)), run("e")]
+        #expect(SubagentCancel.untargetable(runs: runs) == 2)
+        #expect(SubagentCancel.untargetable(runs: [run("a")]) == 0)
+        // A finished one that cannot be named is not waiting on anything.
+        let progress: (SubagentRun) -> ChildProgress? = { $0.agentId == "b" ? self.ended("b") : nil }
+        #expect(SubagentCancel.untargetable(runs: [run("b", child: nil)], progress: progress) == 0)
+    }
+
+    private func decode(_ json: String) throws -> ApprovalItem {
+        try JSONDecoder().decode(ApprovalItem.self, from: Data(json.utf8))
+    }
+
+    @Test func aSubagentCardFromAnotherChatSaysSo() throws {
+        let item = try decode(#"{"id":"a","tool":"bash","botName":"Generalist","subagent":true,"rootSessionId":"ses_root"}"#)
+        #expect(item.originLabel(openBotId: "b", openSessionId: "ses_root") == "Sub-agent of Generalist")
+        #expect(item.originLabel(openBotId: "b", openSessionId: "ses_other") == "Sub-agent of Generalist, from another chat")
+        // Unknown on either side: no claim.
+        #expect(item.originLabel(openBotId: "b", openSessionId: nil) == "Sub-agent of Generalist")
+        let old = try decode(#"{"id":"a","tool":"bash","botName":"G","subagent":true}"#)
+        #expect(old.originLabel(openBotId: "b", openSessionId: "ses_other") == "Sub-agent of G")
     }
 }

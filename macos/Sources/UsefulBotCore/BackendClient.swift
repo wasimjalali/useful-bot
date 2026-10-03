@@ -1160,11 +1160,41 @@ public actor BackendClient {
     }
 
     /// Ask the proxy to cancel the active turn on a session.
-    public func cancel(sessionId: String) async throws {
+    /// `reportOnly` marks the app's own cancel of a turn that only carries
+    /// cancelled reports of sub-agents the owner stopped: the proxy then retires
+    /// that session's cards alone, not those of sub-agents still running.
+    public func cancel(sessionId: String, reportOnly: Bool = false) async throws {
         let (data, response) = try await perform { client, token in
+            let path = client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/cancel")
             var request = URLRequest(
-                url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/cancel")
+                url: reportOnly ? path.appending(queryItems: [URLQueryItem(name: "scope", value: "report")]) : path
             )
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectOK(data, response)
+    }
+
+    /// Cancel a sub-agent's own turn. The proxy verifies the child the same way
+    /// it does a stream read: by the parent session and the index of the
+    /// parent's `subagent.called` for it.
+    public func cancelChild(
+        botId: String, childSessionId: String, parentSessionId: String, at: Int, agentId: String? = nil
+    ) async throws {
+        let (data, response) = try await perform { client, token in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(childSessionId))/cancel"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "parent", value: parentSessionId),
+                URLQueryItem(name: "at", value: String(at)),
+            ]
+            // The server uses it to keep the stopped agent from being relaunched.
+            if let agentId { components?.queryItems?.append(URLQueryItem(name: "agentId", value: agentId)) }
+            guard let url = components?.url else { throw BackendError.decoding }
+            var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             return request

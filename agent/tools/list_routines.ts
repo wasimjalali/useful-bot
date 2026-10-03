@@ -13,7 +13,7 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     const shell = readShell();
-    const who = await callerOf(shell, ctx);
+    const who = await callerOf(shell, ctx, { readOnly: true });
     if (!who.ok) return who.result;
     const botId = input.botId?.trim() || who.caller.id;
     const bot = shell.bots.find((item) => item.id === botId) ?? null;

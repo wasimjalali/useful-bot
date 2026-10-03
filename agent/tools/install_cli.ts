@@ -6,7 +6,8 @@ import { approvedCommand, confinedCommand, sandboxAvailable } from "../lib/sandb
 import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
-import { inAppGate, READ_ONLY_BLOCKED, settle } from "../lib/permission.ts";
+import { inAppGate, READ_ONLY_BLOCKED, SUB_AGENT_BLOCKED, settle } from "../lib/permission.ts";
+import { isSubAgent } from "../lib/active-bot.ts";
 import { CLI_REGISTRY, cliStatus, findCli, resolveBin } from "../lib/cli-registry.ts";
 import { ownerPath, rescanOwnerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -37,6 +38,8 @@ export default defineTool({
       };
     }
 
+    // An install leaves a program on the owner's Mac: the owner's own chat only.
+    if (isSubAgent(ctx)) return SUB_AGENT_BLOCKED;
     const wanted = (input.name ?? "").trim();
     const entry = wanted ? findCli(wanted) : null;
     if (!entry) {

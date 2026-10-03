@@ -1,4 +1,4 @@
-import { CHILD_AT_MAX, bindTurnBody, isEveSessionPost } from "../../shared/eve-proxy.ts";
+import { CHILD_AT_MAX, bindTurnBody, childCancelQuery, isEveSessionPost } from "../../shared/eve-proxy.ts";
 import { eveStreamPayload } from "../../shared/eve-stream.ts";
 import { bindChildSession, readSessionParent, resolveSessionBot } from "../../shared/session-bindings.ts";
 import { eveOrigin } from "../../shared/stack.ts";
@@ -231,6 +231,38 @@ export async function authorizeChildStream(
   if (payload === null || !isSubagentCall(payload, parent, child)) return refused;
   deps.bind(child, parent, bot);
   return allowed();
+}
+
+export type ChildCancel =
+  | { kind: "none" }
+  | { kind: "refused"; status: number; error: string }
+  | { kind: "verified"; jwt: string; search: string; parent: string; child: string; agentId: string | null };
+
+/**
+ * A cancel into a sub-agent's child, as one decision. `none`: not a POST to
+ * exactly `session/<id>/cancel` carrying a `parent` query, so the normal
+ * authorisation (which refuses every write into a recorded child) applies.
+ * Otherwise `parent` and `at` are required and checked against the parent's
+ * `subagent.called` event (authorizeChildStream), and only `verified` may skip
+ * the normal write refusal. Throws like authorizeChildStream.
+ */
+export async function authorizeChildCancel(
+  method: string,
+  suffix: string,
+  search: string,
+  deps: ChildStreamDeps,
+  signal?: AbortSignal,
+): Promise<ChildCancel> {
+  const query = childCancelQuery(method, suffix, search);
+  if (!query.present) return { kind: "none" };
+  const child = /^session\/([^/]+)\/cancel$/.exec(suffix)?.[1];
+  if (!child || query.parent === null || query.at === null || query.agentIdBad) {
+    return { kind: "refused", status: 403, error: "child_session_unverified" };
+  }
+  const auth = await authorizeChildStream(query.parent, child, query.at, deps, signal);
+  if (!auth.ok) return { kind: "refused", status: auth.status, error: auth.error };
+  if (auth.jwt === null) return { kind: "refused", status: 403, error: "child_session_unverified" };
+  return { kind: "verified", jwt: auth.jwt, search: query.search, parent: query.parent, child, agentId: query.agentId };
 }
 
 /** Whether a stream line is exactly `parent`'s `subagent.called` for `child`. */

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,7 +21,9 @@ import { readShell, writeShell } from "../shared/shell-io.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
-import { activeBotId, awaitActiveBotId, BotContextMissingError } from "../agent/lib/active-bot.ts";
+import { activeBotId, authoritySessionId, awaitActiveBotId, BotContextMissingError, subAgentRoot } from "../agent/lib/active-bot.ts";
+import { sessionPermission } from "../agent/lib/permission.ts";
+import { effectiveRoot } from "../agent/lib/workspace.ts";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
 import { setApprovalStore } from "../agent/lib/write.ts";
 import { pumpHandoffs, startRoutineNow } from "../web/lib/agent-exec.ts";
@@ -42,6 +44,14 @@ import runRoutine from "../agent/tools/run_routine.ts";
 import sendToBot from "../agent/tools/send_to_bot.ts";
 import updateBotProfile from "../agent/tools/update_bot_profile.ts";
 import updateRoutine from "../agent/tools/update_routine.ts";
+import memoryDelete from "../agent/tools/memory_delete.ts";
+import generateImage from "../agent/tools/generate_image.ts";
+import installCli from "../agent/tools/install_cli.ts";
+import proposeConnector from "../agent/tools/propose_connector.ts";
+import proposeConnection from "../agent/tools/propose_connection.ts";
+import readFileTool from "../agent/tools/read_file.ts";
+import writeFileTool from "../agent/tools/write_file.ts";
+import listDirTool from "../agent/tools/list_dir.ts";
 
 type Tool = { execute: (input: never, context: never) => unknown };
 async function run<T>(tool: Tool, input: Record<string, unknown>, context: Record<string, unknown> = {}): Promise<T> {
@@ -640,5 +650,185 @@ test("a child session is bound to its parent's bot with the parent recorded, imm
     assert.equal(sessionCarriesOverFor("root-1", alpha, null, owners), true);
     assert.equal(unbindBot(alpha, owners), 2);
     assert.equal(readSessionParent("kid-1", owners), null);
+  });
+});
+
+// MARK: - Sub-agent children act as their root session's bot (W5)
+//
+// Failure modes, written before the code. A child (eve `ctx.session.parent`,
+// set by eve and never by the model) must:
+//  1. of a bound root, act as the root's bot with the root's grant, whatever
+//     the shell pin, UB_ACTIVE_BOT_ID or the child's own rows say;
+//  2. of an unbound root, a root that is itself a child, a nested hop
+//     (parent.sessionId != rootSessionId), a missing or self-referencing
+//     rootSessionId, refuse as bot_context_missing, never fall back to a pin;
+//  3. refuse when its bot claim names another bot, or its own row names
+//     another bot, another parent, or no parent (bound as a root);
+//  4. never exceed the root's permission (a grant stamped on the child id is
+//     ignored; a Read only root refuses the child's write);
+//  5. never write memory, change the roster, routines, groups or profiles, send
+//     to bots, install software or generate images (default deny; reads stay);
+//  6. not change bot when the owner moves the pin mid-run;
+//  7. not bind the child as a root (its row, once written, has the parent).
+
+type Kid = { session: { id: string; parent: unknown; auth?: { current: { attributes: Record<string, unknown> } | null }; turn?: { id: string } }; callId?: string };
+function kid(child: string, root: string, opts: { parent?: unknown; claim?: unknown } = {}): Kid {
+  return {
+    session: {
+      id: child,
+      parent: opts.parent ?? { callId: "call-1", rootSessionId: root, sessionId: root, turn: { id: "t0", sequence: 0 } },
+      ...(opts.claim === undefined ? {} : { auth: { current: { attributes: { botId: opts.claim } } } }),
+      turn: { id: "kt1" },
+    },
+    callId: "kc1",
+  };
+}
+
+test("a child of a bound root acts as the root's bot, whatever the pin says, and is recorded under its parent", async () => {
+  await withWorld(async ({ alpha, beta, owners }) => {
+    bindSession("root-1", alpha, new Date(), owners);
+    process.env.UB_ACTIVE_BOT_ID = beta;
+    point(beta, "somewhere-else");
+    const ctx = kid("kid-1", "root-1");
+    assert.equal(activeBotId(readShell(), ctx), alpha);
+    assert.equal(await awaitActiveBotId(readShell(), ctx), alpha);
+    assert.deepEqual(subAgentRoot(ctx), { rootSessionId: "root-1", botId: alpha });
+    // The child row names its parent, so it is never a root binding.
+    assert.equal(readSessionBot("kid-1", owners), alpha);
+    assert.equal(readSessionParent("kid-1", owners), "root-1");
+    // The owner moves the pin to Beta mid-run: the child stays Alpha's.
+    writeShell({ ...readShell(), selectedBotId: beta });
+    assert.equal(activeBotId(readShell(), kid("kid-1", "root-1")), alpha);
+    // A claim that agrees is fine.
+    assert.equal(activeBotId(readShell(), kid("kid-2", "root-1", { claim: alpha })), alpha);
+    // A non-child is untouched.
+    assert.equal(subAgentRoot({ session: { id: "root-1" } }), null);
+  });
+});
+
+test("a child is refused when its root is unbound, a child, nested or malformed, even under the test pin", async () => {
+  await withWorld(async ({ alpha, beta, owners }) => {
+    process.env.UB_ACTIVE_BOT_ID = beta;
+    bindSession("root-1", alpha, new Date(), owners);
+    bindChildSession("kid-root", "root-1", alpha, new Date(), owners);
+    const bad: Array<[string, Kid]> = [
+      ["unbound root", kid("kid-a", "root-unbound")],
+      ["root is itself a child", kid("kid-b", "kid-root")],
+      ["nested hop", kid("kid-c", "root-1", { parent: { callId: "c", rootSessionId: "root-1", sessionId: "kid-root", turn: { id: "t", sequence: 0 } } })],
+      ["no root id", kid("kid-d", "root-1", { parent: { callId: "c", sessionId: "root-1", turn: { id: "t", sequence: 0 } } })],
+      ["root id not a string", kid("kid-e", "root-1", { parent: { callId: "c", rootSessionId: 5, sessionId: "root-1", turn: { id: "t", sequence: 0 } } })],
+      ["root id not a session id", kid("kid-f", "root-1", { parent: { callId: "c", rootSessionId: "a/b", sessionId: "a/b", turn: { id: "t", sequence: 0 } } })],
+      ["child is its own root", kid("root-1", "root-1")],
+      ["parent not an object", kid("kid-g", "root-1", { parent: "root-1" })],
+    ];
+    for (const [label, ctx] of bad) {
+      assert.throws(() => activeBotId(readShell(), ctx), /bot_context_missing/, label);
+      await assert.rejects(awaitActiveBotId(readShell(), ctx, 100), /bot_context_missing/, label);
+      assert.throws(() => authoritySessionId(ctx), /bot_context_missing/, label);
+    }
+    // Nothing was bound for a refused child.
+    for (const id of ["kid-a", "kid-b", "kid-c", "kid-d", "kid-e", "kid-f", "kid-g"]) assert.equal(readSessionBot(id, owners), null, id);
+  });
+});
+
+test("a child whose claim or own row disagrees with its root is refused", async () => {
+  await withWorld(async ({ alpha, beta, owners }) => {
+    bindSession("root-1", alpha, new Date(), owners);
+    bindSession("root-2", alpha, new Date(), owners);
+    // The claim names another bot.
+    assert.throws(() => activeBotId(readShell(), kid("kid-1", "root-1", { claim: beta })), /bot_context_missing/);
+    assert.equal(readSessionBot("kid-1", owners), null);
+    // A claim that is not a string is no claim (eve projects only strings), the root decides.
+    assert.equal(activeBotId(readShell(), kid("kid-1b", "root-1", { claim: 7 })), alpha);
+    // The child's own row names another bot, another parent, or no parent.
+    bindChildSession("kid-2", "root-1", beta, new Date(), owners);
+    assert.throws(() => activeBotId(readShell(), kid("kid-2", "root-1")), /bot_context_missing/);
+    bindChildSession("kid-3", "root-2", alpha, new Date(), owners);
+    assert.throws(() => activeBotId(readShell(), kid("kid-3", "root-1")), /bot_context_missing/);
+    bindSession("kid-4", alpha, new Date(), owners);
+    assert.throws(() => activeBotId(readShell(), kid("kid-4", "root-1")), /bot_context_missing/);
+    assert.equal(readSessionParent("kid-4", owners), null, "a root row was not turned into a child row");
+  });
+});
+
+test("a child holds exactly its root's permission and workspace, never its own grant", async () => {
+  await withWorld(async ({ alpha, dir, owners }) => {
+    const folder = join(realpathSync(dir), "work");
+    mkdirSync(folder);
+    writeFileSync(join(folder, "a.txt"), "hello");
+    setApprovalStore(new ApprovalStore(() => 1_000));
+    const store = process.env.UB_WORKSPACE_STORE_PATH;
+    bindSession("root-ro", alpha, new Date(), owners);
+    bindSession("root-auto", alpha, new Date(), owners);
+    bindSession("root-nogrant", alpha, new Date(), owners);
+    upsertSessionGrant({ sessionId: "root-ro", path: folder, permission: "read_only" }, new Date(), store);
+    upsertSessionGrant({ sessionId: "root-auto", path: folder, permission: "auto" }, new Date(), store);
+    // Someone stamps a stronger grant on the child's own id: it must not count.
+    upsertSessionGrant({ sessionId: "kid-ro", path: folder, permission: "full_access" }, new Date(), store);
+    const ro = kid("kid-ro", "root-ro");
+    const auto = kid("kid-auto", "root-auto");
+    const none = kid("kid-none", "root-nogrant");
+    assert.equal(sessionPermission(ro), "read_only");
+    assert.equal(sessionPermission(auto), "auto");
+    assert.equal(sessionPermission(none), "read_only");
+    assert.equal(effectiveRoot(authoritySessionId(auto)).root, folder);
+    // A refused child is Read only for permission, never wider.
+    assert.equal(sessionPermission(kid("kid-x", "root-unbound")), "read_only");
+    // Read only root: the child's write is refused; nothing lands.
+    await assert.rejects(run(writeFileTool, { path: "out.txt", content: "x", expectedSha256: null }, ro), /workspace_read_only/);
+    assert.equal(existsSync(join(folder, "out.txt")), false);
+    // Auto root with the folder attached: the child writes and reads there.
+    await run(writeFileTool, { path: "out.txt", content: "from the child", expectedSha256: null }, auto);
+    assert.equal(readFileSync(join(folder, "out.txt"), "utf8"), "from the child");
+    const read = await run<{ text: string }>(readFileTool, { path: "a.txt" }, auto);
+    assert.match(read.text, /hello/);
+    const listed = await run<{ entries?: unknown }>(listDirTool, { path: "." }, auto);
+    assert.ok(JSON.stringify(listed).includes("a.txt"));
+    // A refused child cannot even read.
+    assert.deepEqual(await run(readFileTool, { path: "a.txt" }, kid("kid-y", "root-unbound")), { status: "blocked", error: "bot_context_missing" });
+    // The child of an Auto root writing outside the folder is still refused by the root's rules.
+    await assert.rejects(run(writeFileTool, { path: "../escape.txt", content: "x", expectedSha256: null }, auto), /path_escape/);
+  });
+});
+
+test("a child never changes memory, the roster, routines, groups, profiles or installs; it may read", async () => {
+  await withWorld(async ({ alpha, owners }) => {
+    setApprovalStore(new ApprovalStore(() => 1_000));
+    bindSession("root-1", alpha, new Date(), owners);
+    upsertSessionGrant({ sessionId: "root-1", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const ctx = kid("kid-1", "root-1");
+    const refused: Array<[string, Tool, Record<string, unknown>]> = [
+      ["memoryUpsert", memoryUpsert, { expectedRevision: null, title: "t", tags: [], body: "b", expiresAt: null }],
+      ["memoryDelete", memoryDelete, { id: "note-1", expectedRevision: 1 }],
+      ["createRoutine", createRoutineTool, { name: "n", instruction: "i", schedules: [{ kind: "daily", time: "09:00" }] }],
+      ["updateRoutine", updateRoutine, { routineId: "rtn_x", active: false }],
+      ["deleteRoutine", deleteRoutine, { routineId: "rtn_x" }],
+      ["runRoutine", runRoutine, { routineId: "rtn_x" }],
+      ["railAction", railAction, { action: "pin", botId: alpha }],
+      ["clearHistory", clearHistory, {}],
+      ["deleteBot", deleteBot, { botId: alpha }],
+      ["updateBotProfile", updateBotProfile, { description: "x" }],
+      ["proposeBot", proposeBot, { name: "X" }],
+      ["proposeGroup", proposeGroup, { name: "G", memberIds: ["a", "b"] }],
+      ["proposeConnector", proposeConnector, { slug: "gmail", purpose: "read mail" }],
+      ["proposeConnection", proposeConnection, { kind: "mcp", url: "https://example.com/mcp", name: "X", description: "x", authKind: "none" }],
+      ["sendToBot", sendToBot, { botId: alpha, message: "hi" }],
+      ["postToGroup", postToGroup, { groupId: "g", message: "hi" }],
+      ["generateImage", generateImage, { prompt: "a cat" }],
+      ["installCli", installCli, { action: "install", name: "gh" }],
+    ];
+    for (const [name, tool, input] of refused) {
+      const result = await run<{ status?: string; error?: string }>(tool, input, ctx);
+      assert.deepEqual({ status: result?.status, error: result?.error }, { status: "blocked", error: "not_available_for_sub_agents" }, name);
+    }
+    assert.equal(readRoutinesStore().routines.length, 0);
+    // Reads work, as the root's bot.
+    const bots = await run<{ activeBotId?: string }>(listBots, {}, ctx);
+    assert.equal(bots.activeBotId, alpha);
+    const searched = await run<{ status?: string; error?: string }>(memorySearch, { query: "x" }, ctx);
+    assert.notEqual(searched?.error, "bot_context_missing");
+    assert.notEqual(searched?.error, "not_available_for_sub_agents");
+    const routines = await run<{ status?: string; error?: string }>(listRoutines, {}, ctx);
+    assert.notEqual(routines?.error, "not_available_for_sub_agents");
   });
 });

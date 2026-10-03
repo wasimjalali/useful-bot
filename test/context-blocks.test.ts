@@ -133,6 +133,12 @@ test("This turn shows the day in the owner's time zone, permission, folder and m
   assert.ok(tokyo.includes("Saturday 2026-10-03"));
 });
 
+test("This turn says an unknown grant is the starting chat's", () => {
+  const text = renderThisTurn({ ...TURN, permission: null, folder: null });
+  assert.ok(text.includes("This chat: the same permission and folder as the chat that started you."));
+  assert.equal(text.includes("Auto"), false);
+});
+
 test("This turn handles no folder, no image model and the first chat", () => {
   const text = renderThisTurn({ ...TURN, folder: null, image: null, permission: "read_only", firstChat: true });
   assert.ok(text.includes("This chat: Read only, no folder, working under the owner's home."));
