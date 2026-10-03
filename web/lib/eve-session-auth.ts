@@ -355,8 +355,11 @@ export function childWriteRefusal(
   suffix: string,
   isChild: (sessionId: string) => boolean,
 ): { status: 403; error: "child_session_readonly" } | null {
-  if (method === "GET") return null;
-  const match = /^session\/([^/]+)(?:\/[^/]+)?$/.exec(suffix);
+  const verb = method.toUpperCase();
+  if (verb === "GET" || verb === "HEAD") return null;
+  // Any path under the session, not only the shapes the POST allowlist admits
+  // today, so a later route cannot write past this.
+  const match = /^session\/([^/]+)(?:\/|$)/.exec(suffix);
   if (!match || !isChild(match[1])) return null;
   return { status: 403, error: "child_session_readonly" };
 }
