@@ -2308,8 +2308,17 @@ final class AppModel: ObservableObject {
     /// Nil when it is not tracked; the face then reads as thinking.
     func railActivity(_ botId: String) -> TurnActivity? {
         guard isWorking(botId) else { return nil }
+        if subagentsOnly(botId) { return .subagent(finished: false) }
         if botId == selectedBotId { return activity }
         return backgroundActivities[botId] ?? backgroundProjections[botId]?.activity
+    }
+
+    /// Sub-agents are out but the bot has no turn of its own running.
+    func subagentsOnly(_ botId: String) -> Bool {
+        subagentWorkingBotIds.contains(botId)
+            && !workingBotIds.contains(botId)
+            && !handoffWorkingIds.contains(botId)
+            && !(botId == selectedBotId && (pending || backgroundWorking))
     }
 
     func isWorking(_ botId: String) -> Bool {

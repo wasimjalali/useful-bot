@@ -28,6 +28,12 @@ public struct ChildTracker: Sendable {
 
     public init(taskId: String) { progress = ChildProgress(taskId: taskId) }
 
+    private static func parseStamp(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+
     public mutating func apply(_ event: EveEvent, at now: Date) {
         projection.apply(event, live: true)
         progress.lastEventAt = now
@@ -40,7 +46,12 @@ public struct ChildTracker: Sendable {
                 progress.finalAnswer = text
             }
         case "turn.completed":
-            if stopAnswer != nil, progress.finishedAt == nil { progress.finishedAt = now }
+            // The child's own clock: eve holds a finished child's report until
+            // its siblings settle, so the parent's arrival says nothing about
+            // when the child was done.
+            if stopAnswer != nil, progress.finishedAt == nil {
+                progress.finishedAt = event.metaAt.flatMap(Self.parseStamp) ?? now
+            }
         case "turn.started", "message.received":
             // The child went on to another turn: the earlier answer is not final.
             if progress.finishedAt != nil {
@@ -60,6 +71,9 @@ public enum SubagentRowStatus: Equatable, Sendable {
     /// A working run whose stream has said nothing for `quietAfter`.
     case quiet(minutes: Int, lastStep: String?)
     case reported
+    /// The child's stream shows its answer; the parent has no report yet.
+    /// `answer` is the child's text when known, for View.
+    case awaitingReport(answer: String?)
     case failed(reason: String)
     case stopped
     /// Its stream finished with an answer the parent never received.
@@ -68,8 +82,8 @@ public enum SubagentRowStatus: Equatable, Sendable {
     /// Still counted as at work in the header.
     public var isWorking: Bool {
         switch self {
-        case .working, .quiet, .notDelivered: return true
-        case .reported, .failed, .stopped: return false
+        case .working, .quiet: return true
+        case .reported, .awaitingReport, .notDelivered, .failed, .stopped: return false
         }
     }
 }
@@ -78,32 +92,72 @@ public enum SubagentStatus {
     public static let quietAfter: TimeInterval = 5 * 60
     public static let undeliveredAfter: TimeInterval = 60
 
-    /// `parentBusy` is whether the parent bot is in a turn: while it is, a
-    /// report may still be on its way, so nothing is called undelivered.
-    public static func resolve(
-        run: SubagentRun,
-        progress: ChildProgress?,
+    /// Every run of one batch at once. A run whose child has finished waits
+    /// for the parent's report (`awaitingReport`): eve holds each report until
+    /// the last sibling settles. It becomes `notDelivered` only when no run in
+    /// the batch is still working, the parent is idle, and 60 s have passed
+    /// since the last of them finished.
+    public static func resolveAll(
+        runs: [SubagentRun],
+        progress: (SubagentRun) -> ChildProgress?,
         parentBusy: Bool,
         now: Date
-    ) -> SubagentRowStatus {
+    ) -> [SubagentRowStatus] {
+        var finishes: [Date?] = []
+        var statuses: [SubagentRowStatus?] = []
+        for run in runs {
+            switch run.state {
+            case .reported(let at):
+                statuses.append(.reported); finishes.append(at)
+            case .failed(let at, let message):
+                statuses.append(.failed(reason: plainFailure(message))); finishes.append(at)
+            case .cancelled(let at):
+                statuses.append(.stopped); finishes.append(at)
+            case .working:
+                // Progress of an earlier task of the same agent says nothing about this one.
+                guard let p = progress(run), p.taskId == run.taskId, p.lastEventAt != nil else {
+                    statuses.append(.working(label: nil)); finishes.append(nil); continue
+                }
+                if let finished = p.finishedAt, let answer = p.finalAnswer, !answer.isEmpty {
+                    statuses.append(.awaitingReport(answer: answer)); finishes.append(finished)
+                } else if let last = p.lastEventAt, p.finishedAt == nil, now.timeIntervalSince(last) >= quietAfter {
+                    statuses.append(.quiet(minutes: max(5, Int(now.timeIntervalSince(last) / 60)), lastStep: p.label))
+                    finishes.append(nil)
+                } else {
+                    statuses.append(.working(label: p.label)); finishes.append(nil)
+                }
+            }
+        }
+        var result = statuses.map { $0! }
+        let batchSettled = !result.contains { $0.isWorking }
+        let last = finishes.compactMap { $0 }.max()
+        if batchSettled, !parentBusy, let last, now.timeIntervalSince(last) >= undeliveredAfter {
+            for index in result.indices {
+                if case .awaitingReport = result[index] { result[index] = .notDelivered }
+            }
+        }
+        return result
+    }
+
+    /// The row's end: the child's own finish when its stream says one, else
+    /// the report's time.
+    public static func duration(of run: SubagentRun, progress: ChildProgress? = nil) -> TimeInterval? {
+        guard let start = run.startedAt else { return nil }
+        var end: Date?
         switch run.state {
-        case .reported: return .reported
-        case .failed(_, let message): return .failed(reason: plainFailure(message))
-        case .cancelled: return .stopped
-        case .working: break
+        case .working: end = nil
+        case .reported(let at): end = at
+        case .failed(let at, _): end = at
+        case .cancelled(let at): end = at
         }
-        // Progress of an earlier task of the same agent says nothing about this one.
-        guard let progress, progress.taskId == run.taskId, progress.lastEventAt != nil else {
-            return .working(label: nil)
+        if case .reported = run.state, let progress, progress.taskId == run.taskId, let own = progress.finishedAt {
+            end = own
         }
-        if let finished = progress.finishedAt, let answer = progress.finalAnswer, !answer.isEmpty {
-            if !parentBusy, now.timeIntervalSince(finished) >= undeliveredAfter { return .notDelivered }
-            return .working(label: progress.label)
+        if case .working = run.state, let progress, progress.taskId == run.taskId, let own = progress.finishedAt {
+            end = own
         }
-        if progress.finishedAt == nil, let last = progress.lastEventAt, now.timeIntervalSince(last) >= quietAfter {
-            return .quiet(minutes: max(5, Int(now.timeIntervalSince(last) / 60)), lastStep: progress.label)
-        }
-        return .working(label: progress.label)
+        guard let end else { return nil }
+        return max(0, end.timeIntervalSince(start))
     }
 
     /// eve's `message` field, put in words the owner can act on. Never raw JSON.
@@ -123,20 +177,6 @@ public enum SubagentStatus {
         }
         return "Stopped: it hit an error"
     }
-
-    /// Start to the settled time, for a settled run.
-    public static func duration(of run: SubagentRun) -> TimeInterval? {
-        guard let start = run.startedAt else { return nil }
-        let end: Date?
-        switch run.state {
-        case .working: end = nil
-        case .reported(let at): end = at
-        case .failed(let at, _): end = at
-        case .cancelled(let at): end = at
-        }
-        guard let end else { return nil }
-        return max(0, end.timeIntervalSince(start))
-    }
 }
 
 public struct SubagentHeader: Equatable, Sendable {
@@ -148,7 +188,12 @@ public enum SubagentCardCopy {
     public static func header(statuses: [SubagentRowStatus], botName: String) -> SubagentHeader {
         let total = statuses.count
         let working = statuses.filter(\.isWorking).count
-        let done = statuses.filter { $0 == .reported }.count
+        let reported = statuses.filter { $0 == .reported }.count
+        let awaiting = statuses.filter {
+            if case .awaitingReport = $0 { return true }
+            return $0 == .notDelivered
+        }.count
+        let done = reported + awaiting
         let failed = total - working - done
         let agents = total == 1 ? "1 sub-agent" : "\(total) sub-agents"
         if working == total { return SubagentHeader(title: "\(agents) working", detail: nil) }
@@ -160,9 +205,10 @@ public enum SubagentCardCopy {
             return SubagentHeader(title: agents, detail: parts.joined(separator: " · "))
         }
         if failed == 0 {
+            if awaiting > 0 { return SubagentHeader(title: "\(agents) done, handing reports to \(botName)", detail: nil) }
             return SubagentHeader(title: "\(total == 1 ? "1 report" : "\(total) reports") handed to \(botName)", detail: nil)
         }
-        return SubagentHeader(title: "\(done) of \(total) \(total == 1 ? "report" : "reports") in · \(failed) failed", detail: nil)
+        return SubagentHeader(title: "\(reported) of \(total) \(total == 1 ? "report" : "reports") in · \(failed) failed", detail: nil)
     }
 
     /// The header button's spoken form: the same words, in one sentence.

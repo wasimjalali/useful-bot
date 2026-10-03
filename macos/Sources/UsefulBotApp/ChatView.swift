@@ -578,6 +578,13 @@ struct ChatView: View {
         // newest turn, and older ones as the reader asks for them. The stack
         // stays eager on purpose (see `AppModel.transcriptWindow`).
         let window = model.transcriptWindow
+        // A bubble that follows a sub-agent card keeps the full gap: the card
+        // broke its turn's stack, and the tight stacking would sit it 8 pt under.
+        let anchored = Set(model.subagentCards.compactMap(\.anchorRowId))
+        var afterCard = Set<String>()
+        for (above, below) in zip(window.blocks, window.blocks.dropFirst()) where anchored.contains(above.id) {
+            afterCard.insert(below.id)
+        }
         return ScrollViewReader { proxy in
             ScrollView {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.transcriptGap) {
@@ -638,6 +645,7 @@ struct ChatView: View {
                                 // Not the first mounted bubble: the one it
                                 // would stack under is behind the row.
                                 .padding(.top, model.continuationIds.contains(row.id) && row.id != window.startId
+                                    && !afterCard.contains(row.id)
                                     ? DesignTokens.Space.bubbleStackGap - DesignTokens.Space.transcriptGap
                                     : 0)
                                 // Only the newest reply measures itself, and
@@ -685,7 +693,7 @@ struct ChatView: View {
                         // and a row that vanished pulled everything down by
                         // its height.
                         Group {
-                            if model.pending || model.backgroundWorking {
+                            if model.pending || model.backgroundWorking, !(model.activity.isSubagent && !model.subagentCards.isEmpty) {
                                 WorkingRow(
                                     bot: bot,
                                     activity: model.activity,
@@ -693,7 +701,7 @@ struct ChatView: View {
                                     toolkits: model.connectorApps,
                                     runningModel: model.runningModelNote(for: bot.id)
                                 )
-                            } else if let since = model.runningTaskSince {
+                            } else if let since = model.runningTaskSince, model.subagentCards.isEmpty {
                                 // The turn that started a sub-agent is over,
                                 // and the sub-agent is still at it.
                                 WorkingRow(bot: bot, activity: .subagent(finished: false), since: since, toolkits: [])

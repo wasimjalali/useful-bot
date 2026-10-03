@@ -108,6 +108,11 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     /// and the sub-agent: the owner only sees that it runs and when it is back.
     case subagent(finished: Bool)
 
+    public var isSubagent: Bool {
+        if case .subagent = self { return true }
+        return false
+    }
+
     /// Sentence case, no trailing period: the row swaps between these while
     /// the turn runs, and a period on every one of them reads as a stutter.
     public var label: String {

@@ -97,7 +97,12 @@ struct SubagentGroupCard: View {
     }
 
     private func content(now: Date) -> some View {
-        let statuses = card.runs.map { status(of: $0, now: now) }
+        let statuses = SubagentStatus.resolveAll(
+            runs: card.runs,
+            progress: { run in run.childSessionId.flatMap { store.progress[$0] } },
+            parentBusy: parentBusy,
+            now: now
+        )
         let header = SubagentCardCopy.header(statuses: statuses, botName: bot.name)
         let started = card.runs.compactMap(\.startedAt).min()
         return VStack(alignment: .leading, spacing: 0) {
@@ -167,15 +172,6 @@ struct SubagentGroupCard: View {
         .accessibilityIdentifier("subagent-card")
     }
 
-    private func status(of run: SubagentRun, now: Date) -> SubagentRowStatus {
-        SubagentStatus.resolve(
-            run: run,
-            progress: run.childSessionId.flatMap { store.progress[$0] },
-            parentBusy: parentBusy,
-            now: now
-        )
-    }
-
     /// Up to four faces overlapping; one that is still at work moves.
     private func faces(_ statuses: [SubagentRowStatus]) -> some View {
         let shown = Array(card.runs.enumerated().prefix(4))
@@ -221,6 +217,13 @@ private struct SubagentRow: View {
 
     private var amber: Color { Theme.C.warning }
 
+    /// The report: the parent's once it has one, else the child's own answer.
+    private var reportText: String? {
+        if let result = run.result, !result.isEmpty { return result }
+        if case .awaitingReport(let answer) = status { return answer }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
@@ -244,7 +247,7 @@ private struct SubagentRow: View {
                     statusLine
                 }
             }
-            if showsReport, let report = run.result, !report.isEmpty {
+            if showsReport, let report = reportText, !report.isEmpty {
                 ChatMarkdownView(text: report)
                     .padding(.leading, 34)
             }
@@ -259,7 +262,7 @@ private struct SubagentRow: View {
             Text(WorkingElapsed.text(from: start, to: now))
                 .font(.system(size: 13).monospacedDigit())
                 .foregroundStyle(Theme.C.inkFaint)
-        } else if let seconds = SubagentStatus.duration(of: run) {
+        } else if let seconds = SubagentStatus.duration(of: run, progress: progress) {
             Text(WorkingElapsed.text(seconds))
                 .font(.system(size: 13).monospacedDigit())
                 .foregroundStyle(Theme.C.inkFaint)
@@ -300,6 +303,22 @@ private struct SubagentRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
                 if let report = run.result, !report.isEmpty {
+                    Button(showsReport ? "Hide" : "View") { showsReport.toggle() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.C.link)
+                        .accessibilityLabel(showsReport ? "Hide the \(run.title) report" : "View the \(run.title) report")
+                }
+            }
+        case .awaitingReport:
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                Text("Done, report on its way")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                if reportText != nil {
                     Button(showsReport ? "Hide" : "View") { showsReport.toggle() }
                         .buttonStyle(.plain)
                         .font(.system(size: 13, weight: .medium))
