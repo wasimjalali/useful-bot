@@ -958,7 +958,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// The row each launching turn's card sits under: the last row that turn
     /// put in the transcript. Missing once the turn is forgotten.
     public func subagentAnchor(forGroup id: String) -> String? {
-        id == (currentTurnId ?? "") ? turn.lastRowId : turns[id]?.lastRowId
+        id == (currentTurnId ?? "") ? turn.lastRowId : (turns[id]?.lastRowId ?? groupAnchors[id])
     }
     /// Requests from eve that are not questions (a session limit, a tool
     /// approval, a kind not known yet), open until `input.resolved`. Unlike a
@@ -980,6 +980,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     private var replayOpen = false
     /// Held rows whose own turn raised the request: eve never replays these.
     private var heldOrigins: Set<String> = []
+    /// The row each launching turn ended on, kept after the turn table lets
+    /// the turn go (it holds the newest 256).
+    private var groupAnchors: [String: String] = [:]
     /// The session the last event came from. A different one is a new chat.
     private var activeSession: String?
     private var replayTurn: String?
@@ -1215,7 +1218,12 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         if turns.updateValue(record, forKey: id) == nil {
             turnOrder.append(id)
             if turnOrder.count > Self.turnCap {
-                turns[turnOrder.removeFirst()] = nil
+                let old = turnOrder.removeFirst()
+                // A card's anchor outlives its turn's record.
+                if let row = turns[old]?.lastRowId, subagentRuns.contains(where: { $0.groupId == old }) {
+                    groupAnchors[old] = row
+                }
+                turns[old] = nil
             }
         }
     }
@@ -1600,8 +1608,15 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         if matched.isEmpty, within {
             // Inside a merged report turn the held text stands as its own
             // blank-line-separated segment, never as a word inside another's.
-            let segments = Set(text.components(separatedBy: "\n\n").map(Self.replayKey))
-            matched = texts.indices.filter { !texts[$0].isEmpty && segments.contains(texts[$0]) }
+            // A held text of several paragraphs is a run of consecutive segments.
+            let parts = text.components(separatedBy: "\n\n").map(Self.replayKey)
+            var runs = Set<String>()
+            for start in parts.indices {
+                for end in start..<min(parts.count, start + 8) {
+                    runs.insert(parts[start...end].joined(separator: " "))
+                }
+            }
+            matched = texts.indices.filter { !texts[$0].isEmpty && runs.contains(texts[$0]) }
         }
         guard !matched.isEmpty else { return false }
         replayTurn = here

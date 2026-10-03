@@ -170,6 +170,9 @@ final class AppModel: ObservableObject {
     private var droppedMessageForRow: [String: String] = [:]
     /// Sub-agent tasks whose report the owner handed to the bot.
     @Published private(set) var handedOverTasks: Set<String> = []
+    /// Reports the owner opened, by task id. Kept here so a card that swaps
+    /// its view tree (the clock stopping) does not close them.
+    @Published var openReports: Set<String> = []
     /// Requests hidden here only: dead ones, or ones with no way to answer.
     @Published private(set) var dismissedRequestIds: Set<String> = []
     /// One card per turn that launched sub-agents, for the open chat.
@@ -2802,7 +2805,14 @@ final class AppModel: ObservableObject {
     /// child progress; another bot's runs read as working until they report.
     private func refreshRailFlags(_ botId: String) {
         let isOpen = botId == selectedBotId
-        guard let proj = isOpen ? projection : backgroundProjections[botId] else { return }
+        guard let proj = isOpen ? projection : backgroundProjections[botId] else {
+            // No projection left (evicted, or never opened): nothing is known.
+            if !botId.isEmpty, !isOpen {
+                subagentWorkingBotIds.remove(botId)
+                waitingBotIds.remove(botId)
+            }
+            return
+        }
         let cutoff = Date().addingTimeInterval(-Self.subagentPatience)
         let now = Date()
         let busy = isOpen && (pending || backgroundWorking)
@@ -2859,7 +2869,17 @@ final class AppModel: ObservableObject {
         }
         droppedMessageForRow = forRow
         if dropped != droppedRowIds { droppedRowIds = dropped }
-        let resent = Set(forRow.filter { resentMessageIds.contains($0.value) }.keys)
+        // Sent again: by this app, or by a later owner message with the same
+        // text (which also holds after a relaunch).
+        func sentAgain(_ id: String) -> Bool {
+            if resentMessageIds.contains(id) { return true }
+            guard let at = projection.messages.firstIndex(where: { $0.id == id }) else { return false }
+            let text = projection.messages[at].text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return projection.messages[(at + 1)...].contains {
+                $0.role == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == text
+            }
+        }
+        let resent = Set(forRow.filter { sentAgain($0.value) }.keys)
         if resent != resentRowIds { resentRowIds = resent }
         refreshRailFlags(selectedBotId ?? "")
         syncChildFollows()
@@ -3039,6 +3059,7 @@ final class AppModel: ObservableObject {
         }
         let child = target.childSessionId
         var refusals = 0
+        var pending409 = 0
         // Consecutive reads that failed: drives a capped backoff. A quiet
         // child ends its read cleanly and is reopened at the usual pace.
         var barren = 0
@@ -3056,6 +3077,7 @@ final class AppModel: ObservableObject {
                     if let index = event.index { childCursors[child] = index + 1 }
                     subagentProgress.record(event, child: child, taskId: target.taskId)
                     refusals = 0
+                    pending409 = 0
                 }
             } catch is CancellationError {
                 return
@@ -3067,6 +3089,17 @@ final class AppModel: ObservableObject {
                 NSLog("Useful Bot: sub-agent stream refused for %@", child)
                 retryChild(target, after: 600)
                 return
+            } catch BackendError.http(409) {
+                // The child is not bound yet (`child_session_pending`): it will
+                // be in a moment. A short wait, a few times, then the usual backoff.
+                pending409 += 1
+                if pending409 > 8 { refusals += 1 }
+                if refusals >= 5 {
+                    retryChild(target, after: 60)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                continue
             } catch BackendError.http(let status) {
                 refusals += 1
                 NSLog("Useful Bot: sub-agent stream answered %d (%d)", status, refusals)

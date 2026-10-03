@@ -592,13 +592,18 @@ struct ChatView: View {
         // Only a card with no anchor, or whose anchor is nowhere in the chat,
         // goes to the tail. One whose block is merely above the mounted window
         // waits for "Show earlier" to mount it.
+        // A settled card with no row to follow is not drawn: at the tail it
+        // would sit under the newest message as if it were new.
         let tailCards = model.subagentCards.filter { card in
-            guard let anchor = card.anchorRowId else { return true }
-            return !model.transcriptBlocks.contains { $0.holds(rowId: anchor) }
+            if let anchor = card.anchorRowId, model.transcriptBlocks.contains(where: { $0.holds(rowId: anchor) }) {
+                return false
+            }
+            return card.runs.contains { $0.state == .working }
         }
-        // A card covers the sub-agent work only when it is on screen and has a
-        // run still out; an old card scrolled out of the window does not.
-        let hasActiveCard = (tailCards + cardsByBlock.values.flatMap { $0 }).contains {
+        // A card covers the sub-agent work only when it sits under its own
+        // reply and has a run still out. One parked at the tail does not, so
+        // a real working row is never hidden by it.
+        let hasActiveCard = cardsByBlock.values.flatMap { $0 }.contains {
             $0.runs.contains { $0.state == .working }
         }
         var afterCard = Set<String>()

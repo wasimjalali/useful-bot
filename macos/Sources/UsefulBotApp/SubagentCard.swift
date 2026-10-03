@@ -236,7 +236,11 @@ private struct SubagentRow: View {
     let now: Date
     let progress: ChildProgress?
     @EnvironmentObject private var model: AppModel
-    @State private var showsReport = false
+    private var showsReport: Bool { model.openReports.contains(run.taskId) }
+
+    private func toggleReport() {
+        if showsReport { model.openReports.remove(run.taskId) } else { model.openReports.insert(run.taskId) }
+    }
 
     private var amber: Color { Theme.C.warning }
 
@@ -326,7 +330,7 @@ private struct SubagentRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
                 if let report = run.result, !report.isEmpty {
-                    Button(showsReport ? "Hide" : "View") { showsReport.toggle() }
+                    Button(showsReport ? "Hide" : "View") { toggleReport() }
                         .buttonStyle(.plain)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Theme.C.link)
@@ -342,7 +346,7 @@ private struct SubagentRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
                 if reportText != nil {
-                    Button(showsReport ? "Hide" : "View") { showsReport.toggle() }
+                    Button(showsReport ? "Hide" : "View") { toggleReport() }
                         .buttonStyle(.plain)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Theme.C.link)

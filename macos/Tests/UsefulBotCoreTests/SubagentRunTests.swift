@@ -554,6 +554,34 @@ import Testing
         #expect(other.droppedMessageIds.count == 1)
     }
 
+    @Test func aMultiParagraphHeldTextIsFoundInAMergedReportTurn() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "First part\n\nSecond part") { p.apply(event) }
+        p.apply(try line(resolved))
+        let merged = "Background task task_aaa (agent) is completed.\n\nResult:\nFine.\n\nFirst part\n\nSecond part"
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"message.received","data":{"message":\#(json(merged)),"kind":"\#(EveStream.backgroundTaskKind)","turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        #expect(p.queuedMessageIds.isEmpty)
+    }
+
+    /// The launching turn's row is remembered when the turn table forgets the turn.
+    @Test func aCardKeepsItsAnchorAfterItsTurnIsForgotten() throws {
+        var p = StreamProjection()
+        p.apply(try line(#"{"type":"message.received","data":{"message":"Run critics","turnId":"turn_1"},"meta":{"id":"first_row"}}"#))
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_1"},"meta":{"id":"end_1"}}"#))
+        for n in 2...300 {
+            p.apply(try line(#"{"type":"message.received","data":{"message":"Hello \#(n)","turnId":"turn_\#(n)"},"meta":{"id":"row_\#(n)"}}"#))
+            p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_\#(n)"},"meta":{"id":"end_\#(n)"}}"#))
+        }
+        let group = try #require(p.subagentRuns.first?.groupId)
+        #expect(p.subagentAnchor(forGroup: group) == "first_row")
+        let restored = try JSONDecoder().decode(StreamProjection.self, from: JSONEncoder().encode(p))
+        #expect(restored.subagentAnchor(forGroup: group) == "first_row")
+    }
+
     @Test func heldRowsSurviveASnapshotBetweenTheAnswerAndTheReplay() throws {
         var head = StreamProjection()
         for event in try originTurn("turn_16", text: "Probe 18") { head.apply(event) }
