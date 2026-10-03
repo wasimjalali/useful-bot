@@ -39,6 +39,7 @@ import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { bindSession, readSessionParent, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
+import { recordSubagentStop } from "../../../../../shared/subagent-stops.ts";
 import { eveOrigin } from "../../../../../shared/stack.ts";
 
 const EVE = eveOrigin();
@@ -469,6 +470,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   } catch (err) {
     console.error("child session check failed", err instanceof Error ? err.message : err);
     return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+  }
+  // Before the cancel reaches eve, so the marker exists when eve's cancelled
+  // report reaches the parent. A marker that cannot be written is said, not hidden.
+  if (childCancel) {
+    try {
+      recordSubagentStop({ rootSessionId: childCancel.parent, childSessionId: childCancel.child, agentId: null });
+    } catch (err) {
+      console.error("owner stop of a sub-agent was not recorded", err instanceof Error ? err.message : err);
+    }
   }
   try {
     const signal = method === "GET"

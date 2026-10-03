@@ -528,3 +528,42 @@ test("an unreadable binding store keeps the mark", async () => {
     assert.equal(seenOutside({ session: { id: "root-1", turn: { id: "t" } } }), true);
   });
 });
+
+// Stop must stick. Failure modes: a marker written for anything but a verified
+// child cancel; the "do not restart" line missing for a cancelled report of a
+// stopped child; the line shown for a genuinely failed child, a turn with no
+// report, or another root's stop.
+import { defaultSubagentStopsPath, readSubagentStops, recordSubagentStop } from "../shared/subagent-stops.ts";
+
+test("a cancelled report of a stopped child carries the do-not-restart line; a failed one does not", async () => {
+  forgetSnapshots();
+  await withWorld(async ({ alpha }) => {
+    const savedRoot = process.env.UB_STATE_ROOT;
+    process.env.UB_STATE_ROOT = mkdtempSync(join(tmpdir(), "ub-stops-"));
+    const path = defaultSubagentStopsPath();
+    try {
+      bindSession("root-1", alpha);
+      bindSession("root-2", alpha);
+      recordSubagentStop({ rootSessionId: "root-1", childSessionId: "kid-1", agentId: null });
+      const cancelled = 'Background task task_ab12 (agent) failed.\n\nError:\n{"code":"SUBAGENT_EXECUTION_FAILED","message":"The agent invocation was cancelled."}';
+      const failed = 'Background task task_cd34 (agent) failed.\n\nError:\n{"code":"SUBAGENT_EXECUTION_FAILED","message":"The model call timed out."}';
+      const turn = (root: string, text: string | null, id: string) => ({
+        ...ctxFor(root, alpha, { delivery: "owner" }),
+        messages: text === null ? [] : [{ role: "user", kind: "execution.background_task", content: text }],
+      }) as SnapshotCtx;
+      const line = async (root: string, text: string | null, id: string) => {
+        const snap = await ensureTurnSnapshot(turn(root, text, id), id);
+        return snap?.status === "ok" ? renderContext(snap.context) : "";
+      };
+      assert.match(await line("root-1", cancelled, "t1"), /The owner pressed Stop on these sub-agents: kid-1\. .*Do not start them again unless the owner asks\./);
+      assert.doesNotMatch(await line("root-1", failed, "t2"), /pressed Stop/);
+      assert.doesNotMatch(await line("root-1", null, "t3"), /pressed Stop/);
+      assert.doesNotMatch(await line("root-2", cancelled, "t4"), /pressed Stop/);
+      // An expired stop is forgotten.
+      assert.deepEqual(readSubagentStops("root-1", Date.now() + 2 * 60 * 60 * 1000, path), []);
+    } finally {
+      if (savedRoot === undefined) delete process.env.UB_STATE_ROOT;
+      else process.env.UB_STATE_ROOT = savedRoot;
+    }
+  });
+});

@@ -4,6 +4,7 @@ import { accountFullName, ownerName } from "../../shared/operator.ts";
 import { botComposerState, publicProviders, readProviderStore, type ProviderStore } from "../../shared/providers.ts";
 import { botSelection, type TurnSelection } from "../../shared/session-selection.ts";
 import { bindSession, readSessionParent, resolveSessionBot } from "../../shared/session-bindings.ts";
+import { readSubagentStops } from "../../shared/subagent-stops.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID, orchestratorId, type BotKind, type ShellStore } from "../../shared/shell-store.ts";
 import { readSessionGrant, type WorkspacePermission } from "../../shared/workspace-store.ts";
@@ -224,20 +225,47 @@ const REPORT_TEXT = /^\s*(?:Background task task_[A-Za-z0-9]+\b|\[Task state\])/
  * input in one turn: any report among them makes the turn one.
  */
 export function isSubAgentReport(messages: SnapshotCtx["messages"]): boolean {
+  return turnInputs(messages).some((message) => message.kind === REPORT_KIND || reportText(message));
+}
+
+/** The user messages after the last assistant message: what this turn was started with. */
+function turnInputs(messages: SnapshotCtx["messages"]): NonNullable<SnapshotCtx["messages"]>[number][] {
   const all = messages ?? [];
   let from = all.length;
   while (from > 0 && all[from - 1].role !== "assistant") from -= 1;
-  return all.slice(from).some((message) => {
-    if (message.role !== "user") return false;
-    if (message.kind === REPORT_KIND) return true;
-    const content = message.content;
-    const text = typeof content === "string"
-      ? content
-      : Array.isArray(content)
-        ? content.map((part) => (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "")).join("\n")
-        : "";
-    return REPORT_TEXT.test(text) || /(?:^|\n\n)Background task task_[A-Za-z0-9]+\b/.test(text);
-  });
+  return all.slice(from).filter((message) => message.role === "user");
+}
+
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "")).join("\n");
+}
+
+function reportText(message: { content?: unknown }): boolean {
+  const text = textOf(message.content);
+  return REPORT_TEXT.test(text) || /(?:^|\n\n)Background task task_[A-Za-z0-9]+\b/.test(text);
+}
+
+/** eve reports a cancelled child as a failed task with this error, or as "is cancelled". */
+const CANCELLED_REPORT = /The agent invocation was cancelled|^Background task task_[A-Za-z0-9]+(?: \([^\n]*?\))? is cancelled\./m;
+
+/**
+ * The sub-agent sessions the owner stopped, when this turn is started by a
+ * cancelled report: the root's unexpired owner stops (shared/subagent-stops.ts).
+ * A report names a task, not a session, so any recent stop under the root
+ * counts. A genuinely failed report, or a turn with no report, names none.
+ */
+function stoppedByOwner(ctx: SnapshotCtx): string[] {
+  if (ctx.session.parent || ctx.channel?.kind === "subagent") return [];
+  const cancelled = turnInputs(ctx.messages).some((message) => CANCELLED_REPORT.test(textOf(message.content)));
+  if (!cancelled) return [];
+  try {
+    return readSubagentStops(ctx.session.id).map((stop) => stop.childSessionId);
+  } catch (err) {
+    console.error("[turn-snapshot] owner stops could not be read", err instanceof Error ? err.message : err);
+    return [];
+  }
 }
 
 /**
@@ -322,6 +350,7 @@ export function buildSnapshot(
         model: { label: model.label, id: model.id, connection: model.connection },
         image: imageModel ? { label: imageModel.label, id: imageModel.id } : null,
         firstChat,
+        stopped: stoppedByOwner(ctx),
       },
     },
   };

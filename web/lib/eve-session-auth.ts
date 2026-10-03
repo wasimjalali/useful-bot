@@ -236,7 +236,7 @@ export async function authorizeChildStream(
 export type ChildCancel =
   | { kind: "none" }
   | { kind: "refused"; status: number; error: string }
-  | { kind: "verified"; jwt: string; search: string };
+  | { kind: "verified"; jwt: string; search: string; parent: string; child: string };
 
 /**
  * A cancel into a sub-agent's child, as one decision. `none`: not a POST to
@@ -262,7 +262,7 @@ export async function authorizeChildCancel(
   const auth = await authorizeChildStream(query.parent, child, query.at, deps, signal);
   if (!auth.ok) return { kind: "refused", status: auth.status, error: auth.error };
   if (auth.jwt === null) return { kind: "refused", status: 403, error: "child_session_unverified" };
-  return { kind: "verified", jwt: auth.jwt, search: query.search };
+  return { kind: "verified", jwt: auth.jwt, search: query.search, parent: query.parent, child };
 }
 
 /** Whether a stream line is exactly `parent`'s `subagent.called` for `child`. */

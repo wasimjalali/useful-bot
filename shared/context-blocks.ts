@@ -125,6 +125,8 @@ export type ThisTurn = {
   image: { label: string; id: string } | null;
   /** True only while this bot has no finished turn. */
   firstChat: boolean;
+  /** Sub-agent sessions the owner stopped whose cancelled report this turn carries. Absent or empty: none. */
+  stopped?: string[];
 };
 
 /** Weekday and YYYY-MM-DD for `date` in `tz`. Day granularity keeps the block stable all day. */
@@ -163,6 +165,9 @@ export function renderThisTurn(turn: ThisTurn): string {
     `Model: ${flat(turn.model.label)} (${flat(turn.model.id)}) via ${flat(turn.model.connection)}. Say this when asked what powers you. ${image}`,
   ];
   if (turn.firstChat) lines.push("This is the owner's first chat with you.");
+  if (turn.stopped?.length) {
+    lines.push(`The owner pressed Stop on these sub-agents: ${turn.stopped.map((id) => flat(id)).join(", ")}. Their cancelled reports are not failures. Do not start them again unless the owner asks.`);
+  }
   return lines.join("\n");
 }
 

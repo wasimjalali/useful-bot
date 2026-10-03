@@ -597,3 +597,15 @@ test("a cancel into a child is one verified decision; nothing else skips the wri
     assert.equal(recorded.reads.length, 0);
   });
 });
+
+test("only a verified child cancel names the child and parent a stop is recorded under", async () => {
+  await withSecret(async () => {
+    const ok = await authorizeChildCancel("POST", "session/kid-new/cancel", "?parent=p1&at=9", childDeps());
+    assert.equal(ok.kind === "verified" ? `${ok.parent}/${ok.child}` : "", "p1/kid-new");
+    // Refused and non-child requests carry nothing to record.
+    for (const [suffix, search] of [["session/kid-new/cancel", "?parent=p1"], ["session/kid-1/cancel", ""], ["session/kid-new", "?parent=p1&at=9"]] as const) {
+      const r = await authorizeChildCancel("POST", suffix, search, childDeps());
+      assert.notEqual(r.kind, "verified", suffix + search);
+    }
+  });
+});
