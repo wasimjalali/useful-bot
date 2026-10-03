@@ -968,6 +968,12 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// Owner rows whose turn ended with no model step while a request was
     /// open: eve held them for later. They stay marked once it is answered.
     public private(set) var queuedMessageIds: Set<String> = []
+    /// The held rows in the order they were held, until eve replays them,
+    /// drops them or the session ends. A row raised the request itself (its
+    /// turn had no step) or was queued behind it.
+    private var heldOrder: [String] = []
+    /// Held rows eve never replayed: the bot never got them.
+    public private(set) var droppedMessageIds: Set<String> = []
     /// The brief of each sub-agent call, by call id, until its receipt claims it.
     private var callBriefs: [String: String] = [:]
     /// The turn each task's receipt was seen under, keyed by call id.
@@ -1089,6 +1095,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         /// Whether a model step began in it. A turn eve queued behind a
         /// pending request runs none.
         var sawStep = false
+        /// Whether a non-question request was raised in it.
+        var raisedRequest = false
         /// Whether a message arrived in this turn at all. A turn refused
         /// before its own echo (`session_busy`, an open circuit) would
         /// otherwise be read as having thrown away a message an earlier turn
@@ -1529,10 +1537,58 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// An owner row whose turn ended with no model step while a request was
     /// open was held by eve, not answered.
     private mutating func markQueued(_ record: TurnRecord) {
-        guard !pendingRequests.isEmpty, record.sawMessage, !record.sawStep, !record.producedWork,
+        // The turn that raised the request counts as having produced work,
+        // but it ran no step and eve never replays it.
+        guard !pendingRequests.isEmpty, record.sawMessage, !record.sawStep,
+              !record.producedWork || record.raisedRequest,
               let carried = record.carriedUserMessageId,
               let index = indexById[carried] else { return }
-        queuedMessageIds.insert(messages[index].id)
+        let id = messages[index].id
+        queuedMessageIds.insert(id)
+        if !heldOrder.contains(id) { heldOrder.append(id) }
+    }
+
+    /// The held rows are gone for good: the answer was Stop, or eve went on
+    /// without replaying them.
+    public mutating func dropHeldMessages() {
+        for id in heldOrder { droppedMessageIds.insert(id) }
+        heldOrder = []
+        queuedMessageIds = []
+    }
+
+    /// eve answers a request by replaying what it held as one new message
+    /// (several joined by a blank line), and never replays the message whose
+    /// turn raised the request. A message that is that replay joins the rows
+    /// it repeats; whatever else was held is dropped. Returns whether it did.
+    private mutating func attachReplay(_ text: String, event: EveEvent, at stamp: Date?) -> Bool {
+        guard pendingRequests.isEmpty, !heldOrder.isEmpty else { return false }
+        let texts = heldOrder.map { id in indexById[id].map { messages[$0].text.trimmingCharacters(in: .whitespacesAndNewlines) } ?? "" }
+        let wanted = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var matched: Range<Int>?
+        search: for length in stride(from: texts.count, through: 1, by: -1) {
+            for start in 0...(texts.count - length) where texts[start..<start + length].joined(separator: "\n\n") == wanted {
+                matched = start..<start + length
+                break search
+            }
+        }
+        guard let matched else {
+            // Not a replay of anything held: eve went on without it.
+            dropHeldMessages()
+            return false
+        }
+        for id in heldOrder[..<matched.lowerBound] { droppedMessageIds.insert(id) }
+        let attached = Array(heldOrder[matched])
+        let rest = Array(heldOrder[matched.upperBound...])
+        heldOrder = rest
+        queuedMessageIds = Set(rest)
+        for id in attached { Self.claimUserRow(id, on: &turn) }
+        turn.lastRowId = attached.last
+        turnStartedAt = stamp ?? Date()
+        failed = false
+        failure = nil
+        pending = true
+        activity = .thinking
+        return true
     }
 
     public mutating func beginTurn() {
@@ -1828,6 +1884,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 activity = .thinking
                 return
             }
+            if attachReplay(text, event: event, at: stamp) { return }
             let userId = event.id ?? mintId("u")
             turnStartedAt = stamp ?? Date()
             appendMessage(ChatMessage(
@@ -2041,6 +2098,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     runningTasks = [:]
                     abandonRuns()
                     pendingRequests = []
+                    dropHeldMessages()
                 }
                 guard var stepped = turns[id] else { break }
                 stepped.ended = true
@@ -2071,6 +2129,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     runningTasks = [:]
                     abandonRuns()
                     pendingRequests = []
+                    dropHeldMessages()
                 }
                 let standing = retryableMarkId
                 pending = false
@@ -2155,6 +2214,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 }
             }
             guard var record = record(of: owner) else { break }
+            if !EveStream.parsePendingRequests(event.data, eventId: event.id).isEmpty { record.raisedRequest = true }
             // A question ends the turn: the bot is waiting on the owner, not
             // working. So it closes the rows above it, the way an answer does.
             record.producedWork = true
@@ -2180,6 +2240,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             questions.removeAll { resolved.contains($0.id) }
             pendingRequests.removeAll { resolved.contains($0.id) }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
+            // The session ended with rows still held: eve will not replay them.
+            if event.type == "session.completed", pendingRequests.isEmpty { dropHeldMessages() }
             switch turnOwner(of: event) {
             case .ignored:
                 // The same for another turn's end: this turn is still running.

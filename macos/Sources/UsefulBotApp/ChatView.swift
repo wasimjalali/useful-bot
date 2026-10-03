@@ -663,6 +663,19 @@ struct ChatView: View {
                                         }
                                     }
                                 }
+                                // eve held this message behind a request and
+                                // never replayed it.
+                                if model.droppedRowIds.contains(row.id) {
+                                    FailureRow(
+                                        text: "\(bot.name) never got this message",
+                                        retryable: !Attachments.namesEchoedFile(row.text),
+                                        enabled: !model.pending,
+                                        until: nil,
+                                        maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
+                                        buttonTitle: "Send again"
+                                    ) { model.sendFromCard(row.text) }
+                                    .padding(.top, DesignTokens.Space.bubbleStackGap - DesignTokens.Space.transcriptGap)
+                                }
                             case .images(let rows):
                                 GeneratedImageRun(
                                     rows: rows,
@@ -1179,6 +1192,7 @@ private struct FailureRow: View {
     /// A router cool-down's end: the row counts down to it and holds Retry.
     let until: Date?
     let maxWidth: CGFloat
+    var buttonTitle = "Retry"
     let retry: () -> Void
 
     /// A row without the button says what happened, not to press Retry.
@@ -1225,7 +1239,7 @@ private struct FailureRow: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 if retryable {
-                    NativeButton("Retry", kind: .secondary, small: true, enabled: canRetry, action: retry)
+                    NativeButton(buttonTitle, kind: .secondary, small: true, enabled: canRetry, action: retry)
                         .accessibilityIdentifier("failure-retry")
                 }
             }

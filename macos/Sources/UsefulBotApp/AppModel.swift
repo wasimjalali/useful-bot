@@ -158,6 +158,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var busyRequests: Set<String> = []
     /// Owner rows eve is holding until a request is answered.
     @Published private(set) var queuedRowIds: Set<String> = []
+    /// Owner rows eve held and never replayed: the bot never got them.
+    @Published private(set) var droppedRowIds: Set<String> = []
     /// One card per turn that launched sub-agents, for the open chat.
     @Published private(set) var subagentCards: [SubagentCardData] = []
     /// Cards the owner opened. Kept for the life of the app, not saved.
@@ -2812,6 +2814,13 @@ final class AppModel: ObservableObject {
             }
         }
         if queued != queuedRowIds { queuedRowIds = queued }
+        var dropped = Set<String>()
+        for id in projection.droppedMessageIds {
+            guard let message = projection.messages.first(where: { $0.id == id }),
+                  let row = Transcript.rowId(forMessage: message, in: rows) else { continue }
+            dropped.insert(row)
+        }
+        if dropped != droppedRowIds { droppedRowIds = dropped }
         syncChildFollows()
     }
 
@@ -2828,6 +2837,11 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             do {
                 try await self.client.answerInput(botId: botId, sessionId: session, requestId: request.id, optionId: option.id)
+                // Stop ends the session: what eve held will never be replayed.
+                if request.kind == PendingRequestCopy.sessionLimitKind, option.id == "stop", self.selectedBotId == botId {
+                    self.projection.dropHeldMessages()
+                    self.rebuildTranscript()
+                }
                 // The stream normally removes the card well before this. If
                 // it did not, the buttons come back rather than stay dead.
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
@@ -4356,6 +4370,7 @@ final class AppModel: ObservableObject {
         pendingRequests = []
         busyRequests = []
         queuedRowIds = []
+        droppedRowIds = []
         subagentCards = []
         resetChildFollows()
         activity = .thinking

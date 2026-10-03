@@ -310,6 +310,121 @@ import Testing
         #expect(q.queuedMessageIds.isEmpty)
     }
 
+    // MARK: held rows and eve's replay
+
+    /// The turn whose own message raised the request: a message, the request, an end, no step.
+    private func originTurn(_ turn: String, text: String) throws -> [EveEvent] {
+        [
+            try line(#"{"type":"turn.started","data":{"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"message.received","data":{"message":\#(json(text)),"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(limit.replacingOccurrences(of: "turn_47", with: turn).replacingOccurrences(of: "evt_limit", with: nextId())),
+            try line(#"{"type":"turn.completed","data":{"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+        ]
+    }
+
+    private let resolved = #"{"type":"input.resolved","data":{"resolutions":[{"kind":"session-limit","outcome":"answered","requestId":"s:limit:input:41"}]}}"#
+
+    /// eve replays the queued text as a new message in a turn that runs.
+    private func replayTurn(_ turn: String, text: String) throws -> [EveEvent] {
+        [
+            try line(#"{"type":"turn.started","data":{"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"message.received","data":{"message":\#(json(text)),"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"step.started","data":{"turnId":"\#(turn)","stepIndex":0},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"message.completed","data":{"message":"ok","turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"turn.completed","data":{"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+        ]
+    }
+
+    private func users(_ p: StreamProjection) -> [ChatMessage] { p.messages.filter { $0.role == .user } }
+
+    @Test func theMessageThatRaisedTheRequestIsHeldToo() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        #expect(p.pendingRequests.count == 1)
+        #expect(p.queuedMessageIds == Set(users(p).map(\.id)))
+        #expect(p.droppedMessageIds.isEmpty)
+    }
+
+    @Test func aReplayOfQueuedTextAttachesToTheExistingRow() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        #expect(users(p).count == 2)
+        p.apply(try line(resolved))
+        for event in try replayTurn("turn_18", text: "Probe 19") { p.apply(event) }
+        // Probe 19 once, then its reply; probe 18 is never replayed.
+        #expect(users(p).map(\.text) == ["Probe 18", "Probe 19"])
+        #expect(p.messages.map(\.text) == ["Probe 18", "Probe 19", "ok"])
+        #expect(p.queuedMessageIds.isEmpty)
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+        #expect(!p.pending)
+    }
+
+    @Test func severalQueuedRowsJoinedByBlankLinesAttachInOrder() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        for event in try queuedTurn("turn_18", text: "Probe 20") { p.apply(event) }
+        p.apply(try line(resolved))
+        for event in try replayTurn("turn_19", text: "Probe 19\n\nProbe 20") { p.apply(event) }
+        #expect(users(p).map(\.text) == ["Probe 18", "Probe 19", "Probe 20"])
+        #expect(p.messages.last?.text == "ok")
+        #expect(p.queuedMessageIds.isEmpty)
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+    }
+
+    @Test func aReplayThatIncludesTheOriginDropsNothing() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        p.apply(try line(resolved))
+        for event in try replayTurn("turn_18", text: "Probe 18\n\nProbe 19") { p.apply(event) }
+        #expect(users(p).count == 2)
+        #expect(p.droppedMessageIds.isEmpty)
+        #expect(p.queuedMessageIds.isEmpty)
+    }
+
+    @Test func aDifferentMessageAfterTheAnswerDropsTheHeldRows() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        p.apply(try line(resolved))
+        for event in try replayTurn("turn_17", text: "Something else") { p.apply(event) }
+        #expect(users(p).map(\.text) == ["Probe 18", "Something else"])
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+        #expect(p.queuedMessageIds.isEmpty)
+    }
+
+    @Test func stopEndsTheSessionAndEveryHeldRowIsDropped() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        p.apply(try line(resolved))
+        p.apply(try line(#"{"type":"session.completed","data":{}}"#))
+        #expect(p.droppedMessageIds == Set(users(p).map(\.id)))
+        #expect(p.queuedMessageIds.isEmpty)
+    }
+
+    @Test func theOwnersStopChoiceDropsHeldRowsWithoutWaitingForTheStream() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        p.dropHeldMessages()
+        #expect(p.droppedMessageIds == Set(users(p).map(\.id)))
+        #expect(p.queuedMessageIds.isEmpty)
+    }
+
+    @Test func heldRowsSurviveASnapshotBetweenTheAnswerAndTheReplay() throws {
+        var head = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { head.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { head.apply(event) }
+        head.apply(try line(resolved))
+        var restored = try JSONDecoder().decode(StreamProjection.self, from: JSONEncoder().encode(head))
+        #expect(restored == head)
+        for event in try replayTurn("turn_18", text: "Probe 19") { restored.apply(event) }
+        #expect(users(restored).map(\.text) == ["Probe 18", "Probe 19"])
+        #expect(restored.droppedMessageIds.count == 1)
+        #expect(restored.queuedMessageIds.isEmpty)
+    }
+
     // MARK: snapshots
 
     @Test func aSnapshotRoundTripKeepsProjectingTheSame() throws {
