@@ -2853,18 +2853,20 @@ final class AppModel: ObservableObject {
     private var appActive = true
     private var activityObservers: [NSObjectProtocol] = []
 
-    /// Children are followed only while the app is in front.
+    /// Children are followed unless the app is hidden. Not "in front": the
+    /// owner often keeps the chat visible beside another app while sub-agents
+    /// run, and a card that froze then read as stuck (found in the live check).
     private func observeAppActivity() {
-        appActive = NSApplication.shared.isActive
+        appActive = !NSApplication.shared.isHidden
         let center = NotificationCenter.default
         activityObservers = [
-            center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            center.addObserver(forName: NSApplication.didUnhideNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.appActive = true
                     self?.syncChildFollows()
                 }
             },
-            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            center.addObserver(forName: NSApplication.didHideNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.appActive = false
                     self?.stopChildFollows()
