@@ -345,6 +345,34 @@ import Testing
         #expect(p.droppedMessageIds.isEmpty)
     }
 
+    /// Seen live: eve can open the step before it pauses for the limit.
+    @Test func anOriginTurnWithAStepStartedIsStillHeldAndDropped() throws {
+        var p = StreamProjection()
+        var origin = try originTurn("turn_25", text: "Probe 21")
+        origin.insert(try line(#"{"type":"step.started","data":{"turnId":"turn_25","stepIndex":0},"meta":{"id":"\#(nextId())"}}"#), at: 2)
+        for event in origin { p.apply(event) }
+        for event in try queuedTurn("turn_26", text: "Held") { p.apply(event) }
+        #expect(p.queuedMessageIds.count == 2)
+        p.apply(try line(resolved))
+        for event in try replayTurn("turn_27", text: "Held") { p.apply(event) }
+        #expect(users(p).map(\.text) == ["Probe 21", "Held"])
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+    }
+
+    /// A request raised after the turn already answered resumes that turn, so
+    /// its message is neither held nor dropped.
+    @Test func aRequestRaisedMidTurnDoesNotHoldItsMessage() throws {
+        var p = StreamProjection()
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_30"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"message.received","data":{"message":"Do it","turnId":"turn_30"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"step.started","data":{"turnId":"turn_30","stepIndex":0},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"message.completed","data":{"message":"Working on it","turnId":"turn_30"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(limit.replacingOccurrences(of: "turn_47", with: "turn_30").replacingOccurrences(of: "evt_limit", with: nextId())))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_30"},"meta":{"id":"\#(nextId())"}}"#))
+        #expect(p.pendingRequests.count == 1)
+        #expect(p.queuedMessageIds.isEmpty)
+    }
+
     @Test func aReplayOfQueuedTextAttachesToTheExistingRow() throws {
         var p = StreamProjection()
         for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }

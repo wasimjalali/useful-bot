@@ -1537,10 +1537,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// An owner row whose turn ended with no model step while a request was
     /// open was held by eve, not answered.
     private mutating func markQueued(_ record: TurnRecord) {
-        // The turn that raised the request counts as having produced work,
-        // but it ran no step and eve never replays it.
-        guard !pendingRequests.isEmpty, record.sawMessage, !record.sawStep,
-              !record.producedWork || record.raisedRequest,
+        // The turn that raised the request before doing any work is held
+        // too, and eve never replays it. It may show a `step.started` (the
+        // pause lands before the model call) or none, so the step is no test.
+        guard !pendingRequests.isEmpty, record.sawMessage,
+              record.raisedRequest || (!record.sawStep && !record.producedWork),
               let carried = record.carriedUserMessageId,
               let index = indexById[carried] else { return }
         let id = messages[index].id
@@ -2214,7 +2215,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 }
             }
             guard var record = record(of: owner) else { break }
-            if !EveStream.parsePendingRequests(event.data, eventId: event.id).isEmpty { record.raisedRequest = true }
+            // Only a request raised before the turn did anything holds its
+            // message: one raised mid-turn resumes that turn once answered.
+            if !record.producedWork, !EveStream.parsePendingRequests(event.data, eventId: event.id).isEmpty {
+                record.raisedRequest = true
+            }
             // A question ends the turn: the bot is waiting on the owner, not
             // working. So it closes the rows above it, the way an answer does.
             record.producedWork = true
