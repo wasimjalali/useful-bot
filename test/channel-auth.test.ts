@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHmac } from "node:crypto";
 import { channelAuth } from "../agent/lib/channel-auth.ts";
-import { authorizeEveCall, carryOverReader } from "../web/lib/eve-session-auth.ts";
+import { authorizeChildStream, authorizeEveCall, carryOverReader, streamHasSubagentCall, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
 import { channelJwt } from "../web/lib/agent-exec.ts";
 import type { ShellStore } from "../shared/shell-store.ts";
 
@@ -206,4 +206,125 @@ test("a carry-over reads the old session only as the bot that owns it", async ()
     // A bot id is never empty, so a null subject cannot reach the signer.
     assert.throws(() => channelJwt(""), /channel_bot_missing/);
   });
+});
+
+// MARK: - child session streams
+//
+// Failure modes, written before the code: the parent is unbound, bound to
+// another bot, or itself a child (a nested read); the child is the parent, is
+// a root session of this or another bot, is already bound as a child of a
+// different parent, or is claimed by another bot; the parent's stream does not
+// list the child, lists it under a different parent session (the event's own
+// sessionId), is cut off or cannot be read (fail closed, not open); a cache
+// hit must not skip the parent checks; a verified child is bound as the
+// parent's bot so eve answers, and only then is a token minted.
+
+function childDeps(over: Partial<ChildStreamDeps> = {}): ChildStreamDeps & { binds: string[]; state: { verifies: number } } {
+  const owners = new Map<string, string>([["p1", "bot-a"], ["p2", "bot-b"], ["root-a", "bot-a"], ["kid-old", "bot-a"]]);
+  const parents = new Map<string, string>([["kid-old", "p1"], ["nested", "kid-old"], ["nested-b", "kid-old"]]);
+  owners.set("nested", "bot-a");
+  const state = { binds: [] as string[], verifies: 0 };
+  const deps: ChildStreamDeps = {
+    resolveBot: (id) => owners.get(id) ?? null,
+    readParent: (id) => parents.get(id) ?? null,
+    verify: async (parent, child) => { state.verifies += 1; return parent === "p1" && (child === "kid-1" || child === "kid-old"); },
+    bind: (child, parent, bot) => { state.binds.push(`${child}<${parent}:${bot}`); owners.set(child, bot); parents.set(child, parent); },
+    cache: new Map(),
+    ...over,
+  };
+  return Object.assign(deps, { binds: state.binds, state });
+}
+
+test("a child stream is read only when it is a verified child of a session bound to the bot", async () => {
+  await withSecret(async () => {
+    const deps = childDeps();
+    const ok = await authorizeChildStream("p1", "kid-1", deps);
+    assert.ok(ok.ok);
+    assert.equal(claimsOf(ok.jwt).botId, "bot-a");
+    assert.equal(ok.bound, "bot-a");
+    assert.deepEqual(deps.binds, ["kid-1<p1:bot-a"]);
+    assert.equal(deps.state.verifies, 1);
+    // A second read is served from the cache, with the same binding check.
+    const again = await authorizeChildStream("p1", "kid-1", deps);
+    assert.ok(again.ok);
+    assert.equal(deps.state.verifies, 1);
+    assert.equal(deps.binds.length, 1);
+  });
+});
+
+test("a child stream is refused for an unbound, foreign or nested parent, and a bad child", async () => {
+  await withSecret(async () => {
+    const refused = { ok: false, status: 403, error: "child_session_unverified" };
+    const deps = childDeps();
+    // The parent is unbound: the same 400 a normal stream read gets.
+    assert.deepEqual(await authorizeChildStream("ghost", "kid-1", deps), { ok: false, status: 400, error: "session_unbound" });
+    // Parent bound to another bot while the child is bot-a's: the child is not under a bot-a session.
+    assert.deepEqual(await authorizeChildStream("p2", "kid-1", deps), refused);
+    // Nested: the parent is itself a child.
+    assert.deepEqual(await authorizeChildStream("kid-old", "nested", deps), refused);
+    // A child under a different parent than the one named.
+    assert.deepEqual(await authorizeChildStream("p1", "nested-b", deps), refused);
+    // Not in the parent's stream.
+    assert.deepEqual(await authorizeChildStream("p1", "kid-9", deps), refused);
+    // The parent as its own child, and a root session as a child.
+    assert.deepEqual(await authorizeChildStream("p1", "p1", deps), refused);
+    assert.deepEqual(await authorizeChildStream("p1", "root-a", deps), refused);
+    assert.deepEqual(await authorizeChildStream("p1", "p2", deps), refused);
+    assert.deepEqual(deps.binds, []);
+  });
+});
+
+test("an unreadable parent stream refuses the child; a cache hit still checks the parent", async () => {
+  await withSecret(async () => {
+    const down = childDeps({ verify: async () => { throw new Error("eve_stream_500"); } });
+    await assert.rejects(authorizeChildStream("p1", "kid-1", down), /eve_stream_500/);
+    assert.deepEqual(down.binds, []);
+    // Verified once, then the parent's binding changes under the cache: refused again.
+    const deps = childDeps();
+    assert.ok((await authorizeChildStream("p1", "kid-1", deps)).ok);
+    const moved = { ...deps, resolveBot: (id: string) => (id === "p1" ? "bot-b" : deps.resolveBot(id)) };
+    assert.deepEqual(await authorizeChildStream("p1", "kid-1", moved), { ok: false, status: 403, error: "child_session_unverified" });
+    // The cache is bounded.
+    const small = childDeps({ verify: async () => true, cache: new Map() });
+    for (let i = 0; i < 700; i++) await authorizeChildStream("p1", `kid-${i}`, small);
+    assert.ok(small.cache.size <= 512);
+  });
+});
+
+function ndjson(events: unknown[], tail?: number): Response {
+  const headers = new Headers({ "content-type": "application/x-ndjson" });
+  if (tail !== undefined) headers.set("x-eve-stream-tail-index", String(tail));
+  return new Response(events.map((event) => JSON.stringify(event)).join("\n") + "\n", { headers });
+}
+const called = (sessionId: string, childSessionId: string) => ({ type: "subagent.called", data: { sessionId, childSessionId, callId: "c" } });
+
+test("the parent's stream is scanned for a subagent.called naming this parent and child", async () => {
+  const events = [
+    { type: "turn.started", data: {} },
+    called("p1", "kid-1"),
+    { type: "message.completed", data: {} },
+  ];
+  const fetching = (response: () => Response) => (async () => response()) as unknown as typeof fetch;
+  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => ndjson(events, 2))), true);
+  // Same child under a different parent's event: not a match.
+  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => ndjson([called("p9", "kid-1")], 0))), false);
+  // A grandchild call re-emitted on the parent stream names the child as its session.
+  assert.equal(await streamHasSubagentCall("p1", "kid-2", "jwt", fetching(() => ndjson([called("kid-1", "kid-2")], 0))), false);
+  // Another event type carrying the same fields is not a delegation.
+  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => ndjson([{ type: "subagent.completed", data: { sessionId: "p1", childSessionId: "kid-1" } }], 0))), false);
+  // A line that does not parse is skipped, not fatal; the match after it counts.
+  const noisy = new Response(`not json\n${JSON.stringify(called("p1", "kid-1"))}\n`, { headers: { "x-eve-stream-tail-index": "1" } });
+  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => noisy)), true);
+  // An error status is loud, never read as "not a child".
+  await assert.rejects(streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => new Response("no", { status: 500 }))), /eve_stream_500/);
+  // The read is as the bot, from the start of the parent stream.
+  let seen = "";
+  let auth = "";
+  await streamHasSubagentCall("p1", "kid-1", "jwt-x", (async (url: string, init: RequestInit) => {
+    seen = String(url);
+    auth = String((init.headers as Record<string, string>).authorization);
+    return ndjson(events, 2);
+  }) as unknown as typeof fetch);
+  assert.match(seen, /\/eve\/v1\/session\/p1\/stream\?startIndex=0&includeTailIndex=1$/);
+  assert.equal(auth, "Bearer jwt-x");
 });

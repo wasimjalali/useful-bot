@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   backfillSessionOwners,
+  bindChildSession,
   bindSession,
   parseSessionOwners,
   readSessionBot,
+  readSessionParent,
   readSessionOwners,
   resolveSessionBot,
   sessionCarriesOverFor,
@@ -605,5 +607,38 @@ test("the default bot is bound like any other", async () => {
     point(DEFAULT_BOT_ID, "sess-default");
     assert.equal(resolveSessionBot("sess-default"), DEFAULT_BOT_ID);
     assert.equal(existsSync(process.env.UB_SESSION_OWNERS_PATH as string), true);
+  });
+});
+
+// Failure modes for a child binding, written before the code: a child row must
+// say which session it is under and still be a plain bot binding for eve; it
+// can never be re-pointed at another bot or parent, a root session never gains
+// a parent, a bad parent id is refused on read and write, a child cannot be
+// carried over, and deleting the bot takes its children with it.
+test("a child session is bound to its parent's bot with the parent recorded, immutably", async () => {
+  await withWorld(({ owners, alpha, beta }) => {
+    bindSession("root-1", alpha, new Date(), owners);
+    assert.equal(bindChildSession("kid-1", "root-1", alpha, new Date(), owners), "created");
+    assert.equal(readSessionBot("kid-1", owners), alpha);
+    assert.equal(readSessionParent("kid-1", owners), "root-1");
+    assert.equal(readSessionParent("root-1", owners), null);
+    assert.equal(readSessionParent("ghost", owners), null);
+    assert.equal(bindChildSession("kid-1", "root-1", alpha, new Date(), owners), "exists");
+    assert.throws(() => bindChildSession("kid-1", "root-1", beta, new Date(), owners), /session_owner_conflict/);
+    assert.throws(() => bindChildSession("kid-1", "root-2", alpha, new Date(), owners), /session_owner_conflict/);
+    // A root session never becomes a child, and a child never becomes a root.
+    assert.throws(() => bindChildSession("root-1", "root-2", alpha, new Date(), owners), /session_owner_conflict/);
+    assert.equal(bindSession("kid-1", alpha, new Date(), owners), "exists");
+    assert.equal(readSessionParent("kid-1", owners), "root-1");
+    assert.throws(() => bindChildSession("kid-2", "bad/id", alpha, new Date(), owners), /session_owners_session_id/);
+    assert.throws(() => bindChildSession("kid-2", "kid-2", alpha, new Date(), owners), /session_owners_session_id/);
+    // Strict parse: a parent that is not a session id is a bad row.
+    assert.throws(() => parseSessionOwners({ schemaVersion: 1, sessions: { k: { botId: "a", createdAt: new Date().toISOString(), parentId: "a/b" } } }), /session_owners_parent_id/);
+    assert.throws(() => parseSessionOwners({ schemaVersion: 1, sessions: { k: { botId: "a", createdAt: new Date().toISOString(), parentId: 5 } } }), /session_owners_parent_id/);
+    // A child is not carried over into a new session, and goes with its bot.
+    assert.equal(sessionCarriesOverFor("kid-1", alpha, null, owners), false);
+    assert.equal(sessionCarriesOverFor("root-1", alpha, null, owners), true);
+    assert.equal(unbindBot(alpha, owners), 2);
+    assert.equal(readSessionParent("kid-1", owners), null);
   });
 });

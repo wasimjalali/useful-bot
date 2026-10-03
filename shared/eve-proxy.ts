@@ -140,6 +140,76 @@ export function parseTurnMessage(value: unknown): TurnMessage | null {
   return parts;
 }
 
+const INPUT_REQUEST_ID_MAX = 300;
+const INPUT_OPTION_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const INPUT_RESPONSES_MAX = 8;
+
+export type InputResponse = { requestId: string; optionId: string };
+
+/**
+ * The structured answer to an eve input request (a session limit, an
+ * approval): `{"inputResponses":[{"requestId","optionId"}]}`, the body eve
+ * takes in place of a message. Strict on purpose: 1 to 8 items of exactly
+ * those two string fields, and nothing else on the body but the bot tag the
+ * app sends with every turn (checked against the binding, never relayed).
+ * Text, files, extra keys and a message beside it are refused, not stripped.
+ */
+export function parseInputResponses(raw: string): { ok: true; inputResponses: InputResponse[] } | { ok: false } {
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false };
+  }
+  if (!json || typeof json !== "object" || Array.isArray(json)) return { ok: false };
+  const body = json as Record<string, unknown>;
+  for (const key of Object.keys(body)) {
+    if (key !== "inputResponses" && key !== "botId") return { ok: false };
+  }
+  if (body.botId !== undefined && typeof body.botId !== "string") return { ok: false };
+  const items = body.inputResponses;
+  if (!Array.isArray(items) || items.length < 1 || items.length > INPUT_RESPONSES_MAX) return { ok: false };
+  const out: InputResponse[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return { ok: false };
+    const rec = item as Record<string, unknown>;
+    const keys = Object.keys(rec);
+    if (keys.length !== 2 || !keys.includes("requestId") || !keys.includes("optionId")) return { ok: false };
+    const { requestId, optionId } = rec;
+    if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > INPUT_REQUEST_ID_MAX) return { ok: false };
+    if (typeof optionId !== "string" || !INPUT_OPTION_ID.test(optionId)) return { ok: false };
+    out.push({ requestId, optionId });
+  }
+  return { ok: true, inputResponses: out };
+}
+
+/** True when the body is a JSON object that carries an `inputResponses` key at all, valid or not. */
+export function bodyHasInputResponses(raw: string): boolean {
+  try {
+    const json = JSON.parse(raw) as unknown;
+    return Boolean(json) && typeof json === "object" && !Array.isArray(json) && Object.hasOwn(json as object, "inputResponses");
+  } catch {
+    return false;
+  }
+}
+
+const CHILD_PARENT = new RegExp(`^${SESSION_ID}$`);
+
+/**
+ * The `parent` query of a sub-agent's stream read. The app names the parent
+ * session the child was delegated from; the proxy never relays it to eve.
+ * `parent` is null when it is present but not exactly one session id.
+ */
+export function childStreamQuery(search: string): { present: false } | { present: true; parent: string | null; search: string } {
+  const params = new URLSearchParams(search);
+  if (!params.has("parent")) return { present: false };
+  const all = params.getAll("parent");
+  const parent = all.length === 1 && CHILD_PARENT.test(all[0]) ? all[0] : null;
+  params.delete("parent");
+  const rest = params.toString();
+  return { present: true, parent, search: rest ? `?${rest}` : "" };
+}
+
 /** The text of a turn: the string itself, or its text parts joined. */
 export function turnText(message: TurnMessage): string {
   if (typeof message === "string") return message;
