@@ -1,12 +1,15 @@
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
+  bodyHasInputResponses,
+  childStreamQuery,
   turnRewriteFailure,
   eveGetAllowed,
   evePostAllowed,
   eveSessionRoute,
   hiddenPrefixChars,
   isEveSessionPost,
+  parseInputResponses,
   parseTurnExtras,
   parseTurnMessage,
   relayedEveCode,
@@ -29,13 +32,13 @@ import {
   sessionHasCompletedTurn,
   syncSessionWorkspace,
 } from "../../../../lib/agent-exec";
-import { authorizeEveCall, carryOverReader, type EveCallAuth } from "../../../../lib/eve-session-auth";
+import { authorizeChildStream, authorizeEveCall, carryOverReader, childStreamDeps, childWriteRefusal, type EveCallAuth } from "../../../../lib/eve-session-auth";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
-import { bindSession, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
+import { bindSession, readSessionParent, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
 import { eveOrigin } from "../../../../../shared/stack.ts";
 
 const EVE = eveOrigin();
@@ -103,7 +106,20 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     }
   }
   const url = new URL(request.url);
-  const target = `${EVE}/eve/v1/${suffix}${url.search}`;
+  let target = `${EVE}/eve/v1/${suffix}${url.search}`;
+  const sessionPath = /^session\/([^/]+)(?:\/(?:stream|cancel))?$/.exec(suffix);
+  // A sub-agent's child session is read only. A send, a cancel or a reset into
+  // one is refused here, whatever binding eve holds for it.
+  if (method !== "GET" && sessionPath) {
+    try {
+      if (readSessionParent(sessionPath[1]) !== null) {
+        return Response.json({ ok: false, error: "child_session_readonly" }, { status: 403 });
+      }
+    } catch (err) {
+      console.error("child session check failed", err instanceof Error ? err.message : err);
+      return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+    }
+  }
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
@@ -121,7 +137,34 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     }
   };
   if (method === "GET") {
-    const auth = authorize(null);
+    // A read of a sub-agent's child stream names the session it was delegated
+    // from (`parent`) and the index of that session's `subagent.called` event
+    // for it (`at`), which is checked against that one event on the parent's
+    // own stream (see authorizeChildStream). A session recorded as a child is
+    // never read without its parent.
+    const child = sessionPath && suffix.endsWith("/stream") ? childStreamQuery(url.search) : null;
+    let auth: EveCallAuth | Response;
+    if (sessionPath && child?.present) {
+      if (child.parent === null) return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
+      try {
+        auth = await authorizeChildStream(child.parent, sessionPath[1], child.at, childStreamDeps(), request.signal);
+      } catch (err) {
+        console.error("child stream could not be verified", err instanceof Error ? err.message : err);
+        const missing = err instanceof Error && err.message === "channel_credential_missing";
+        return Response.json({ ok: false, error: missing ? "channel_credential_missing" : "child_session_unverifiable" }, { status: 503 });
+      }
+      target = `${EVE}/eve/v1/${suffix}${child.search}`;
+    } else {
+      try {
+        if (sessionPath && readSessionParent(sessionPath[1]) !== null) {
+          return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
+        }
+      } catch (err) {
+        console.error("child session check failed", err instanceof Error ? err.message : err);
+        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+      }
+      auth = authorize(null);
+    }
     if (auth instanceof Response) return auth;
     if (!auth.ok) return Response.json({ ok: false, error: auth.error }, { status: auth.status });
     jwt = auth.jwt;
@@ -132,6 +175,9 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   // The session a replacement carries over from, once verified.
   let carriedFrom: string | null = null;
   let carriedOwner: string | null = null;
+  // An answer to an eve input request (a session limit, an approval): forwarded
+  // as validated, never rewritten into a turn.
+  let inputAnswer = false;
   if (method !== "GET") {
     try {
       body = await readBody(request, EVE_BODY_MAX);
@@ -149,8 +195,20 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       jwt = auth.jwt;
       if (jwt) headers.set("authorization", `Bearer ${jwt}`);
       if (isEveSessionPost(suffix) && auth.body !== null) body = new TextEncoder().encode(auth.body);
+      if (isEveSessionPost(suffix) && bodyHasInputResponses(new TextDecoder().decode(body))) {
+        // Same binding as a turn into this session (authorize above pinned the
+        // bound bot); the body is rebuilt from the validated fields alone.
+        const answer = parseInputResponses(new TextDecoder().decode(body));
+        if (!answer.ok) return Response.json({ ok: false, error: "input_responses_invalid" }, { status: 400 });
+        body = new TextEncoder().encode(JSON.stringify({ inputResponses: answer.inputResponses }));
+        headers.set("content-type", "application/json");
+        inputAnswer = true;
+      }
+    } else if (bodyHasInputResponses(new TextDecoder().decode(body))) {
+      // A create opens a conversation with a message; there is nothing to answer yet.
+      return Response.json({ ok: false, error: "input_responses_invalid" }, { status: 400 });
     }
-    if (isEveSessionPost(suffix)) {
+    if (isEveSessionPost(suffix) && !inputAnswer) {
       // Identity first. A turn into an existing session belongs to the bot the
       // durable binding names for that session id, never to the bot the body
       // says: nothing else ties a session to a bot, and the body is the one
@@ -381,6 +439,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       }
     }
+  }
+  // A child can be recorded while this request was being read and prepared:
+  // one last look, right before anything reaches eve.
+  try {
+    const readOnly = childWriteRefusal(method, suffix, (id) => readSessionParent(id) !== null);
+    if (readOnly) return Response.json({ ok: false, error: readOnly.error }, { status: readOnly.status });
+  } catch (err) {
+    console.error("child session check failed", err instanceof Error ? err.message : err);
+    return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
   }
   try {
     const signal = method === "GET"

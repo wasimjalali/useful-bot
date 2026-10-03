@@ -19,6 +19,7 @@ import { generateImage, IMAGE_USAGE_TOKENS } from "./upstreams/images.ts";
 import { readCapped } from "./read-capped.ts";
 import { usageFromPayload, usageFromSseBlock, type ObservedUsage } from "../../shared/usage-parse.ts";
 import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
+import { requestSignal } from "./request-signal.ts";
 import { createThinkStream, flushThinkStream, noteInlineThink, splitThinkBlock, splitThinkCompletion } from "./inline-think.ts";
 
 const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
@@ -51,6 +52,11 @@ function send(res: ServerResponse, status: number, body: unknown, extra: Record<
 
 const UPSTREAM_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 const REQUEST_TOTAL_MS = 180_000;
+// A streaming call is held to REQUEST_TOTAL_MS only until its headers arrive.
+// After that the idle timers govern, so a long report that keeps producing is
+// not cut at 3 minutes (it was, at exactly 180 s, while tokens still flowed).
+// This backstop only ends a stream that never stops.
+const STREAM_TOTAL_MS = 15 * 60_000;
 const FIRST_EVENT_MS = 60_000;
 const IDLE_EVENT_MS = 45_000;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -637,7 +643,10 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               res.destroy();
             }
           });
-          const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
+          const guard = parsed.stream
+            ? requestSignal(controller, { headerMs: REQUEST_TOTAL_MS, totalMs: STREAM_TOTAL_MS })
+            : null;
+          const signal = guard?.signal ?? AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
           let upstream: Awaited<ReturnType<typeof completeUpstream>>;
           try {
             upstream = await completeUpstream({
@@ -675,7 +684,9 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                 });
               },
             });
+            guard?.headersArrived();
           } catch (error) {
+            guard?.dispose();
             if (error instanceof RouterError) {
               circuit.recordFailure(circuitId, error);
               throw error;

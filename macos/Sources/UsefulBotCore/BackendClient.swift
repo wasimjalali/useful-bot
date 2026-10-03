@@ -1503,6 +1503,31 @@ public actor BackendClient {
         return sid
     }
 
+    /// Answer an eve input request (a session limit, a tool approval). It goes
+    /// to the same session route a turn does, as `inputResponses`, never as a
+    /// message.
+    public func answerInput(botId: String, sessionId: String, requestId: String, optionId: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            let body: [String: Any] = [
+                "botId": botId,
+                "inputResponses": [["requestId": requestId, "optionId": optionId]],
+            ]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        // The session is gone, so the request it raised can never be answered.
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
+           failure.code == "session_not_active" {
+            throw BackendError.sessionEnded
+        }
+        try Self.expectOK(data, response)
+    }
+
     /// The code of a refusal body, whichever shape carries it: a top-level
     /// `code`, an `error` string, or `error: { code }`.
     static func refusalCode(in data: Data) -> String? {
@@ -2080,7 +2105,10 @@ public actor BackendClient {
         untilTail: Bool = false,
         markHistory: Bool = false,
         historyMarker: String? = nil,
-        allowUntaggedTurn: Bool = true
+        allowUntaggedTurn: Bool = true,
+        parentSessionId: String? = nil,
+        calledAt: Int? = nil,
+        tailCount: Int? = nil
     ) -> AsyncThrowingStream<EveEvent, Error> {
         stream(
             sessionId: sessionId,
@@ -2091,6 +2119,9 @@ public actor BackendClient {
             markHistory: markHistory,
             historyMarker: historyMarker,
             allowUntaggedTurn: allowUntaggedTurn,
+            parentSessionId: parentSessionId,
+            calledAt: calledAt,
+            tailCount: tailCount,
             tailBox: nil
         )
     }
@@ -2104,12 +2135,17 @@ public actor BackendClient {
         markHistory: Bool = false,
         historyMarker: String? = nil,
         allowUntaggedTurn: Bool = true,
+        parentSessionId: String? = nil,
+        calledAt: Int? = nil,
+        tailCount: Int? = nil,
         tailBox: TailBox?
     ) -> AsyncThrowingStream<EveEvent, Error> {
         // A marker stands in for the tail index; without one, the tail is
         // asked for as before.
         let marker = markHistory ? historyMarker : nil
-        let wantsTail = untilTail || (markHistory && marker == nil)
+        // The last `tailCount` events: eve reads a negative `startIndex` from the
+        // tail, and the tail index is needed to say where the first one sits.
+        let wantsTail = untilTail || (markHistory && marker == nil) || tailCount != nil
         let base = self.base
         let client = self
         return AsyncThrowingStream { continuation in
@@ -2132,9 +2168,17 @@ public actor BackendClient {
                             url: base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/stream"),
                             resolvingAgainstBaseURL: false
                         )
-                        components?.queryItems = [URLQueryItem(name: "startIndex", value: String(max(0, startIndex)))]
+                        components?.queryItems = [URLQueryItem(name: "startIndex", value: tailCount.map { String(-max(1, $0)) } ?? String(max(0, startIndex)))]
                         if wantsTail {
                             components?.queryItems?.append(URLQueryItem(name: "includeTailIndex", value: "1"))
+                        }
+                        // A sub-agent's child session is read through its parent,
+                        // naming where the parent's `subagent.called` for it sits.
+                        if let parentSessionId {
+                            components?.queryItems?.append(URLQueryItem(name: "parent", value: parentSessionId))
+                            if let calledAt {
+                                components?.queryItems?.append(URLQueryItem(name: "at", value: String(calledAt)))
+                            }
                         }
                         guard let url = components?.url else { throw BackendError.decoding }
                         var request = URLRequest(url: url)
@@ -2168,7 +2212,9 @@ public actor BackendClient {
                             }
                         }
 #else
-                        if (status == 401 || status == 403), attempt == 0 {
+                        // A child stream's 403 is the proxy refusing it (the parent
+                        // does not vouch for it), which signing in again never fixes.
+                        if (status == 401 || (status == 403 && parentSessionId == nil)), attempt == 0 {
                             // The session rotated (server restart); sign in and
                             // rebuild the stream once.
                             try await client.reauth(unlessRotatedFrom: sentCookie, signedOutSince: sentEpoch)
@@ -2193,6 +2239,13 @@ public actor BackendClient {
                         openedBox.set()
                         tailBox?.set(tail)
                         var nextIndex = max(0, startIndex)
+                        if let tailCount {
+                            // Without the tail there is no telling where these
+                            // events sit, and a cursor built on a guess is worse
+                            // than no read.
+                            guard let tail else { throw BackendError.decoding }
+                            nextIndex = max(0, tail + 1 - max(1, tailCount))
+                        }
                         if untilTail, let tail, tail < nextIndex {
                             // Nothing recorded past the cursor.
                             continuation.finish()

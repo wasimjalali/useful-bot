@@ -17,6 +17,8 @@ export type SnapshotCtx = {
     parent?: unknown;
     auth?: { current?: { attributes?: Readonly<Record<string, unknown>> } | null } | null;
   };
+  /** eve's dynamic resolvers carry no `session.parent`; there a sub-agent's child is known by `kind: "subagent"`. */
+  channel?: { kind?: unknown } | null;
   messages?: readonly { role?: string }[];
 };
 
@@ -129,9 +131,9 @@ function refusal(sessionId: string, reason: string): null {
  * session binding. A claim and a binding that name different bots, a child
  * session, and a session with neither are refused (null). A claim with no
  * binding yet binds the session to the claimed bot (a create's first turn can
- * run before the proxy writes the row). With no claim at all (a turn eve
- * starts itself on a session from before claims), the binding is waited for,
- * bounded.
+ * run before the proxy writes the row), unless it is a sub-agent's child. With
+ * no claim at all (a turn eve starts itself on a session from before claims),
+ * the binding is waited for, bounded.
  */
 export async function boundBotId(
   ctx: SnapshotCtx,
@@ -145,6 +147,10 @@ export async function boundBotId(
     const bound = resolveSessionBot(sessionId);
     if (claim) {
       if (bound === null) {
+        // A child is never bound as a root: the proxy binds it under its
+        // parent once it has verified the parent delegated it, and refuses
+        // to read a child that is already bound as a root.
+        if (ctx.channel?.kind === "subagent") return claim;
         try {
           bindSession(sessionId, claim);
         } catch (err) {

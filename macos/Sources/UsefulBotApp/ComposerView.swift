@@ -86,6 +86,7 @@ struct ComposerView: View {
 
     private var placeholder: String {
         if replying != nil { return "Reply…" }
+        if model.pendingRequests.contains(where: { !$0.options.isEmpty }) { return "Your message waits until you answer the card" }
         return bot.isGroup ? "Message this group. @name to direct one bot" : "Message \(bot.name)"
     }
 
