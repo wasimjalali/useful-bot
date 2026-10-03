@@ -1,0 +1,341 @@
+import Foundation
+import Testing
+@testable import UsefulBotCore
+
+/// How this part can fail, written before the code:
+/// - the receipt (`action.result` / `subagent.completed`, status working) is not a completion;
+/// - `subagent.called` arrives after the receipt, even after the parent's turn ended, or before it;
+/// - a relaunch (same agentId, new taskId) must keep one row, and an old task's late report is stale;
+/// - a report for a task nobody launched must neither crash nor invent a row;
+/// - two reports in one message settle two rows, each with its own text;
+/// - failed, then relaunched, then reported ends reported with the new text;
+/// - an update or needs-input wake is not an outcome;
+/// - a brief with no role line falls back to "Sub-agent N";
+/// - a session-limit request is not closed by later turns or by the owner's send;
+/// - an unknown request kind still surfaces; `input.resolved` and a retired session remove it;
+/// - a question never becomes a pending request;
+/// - a queued owner message is marked only when a request is open and no model step ran;
+/// - a snapshot round trip reproduces the same state and keeps projecting the same.
+@Suite struct SubagentRunTests {
+    private func line(_ json: String) throws -> EveEvent {
+        try #require(EveStream.parseLine(json))
+    }
+
+    private final class Counter: @unchecked Sendable { var n = 0 }
+    private let counter = Counter()
+    private func nextId() -> String {
+        counter.n += 1
+        return "evt_\(counter.n)"
+    }
+
+    private func stamp(_ second: Int) -> String {
+        String(format: "2026-10-01T20:49:%02d.000Z", second)
+    }
+
+    private func json(_ text: String) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: [text], options: [.fragmentsAllowed])
+        let array = String(decoding: data, as: UTF8.self)
+        return String(array.dropFirst().dropLast())
+    }
+
+    private func requested(call: String, brief: String, turn: String, at: Int = 1) throws -> EveEvent {
+        try line("""
+        {"type":"actions.requested","data":{"actions":[{"callId":"\(call)","input":{"message":\(json(brief))},"kind":"tool-call","toolName":"agent"}],"turnId":"\(turn)"},"meta":{"id":"\(nextId())","at":"\(stamp(at))"}}
+        """)
+    }
+
+    private func launched(call: String, agent: String, task: String, turn: String, at: Int = 2) throws -> EveEvent {
+        try line("""
+        {"type":"action.result","data":{"result":{"callId":"\(call)","kind":"tool-result","output":{"agentId":"\(agent)","status":"working","taskId":"\(task)"},"toolName":"agent"},"turnId":"\(turn)","status":"completed"},"meta":{"id":"\(nextId())","at":"\(stamp(at))"}}
+        """)
+    }
+
+    private func receipt(call: String, agent: String, task: String, at: Int = 2) throws -> EveEvent {
+        try line("""
+        {"type":"subagent.completed","data":{"backgroundTask":{"status":"working","taskId":"\(task)"},"callId":"\(call)","output":"{\\"agentId\\":\\"\(agent)\\",\\"status\\":\\"working\\",\\"taskId\\":\\"\(task)\\"}","subagentName":"agent"},"meta":{"id":"\(nextId())","at":"\(stamp(at))"}}
+        """)
+    }
+
+    private func called(agent: String, child: String, turn: String, at: Int = 5) throws -> EveEvent {
+        try line("""
+        {"type":"subagent.called","data":{"agentId":"\(agent)","callId":"c","childSessionId":"\(child)","childStreamPath":"/eve/v1/session/\(child)/stream","name":"agent","toolName":"agent","turnId":"\(turn)"},"meta":{"id":"\(nextId())","at":"\(stamp(at))"}}
+        """)
+    }
+
+    private func report(_ text: String, turn: String, at: Int = 30) throws -> EveEvent {
+        try line("""
+        {"type":"message.received","data":{"message":\(json(text)),"turnId":"\(turn)","kind":"execution.background_task"},"meta":{"id":"\(nextId())","at":"\(stamp(at))"}}
+        """)
+    }
+
+    private let critic = "You are a senior UX and accessibility critic reviewing one file. Report findings only."
+
+    @Test func aReceiptStartsARunAndIsNotACompletion() throws {
+        var p = StreamProjection()
+        p.apply(try requested(call: "call_a", brief: critic, turn: "turn_1"))
+        p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1", at: 7))
+        #expect(p.subagentRuns.count == 1)
+        let run = p.subagentRuns[0]
+        #expect(run.id == "ag_agent:aaa")
+        #expect(run.taskId == "task_aaa")
+        #expect(run.title == "UX and accessibility critic")
+        #expect(run.groupId == "turn_1")
+        #expect(run.childSessionId == nil)
+        #expect(run.state == .working)
+        #expect(run.result == nil)
+        #expect(run.startedAt == TranscriptBlocks.date(fromISO8601: stamp(7)))
+        // The admission receipt for the same task is the same run, not a second one.
+        p.apply(try receipt(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", at: 7))
+        #expect(p.subagentRuns.count == 1)
+    }
+
+    @Test func theReceiptAloneStartsARunToo() throws {
+        var p = StreamProjection()
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_4"}}"#))
+        p.apply(try receipt(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa"))
+        #expect(p.subagentRuns.count == 1)
+        #expect(p.subagentRuns[0].groupId == "turn_4")
+        #expect(p.subagentRuns[0].title == "Sub-agent 1")
+    }
+
+    @Test func calledAfterTheParentsTurnEndedFillsTheChildSession() throws {
+        var p = StreamProjection()
+        p.apply(try requested(call: "call_a", brief: critic, turn: "turn_1"))
+        p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_1"}}"#))
+        #expect(p.subagentRuns[0].childSessionId == nil)
+        // eve files the call under the NEXT turn, which has begun by then.
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_2"}}"#))
+        p.apply(try called(agent: "ag_agent:aaa", child: "wrun_child_a", turn: "turn_2"))
+        #expect(p.subagentRuns[0].childSessionId == "wrun_child_a")
+        // The run stays in the turn that launched it.
+        #expect(p.subagentRuns[0].groupId == "turn_1")
+    }
+
+    @Test func calledBeforeTheReceiptIsKept() throws {
+        var p = StreamProjection()
+        p.apply(try called(agent: "ag_agent:aaa", child: "wrun_child_a", turn: "turn_2"))
+        #expect(p.subagentRuns.isEmpty)
+        p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        #expect(p.subagentRuns[0].childSessionId == "wrun_child_a")
+    }
+
+    @Test func aReportSettlesTheRunWithItsText() throws {
+        var p = StreamProjection()
+        p.apply(try requested(call: "call_a", brief: critic, turn: "turn_1"))
+        p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try report("Background task task_aaa (agent) is completed.\n\nResult:\nThe file is solid.\n\nOne gap: contrast.", turn: "turn_2", at: 40))
+        #expect(p.subagentRuns[0].state == .reported(at: TranscriptBlocks.date(fromISO8601: stamp(40))))
+        #expect(p.subagentRuns[0].result == "The file is solid.\n\nOne gap: contrast.")
+    }
+
+    @Test func twoReportsInOneMessageSettleTwoRows() throws {
+        var p = StreamProjection()
+        for (i, id) in ["aaa", "bbb"].enumerated() {
+            p.apply(try requested(call: "call_\(id)", brief: critic, turn: "turn_1"))
+            p.apply(try launched(call: "call_\(id)", agent: "ag_agent:\(id)", task: "task_\(id)", turn: "turn_1", at: 2 + i))
+        }
+        p.apply(try report("""
+        Background task task_aaa (agent) is completed.
+
+        Result:
+        First answer.
+
+        Background task task_bbb (agent) failed.
+
+        Error:
+        {"code":"SUBAGENT_EXECUTION_FAILED","message":"upstream_timeout"}
+        """, turn: "turn_2"))
+        #expect(p.subagentRuns.map(\.id) == ["ag_agent:aaa", "ag_agent:bbb"])
+        #expect(p.subagentRuns[0].result == "First answer.")
+        guard case .reported = p.subagentRuns[0].state else { Issue.record("first should be reported"); return }
+        guard case .failed(_, let message) = p.subagentRuns[1].state else { Issue.record("second should be failed"); return }
+        #expect(message == "upstream_timeout")
+    }
+
+    @Test func aReportForAnUnknownTaskChangesNothing() throws {
+        var p = StreamProjection()
+        p.apply(try requested(call: "call_a", brief: critic, turn: "turn_1"))
+        p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try report("Background task task_zzz (agent) is completed.\n\nResult:\nStray.", turn: "turn_2"))
+        #expect(p.subagentRuns.count == 1)
+        #expect(p.subagentRuns[0].state == .working)
+    }
+
+    @Test func failureThenRelaunchThenSuccessKeepsOneRow() throws {
+        var p = StreamProjection()
+        p.apply(try requested(call: "call_a", brief: critic, turn: "turn_1"))
+        p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_old", turn: "turn_1"))
+        p.apply(try called(agent: "ag_agent:aaa", child: "wrun_child_a", turn: "turn_2"))
+        p.apply(try report("Background task task_old (agent) failed.\n\nError:\n{\"code\":\"X\",\"message\":\"upstream_timeout\"}", turn: "turn_2", at: 20))
+        guard case .failed = p.subagentRuns[0].state else { Issue.record("should be failed"); return }
+        // Steering relaunches the same agent with a new task and the same child session.
+        p.apply(try launched(call: "call_b", agent: "ag_agent:aaa", task: "task_new", turn: "turn_3", at: 25))
+        #expect(p.subagentRuns.count == 1)
+        #expect(p.subagentRuns[0].taskId == "task_new")
+        #expect(p.subagentRuns[0].state == .working)
+        #expect(p.subagentRuns[0].childSessionId == "wrun_child_a")
+        #expect(p.subagentRuns[0].groupId == "turn_1")
+        #expect(p.subagentRuns[0].startedAt == TranscriptBlocks.date(fromISO8601: stamp(2)))
+        // The old task's failure delivered again is stale.
+        p.apply(try report("Background task task_old (agent) failed.\n\nError:\n{\"message\":\"again\"}", turn: "turn_3", at: 26))
+        #expect(p.subagentRuns[0].state == .working)
+        p.apply(try report("Background task task_new (agent) is completed.\n\nResult:\nDone this time.", turn: "turn_4", at: 50))
+        #expect(p.subagentRuns[0].state == .reported(at: TranscriptBlocks.date(fromISO8601: stamp(50))))
+        #expect(p.subagentRuns[0].result == "Done this time.")
+    }
+
+    @Test func aCancelledTaskIsCancelledAndAnUpdateIsNot() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try launched(call: "call_b", agent: "ag_agent:bbb", task: "task_bbb", turn: "turn_1"))
+        p.apply(try report("Background task task_aaa (agent) update: halfway there.", turn: "turn_2"))
+        #expect(p.subagentRuns[0].state == .working)
+        p.apply(try report("Background task task_bbb (agent) is cancelled.", turn: "turn_3"))
+        guard case .cancelled = p.subagentRuns[1].state else { Issue.record("should be cancelled"); return }
+    }
+
+    @Test func runsGroupByTheTurnThatLaunchedThem() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try launched(call: "b", agent: "ag_agent:bbb", task: "task_bbb", turn: "turn_1"))
+        p.apply(try launched(call: "c", agent: "ag_agent:ccc", task: "task_ccc", turn: "turn_5"))
+        #expect(p.subagentBatches.map(\.id) == ["turn_1", "turn_5"])
+        #expect(p.subagentBatches[0].runs.map(\.id) == ["ag_agent:aaa", "ag_agent:bbb"])
+        #expect(p.subagentBatches[1].runs.map(\.id) == ["ag_agent:ccc"])
+    }
+
+    @Test func titlesComeFromTheBriefsFirstLine() throws {
+        #expect(SubagentRun.title(fromBrief: "You are a product strategist critiquing whether a tool serves its users.", fallbackIndex: 1) == "Product strategist")
+        #expect(SubagentRun.title(fromBrief: "You are an expert code reviewer. Review the diff.", fallbackIndex: 2) == "Code reviewer")
+        #expect(SubagentRun.title(fromBrief: "Read-only research of a public repo.", fallbackIndex: 3) == "Sub-agent 3")
+        #expect(SubagentRun.title(fromBrief: nil, fallbackIndex: 4) == "Sub-agent 4")
+        #expect(SubagentRun.title(fromBrief: "\n\nYou are a very long winded role name that just keeps going and going on and on forever.", fallbackIndex: 1).count <= 40)
+    }
+
+    // MARK: pending requests
+
+    private let limit = """
+    {"type":"input.requested","data":{"requests":[{"action":{"callId":"s:limit:input:41","kind":"tool-call","toolName":"session_limit_continuation"},"allowFreeform":false,"display":"confirmation","kind":"session-limit","options":[{"description":"Grant a fresh token budget","id":"continue","label":"Approve","style":"primary"},{"description":"Stop now","id":"stop","label":"Stop","style":"danger"}],"prompt":"This session has hit the input-token limit.","requestId":"s:limit:input:41"}],"turnId":"turn_47"},"meta":{"id":"evt_limit","at":"2026-10-01T21:02:58.244Z"}}
+    """
+
+    private func queuedTurn(_ turn: String, text: String = "Any update?") throws -> [EveEvent] {
+        [
+            try line(#"{"type":"turn.started","data":{"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"message.received","data":{"message":\#(json(text)),"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"turn.completed","data":{"turnId":"\#(turn)"},"meta":{"id":"\#(nextId())"}}"#),
+            try line(#"{"type":"session.waiting","data":{"wait":"next-user-message"},"meta":{"id":"\#(nextId())"}}"#),
+        ]
+    }
+
+    @Test func aSessionLimitSurfacesAndSurvivesLaterTurns() throws {
+        var p = StreamProjection()
+        p.apply(try line(limit))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_47"}}"#))
+        #expect(p.pendingRequests.count == 1)
+        let request = p.pendingRequests[0]
+        #expect(request.id == "s:limit:input:41")
+        #expect(request.kind == "session-limit")
+        #expect(request.prompt.hasPrefix("This session has hit"))
+        #expect(request.options.map(\.id) == ["continue", "stop"])
+        #expect(request.options.map(\.label) == ["Approve", "Stop"])
+        #expect(request.options.map(\.style) == ["primary", "danger"])
+        // The owner's send and eve's queued turns do not answer it.
+        p.beginTurn()
+        for event in try queuedTurn("turn_48") { p.apply(event) }
+        for event in try queuedTurn("turn_49") { p.apply(event) }
+        #expect(p.pendingRequests.map(\.id) == ["s:limit:input:41"])
+        // A replay of the same request is one request.
+        p.apply(try line(limit.replacingOccurrences(of: "evt_limit", with: "evt_limit_again")))
+        #expect(p.pendingRequests.count == 1)
+        p.apply(try line(#"{"type":"input.resolved","data":{"resolutions":[{"kind":"session-limit","outcome":"answered","requestId":"s:limit:input:41"}]}}"#))
+        #expect(p.pendingRequests.isEmpty)
+    }
+
+    @Test func anUnknownKindStillSurfaces() throws {
+        var p = StreamProjection()
+        p.apply(try line(#"{"type":"input.requested","data":{"requests":[{"kind":"brand-new-kind","requestId":"r1","prompt":"Allow this?","display":"confirmation"},{"kind":"tool-approval","requestId":"r2"}],"turnId":"turn_1"}}"#))
+        #expect(p.pendingRequests.map(\.id) == ["r1", "r2"])
+        #expect(p.pendingRequests[0].kind == "brand-new-kind")
+        #expect(p.pendingRequests[0].options.isEmpty)
+        #expect(!p.pendingRequests[1].prompt.isEmpty)
+    }
+
+    @Test func aQuestionIsNotAPendingRequest() throws {
+        var p = StreamProjection()
+        p.apply(try line(#"{"type":"input.requested","data":{"requests":[{"kind":"question","requestId":"q1","prompt":"Which folder?","options":[]}],"turnId":"turn_1"}}"#))
+        #expect(p.questions.count == 1)
+        #expect(p.pendingRequests.isEmpty)
+    }
+
+    @Test func aRetiredSessionTakesThePendingRequestAndWorkingRunsWithIt() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        p.apply(try line(limit))
+        p.apply(try line(#"{"type":"session.failed","data":{"code":"boom"}}"#))
+        #expect(p.pendingRequests.isEmpty)
+        guard case .cancelled = p.subagentRuns[0].state else { Issue.record("a retired session wakes for nothing"); return }
+    }
+
+    // MARK: queued owner messages
+
+    @Test func aTurnWithNoModelStepWhileARequestIsOpenIsQueued() throws {
+        var p = StreamProjection()
+        p.apply(try line(limit))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_47"}}"#))
+        for event in try queuedTurn("turn_48", text: "First nudge") { p.apply(event) }
+        for event in try queuedTurn("turn_49", text: "Second nudge") { p.apply(event) }
+        let users = p.messages.filter { $0.role == .user }
+        #expect(users.count == 2)
+        #expect(p.queuedMessageIds == Set(users.map(\.id)))
+        // Resolving it leaves those rows as they were.
+        p.apply(try line(#"{"type":"input.resolved","data":{"resolutions":[{"requestId":"s:limit:input:41"}]}}"#))
+        #expect(p.queuedMessageIds.count == 2)
+    }
+
+    @Test func aNormalMessageThatGetsAReplyIsNeverQueued() throws {
+        var p = StreamProjection()
+        // A request is open, but this turn ran a model step and answered.
+        p.apply(try line(limit))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_47"}}"#))
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_48"},"meta":{"id":"e1"}}"#))
+        p.apply(try line(#"{"type":"message.received","data":{"message":"Hello","turnId":"turn_48"},"meta":{"id":"e2"}}"#))
+        p.apply(try line(#"{"type":"step.started","data":{"turnId":"turn_48","stepIndex":0},"meta":{"id":"e3"}}"#))
+        p.apply(try line(#"{"type":"message.completed","data":{"message":"Hi there","turnId":"turn_48"},"meta":{"id":"e4"}}"#))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_48"},"meta":{"id":"e5"}}"#))
+        #expect(p.queuedMessageIds.isEmpty)
+        // And with no request open, an empty turn is not queued either.
+        var q = StreamProjection()
+        for event in try queuedTurn("turn_1") { q.apply(event) }
+        #expect(q.queuedMessageIds.isEmpty)
+    }
+
+    // MARK: snapshots
+
+    @Test func aSnapshotRoundTripKeepsProjectingTheSame() throws {
+        var events: [EveEvent] = []
+        events.append(try requested(call: "call_a", brief: critic, turn: "turn_1"))
+        events.append(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        events.append(try line(limit))
+        for event in try queuedTurn("turn_48") { events.append(event) }
+        let tail = [
+            try called(agent: "ag_agent:aaa", child: "wrun_child_a", turn: "turn_49"),
+            try report("Background task task_aaa (agent) is completed.\n\nResult:\nFine.", turn: "turn_49", at: 44),
+            try line(#"{"type":"input.resolved","data":{"resolutions":[{"requestId":"s:limit:input:41"}]}}"#),
+        ]
+        var whole = StreamProjection()
+        for event in events + tail { whole.apply(event) }
+
+        var head = StreamProjection()
+        for event in events { head.apply(event) }
+        let data = try JSONEncoder().encode(head)
+        var restored = try JSONDecoder().decode(StreamProjection.self, from: data)
+        #expect(restored == head)
+        #expect(restored.isConsistent)
+        for event in tail { restored.apply(event) }
+        #expect(restored == whole)
+        #expect(restored.subagentRuns[0].result == "Fine.")
+        #expect(restored.pendingRequests.isEmpty)
+        #expect(restored.queuedMessageIds.count == 1)
+    }
+}

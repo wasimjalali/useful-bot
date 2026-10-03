@@ -673,7 +673,7 @@ public enum EveStream {
     /// (`formatTaskNotification` and the update and authorization wakes in
     /// eve's `execution/tasks/child/steps.js`, 0.54). Streams from before the
     /// `kind` mark carry nothing else to tell such a report by.
-    private static let taskReportPattern = try! NSRegularExpression(
+    static let taskReportPattern = try! NSRegularExpression(
         pattern: "^Background task (task_[A-Za-z0-9]+)(?: \\([^\\n]*?\\))? (is completed\\.|failed\\.|is cancelled\\.|needs input\\.|needs authorization\\.|update: )",
         options: [.anchorsMatchLines]
     )
@@ -934,6 +934,38 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// delivered again, or an update wake that trails the completion, is
     /// still the bot's and never an owner row.
     private var settledTasks: Set<String> = []
+    /// Every background sub-agent this session launched, one row per agent id,
+    /// in the order they first started. A relaunch of the same agent moves its
+    /// row back to working.
+    public private(set) var subagentRuns: [SubagentRun] = []
+    /// The same runs grouped by the turn that launched them, for one card each.
+    public var subagentBatches: [SubagentBatch] {
+        var batches: [SubagentBatch] = []
+        for run in subagentRuns {
+            if let at = batches.firstIndex(where: { $0.id == run.groupId }) {
+                batches[at].runs.append(run)
+            } else {
+                batches.append(SubagentBatch(id: run.groupId, runs: [run]))
+            }
+        }
+        return batches
+    }
+    /// Requests from eve that are not questions (a session limit, a tool
+    /// approval, a kind not known yet), open until `input.resolved`. Unlike a
+    /// question, the owner's next message does not answer one: eve keeps it
+    /// pending and queues what the owner writes.
+    public private(set) var pendingRequests: [PendingRequest] = []
+    /// Owner rows whose turn ended with no model step while a request was
+    /// open: eve held them for later. They stay marked once it is answered.
+    public private(set) var queuedMessageIds: Set<String> = []
+    /// The brief of each sub-agent call, by call id, until its receipt claims it.
+    private var callBriefs: [String: String] = [:]
+    /// The turn each task's receipt was seen under, keyed by call id.
+    private var callTurns: [String: String] = [:]
+    /// Which agent each task id belongs to, every task it ever ran.
+    private var taskAgents: [String: String] = [:]
+    /// The child session eve named for each agent.
+    private var childSessions: [String: String] = [:]
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -1044,6 +1076,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         /// never answered. A turn that reasoned, failed and was resent left
         /// the question standing twice with nothing between.
         var producedWork = false
+        /// Whether a model step began in it. A turn eve queued behind a
+        /// pending request runs none.
+        var sawStep = false
         /// Whether a message arrived in this turn at all. A turn refused
         /// before its own echo (`session_busy`, an open circuit) would
         /// otherwise be read as having thrown away a message an earlier turn
@@ -1421,6 +1456,75 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         settledTasks.insert(task)
     }
 
+    /// A message from eve on a sub-agent's behalf: settle what it finished
+    /// and record what each report said on its run.
+    private mutating func settleReports(_ reports: [(taskId: String, settled: Bool)], text: String, at stamp: Date?) {
+        for report in reports where report.settled { settle(report.taskId) }
+        for detail in EveStream.taskReportDetails(text) {
+            // A task nobody here launched, or one a relaunch replaced, is
+            // not a row's to change.
+            guard let agent = taskAgents[detail.taskId],
+                  let index = subagentRuns.firstIndex(where: { $0.agentId == agent }),
+                  subagentRuns[index].taskId == detail.taskId else { continue }
+            switch detail.outcome {
+            case .completed:
+                subagentRuns[index].state = .reported(at: stamp)
+                subagentRuns[index].result = detail.body
+            case .failed:
+                subagentRuns[index].state = .failed(at: stamp, message: detail.body)
+            case .cancelled:
+                subagentRuns[index].state = .cancelled(at: stamp)
+            case .other:
+                break
+            }
+        }
+    }
+
+    /// A sub-agent's admission receipt, from the tool result or from
+    /// `subagent.completed`, whichever arrives first. The other is the same task.
+    private mutating func noteLaunch(agent: String, task: String, call: String?, turn: String?, at stamp: Date?) {
+        taskAgents[task] = agent
+        let group = turn ?? call.flatMap { callTurns[$0] } ?? currentTurnId ?? ""
+        if let index = subagentRuns.firstIndex(where: { $0.agentId == agent }) {
+            // Steered again: one row, back to work.
+            if subagentRuns[index].taskId != task {
+                subagentRuns[index].taskId = task
+                subagentRuns[index].state = .working
+                subagentRuns[index].result = nil
+            }
+        } else {
+            let brief = call.flatMap { callBriefs[$0] }
+            subagentRuns.append(SubagentRun(
+                agentId: agent,
+                childSessionId: childSessions[agent],
+                taskId: task,
+                title: SubagentRun.title(fromBrief: brief, fallbackIndex: subagentRuns.count + 1),
+                startedAt: stamp,
+                groupId: group
+            ))
+        }
+        if let call {
+            callBriefs[call] = nil
+            callTurns[call] = nil
+        }
+    }
+
+    /// The session is gone or replaced: nothing it started will report back.
+    private mutating func abandonRuns() {
+        for index in subagentRuns.indices where subagentRuns[index].state == .working {
+            subagentRuns[index].state = .cancelled(at: nil)
+        }
+    }
+
+    /// An owner row whose turn ended with no model step while a request was
+    /// open was held by eve, not answered.
+    private mutating func markQueued(_ record: TurnRecord) {
+        guard !pendingRequests.isEmpty, record.sawMessage, !record.sawStep, !record.producedWork,
+              let carried = record.carriedUserMessageId,
+              let index = indexById[carried] else { return }
+        queuedMessageIds.insert(messages[index].id)
+    }
+
     public mutating func beginTurn() {
         pending = true
         turnStartedAt = Date()
@@ -1481,6 +1585,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         if let session = event.sessionId {
             if let tasks = tasksSession, tasks != session {
                 runningTasks = [:]
+                abandonRuns()
                 tasksSession = nil
             }
             if firstSession == nil { firstSession = session }
@@ -1613,7 +1718,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     guard canResume(known) || ownEcho, var stepped = unstash(named) else {
                         // A late report is still the bot's, never an owner row.
                         if fromTask {
-                            for report in reports where report.settled { settle(report.taskId) }
+                            settleReports(reports, text: text, at: stamp)
                             return
                         }
                         lateUserRow(event, text: text, at: stamp, for: named)
@@ -1643,7 +1748,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // owner's: it opens the turn in which the bot answers, and shows
             // only in the working row.
             if fromTask {
-                for report in reports where report.settled { settle(report.taskId) }
+                settleReports(reports, text: text, at: stamp)
                 turn.fromTask = true
                 failed = false
                 failure = nil
@@ -1761,6 +1866,12 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // on screen. A stepped-off turn's late call is a drawing that
             // turn made, and a replay shows it; what the working row says is
             // still the live turn's.
+            for action in event.data?["actions"]?.arrayValue ?? [] {
+                guard action["toolName"]?.stringValue == "agent" || action["subagentName"]?.stringValue != nil,
+                      let call = action["callId"]?.stringValue, !call.isEmpty else { continue }
+                if let brief = action["input"]?["message"]?.stringValue { callBriefs[call] = brief }
+                if let turn = event.turnId { callTurns[call] = turn }
+            }
             let owner = turnOwner(of: event)
             guard var record = record(of: owner) else { break }
             record.producedWork = true
@@ -1918,6 +2029,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     questions = []
                     // A retired session wakes for nothing again.
                     runningTasks = [:]
+                    abandonRuns()
+                    pendingRequests = []
                 }
                 guard var stepped = turns[id] else { break }
                 stepped.ended = true
@@ -1946,6 +2059,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     questions = []
                     // A retired session wakes for nothing again.
                     runningTasks = [:]
+                    abandonRuns()
+                    pendingRequests = []
                 }
                 let standing = retryableMarkId
                 pending = false
@@ -1977,6 +2092,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                let task = output["taskId"]?.stringValue, task.hasPrefix("task_") {
                 runningTasks[task] = runningTasks[task] ?? stamp ?? Date()
                 if let session = event.sessionId { tasksSession = session }
+                if let agent = output["agentId"]?.stringValue, !agent.isEmpty {
+                    noteLaunch(agent: agent, task: task, call: event.data?["result"]?["callId"]?.stringValue, turn: event.turnId, at: stamp)
+                }
             }
             // Another turn's results are not this turn's chips.
             guard case .current = turnOwner(of: event) else { break }
@@ -1985,12 +2103,47 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
             if event.type == "action.result" { activity = .thinking }
+        case "subagent.completed":
+            // The admission receipt, not a completion: `backgroundTask.status`
+            // says the task is working.
+            if let task = event.data?["backgroundTask"]?["taskId"]?.stringValue, task.hasPrefix("task_"),
+               event.data?["backgroundTask"]?["status"]?.stringValue == "working",
+               let output = event.data?["output"]?.stringValue,
+               let raw = output.data(using: .utf8),
+               let agent = (try? JSONDecoder().decode(JSONValue.self, from: raw))?["agentId"]?.stringValue, !agent.isEmpty {
+                noteLaunch(agent: agent, task: task, call: event.data?["callId"]?.stringValue, turn: event.turnId, at: stamp)
+            }
+        case "subagent.called":
+            // May arrive after the receipt and after the parent's turn ended;
+            // its turn is the next one's, so it only names the child session.
+            if let agent = event.data?["agentId"]?.stringValue, !agent.isEmpty,
+               let child = event.data?["childSessionId"]?.stringValue, !child.isEmpty {
+                childSessions[agent] = child
+                if let index = subagentRuns.firstIndex(where: { $0.agentId == agent }) {
+                    subagentRuns[index].childSessionId = child
+                }
+            }
+        case "step.started":
+            let owner = turnOwner(of: event)
+            guard var record = record(of: owner) else { break }
+            record.sawStep = true
+            store(record, for: owner)
         case "input.requested":
             // A question an older turn asked and the owner has already
             // answered must not come back as a live card on this one. A
             // stepped-off turn's late question is still open: the owner's
             // answer, when there is one, follows as `input.resolved`.
             let owner = turnOwner(of: event)
+            // Not a question: eve holds it until `input.resolved`, whatever
+            // turns begin meanwhile, so neither the owner nor the turn rule
+            // below closes it. A replayed one is removed by its own resolve.
+            for request in EveStream.parsePendingRequests(event.data, eventId: event.id) {
+                if let index = pendingRequests.firstIndex(where: { $0.id == request.id }) {
+                    pendingRequests[index] = request
+                } else {
+                    pendingRequests.append(request)
+                }
+            }
             guard var record = record(of: owner) else { break }
             // A question ends the turn: the bot is waiting on the owner, not
             // working. So it closes the rows above it, the way an answer does.
@@ -2015,6 +2168,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             let resolved = Set((event.data?["resolutions"]?.arrayValue ?? [])
                 .compactMap { $0["requestId"]?.stringValue })
             questions.removeAll { resolved.contains($0.id) }
+            pendingRequests.removeAll { resolved.contains($0.id) }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             switch turnOwner(of: event) {
             case .ignored:
@@ -2027,6 +2181,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 guard var stepped = turns[id] else { break }
                 stepped.ended = true
                 turns[id] = stepped
+                if event.type == "turn.completed" { markQueued(stepped) }
                 if let carried = stepped.carriedUserMessageId, discardedUserMessageId == carried {
                     discardedUserMessageId = nil
                 }
@@ -2044,6 +2199,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     // last word on that message.
                     if event.type == "turn.completed" { foldRetriedFailures() }
                 }
+                if event.type == "turn.completed" { markQueued(turn) }
                 pending = false
                 turn.ended = true
                 leaveCurrentTurn()
