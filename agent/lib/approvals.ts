@@ -353,8 +353,8 @@ export class ApprovalStore {
    * A stopped session can no longer act on its cards: retire them now, the
    * pending ones and the approved ones not yet consumed (an approval granted
    * just before Stop must not run after it). A consumed card has already run.
-   * Only that session's own cards: a root's Stop leaves a sub-agent's cards
-   * alone, because each running child is stopped by its own cancel.
+   * A root's cancel also retires its sub-agents' cards unless `children: false`
+   * is passed (the app's automatic cancel of a stopped-report turn).
    */
   expireSession(sessionId: string, options: { children?: boolean } = {}): number {
     // Fail closed by default: an owner's Stop on a root also retires the cards
