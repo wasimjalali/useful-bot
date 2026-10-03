@@ -129,6 +129,9 @@ struct SubagentGroupCard: View {
         .onChange(of: card) { _, _ in clockStopped = false }
         .onChange(of: parentBusy) { _, _ in clockStopped = false }
         .onChange(of: parked) { _, _ in clockStopped = false }
+        // This card's clock depends on the other cards too: one leaving
+        // "working" can be what lets this one go to "not delivered".
+        .onChange(of: chat) { _, _ in clockStopped = false }
     }
 
     private func content(now: Date) -> some View {

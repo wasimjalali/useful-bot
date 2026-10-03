@@ -2969,8 +2969,10 @@ final class AppModel: ObservableObject {
                     self.projection.dropHeldMessages()
                 } else {
                     self.backgroundProjections[botId]?.dropHeldMessages()
-                    // The at-rest copy would bring the held rows back on return.
+                    // The at-rest copies, in memory and on disk, would bring
+                    // the held rows back on return or after a relaunch.
                     self.stashSnapshots[botId] = nil
+                    self.removeSnapshot(botId, blockWrites: false)
                     self.refreshRailFlags(botId)
                 }
                 self.publishSubagents(rows: self.transcript)
