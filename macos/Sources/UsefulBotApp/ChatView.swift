@@ -224,6 +224,7 @@ struct ChatView: View {
     private func askColumn(_ bot: ShellBot) -> some View {
         let hasAsk = !model.approvals.isEmpty
             || !model.openQuestions.isEmpty
+            || !model.pendingRequests.isEmpty
             || !model.openProposals.isEmpty
             || model.approvalError != nil
         if hasAsk {
@@ -233,6 +234,13 @@ struct ChatView: View {
                 }
                 ForEach(model.openQuestions) { question in
                     questionAsk(question, bot: bot)
+                }
+                ForEach(model.pendingRequests) { request in
+                    WaitingCard(
+                        request: request,
+                        botName: bot.name,
+                        busy: model.busyRequests.contains(request.id)
+                    ) { option in model.answerRequest(request, option: option) }
                 }
                 if let store = model.store {
                     ForEach(model.openProposals) { proposal in
@@ -544,6 +552,16 @@ struct ChatView: View {
         }
     }
 
+    private func subagentCard(_ card: SubagentCardData, bot: ShellBot) -> some View {
+        SubagentGroupCard(
+            card: card,
+            bot: bot,
+            parentBusy: model.pending || model.backgroundWorking,
+            maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
+            store: model.subagentProgress
+        )
+    }
+
     private func transcript(_ bot: ShellBot) -> some View {
         let roster = model.store?.bots ?? []
         // What the rows are handed. A row is skipped while its inputs compare
@@ -579,6 +597,7 @@ struct ChatView: View {
                             ShowEarlierRow { model.showEarlierMessages() }
                         }
                         ForEach(window.blocks) { block in
+                          Group {
                             switch block {
                             case .dayDivider(_, let label):
                                 DayDividerRow(label: label)
@@ -605,6 +624,7 @@ struct ChatView: View {
                                     bots: rowRoster,
                                     recipients: recipients,
                                     maxBubbleWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
+                                    queued: model.queuedRowIds.contains(row.id),
                                     // The reply still being written parses
                                     // into one replaceable slot. Part of the
                                     // row's equality, so the turn finishing
@@ -647,6 +667,16 @@ struct ChatView: View {
                                     roster: roster
                                 )
                             }
+                            // The sub-agents a turn launched sit under its reply.
+                            ForEach(model.subagentCards.filter { $0.anchorRowId == block.id }) { card in
+                                subagentCard(card, bot: bot)
+                            }
+                          }
+                        }
+                        // A card with no row to follow, or whose row is gone,
+                        // goes at the tail where the working row would be.
+                        ForEach(model.subagentCards.filter { $0.anchorRowId == nil }) { card in
+                            subagentCard(card, bot: bot)
                         }
                         // Up for the whole turn, under whichever bubble is
                         // newest, so the owner can see the bot is still going
@@ -1495,6 +1525,8 @@ struct TranscriptRowView: View, Equatable {
     var bots: [ShellBot] = []
     var recipients: [String] = []
     var maxBubbleWidth: CGFloat = 612
+    /// eve is holding this owner message until a waiting card is answered.
+    var queued = false
     /// The bubble of a turn still running: its markdown is parsed into a
     /// transient slot instead of the shared cache, one entry per delta.
     var streaming = false
@@ -1612,6 +1644,7 @@ struct TranscriptRowView: View, Equatable {
                     }
                 }
             }
+            if queued { QueuedTag() }
         }
     }
 

@@ -950,6 +950,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         }
         return batches
     }
+    /// The row each launching turn's card sits under: the last row that turn
+    /// put in the transcript. Missing once the turn is forgotten.
+    public func subagentAnchor(forGroup id: String) -> String? {
+        id == (currentTurnId ?? "") ? turn.lastRowId : turns[id]?.lastRowId
+    }
     /// Requests from eve that are not questions (a session limit, a tool
     /// approval, a kind not known yet), open until `input.resolved`. Unlike a
     /// question, the owner's next message does not answer one: eve keeps it

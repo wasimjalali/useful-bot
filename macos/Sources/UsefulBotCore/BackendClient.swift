@@ -1503,6 +1503,25 @@ public actor BackendClient {
         return sid
     }
 
+    /// Answer an eve input request (a session limit, a tool approval). It goes
+    /// to the same session route a turn does, as `inputResponses`, never as a
+    /// message.
+    public func answerInput(botId: String, sessionId: String, requestId: String, optionId: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            let body: [String: Any] = [
+                "botId": botId,
+                "inputResponses": [["requestId": requestId, "optionId": optionId]],
+            ]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        try Self.expectOK(data, response)
+    }
+
     /// The code of a refusal body, whichever shape carries it: a top-level
     /// `code`, an `error` string, or `error: { code }`.
     static func refusalCode(in data: Data) -> String? {
@@ -2080,7 +2099,8 @@ public actor BackendClient {
         untilTail: Bool = false,
         markHistory: Bool = false,
         historyMarker: String? = nil,
-        allowUntaggedTurn: Bool = true
+        allowUntaggedTurn: Bool = true,
+        parentSessionId: String? = nil
     ) -> AsyncThrowingStream<EveEvent, Error> {
         stream(
             sessionId: sessionId,
@@ -2091,6 +2111,7 @@ public actor BackendClient {
             markHistory: markHistory,
             historyMarker: historyMarker,
             allowUntaggedTurn: allowUntaggedTurn,
+            parentSessionId: parentSessionId,
             tailBox: nil
         )
     }
@@ -2104,6 +2125,7 @@ public actor BackendClient {
         markHistory: Bool = false,
         historyMarker: String? = nil,
         allowUntaggedTurn: Bool = true,
+        parentSessionId: String? = nil,
         tailBox: TailBox?
     ) -> AsyncThrowingStream<EveEvent, Error> {
         // A marker stands in for the tail index; without one, the tail is
@@ -2135,6 +2157,10 @@ public actor BackendClient {
                         components?.queryItems = [URLQueryItem(name: "startIndex", value: String(max(0, startIndex)))]
                         if wantsTail {
                             components?.queryItems?.append(URLQueryItem(name: "includeTailIndex", value: "1"))
+                        }
+                        // A sub-agent's child session is read through its parent.
+                        if let parentSessionId {
+                            components?.queryItems?.append(URLQueryItem(name: "parent", value: parentSessionId))
                         }
                         guard let url = components?.url else { throw BackendError.decoding }
                         var request = URLRequest(url: url)
