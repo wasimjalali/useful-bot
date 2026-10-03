@@ -15,6 +15,7 @@ import {
   sessionCarriesOverFor,
   unbindBot,
 } from "../shared/session-bindings.ts";
+import { bindSubagentChild } from "../agent/lib/subagent-binding.ts";
 import { bindTurnBody, turnRewriteFailure } from "../shared/eve-proxy.ts";
 import { applyShellAction, DEFAULT_BOT_ID, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
@@ -640,5 +641,59 @@ test("a child session is bound to its parent's bot with the parent recorded, imm
     assert.equal(sessionCarriesOverFor("root-1", alpha, null, owners), true);
     assert.equal(unbindBot(alpha, owners), 2);
     assert.equal(readSessionParent("kid-1", owners), null);
+  });
+});
+
+// Failure modes for the hook that records a sub-agent child, written before the
+// code: any other event type; a call from a child session itself; a data
+// session id that is not the context's own; an unbound parent; a missing,
+// non-string, unsafe or self-referencing child id; a child already bound as a
+// root or for another bot (logged, never overwritten, never thrown); a store
+// that throws; the same event twice.
+test("the hook records a child on subagent.called only for a bound root parent, and never throws", async () => {
+  await withWorld(({ alpha, beta, owners }) => {
+    const logged: string[] = [];
+    const log = (message: string) => { logged.push(message); };
+    const called = (sessionId: string, childSessionId: unknown) => ({ type: "subagent.called", data: { sessionId, childSessionId, callId: "c" } });
+    const root = { session: { id: "root-1" } };
+    bindSession("root-1", alpha, new Date(), owners);
+    bindSession("root-b", beta, new Date(), owners);
+    bindSession("kid-root", beta, new Date(), owners);
+
+    assert.equal(bindSubagentChild(called("root-1", "kid-1"), root, { log }), "bound");
+    assert.equal(readSessionBot("kid-1", owners), alpha);
+    assert.equal(readSessionParent("kid-1", owners), "root-1");
+    // The same event again changes nothing.
+    assert.equal(bindSubagentChild(called("root-1", "kid-1"), root, { log }), "bound");
+    assert.equal(readSessionParent("kid-1", owners), "root-1");
+    assert.deepEqual(logged, []);
+
+    const none = (event: unknown, ctx: unknown) => assert.equal(bindSubagentChild(event as never, ctx as never, { log }), "ignored");
+    none({ type: "subagent.completed", data: { sessionId: "root-1", childSessionId: "kid-2" } }, root);
+    none({ type: "message.completed", data: { sessionId: "root-1", childSessionId: "kid-2" } }, root);
+    // A child's own call (its hook context names a parent), or a data session that is not the context's.
+    none(called("root-1", "kid-2"), { session: { id: "root-1", parent: { id: "x" } } });
+    none(called("root-b", "kid-2"), root);
+    none(called("ghost", "kid-2"), { session: { id: "ghost" } });
+    none(called("root-1", undefined), root);
+    none(called("root-1", 7), root);
+    none(called("root-1", "a/b"), root);
+    none(called("root-1", "root-1"), root);
+    none({ type: "subagent.called" }, root);
+    none(called("root-1", "kid-2"), {});
+    // An unbound parent never gains a child; a child is never a parent here.
+    none(called("kid-1", "kid-3"), { session: { id: "kid-1" } });
+    assert.equal(readSessionBot("kid-2", owners), null);
+    assert.equal(readSessionBot("kid-3", owners), null);
+
+    // A conflicting row is logged and left alone, not thrown.
+    assert.equal(bindSubagentChild(called("root-1", "kid-root"), root, { log }), "failed");
+    assert.equal(readSessionBot("kid-root", owners), beta);
+    assert.equal(readSessionParent("kid-root", owners), null);
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /^\[subagent-binding\]/);
+    // A store failure is logged too.
+    process.env.UB_SESSION_OWNERS_PATH = join(owners, "no", "such", "dir", "\0bad");
+    assert.doesNotThrow(() => bindSubagentChild(called("root-1", "kid-9"), root, { log }));
   });
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHmac } from "node:crypto";
 import { channelAuth } from "../agent/lib/channel-auth.ts";
-import { authorizeChildStream, authorizeEveCall, carryOverReader, childWriteRefusal, createChildVerifier, streamHasSubagentCall, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
+import { authorizeChildStream, authorizeEveCall, carryOverReader, childWriteRefusal, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
 import { channelJwt } from "../web/lib/agent-exec.ts";
 import type { ShellStore } from "../shared/shell-store.ts";
 
@@ -212,121 +212,66 @@ test("a carry-over reads the old session only as the bot that owns it", async ()
 //
 // Failure modes, written before the code: the parent is unbound, bound to
 // another bot, or itself a child (a nested read); the child is the parent, is
-// a root session of this or another bot, is already bound as a child of a
-// different parent, or is claimed by another bot; the parent's stream does not
-// list the child, lists it under a different parent session (the event's own
-// sessionId), is cut off or cannot be read (fail closed, not open); a cache
-// hit must not skip the parent checks; a verified child is bound as the
-// parent's bot so eve answers, and only then is a token minted.
+// a root session of this or another bot, is recorded under a different parent,
+// or is recorded for another bot; the child has no row yet (the agent hook has
+// not landed): a retryable answer, never a read, never a bind by the proxy;
+// a store that cannot be read is loud.
 
-function childDeps(over: Partial<ChildStreamDeps> = {}): ChildStreamDeps & { binds: string[]; state: { verifies: number } } {
-  const owners = new Map<string, string>([["p1", "bot-a"], ["p2", "bot-b"], ["root-a", "bot-a"], ["kid-old", "bot-a"]]);
-  const parents = new Map<string, string>([["kid-old", "p1"], ["nested", "kid-old"], ["nested-b", "kid-old"]]);
-  owners.set("nested", "bot-a");
-  const state = { binds: [] as string[], verifies: 0 };
-  const deps: ChildStreamDeps = {
+function childDeps(over: Partial<ChildStreamDeps> = {}): ChildStreamDeps {
+  const owners = new Map<string, string>([
+    ["p1", "bot-a"], ["p2", "bot-b"], ["root-a", "bot-a"],
+    ["kid-1", "bot-a"], ["kid-b", "bot-b"], ["kid-other", "bot-a"], ["kid-old", "bot-a"], ["nested", "bot-a"],
+  ]);
+  const parents = new Map<string, string>([["kid-1", "p1"], ["kid-b", "p2"], ["kid-other", "p9"], ["kid-old", "p1"], ["nested", "kid-old"]]);
+  return {
     resolveBot: (id) => owners.get(id) ?? null,
     readParent: (id) => parents.get(id) ?? null,
-    verify: async (parent, child) => { state.verifies += 1; return parent === "p1" && (child === "kid-1" || child === "kid-old"); },
-    bind: (child, parent, bot) => { state.binds.push(`${child}<${parent}:${bot}`); owners.set(child, bot); parents.set(child, parent); },
-    cache: new Map(),
     ...over,
   };
-  return Object.assign(deps, { binds: state.binds, state });
 }
 
-test("a child stream is read only when it is a verified child of a session bound to the bot", async () => {
-  await withSecret(async () => {
-    const deps = childDeps();
-    const ok = await authorizeChildStream("p1", "kid-1", deps);
+test("a child stream is read only when the durable binding makes it a child of a session the bot owns", async () => {
+  await withSecret(() => {
+    const ok = authorizeChildStream("p1", "kid-1", childDeps());
     assert.ok(ok.ok);
     assert.equal(claimsOf(ok.jwt).botId, "bot-a");
     assert.equal(ok.bound, "bot-a");
-    assert.deepEqual(deps.binds, ["kid-1<p1:bot-a"]);
-    assert.equal(deps.state.verifies, 1);
-    // A second read is served from the cache, with the same binding check.
-    const again = await authorizeChildStream("p1", "kid-1", deps);
-    assert.ok(again.ok);
-    assert.equal(deps.state.verifies, 1);
-    assert.equal(deps.binds.length, 1);
+    assert.equal(ok.body, null);
   });
 });
 
-test("a child stream is refused for an unbound, foreign or nested parent, and a bad child", async () => {
-  await withSecret(async () => {
+test("a child stream is refused for an unbound, foreign or nested parent and for a wrong child", async () => {
+  await withSecret(() => {
     const refused = { ok: false, status: 403, error: "child_session_unverified" };
     const deps = childDeps();
-    // The parent is unbound: the same 400 a normal stream read gets.
-    assert.deepEqual(await authorizeChildStream("ghost", "kid-1", deps), { ok: false, status: 400, error: "session_unbound" });
-    // Parent bound to another bot while the child is bot-a's: the child is not under a bot-a session.
-    assert.deepEqual(await authorizeChildStream("p2", "kid-1", deps), refused);
+    assert.deepEqual(authorizeChildStream("ghost", "kid-1", deps), { ok: false, status: 400, error: "session_unbound" });
+    // The parent is bot-b's while the child is recorded for bot-a under p1.
+    assert.deepEqual(authorizeChildStream("p2", "kid-1", deps), refused);
     // Nested: the parent is itself a child.
-    assert.deepEqual(await authorizeChildStream("kid-old", "nested", deps), refused);
-    // A child under a different parent than the one named.
-    assert.deepEqual(await authorizeChildStream("p1", "nested-b", deps), refused);
-    // Not in the parent's stream.
-    assert.deepEqual(await authorizeChildStream("p1", "kid-9", deps), refused);
-    // The parent as its own child, and a root session as a child.
-    assert.deepEqual(await authorizeChildStream("p1", "p1", deps), refused);
-    assert.deepEqual(await authorizeChildStream("p1", "root-a", deps), refused);
-    assert.deepEqual(await authorizeChildStream("p1", "p2", deps), refused);
-    assert.deepEqual(deps.binds, []);
+    assert.deepEqual(authorizeChildStream("kid-old", "nested", deps), refused);
+    // Recorded under a different parent than the one named.
+    assert.deepEqual(authorizeChildStream("p1", "kid-other", deps), refused);
+    // The parent as its own child, a root session as a child, another bot's child.
+    assert.deepEqual(authorizeChildStream("p1", "p1", deps), refused);
+    assert.deepEqual(authorizeChildStream("p1", "root-a", deps), refused);
+    assert.deepEqual(authorizeChildStream("p1", "p2", deps), refused);
+    assert.deepEqual(authorizeChildStream("p1", "kid-b", deps), refused);
+    // Same parent id, but the child's row names another bot than the parent's.
+    const crossed = childDeps({ resolveBot: (id) => (id === "kid-1" ? "bot-b" : childDeps().resolveBot(id)) });
+    assert.deepEqual(authorizeChildStream("p1", "kid-1", crossed), refused);
   });
 });
 
-test("an unreadable parent stream refuses the child; a cache hit still checks the parent", async () => {
-  await withSecret(async () => {
-    const down = childDeps({ verify: async () => { throw new Error("eve_stream_500"); } });
-    await assert.rejects(authorizeChildStream("p1", "kid-1", down), /eve_stream_500/);
-    assert.deepEqual(down.binds, []);
-    // Verified once, then the parent's binding changes under the cache: refused again.
-    const deps = childDeps();
-    assert.ok((await authorizeChildStream("p1", "kid-1", deps)).ok);
-    const moved = { ...deps, resolveBot: (id: string) => (id === "p1" ? "bot-b" : deps.resolveBot(id)) };
-    assert.deepEqual(await authorizeChildStream("p1", "kid-1", moved), { ok: false, status: 403, error: "child_session_unverified" });
-    // The cache is bounded.
-    const small = childDeps({ verify: async () => true, cache: new Map() });
-    for (let i = 0; i < 700; i++) await authorizeChildStream("p1", `kid-${i}`, small);
-    assert.ok(small.cache.size <= 512);
+test("a child with no row yet is a retryable 409, and the proxy never binds it", async () => {
+  await withSecret(() => {
+    let wrote = 0;
+    const deps = childDeps({ resolveBot: (id) => (id === "kid-new" ? null : childDeps().resolveBot(id)) });
+    Object.assign(deps, { bind: () => { wrote += 1; } });
+    assert.deepEqual(authorizeChildStream("p1", "kid-new", deps), { ok: false, status: 409, error: "child_session_pending" });
+    assert.equal(wrote, 0);
+    // A store that cannot be read is loud, not "pending" or "refused".
+    assert.throws(() => authorizeChildStream("p1", "kid-1", childDeps({ readParent: () => { throw new Error("session_owners_locked"); } })), /session_owners_locked/);
   });
-});
-
-function ndjson(events: unknown[], tail?: number): Response {
-  const headers = new Headers({ "content-type": "application/x-ndjson" });
-  if (tail !== undefined) headers.set("x-eve-stream-tail-index", String(tail));
-  return new Response(events.map((event) => JSON.stringify(event)).join("\n") + "\n", { headers });
-}
-const called = (sessionId: string, childSessionId: string) => ({ type: "subagent.called", data: { sessionId, childSessionId, callId: "c" } });
-
-test("the parent's stream is scanned for a subagent.called naming this parent and child", async () => {
-  const events = [
-    { type: "turn.started", data: {} },
-    called("p1", "kid-1"),
-    { type: "message.completed", data: {} },
-  ];
-  const fetching = (response: () => Response) => (async () => response()) as unknown as typeof fetch;
-  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => ndjson(events, 2))), true);
-  // Same child under a different parent's event: not a match.
-  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => ndjson([called("p9", "kid-1")], 0))), false);
-  // A grandchild call re-emitted on the parent stream names the child as its session.
-  assert.equal(await streamHasSubagentCall("p1", "kid-2", "jwt", fetching(() => ndjson([called("kid-1", "kid-2")], 0))), false);
-  // Another event type carrying the same fields is not a delegation.
-  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => ndjson([{ type: "subagent.completed", data: { sessionId: "p1", childSessionId: "kid-1" } }], 0))), false);
-  // A line that does not parse is skipped, not fatal; the match after it counts.
-  const noisy = new Response(`not json\n${JSON.stringify(called("p1", "kid-1"))}\n`, { headers: { "x-eve-stream-tail-index": "1" } });
-  assert.equal(await streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => noisy)), true);
-  // An error status is loud, never read as "not a child".
-  await assert.rejects(streamHasSubagentCall("p1", "kid-1", "jwt", fetching(() => new Response("no", { status: 500 }))), /eve_stream_500/);
-  // The read is as the bot, from the start of the parent stream.
-  let seen = "";
-  let auth = "";
-  await streamHasSubagentCall("p1", "kid-1", "jwt-x", (async (url: string, init: RequestInit) => {
-    seen = String(url);
-    auth = String((init.headers as Record<string, string>).authorization);
-    return ndjson(events, 2);
-  }) as unknown as typeof fetch);
-  assert.match(seen, /\/eve\/v1\/session\/p1\/stream\?startIndex=0&includeTailIndex=1$/);
-  assert.equal(auth, "Bearer jwt-x");
 });
 
 // MARK: - review round 1
@@ -365,192 +310,3 @@ test("a send or cancel into a recorded child is refused by the authorisation, wh
   });
 });
 
-type Stream = { events: unknown[] };
-function streams(table: Record<string, Stream>) {
-  const log: Array<{ parent: string; start: number; signal: AbortSignal | null | undefined }> = [];
-  let live = 0;
-  let peak = 0;
-  const impl = (async (url: string, init: RequestInit) => {
-    const m = /session\/([^/]+)\/stream\?startIndex=(-?\d+)&includeTailIndex=1$/.exec(String(url));
-    assert.ok(m, String(url));
-    const parent = m[1];
-    const start = Number(m[2]);
-    log.push({ parent, start, signal: init.signal });
-    const events = table[parent]?.events ?? [];
-    const from = start < 0 ? Math.max(0, events.length + start) : start;
-    live += 1;
-    peak = Math.max(peak, live);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    live -= 1;
-    const lines = events.slice(from).map((event) => JSON.stringify(event)).join("\n");
-    return new Response(lines ? `${lines}\n` : "", { headers: { "x-eve-stream-tail-index": String(events.length - 1) } });
-  }) as unknown as typeof fetch;
-  return { impl, log, peak: () => peak };
-}
-const filler = (n: number) => Array.from({ length: n }, () => ({ type: "message.appended", data: {} }));
-
-test("a long parent verifies from a tail window, then only the new events, and widens once", async () => {
-  const table: Record<string, Stream> = { p: { events: [called("p", "kid-old"), ...filler(30), called("p", "kid-1"), ...filler(5)] } };
-  const feed = streams(table);
-  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 10, negativeTtlMs: 0 });
-  assert.equal(await verify("p", "kid-1", "jwt"), true);
-  // The tail is read first (-1), then the window from an absolute index:
-  // kid-1 sits 6 events from the tail, so no widening.
-  assert.deepEqual(feed.log.map((entry) => entry.start), [-1, 27]);
-  // A known child needs no read at all.
-  assert.equal(await verify("p", "kid-1", "jwt"), true);
-  assert.equal(feed.log.length, 2);
-  // A child older than the window: widen to the start once.
-  assert.equal(await verify("p", "kid-old", "jwt"), true);
-  // (an incremental look past the window's end first, then the widening)
-  assert.deepEqual(feed.log.map((entry) => entry.start), [-1, 27, 37, 0]);
-  // After a full read, a new child is looked for only past what was read.
-  table.p.events.push(called("p", "kid-2"));
-  const before = feed.log.length;
-  assert.equal(await verify("p", "kid-2", "jwt"), true);
-  assert.equal(feed.log.length, before + 1);
-  assert.equal(feed.log[before].start, table.p.events.length - 1);
-  // An unknown child costs one incremental read and is a refusal, not a widening.
-  assert.equal(await verify("p", "kid-ghost", "jwt"), false);
-  assert.equal(feed.log.length, before + 2);
-  assert.equal(feed.log[before + 1].start, table.p.events.length);
-});
-
-test("only an exact subagent.called raised by the parent adds to its record", async () => {
-  const table: Record<string, Stream> = {
-    p: {
-      events: [
-        called("kid-1", "grand"),
-        { type: "subagent.completed", data: { sessionId: "p", childSessionId: "fake-1" } },
-        { type: "message.completed", data: { sessionId: "p", childSessionId: "fake-2" } },
-        { type: "subagent.called", data: { childSessionId: "fake-3" } },
-        { type: "subagent.called", data: { sessionId: "p" } },
-        { type: "subagent.called", data: { sessionId: "p", childSessionId: 7 } },
-        called("other", "fake-4"),
-        called("p", "real"),
-      ],
-    },
-  };
-  const verify = createChildVerifier({ fetch: streams(table).impl, windowEvents: 100, negativeTtlMs: 0 });
-  for (const id of ["grand", "fake-1", "fake-2", "fake-3", "fake-4", "7"]) assert.equal(await verify("p", id, "jwt"), false, id);
-  assert.equal(await verify("p", "real", "jwt"), true);
-});
-
-test("concurrent checks of one parent share a scan, scans are bounded, a miss is remembered and an abort stops the read", async () => {
-  const table: Record<string, Stream> = {};
-  for (let i = 0; i < 8; i++) table[`p${i}`] = { events: [called(`p${i}`, `k${i}`), ...filler(3)] };
-  const feed = streams(table);
-  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 100, maxConcurrent: 2, negativeTtlMs: 0 });
-  // Many children asked of one parent at once: one read.
-  table.p0.events.push(...Array.from({ length: 5 }, (_, i) => called("p0", `extra${i}`)));
-  const same = await Promise.all(["k0", "extra0", "extra1", "extra2", "extra3", "extra4"].map((id) => verify("p0", id, "jwt")));
-  assert.deepEqual(same, [true, true, true, true, true, true]);
-  assert.equal(feed.log.filter((entry) => entry.start >= 0).length, 1);
-  // Eight parents at once: never more than two reads in flight.
-  const many = await Promise.all(Array.from({ length: 8 }, (_, i) => verify(`p${i}`, `k${i}`, "jwt")));
-  assert.deepEqual(many, Array(8).fill(true));
-  assert.ok(feed.peak() <= 2, `peak ${feed.peak()}`);
-
-  // A miss is remembered for the TTL, then looked up again.
-  let clock = 1000;
-  const miss = streams({ q: { events: filler(2) } });
-  const timed = createChildVerifier({ fetch: miss.impl, windowEvents: 100, negativeTtlMs: 10_000, now: () => clock });
-  assert.equal(await timed("q", "nope", "jwt"), false);
-  assert.equal(await timed("q", "nope", "jwt"), false);
-  assert.equal(miss.log.filter((entry) => entry.start >= 0).length, 1);
-  clock += 10_001;
-  assert.equal(await timed("q", "nope", "jwt"), false);
-  assert.equal(miss.log.filter((entry) => entry.start >= 0).length, 2);
-
-  // A failed read is loud, and is remembered for the TTL too.
-  let calls = 0;
-  const broken = createChildVerifier({
-    fetch: (async () => { calls += 1; return new Response("no", { status: 500 }); }) as unknown as typeof fetch,
-    negativeTtlMs: 10_000,
-    now: () => clock,
-  });
-  await assert.rejects(broken("q", "x", "jwt"), /eve_stream_500/);
-  await assert.rejects(broken("q", "x", "jwt"), /eve_stream_500/);
-  assert.equal(calls, 1);
-
-  // The caller went away: its wait ends and, with nobody left, the eve read is aborted.
-  const slow = streams({ z: { events: filler(2) } });
-  const aborting = createChildVerifier({ fetch: slow.impl, negativeTtlMs: 0 });
-  const gone = new AbortController();
-  const pending = aborting("z", "k", "jwt", gone.signal);
-  await new Promise((resolve) => setTimeout(resolve, 1));
-  gone.abort();
-  await assert.rejects(pending, /aborted/);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(slow.log[0]?.signal?.aborted, true);
-  // An already-aborted caller never starts a read.
-  const before = slow.log.length;
-  await assert.rejects(aborting("z", "k2", "jwt", gone.signal), /aborted/);
-  assert.equal(slow.log.length, before);
-});
-
-// Round 2 failure modes: a stream that ends before its advertised tail must not
-// move the cursor or mark the parent complete, and is not a remembered miss; the
-// window starts from an absolute index taken from a tail read, never from a
-// negative one eve resolves against a different tail; a scan cancelled while it
-// waited for a slot must not be joined by the next caller or cached as a failure.
-
-test("a short read commits nothing and is not remembered as a miss", async () => {
-  const events = [called("p", "kid-a"), called("p", "kid-b")];
-  const starts: number[] = [];
-  let calls = 0;
-  const fetching = (async (url: string) => {
-    const start = Number(/startIndex=(-?\d+)/.exec(String(url))?.[1]);
-    starts.push(start);
-    const from = start < 0 ? Math.max(0, events.length + start) : start;
-    calls += 1;
-    // The first scan is cut off after event 0, though the header says the tail is 1.
-    const body = calls === 2 ? events.slice(from, 1) : events.slice(from);
-    return new Response(body.map((event) => JSON.stringify(event)).join("\n") + "\n", { headers: { "x-eve-stream-tail-index": String(events.length - 1) } });
-  }) as unknown as typeof fetch;
-  const verify = createChildVerifier({ fetch: fetching, windowEvents: 100, negativeTtlMs: 10_000 });
-  await assert.rejects(verify("p", "kid-b", "jwt"), /eve_stream_short/);
-  // Nothing was committed: the next call starts over from the same place and finds the child.
-  assert.equal(await verify("p", "kid-b", "jwt"), true);
-  assert.equal(starts[starts.length - 1], 0);
-});
-
-test("the window starts at an absolute index from the tail, and completeness is known only from index 0", async () => {
-  const table: Record<string, Stream> = { p: { events: [called("p", "early"), ...filler(298), called("p", "late")] } };
-  const feed = streams(table);
-  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 100, negativeTtlMs: 0 });
-  assert.equal(await verify("p", "late", "jwt"), true);
-  // Only the tail probe is negative; the scan is absolute (300 events, window 100).
-  assert.deepEqual(feed.log.map((entry) => entry.start), [-1, 200]);
-  // The window did not reach the start, so an older child widens to 0.
-  table.p.events.push(...filler(20));
-  assert.equal(await verify("p", "early", "jwt"), true);
-  assert.deepEqual(feed.log.map((entry) => entry.start).filter((start, i) => i > 1 && start < 0), []);
-  assert.equal(feed.log[feed.log.length - 1].start, 0);
-});
-
-test("a scan cancelled while queued is not joined by the next caller and is never cached as a failure", async () => {
-  const table: Record<string, Stream> = { a: { events: [called("a", "ka")] }, b: { events: [called("b", "kb")] } };
-  const feed = streams(table);
-  const verify = createChildVerifier({ fetch: feed.impl, windowEvents: 100, maxConcurrent: 1, negativeTtlMs: 10_000 });
-  const busy = verify("a", "ka", "jwt");
-  const gone = new AbortController();
-  const queued = verify("b", "kb", "jwt", gone.signal);
-  await new Promise((resolve) => setTimeout(resolve, 1));
-  gone.abort();
-  await assert.rejects(queued, /aborted/);
-  // A replacement caller (no abort of its own) gets a real scan, not the dead one.
-  assert.equal(await verify("b", "kb", "jwt"), true);
-  assert.equal(await busy, true);
-  assert.ok(feed.log.some((entry) => entry.parent === "b" && entry.start >= 0));
-  // And the cancellation was not remembered against the same pair.
-  const other = streams({ c: { events: [called("c", "kc")] } });
-  const v2 = createChildVerifier({ fetch: other.impl, windowEvents: 100, maxConcurrent: 1, negativeTtlMs: 10_000 });
-  const hold = v2("c", "nope", "jwt");
-  const c2 = new AbortController();
-  const waiting = v2("c2", "kc", "jwt", c2.signal);
-  c2.abort();
-  await assert.rejects(waiting, /aborted/);
-  await hold;
-  assert.equal(await v2("c", "kc", "jwt"), true);
-});

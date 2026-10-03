@@ -146,7 +146,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     if (sessionPath && child?.present) {
       if (child.parent === null) return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
       try {
-        auth = await authorizeChildStream(child.parent, sessionPath[1], childStreamDeps(), request.signal);
+        auth = authorizeChildStream(child.parent, sessionPath[1], childStreamDeps());
       } catch (err) {
         console.error("child stream could not be verified", err instanceof Error ? err.message : err);
         const missing = err instanceof Error && err.message === "channel_credential_missing";

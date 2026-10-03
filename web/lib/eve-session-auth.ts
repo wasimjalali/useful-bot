@@ -1,7 +1,5 @@
 import { bindTurnBody, isEveSessionPost } from "../../shared/eve-proxy.ts";
-import { eveStreamPayload } from "../../shared/eve-stream.ts";
-import { bindChildSession, readSessionParent, resolveSessionBot } from "../../shared/session-bindings.ts";
-import { eveOrigin } from "../../shared/stack.ts";
+import { readSessionParent, resolveSessionBot } from "../../shared/session-bindings.ts";
 import { channelJwt, channelJwtNoBot } from "./agent-exec.ts";
 import { readShell } from "../../shared/shell-io.ts";
 
@@ -72,307 +70,17 @@ export function carryOverReader(
   return { ok: true, jwt: channelJwt(ownerId) };
 }
 
-/** The most (parent, child) pairs remembered as verified; the oldest goes first. */
-const CHILD_CACHE_MAX = 512;
-/** How long, and how much, one read of a parent's stream may take. */
-const VERIFY_HARD_MS = 15_000;
-const VERIFY_MAX_BYTES = 64 * 1024 * 1024;
-/** Events of a parent's tail read first: a new child is among the newest. */
-const VERIFY_WINDOW_EVENTS = 5000;
-const VERIFY_CONCURRENCY = 4;
-const VERIFY_MISS_TTL_MS = 10_000;
-const RECORD_MAX_PARENTS = 64;
-const RECORD_MAX_CHILDREN = 4096;
-
 export type ChildStreamDeps = {
   resolveBot: (sessionId: string) => string | null;
   /** The root a session was recorded as a child of, or null. */
   readParent: (sessionId: string) => string | null;
-  /** Whether `parent`'s own stream says it delegated `child`. Throws when the stream cannot be read. */
-  verify: (parent: string, child: string, jwt: string, signal?: AbortSignal) => Promise<boolean>;
-  bind: (child: string, parent: string, botId: string) => void;
-  cache: Map<string, true>;
 };
 
-const verifiedChildren = new Map<string, true>();
-let sharedVerifier: ReturnType<typeof createChildVerifier> | null = null;
-
 export function childStreamDeps(): ChildStreamDeps {
-  sharedVerifier ??= createChildVerifier();
   return {
     resolveBot: (id) => resolveSessionBot(id, readShell()),
     readParent: (id) => readSessionParent(id),
-    verify: sharedVerifier,
-    bind: (child, parent, botId) => { bindChildSession(child, parent, botId); },
-    cache: verifiedChildren,
   };
-}
-
-/** What a scan has learned of one parent's stream: where it has read to, and which children it delegated. */
-type ParentRecord = { next: number; complete: boolean; children: Set<string> };
-
-export type ChildVerifierOptions = {
-  fetch?: typeof fetch;
-  /** Tail events read first for a parent not seen before; 0 reads from the start. */
-  windowEvents?: number;
-  maxConcurrent?: number;
-  negativeTtlMs?: number;
-  now?: () => number;
-};
-
-/**
- * Whether a parent's own stream says it delegated a child, found cheaply. The
- * stream is read as the bot: a parent not seen before is read from a window at
- * its tail (a negative `startIndex`), widened to the start once only if the
- * child is not in it; after that only the events past the last index read are
- * scanned. The record holds only children named by an exact `subagent.called`
- * event whose own `sessionId` is the parent, so nothing a child or a message
- * says can add one. Scans of one parent are shared, scans overall are bounded,
- * a miss or a failure is remembered briefly, and a caller that goes away stops
- * the read once nobody is waiting on it. A stream that cannot be read throws;
- * it never answers true on a guess.
- */
-export function createChildVerifier(options: ChildVerifierOptions = {}) {
-  const fetchImpl = options.fetch ?? fetch;
-  const window = options.windowEvents ?? VERIFY_WINDOW_EVENTS;
-  const maxConcurrent = options.maxConcurrent ?? VERIFY_CONCURRENCY;
-  const ttl = options.negativeTtlMs ?? VERIFY_MISS_TTL_MS;
-  const now = options.now ?? Date.now;
-  const records = new Map<string, ParentRecord>();
-  const misses = new Map<string, { until: number; error?: Error }>();
-  type Scan = { seq: number; controller: AbortController; waiters: number; promise: Promise<void> };
-  const inflight = new Map<string, Scan>();
-  let seq = 0;
-  let running = 0;
-  const queue: Array<() => void> = [];
-
-  const acquire = (): Promise<void> => {
-    if (running < maxConcurrent) {
-      running += 1;
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => queue.push(() => { running += 1; resolve(); }));
-  };
-  const release = () => {
-    running -= 1;
-    queue.shift()?.();
-  };
-  const remember = (parent: string): ParentRecord => {
-    let rec = records.get(parent);
-    if (rec) {
-      records.delete(parent);
-    } else {
-      rec = { next: 0, complete: false, children: new Set() };
-      if (records.size >= RECORD_MAX_PARENTS) {
-        const oldest = records.keys().next().value;
-        if (oldest !== undefined) records.delete(oldest);
-      }
-    }
-    records.set(parent, rec);
-    return rec;
-  };
-
-  /**
-   * The index of the parent stream's last durable event. A negative start is
-   * resolved by eve against a tail it may move past, so it is used for this
-   * alone (the header, then the body is dropped); every scan starts at an
-   * absolute index taken from the answer.
-   */
-  const readTail = async (parent: string, jwt: string, signal: AbortSignal): Promise<number> => {
-    const url = `${eveOrigin()}/eve/v1/session/${encodeURIComponent(parent)}/stream?startIndex=-1&includeTailIndex=1`;
-    const res = await fetchImpl(url, { headers: { authorization: `Bearer ${jwt}` }, signal });
-    if (!res.ok || !res.body) throw new Error(`eve_stream_${res.status}`);
-    await res.body.cancel().catch(() => undefined);
-    const header = Number(res.headers.get("x-eve-stream-tail-index"));
-    if (!res.headers.has("x-eve-stream-tail-index") || !Number.isInteger(header)) throw new Error("eve_stream_tail_unknown");
-    return header;
-  };
-
-  /**
-   * One read of the parent's stream from the absolute index `start` to its
-   * tail. Nothing is merged unless every event up to the tail was read: a
-   * stream that ends early throws `eve_stream_short` and leaves the record as it was.
-   */
-  const readFrom = async (parent: string, jwt: string, start: number, signal: AbortSignal): Promise<void> => {
-    const url = `${eveOrigin()}/eve/v1/session/${encodeURIComponent(parent)}/stream?startIndex=${start}&includeTailIndex=1`;
-    const res = await fetchImpl(url, { headers: { authorization: `Bearer ${jwt}` }, signal });
-    if (!res.ok || !res.body) throw new Error(`eve_stream_${res.status}`);
-    const header = Number(res.headers.get("x-eve-stream-tail-index"));
-    if (!res.headers.has("x-eve-stream-tail-index") || !Number.isInteger(header)) {
-      await res.body.cancel().catch(() => undefined);
-      throw new Error("eve_stream_tail_unknown");
-    }
-    const first = start;
-    const total = Math.max(0, header + 1 - first);
-    const found: string[] = [];
-    if (total > 0) {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let bytes = 0;
-      let consumed = 0;
-      const scan = (line: string) => {
-        const payload = eveStreamPayload(line);
-        if (payload === null) return;
-        consumed += 1;
-        try {
-          const event = JSON.parse(payload) as { type?: unknown; data?: { sessionId?: unknown; childSessionId?: unknown } };
-          if (event.type === "subagent.called" && event.data?.sessionId === parent && typeof event.data.childSessionId === "string") {
-            found.push(event.data.childSessionId);
-          }
-        } catch {
-          /* a line that does not parse names no child */
-        }
-      };
-      try {
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          bytes += value.byteLength;
-          if (bytes > VERIFY_MAX_BYTES) throw new Error("eve_stream_too_large");
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() ?? "";
-          for (const line of lines) scan(line);
-          if (consumed >= total) break;
-        }
-        if (consumed < total) {
-          buf += decoder.decode();
-          scan(buf);
-        }
-        if (consumed < total) throw new Error("eve_stream_short");
-      } finally {
-        await reader.cancel().catch(() => undefined);
-      }
-    } else {
-      await res.body.cancel().catch(() => undefined);
-    }
-    const rec = remember(parent);
-    if (first === 0) rec.complete = true;
-    for (const id of found) {
-      if (rec.children.size >= RECORD_MAX_CHILDREN) {
-        const oldest = rec.children.values().next().value;
-        if (oldest !== undefined) rec.children.delete(oldest);
-      }
-      rec.children.add(id);
-    }
-    rec.next = Math.max(rec.next, header + 1);
-  };
-
-  const runScan = async (parent: string, jwt: string, full: boolean, signal: AbortSignal): Promise<void> => {
-    await acquire();
-    try {
-      if (signal.aborted) throw new Error("aborted");
-      const known = records.get(parent);
-      let start = 0;
-      if (!full) {
-        if (known) start = known.next;
-        else if (window > 0) start = Math.max(0, (await readTail(parent, jwt, signal)) + 1 - window);
-      }
-      await readFrom(parent, jwt, start, signal);
-    } finally {
-      release();
-    }
-  };
-
-  /** Join the scan of this parent in flight (unless it began at or before `minSeq`), or start one. */
-  const attempt = async (
-    parent: string,
-    jwt: string,
-    full: boolean,
-    minSeq: number,
-    signal: AbortSignal | undefined,
-  ): Promise<{ started: boolean }> => {
-    const key = `${parent}\u0000${full ? "full" : "next"}`;
-    let entry = inflight.get(key);
-    let started = false;
-    if (!entry || entry.seq <= minSeq || entry.controller.signal.aborted) {
-      const controller = new AbortController();
-      const hard = setTimeout(() => controller.abort(), VERIFY_HARD_MS);
-      const scan: Scan = { seq: ++seq, controller, waiters: 0, promise: Promise.resolve() };
-      scan.promise = runScan(parent, jwt, full, controller.signal).finally(() => {
-        clearTimeout(hard);
-        if (inflight.get(key) === scan) inflight.delete(key);
-      });
-      scan.promise.catch(() => undefined);
-      inflight.set(key, scan);
-      entry = scan;
-      started = true;
-    }
-    const scan = entry;
-    scan.waiters += 1;
-    let settled = false;
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const onAbort = () => reject(new Error("aborted"));
-        if (signal?.aborted) return onAbort();
-        signal?.addEventListener("abort", onAbort, { once: true });
-        scan.promise.then(resolve, reject).finally(() => signal?.removeEventListener("abort", onAbort));
-      });
-      settled = true;
-    } finally {
-      scan.waiters -= 1;
-      if (scan.waiters === 0 && !settled) {
-        scan.controller.abort();
-        // A scan nobody waits on is gone: no later caller may join it.
-        if (inflight.get(key) === scan) inflight.delete(key);
-      }
-    }
-    return { started };
-  };
-
-  /** A cancellation or a read cut short says nothing about the child, so it is never remembered. */
-  const isTransient = (err: Error) => err.name === "AbortError" || err.message === "aborted" || err.message === "eve_stream_short";
-
-  return async (parent: string, child: string, jwt: string, signal?: AbortSignal): Promise<boolean> => {
-    if (signal?.aborted) throw new Error("aborted");
-    const has = () => records.get(parent)?.children.has(child) === true;
-    if (has()) return true;
-    const key = `${parent}\u0000${child}`;
-    const miss = misses.get(key);
-    if (miss && miss.until > now()) {
-      if (miss.error) throw miss.error;
-      return false;
-    }
-    const noteMiss = (entry: { until: number; error?: Error }) => {
-      if (ttl <= 0) return;
-      if (misses.size >= CHILD_CACHE_MAX) {
-        const oldest = misses.keys().next().value;
-        if (oldest !== undefined) misses.delete(oldest);
-      }
-      misses.set(key, entry);
-    };
-    try {
-      const arrival = seq;
-      const first = await attempt(parent, jwt, false, -1, signal);
-      if (has()) return true;
-      // A scan already running when this call came in may have read to a tail
-      // that predates the child: one more, begun after the call arrived.
-      if (!first.started) {
-        await attempt(parent, jwt, false, arrival, signal);
-        if (has()) return true;
-      }
-      if (window > 0 && records.get(parent)?.complete !== true) {
-        await attempt(parent, jwt, true, -1, signal);
-        if (has()) return true;
-      }
-      noteMiss({ until: now() + ttl });
-      return false;
-    } catch (err) {
-      if (!signal?.aborted && err instanceof Error && !isTransient(err)) noteMiss({ until: now() + ttl, error: err });
-      throw err;
-    }
-  };
-}
-
-/** A one-shot check of `parent`'s whole stream from the start, with nothing remembered. */
-export async function streamHasSubagentCall(
-  parent: string,
-  child: string,
-  jwt: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<boolean> {
-  return createChildVerifier({ fetch: fetchImpl, windowEvents: 0, negativeTtlMs: 0 })(parent, child, jwt);
 }
 
 /**
@@ -398,35 +106,29 @@ export function childWriteRefusal(
 
 /**
  * May a read of `child`'s stream go through, as a sub-agent of `parent`? Only
- * when `parent` is bound to a bot and is not itself a child (no nesting), the
- * child is not the parent, a root session or another bot's, and the parent's
- * own stream lists the child. A verified child is bound as the parent's bot,
- * with the parent recorded, because eve holds every session call to a binding;
- * the proxy refuses any send into a recorded child. Read-only, GET streams only.
+ * when the durable binding says so: `parent` is bound to a bot and is not
+ * itself a child, and `child` is recorded (by the agent's hook, when eve
+ * reported the delegation) as a child of that parent for that same bot. No
+ * stream is read. A child with no row yet is `child_session_pending` (409), a
+ * retryable answer: the hook can land a moment after the app sees the event.
+ * Anything else (the parent itself, a root session, another parent or bot) is
+ * refused. Read-only, GET streams only.
  */
-export async function authorizeChildStream(
+export function authorizeChildStream(
   parent: string,
   child: string,
   deps: ChildStreamDeps,
-  signal?: AbortSignal,
-): Promise<EveCallAuth> {
-  const refused: EveCallAuth = { ok: false, status: 403, error: "child_session_unverified" };
+): EveCallAuth {
   const bot = deps.resolveBot(parent);
   if (bot === null) return { ok: false, status: 400, error: "session_unbound" };
-  if (deps.readParent(parent) !== null || child === parent) return refused;
-  const childBot = deps.resolveBot(child);
+  const refused: EveCallAuth = { ok: false, status: 403, error: "child_session_unverified" };
+  if (child === parent || deps.readParent(parent) !== null) return refused;
   const childParent = deps.readParent(child);
-  if (childParent !== null && childParent !== parent) return refused;
-  if (childBot !== null && (childBot !== bot || childParent === null)) return refused;
-  const key = `${parent}\u0000${child}`;
-  if (!deps.cache.has(key)) {
-    if (!(await deps.verify(parent, child, channelJwt(bot), signal))) return refused;
-    if (deps.cache.size >= CHILD_CACHE_MAX) {
-      const oldest = deps.cache.keys().next().value;
-      if (oldest !== undefined) deps.cache.delete(oldest);
-    }
-    deps.cache.set(key, true);
+  const childBot = deps.resolveBot(child);
+  if (childParent === null) {
+    // No row at all is a child the hook has not recorded yet; a root is not a child.
+    return childBot === null ? { ok: false, status: 409, error: "child_session_pending" } : refused;
   }
-  if (childBot === null) deps.bind(child, parent, bot);
+  if (childParent !== parent || childBot !== bot) return refused;
   return { ok: true, jwt: channelJwt(bot), bound: bot, body: null };
 }

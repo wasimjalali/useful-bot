@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyShellAction, DEFAULT_BOT_ID, orchestratorId, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
-import { bindChildSession, bindSession, readSessionBot, readSessionParent, resolveSessionBot } from "../shared/session-bindings.ts";
+import { bindSession, readSessionBot, readSessionParent, resolveSessionBot } from "../shared/session-bindings.ts";
+import { bindSubagentChild } from "../agent/lib/subagent-binding.ts";
 import { authorizeChildStream, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { renderContext } from "../shared/context-blocks.ts";
@@ -195,15 +196,17 @@ test("a sub-agent's child turn never binds the child as a root, so the proxy can
       const ctx = { ...ctxFor(child, alpha), channel: { kind: "subagent" } };
       assert.equal(await boundBotId(ctx), alpha);
       assert.equal(readSessionBot(child), null, "the child was bound as a root session");
-      // The app's first read of the child's stream, through the proxy.
+      // The app's read before the parent's hook has recorded the child: retry later.
       const deps: ChildStreamDeps = {
         resolveBot: (id) => resolveSessionBot(id),
         readParent: (id) => readSessionParent(id),
-        verify: async (p, c) => p === parent && c === child,
-        bind: (c, p, bot) => { bindChildSession(c, p, bot); },
-        cache: new Map(),
       };
-      const read = await authorizeChildStream(parent, child, deps);
+      const early = authorizeChildStream(parent, child, deps);
+      assert.deepEqual(early, { ok: false, status: 409, error: "child_session_pending" });
+      // The parent's hook records the delegation eve reported.
+      const event = { type: "subagent.called", data: { sessionId: parent, childSessionId: child } };
+      assert.equal(bindSubagentChild(event, { session: { id: parent } }), "bound");
+      const read = authorizeChildStream(parent, child, deps);
       assert.equal(read.ok, true, JSON.stringify(read));
       assert.equal(readSessionParent(child), parent);
       // The child's next step agrees with the binding the proxy wrote.
