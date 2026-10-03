@@ -126,7 +126,7 @@ function eveFetchCounter() {
 test("SHARED_PROMPT_CHARS is at least the size of agent/instructions.md", () => {
   const bytes = readFileSync(new URL("../agent/instructions.md", import.meta.url)).length;
   assert.ok(SHARED_PROMPT_CHARS >= bytes, `instructions.md is ${bytes} bytes, the constant says ${SHARED_PROMPT_CHARS}`);
-  assert.equal(TOOL_SCHEMA_CHARS, 28_000);
+  assert.equal(TOOL_SCHEMA_CHARS, 30_000);
   assert.equal(OUTPUT_RESERVE_TOKENS, 4096);
 });
 

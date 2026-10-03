@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { lenientNullableString } from "../lib/lenient-null.ts";
 import { approvalActor } from "../lib/approvals.ts";
-import { authoritySessionId, awaitActiveBotId } from "../lib/active-bot.ts";
+import { authoritySessionId, awaitActiveBotId, isSubAgent } from "../lib/active-bot.ts";
 import { approvedWrite } from "../lib/write.ts";
 import { appendAgentEvent } from "../../shared/agent-store.ts";
 import { isPagePath, recordPage } from "../../shared/media-store.ts";
@@ -25,6 +25,8 @@ export default defineTool({
       grantSessionId: authoritySessionId(ctx),
     });
     if (!isPagePath(written.path)) return written;
+    // A sub-agent files nothing in the owner's Library or chat: its root reports.
+    if (isSubAgent(ctx)) return { ...written, note: "The page is written. A sub-agent adds nothing to the owner's Library or chat, so say where the file is in your report." };
     return { ...written, note: await showPage(written.path, input.content, ctx) };
   },
 });

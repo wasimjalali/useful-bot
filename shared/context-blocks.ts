@@ -116,7 +116,8 @@ export type ThisTurn = {
   /** The moment of the turn. Only its calendar day in `tz` is shown. */
   date: Date;
   tz: string;
-  permission: ThisTurnPermission;
+  /** Null when the turn cannot name its grant: a sub-agent whose chat is unknown. */
+  permission: ThisTurnPermission | null;
   /** The attached folder's name, or null when none is attached. */
   folder: string | null;
   model: { label: string; id: string; connection: string };
@@ -156,7 +157,9 @@ export function renderThisTurn(turn: ThisTurn): string {
     "# This turn",
     "",
     `Owner: ${owner} (call them ${first}). Today: ${dayIn(turn.date, turn.tz)}, time zone ${flat(turn.tz)}.`,
-    `This chat: ${PERMISSION_LABEL[turn.permission]}, ${folder}.`,
+    turn.permission === null
+      ? "This chat: the same permission and folder as the chat that started you."
+      : `This chat: ${PERMISSION_LABEL[turn.permission]}, ${folder}.`,
     `Model: ${flat(turn.model.label)} (${flat(turn.model.id)}) via ${flat(turn.model.connection)}. Say this when asked what powers you. ${image}`,
   ];
   if (turn.firstChat) lines.push("This is the owner's first chat with you.");

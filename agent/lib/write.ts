@@ -45,6 +45,9 @@ export async function approvedWrite(input: {
   sessionId: string;
   /** The session whose grant counts, when it is not `sessionId`: a sub-agent child's root. */
   grantSessionId?: string;
+  /** From `approvalActor`: a sub-agent's card names its root session. */
+  rootSessionId?: string;
+  subagent?: boolean;
   turnId: string;
   toolCallId: string;
   autoDecision?: "approve" | "deny";
@@ -83,6 +86,8 @@ export async function approvedWrite(input: {
     sessionId: input.sessionId,
     turnId: input.turnId,
     toolCallId: input.toolCallId,
+    rootSessionId: input.rootSessionId,
+    subagent: input.subagent,
     tool: "write_file",
     actionSha256: hash,
     // The content is what the owner is actually authorising, so it goes on

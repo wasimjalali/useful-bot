@@ -15,6 +15,7 @@ import {
 import { dirname } from "node:path";
 import { statePath } from "../../shared/stack.ts";
 import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
+import { authoritySessionId, isBotContextMissing, type ActiveBotContext } from "./active-bot.ts";
 
 /**
  * One boot epoch per process. Records carry the epoch that requested them, and
@@ -94,29 +95,50 @@ export interface StoredApproval {
   status: ApprovalStatus;
   /** Boot epoch of the process that requested the action. */
   epoch?: string;
+  /** For a sub-agent's card: the root session whose chat the card belongs to. */
+  rootSessionId?: string;
+  /** True when a sub-agent's child session raised the card. */
+  subagent?: boolean;
 }
 
 export type PendingApproval = Pick<
   StoredApproval,
-  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt"
+  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt" | "sessionId" | "rootSessionId" | "subagent"
 >;
 
 /** The subset of an eve ToolContext an approval record needs for attribution. */
-export interface ApprovalActorContext {
-  session?: { id?: string; turn?: { id?: string } };
+export type ApprovalActorContext = ActiveBotContext & {
+  session?: { turn?: { id?: string } };
   callId?: string;
-}
+};
 
+/**
+ * Who a card is for. A sub-agent's child (eve's `ctx.session.parent`) raises
+ * the card from its own session, and the record also names its root session,
+ * the chat the card belongs to, and says a sub-agent raised it. A child that
+ * cannot be verified keeps its own session as the root (the card still shows,
+ * marked as a sub-agent's).
+ */
 export function approvalActor(ctx?: ApprovalActorContext): {
   sessionId: string;
   turnId: string;
   toolCallId: string;
+  rootSessionId?: string;
+  subagent?: true;
 } {
-  return {
+  const actor = {
     sessionId: ctx?.session?.id ?? "live",
     turnId: ctx?.session?.turn?.id ?? "live",
     toolCallId: ctx?.callId ?? "live",
   };
+  if (!ctx?.session?.parent) return actor;
+  let rootSessionId = actor.sessionId;
+  try {
+    rootSessionId = authoritySessionId(ctx) ?? actor.sessionId;
+  } catch (err) {
+    if (!isBotContextMissing(err)) throw err;
+  }
+  return { ...actor, rootSessionId, subagent: true };
 }
 
 export function defaultApprovalsPath(): string {
@@ -203,6 +225,8 @@ export class ApprovalStore {
     tool: ApprovalTool;
     actionSha256: string;
     preview: string;
+    rootSessionId?: string;
+    subagent?: boolean;
   }): StoredApproval {
     return this.locked(() => {
       this.load();
@@ -222,6 +246,7 @@ export class ApprovalStore {
         expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
         status: "pending",
         epoch: this.epoch,
+        ...(input.subagent ? { rootSessionId: input.rootSessionId ?? input.sessionId, subagent: true } : {}),
       };
       this.records.set(record.id, record);
       this.persist();
@@ -313,6 +338,8 @@ export class ApprovalStore {
             actionSha256: record.actionSha256,
             createdAt: record.createdAt,
             expiresAt: record.expiresAt,
+            sessionId: record.sessionId,
+            ...(record.subagent ? { rootSessionId: record.rootSessionId, subagent: true } : {}),
           });
         }
       }
@@ -322,13 +349,17 @@ export class ApprovalStore {
     });
   }
 
-  /** A stopped session can no longer act on its cards: retire them now. */
+  /**
+   * A stopped session can no longer act on its cards: retire them now. A root
+   * session's stop takes its sub-agents' cards with it (they name it as their
+   * root).
+   */
   expireSession(sessionId: string): number {
     return this.locked(() => {
       this.load();
       let expired = 0;
       for (const record of this.records.values()) {
-        if (record.status === "pending" && record.sessionId === sessionId) {
+        if (record.status === "pending" && (record.sessionId === sessionId || record.rootSessionId === sessionId)) {
           record.status = "expired";
           expired += 1;
         }

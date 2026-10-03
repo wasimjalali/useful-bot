@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../agent/lib/approvals.ts";
 import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { errorCode, rateLimited } from "../../../lib/api-guard";
+import { readShell } from "../../../../shared/shell-io.ts";
+import { resolveSessionBot } from "../../../../shared/session-bindings.ts";
 
 export const runtime = "nodejs";
 
@@ -18,7 +20,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   try {
-    return NextResponse.json({ ok: true, approvals: store().listPending() });
+    // Each card names the bot whose chat it belongs to (a sub-agent's card, the
+    // bot of its root session) and the session that raised it.
+    const shell = readShell();
+    const approvals = store().listPending().map(({ rootSessionId, subagent, ...card }) => {
+      const botId = resolveSessionBot(rootSessionId ?? card.sessionId, shell);
+      const botName = shell.bots.find((bot) => bot.id === botId)?.name ?? null;
+      return { ...card, botId, botName, subagent: subagent === true };
+    });
+    return NextResponse.json({ ok: true, approvals });
   } catch (err) {
     const code = errorCode(err, "approval_error");
     // Contention on the store lock is transient, so ask the caller to retry.

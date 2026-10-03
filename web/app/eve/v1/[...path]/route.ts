@@ -32,7 +32,7 @@ import {
   sessionHasCompletedTurn,
   syncSessionWorkspace,
 } from "../../../../lib/agent-exec";
-import { authorizeChildStream, authorizeEveCall, carryOverReader, childStreamDeps, childWriteRefusal, type EveCallAuth } from "../../../../lib/eve-session-auth";
+import { authorizeChildCancel, authorizeChildStream, authorizeEveCall, carryOverReader, childStreamDeps, childWriteRefusal, type ChildCancel, type EveCallAuth } from "../../../../lib/eve-session-auth";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
@@ -108,9 +108,26 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   const url = new URL(request.url);
   let target = `${EVE}/eve/v1/${suffix}${url.search}`;
   const sessionPath = /^session\/([^/]+)(?:\/(?:stream|cancel))?$/.exec(suffix);
-  // A sub-agent's child session is read only. A send, a cancel or a reset into
-  // one is refused here, whatever binding eve holds for it.
-  if (method !== "GET" && sessionPath) {
+  // A cancel into a sub-agent's child is verified as one decision (see
+  // authorizeChildCancel), before anything else. eve's background tasks outlive
+  // a parent's cancel, so this is the owner's way to stop one. Only a verified
+  // result skips the write refusals below.
+  let childCancel: Extract<ChildCancel, { kind: "verified" }> | null = null;
+  if (sessionPath) {
+    let decision: ChildCancel;
+    try {
+      decision = await authorizeChildCancel(method, suffix, url.search, childStreamDeps(), request.signal);
+    } catch (err) {
+      console.error("child cancel could not be verified", err instanceof Error ? err.message : err);
+      const missing = err instanceof Error && err.message === "channel_credential_missing";
+      return Response.json({ ok: false, error: missing ? "channel_credential_missing" : "child_session_unverifiable" }, { status: 503 });
+    }
+    if (decision.kind === "refused") return Response.json({ ok: false, error: decision.error }, { status: decision.status });
+    if (decision.kind === "verified") childCancel = decision;
+  }
+  // A sub-agent's child session is otherwise read only. A send, a cancel or a
+  // reset into one is refused here, whatever binding eve holds for it.
+  if (method !== "GET" && sessionPath && !childCancel) {
     try {
       if (readSessionParent(sessionPath[1]) !== null) {
         return Response.json({ ok: false, error: "child_session_readonly" }, { status: 403 });
@@ -170,6 +187,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     jwt = auth.jwt;
     if (jwt) headers.set("authorization", `Bearer ${jwt}`);
   }
+  if (childCancel) {
+    headers.set("authorization", `Bearer ${childCancel.jwt}`);
+    target = `${EVE}/eve/v1/${suffix}${childCancel.search}`;
+  }
   let body: Uint8Array | undefined;
   let route: SessionRoute | null = null;
   // The session a replacement carries over from, once verified.
@@ -188,7 +209,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     }
     // Every session path, a cancel included, is authorised against the binding
     // for its path id before anything else; a create has no session yet.
-    if (suffix !== "session") {
+    if (suffix !== "session" && !childCancel) {
       const auth = authorize(new TextDecoder().decode(body));
       if (auth instanceof Response) return auth;
       if (!auth.ok) return Response.json({ ok: false, error: auth.error }, { status: auth.status });
@@ -443,7 +464,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   // A child can be recorded while this request was being read and prepared:
   // one last look, right before anything reaches eve.
   try {
-    const readOnly = childWriteRefusal(method, suffix, (id) => readSessionParent(id) !== null);
+    const readOnly = childCancel ? null : childWriteRefusal(method, suffix, (id) => readSessionParent(id) !== null);
     if (readOnly) return Response.json({ ok: false, error: readOnly.error }, { status: readOnly.status });
   } catch (err) {
     console.error("child session check failed", err instanceof Error ? err.message : err);

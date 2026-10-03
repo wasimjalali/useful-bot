@@ -228,3 +228,36 @@ test("persist prunes settled records after the grace window and keeps a recent d
   });
   assert.equal(new ApprovalStore(Date.now, path).get(rec.id), undefined);
 });
+
+// A sub-agent's card names its root session and says a sub-agent raised it;
+// stopping the root retires the root's cards and every child's, and no other
+// session's.
+test("a sub-agent's card carries its root and the marker, and a root stop retires the children's cards", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const store = new ApprovalStore(Date.now, path);
+  const hash = hashFor("{}");
+  const ask = (sessionId: string, extra: Record<string, unknown> = {}) => store.request({
+    sessionId, turnId: "t", toolCallId: "c", tool: "memory.upsert", actionSha256: hash, preview: sessionId, ...extra,
+  });
+  const base = approvalActor({ session: { id: "root-1" }, callId: "c" });
+  assert.equal("subagent" in base, false);
+  const child = approvalActor({ session: { id: "kid-1", parent: "not-an-object" }, callId: "c" });
+  // An unverifiable child still shows, marked, with itself as the root.
+  assert.deepEqual(child, { sessionId: "kid-1", turnId: "live", toolCallId: "c", rootSessionId: "kid-1", subagent: true });
+  ask("root-1");
+  ask("kid-1", { rootSessionId: "root-1", subagent: true });
+  ask("kid-2", { rootSessionId: "root-1", subagent: true });
+  ask("other-root");
+  ask("other-kid", { rootSessionId: "other-root", subagent: true });
+  const cards = store.listPending();
+  assert.equal(cards.length, 5);
+  const kid = cards.find((card) => card.sessionId === "kid-1");
+  assert.equal(kid?.subagent, true);
+  assert.equal(kid?.rootSessionId, "root-1");
+  assert.equal(cards.find((card) => card.sessionId === "root-1")?.subagent, undefined);
+  assert.equal(store.expireSession("root-1"), 3);
+  assert.deepEqual(store.listPending().map((card) => card.sessionId).sort(), ["other-kid", "other-root"]);
+  // Stopping one child retires only its own.
+  assert.equal(store.expireSession("other-kid"), 1);
+  assert.deepEqual(store.listPending().map((card) => card.sessionId), ["other-root"]);
+});

@@ -50,6 +50,8 @@ import runRoutine from "../agent/tools/run_routine.ts";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
 import { approvedWrite, setApprovalStore } from "../agent/lib/write.ts";
 import listDir from "../agent/tools/list_dir.ts";
+import writeFileTool from "../agent/tools/write_file.ts";
+import { bindSession } from "../shared/session-bindings.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import {
   createRoutine as storeCreateRoutine,
@@ -2403,6 +2405,52 @@ test("listBots gives a 200-character summary with the length, and the full text 
     const missing = await run<{ status: string }>(listBots, { botId: "nope" });
     assert.equal(missing.status, "not_found");
   } finally {
+    box.restore();
+  }
+});
+
+// A sub-agent's child is the root's hand: what it reads taints the root's notes,
+// and it files no Library page or chat card.
+function childOf(root: string, id: string) {
+  return { session: { id, turn: { id: "kt" }, parent: { callId: "c", rootSessionId: root, sessionId: root, turn: { id: "t0", sequence: 0 } } } };
+}
+
+test("a child's outside reading makes the root's later note model-after-outside-content", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    bindSession("sess-home", DEFAULT_BOT_ID);
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null });
+    const rootTurn = (id: string) => ({ session: { id: "sess-home", turn: { id } } });
+    const before = await run<{ id: string }>(memoryUpsert, note("Before"), rootTurn("kt-before"));
+    await run(listDir, { path: "Desktop" }, childOf("sess-home", "kid-1"));
+    // The root reads nothing itself, in this turn or a later one.
+    const after = await run<{ id: string }>(memoryUpsert, note("From the report"), rootTurn("kt-after"));
+    const store = new MemoryStore(memoryRoot);
+    assert.equal(store.readCard(before.id, "bot-useful").source, "model");
+    assert.equal(store.readCard(after.id, "bot-useful").source, "model-after-outside-content");
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("a child writing an .html file files no Library page or chat card and says so", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  try {
+    bindSession("sess-home", DEFAULT_BOT_ID);
+    const out = await run<{ path: string; note?: string }>(writeFileTool, { path: "report.html", content: "<h1>hi</h1>", expectedSha256: null }, childOf("sess-home", "kid-2"));
+    assert.match(out.note ?? "", /sub-agent adds nothing/);
+    assert.equal(listThreadEvents(DEFAULT_BOT_ID).some((event) => event.kind === "page"), false);
+  } finally {
+    home.restore();
     box.restore();
   }
 });

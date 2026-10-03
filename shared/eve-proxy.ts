@@ -219,6 +219,16 @@ export function childStreamQuery(search: string): { present: false } | { present
   return { present: true, parent, at, search: rest ? `?${rest}` : "" };
 }
 
+/**
+ * The `parent` and `at` queries of a cancel into a sub-agent's child, read
+ * exactly like a child stream read (see `childStreamQuery`). Not present for
+ * any other request, a plain cancel included.
+ */
+export function childCancelQuery(method: string, suffix: string, search: string): ReturnType<typeof childStreamQuery> {
+  if (method.toUpperCase() !== "POST" || !SESSION_CANCEL.test(suffix)) return { present: false };
+  return childStreamQuery(search);
+}
+
 /** The text of a turn: the string itself, or its text parts joined. */
 export function turnText(message: TurnMessage): string {
   if (typeof message === "string") return message;

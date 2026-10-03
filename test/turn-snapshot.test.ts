@@ -222,11 +222,17 @@ test("a child's resolver context shows the root's grant, never the child id's", 
     bindChildSession("kid-1", "root-1", alpha);
     const viaRow = await ensureTurnSnapshot(resolver, "t1");
     assert.equal(viaRow?.status === "ok" ? viaRow.permission : null, "auto");
-    // Not yet bound: the bot's own current chat stands in, for the display only.
+    // Not yet bound: the grant is unknown. Neither the child's own row nor the
+    // bot's current chat is read, even when that chat is the bot's own.
     writeShell(applyShellAction(readShell(), { type: "touchChat", botId: alpha, preview: "hi", sessionId: "root-1" }).store);
     upsertSessionGrant({ sessionId: "kid-2", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
     const viaPointer = await ensureTurnSnapshot({ ...ctxFor("kid-2", alpha), channel: { kind: "subagent" } }, "t1");
-    assert.equal(viaPointer?.status === "ok" ? viaPointer.permission : null, "auto");
+    assert.equal(viaPointer?.status, "ok");
+    assert.equal(viaPointer?.status === "ok" ? viaPointer.permission : "x", null);
+    assert.equal(viaPointer?.status === "ok" ? viaPointer.folder : "x", null);
+    assert.match(viaPointer?.status === "ok" ? renderContext(viaPointer.context) : "", /This chat: the same permission and folder as the chat that started you\./);
+    // A root-bound child still shows the root's grant (the first branch above).
+    assert.match(viaRow?.status === "ok" ? renderContext(viaRow.context) : "", /This chat: Auto,/);
   });
 });
 
@@ -416,5 +422,109 @@ test("This chat shows the permission and folder the session grant gives, which i
     assert.equal(granted?.status === "ok" && granted.permission, "full_access");
     assert.equal(granted?.status === "ok" && granted.folder, "Atlas");
     assert.match(granted?.status === "ok" ? renderContext(granted.context) : "", /This chat: Full access, folder "Atlas" attached\./);
+  });
+});
+
+// Taint from a sub-agent to its root. Failure modes: a child's reading never
+// reaching the root; the mark dropped on a report whose wording this build does
+// not know; dropped by an owner message while a child is still out; kept
+// forever after everything reported; a binding store that cannot be read.
+import { clearRootOutside, markOutside, noteRootReport, seenOutside } from "../agent/lib/outside-content.ts";
+import { isSubAgentReport } from "../agent/lib/turn-snapshot.ts";
+
+function forgetOutside(): void {
+  const holder = globalThis as unknown as Record<symbol, { clear(): void } | undefined>;
+  holder[Symbol.for("useful-bot.outside-content")]?.clear();
+  holder[Symbol.for("useful-bot.outside-content.roots")]?.clear();
+}
+
+function kidCtx(child: string, root: string, botId: string) {
+  const base = ctxFor(child, botId);
+  return { ...base, session: { ...base.session, parent: { callId: "c", rootSessionId: root, sessionId: root, turn: { id: "t0", sequence: 0 } } } };
+}
+
+test("a child's outside reading marks its root for any turn", async () => {
+  forgetOutside();
+  await withWorld(async ({ alpha }) => {
+    bindSession("root-1", alpha);
+    const rootTurn = (id: string) => ({ session: { id: "root-1", turn: { id } } });
+    assert.equal(seenOutside(rootTurn("a")), false);
+    markOutside(kidCtx("kid-1", "root-1", alpha));
+    assert.equal(seenOutside(rootTurn("a")), true);
+    assert.equal(seenOutside(rootTurn("later")), true);
+    // A child that cannot be verified marks only itself.
+    markOutside(kidCtx("kid-9", "nobody", alpha));
+    assert.equal(seenOutside({ session: { id: "nobody", turn: { id: "a" } } }), false);
+  });
+});
+
+test("report turns are recognised by eve's kind first, and by wording or a merged paragraph as a fallback", () => {
+  const user = (content: unknown, kind?: string) => ({ role: "user", content, ...(kind ? { kind } : {}) });
+  assert.equal(isSubAgentReport([user("hello", "user")]), false);
+  // The kind alone is enough, whatever the text says.
+  assert.equal(isSubAgentReport([user("the critics finished", "execution.background_task")]), true);
+  assert.equal(isSubAgentReport([user("Background task task_ab12 (agent) is completed.\nok")]), true);
+  assert.equal(isSubAgentReport([user([{ type: "text", text: "Background task task_ab12 failed." }])]), true);
+  // A report merged after other text.
+  assert.equal(isSubAgentReport([user("also this\n\nBackground task task_ab12 is completed.")]), true);
+  // Only the turn's own input counts: a report before an assistant reply does not.
+  assert.equal(isSubAgentReport([user("x", "execution.background_task"), { role: "assistant", content: "ok" }, user("thanks", "user")]), false);
+});
+
+test("an unrecognised report keeps the mark; an owner turn clears it only once every child has reported", async () => {
+  forgetOutside();
+  forgetSnapshots();
+  await withWorld(async ({ alpha }) => {
+    bindSession("root-1", alpha);
+    bindChildSession("kid-1", "root-1", alpha, new Date(Date.now() - 60_000));
+    const owner = (messages: SnapshotCtx["messages"]) => ({ ...ctxFor("root-1", alpha, { delivery: "owner" }), messages });
+    const rootTurn = { session: { id: "root-1", turn: { id: "t-x" } } };
+    markOutside(kidCtx("kid-1", "root-1", alpha));
+    // A report in wording nobody knows, no kind: the turn looks like an owner turn. No report was seen, so it keeps the mark.
+    await ensureTurnSnapshot(owner([{ role: "user", content: "the critics are done: all clear" }]), "t-a");
+    assert.equal(seenOutside(rootTurn), true, "an unrecognised report must not clear the mark");
+    // A report turn (by kind) is seen; the next owner message, with no child out, clears.
+    await ensureTurnSnapshot(owner([{ role: "user", kind: "execution.background_task", content: "x" }]), "t-b");
+    assert.equal(seenOutside(rootTurn), true, "the report turn itself is outside");
+    await ensureTurnSnapshot(owner([{ role: "user", kind: "user", content: "thanks" }]), "t-c");
+    assert.equal(seenOutside(rootTurn), false);
+  });
+});
+
+test("an owner turn while a child is still out keeps the mark", async () => {
+  forgetOutside();
+  forgetSnapshots();
+  await withWorld(async ({ alpha }) => {
+    bindSession("root-1", alpha);
+    bindChildSession("kid-1", "root-1", alpha, new Date(Date.now() - 60_000));
+    const owner = (kind: string) => ({ ...ctxFor("root-1", alpha, { delivery: "owner" }), messages: [{ role: "user", kind, content: "x" }] });
+    const rootTurn = { session: { id: "root-1", turn: { id: "t-x" } } };
+    markOutside(kidCtx("kid-1", "root-1", alpha));
+    await ensureTurnSnapshot(owner("execution.background_task"), "t-b");
+    // A second child starts after that report and has not reported.
+    bindChildSession("kid-2", "root-1", alpha, new Date(Date.now() + 60_000));
+    await ensureTurnSnapshot(owner("user"), "t-c");
+    assert.equal(seenOutside(rootTurn), true);
+    // A new reading resets the report: still kept.
+    markOutside(kidCtx("kid-2", "root-1", alpha));
+    assert.equal(clearRootOutside("root-1"), false);
+    // The first report after the last mark, with kid-2 recorded before it, lets the next owner turn clear.
+    noteRootReport("root-1", Date.now() + 120_000);
+    assert.equal(clearRootOutside("root-1"), true);
+    assert.equal(seenOutside(rootTurn), false);
+  });
+});
+
+test("an unreadable binding store keeps the mark", async () => {
+  forgetOutside();
+  await withWorld(async ({ alpha }) => {
+    bindSession("root-1", alpha);
+    markOutside(kidCtx("kid-1", "root-1", alpha));
+    noteRootReport("root-1", Date.now() + 1000);
+    const path = process.env.UB_SESSION_OWNERS_PATH as string;
+    // A bad row makes the strict reader see an empty store (children unknown), so the mark must not clear on that.
+    writeFileSync(path, "not json", "utf8");
+    assert.equal((await silenced(async () => clearRootOutside("root-1"))).result, false);
+    assert.equal(seenOutside({ session: { id: "root-1", turn: { id: "t" } } }), true);
   });
 });

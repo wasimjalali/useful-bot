@@ -9,6 +9,7 @@ import { DEFAULT_BOT_ID, orchestratorId, type BotKind, type ShellStore } from ".
 import { readSessionGrant, type WorkspacePermission } from "../../shared/workspace-store.ts";
 import { BINDING_WAIT_MS, isBotContextMissing, subAgentRoot } from "./active-bot.ts";
 import { windowTokensFor } from "./model-window.ts";
+import { clearRootOutside, noteRootReport } from "./outside-content.ts";
 
 /** The slice of an eve resolver, hook or tool context the snapshot reads. */
 export type SnapshotCtx = {
@@ -19,7 +20,7 @@ export type SnapshotCtx = {
   };
   /** eve's dynamic resolvers carry no `session.parent`; there a sub-agent's child is known by `kind: "subagent"`. */
   channel?: { kind?: unknown } | null;
-  messages?: readonly { role?: string }[];
+  messages?: readonly { role?: string; kind?: unknown; content?: unknown }[];
 };
 
 export type OkSnapshot = {
@@ -31,7 +32,8 @@ export type OkSnapshot = {
   profileRevision: number;
   /** The selection every request of the turn sends, and the window compaction is sized from. */
   selection: TurnSelection;
-  permission: WorkspacePermission;
+  /** Null for a sub-agent whose chat is not known: it holds its root's grant, which this turn cannot name. */
+  permission: WorkspacePermission | null;
   folder: string | null;
   /** True when the turn is a handoff: its input is another bot's text, so the turn starts after outside content. */
   outside: boolean;
@@ -190,22 +192,52 @@ function ownerNames(): { owner: string; first: string } {
 }
 
 /**
- * The session whose grant a turn shows. A sub-agent's child holds its root
- * session's grant, never one of its own. A tool or hook context names the root
- * (verified); eve's dynamic resolvers do not, so the child's recorded parent
- * is used, else the bot's current chat when that is the bot's own. That last
- * step only decides what "This turn" says: the tools enforce the verified root.
+ * The session whose grant a turn shows, or null when it cannot be named. A
+ * sub-agent's child holds its root session's grant, never one of its own. A
+ * tool or hook context names the root (verified); eve's dynamic resolvers do
+ * not, so the child's recorded parent is used. A child with no recorded parent
+ * is null: the turn then shows the grant as unknown rather than reading the
+ * child's own row or guessing from the bot's current chat. The tools enforce
+ * the verified root either way.
  */
-function grantSessionFor(ctx: SnapshotCtx, botId: string, botSessionId: string | null): string {
+function grantSessionFor(ctx: SnapshotCtx): string | null {
   if (ctx.session.parent) {
     const root = subAgentRoot(ctx);
     if (!root) throw new Error("bot_context_missing");
     return root.rootSessionId;
   }
   if (ctx.channel?.kind !== "subagent") return ctx.session.id;
-  const parent = readSessionParent(ctx.session.id);
-  if (parent) return parent;
-  return botSessionId && resolveSessionBot(botSessionId) === botId ? botSessionId : ctx.session.id;
+  return readSessionParent(ctx.session.id);
+}
+
+/** eve's own kind on the input of a turn it starts for a background task (scripts/patch-eve.mjs forwards the same mark on the stream). */
+const REPORT_KIND = "execution.background_task";
+
+/** eve's wording for a turn it starts when a background task reports, the fallback signal (see isSubAgentReport). */
+const REPORT_TEXT = /^\s*(?:Background task task_[A-Za-z0-9]+\b|\[Task state\])/;
+
+/**
+ * Whether the turn's input is a sub-agent's report. The structural signal is
+ * eve's message `kind` (`execution.background_task`, and its `[Task state]`
+ * context); the wording is only a second signal. Every user message after the
+ * last assistant message counts, because eve may merge a report with other
+ * input in one turn: any report among them makes the turn one.
+ */
+export function isSubAgentReport(messages: SnapshotCtx["messages"]): boolean {
+  const all = messages ?? [];
+  let from = all.length;
+  while (from > 0 && all[from - 1].role !== "assistant") from -= 1;
+  return all.slice(from).some((message) => {
+    if (message.role !== "user") return false;
+    if (message.kind === REPORT_KIND) return true;
+    const content = message.content;
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map((part) => (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "")).join("\n")
+        : "";
+    return REPORT_TEXT.test(text) || /(?:^|\n\n)Background task task_[A-Za-z0-9]+\b/.test(text);
+  });
 }
 
 /**
@@ -231,7 +263,8 @@ export function buildSnapshot(
   // A step with no turn id cannot be told from the turn before it, so it
   // re-reads. That re-read prefers the grant (written once, at turn start)
   // over the owner's live pick, so a pick made mid-turn cannot split the turn.
-  const grant = readSessionGrant(grantSessionFor(ctx, bot.id, bot.sessionId ?? null));
+  const grantSession = grantSessionFor(ctx);
+  const grant = grantSession === null ? null : readSessionGrant(grantSession);
   const grantPick = turnId === undefined ? grant?.selection ?? null : null;
   const picked = grantPick ?? botSelection(bot, store);
   const selection: TurnSelection = { ...picked, windowTokens: windowTokensFor(picked) };
@@ -241,7 +274,7 @@ export function buildSnapshot(
   // What the tools enforce is the session grant (agent/lib/workspace.ts,
   // permission.ts), so that is what the turn shows: a session with no grant is
   // Read only there, and the folder is the one the grant attached.
-  const permission: WorkspacePermission = grant?.permission ?? "read_only";
+  const permission: WorkspacePermission | null = grantSession === null ? null : grant?.permission ?? "read_only";
   const folder = grant?.path ? basename(grant.path) : null;
   const isGroup = bot.kind === "group";
   const members = isGroup
@@ -272,7 +305,7 @@ export function buildSnapshot(
     selection,
     permission,
     folder,
-    outside: deliveryClaim(ctx) === "handoff",
+    outside: deliveryClaim(ctx) === "handoff" || isSubAgentReport(ctx.messages),
     model,
     image: imageModel,
     context: {
@@ -327,6 +360,14 @@ export function snapshotForBot(
     snapshot = { status: "failed", sessionId, turnId, botId };
   }
   remember(snapshot);
+  // Built once, at the turn's start. A report turn means what a sub-agent read
+  // has been delivered; only a turn that is positively the owner's (the claim
+  // says so and it is not a report) may clear that mark, and only when nothing
+  // is still out (see clearRootOutside).
+  if (snapshot.status === "ok" && turnId !== undefined) {
+    if (isSubAgentReport(ctx.messages)) noteRootReport(sessionId);
+    else if (!snapshot.outside && deliveryClaim(ctx) === "owner") clearRootOutside(sessionId);
+  }
   return snapshot;
 }
 

@@ -105,7 +105,7 @@ export function callerRole(shell: Pick<ShellStore, "bots">, bot: ShellBot): Call
 export const SUB_AGENT_BLOCKED = {
   status: "blocked",
   error: "not_available_for_sub_agents",
-  hint: "A sub-agent reads and works in files. Say what should change in your report.",
+  hint: "Sub-agents cannot change notes or app settings. Report your findings; the owner decides.",
 } as const;
 
 export type CallerResult =
