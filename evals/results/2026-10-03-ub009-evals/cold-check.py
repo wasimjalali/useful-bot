@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check one cold-start run: new sessions, their bot block and any refusal.
 
-usage: cold-check.py <start UTC iso> <end UTC iso> <out.json>
+usage: cold-check.py <start UTC iso> <end UTC iso> <out.json> <instructions marker>
 Reads ~/Library/Logs/UsefulBotDev/service-{web,router,eve}.log and probe-cold/.
 - new sessions: the override's {"coldstart_override": mode, "session": id} lines (web log)
 - per session: its router requests (upstream_usage, by sessionId) and the first
@@ -12,7 +12,8 @@ Reads ~/Library/Logs/UsefulBotDev/service-{web,router,eve}.log and probe-cold/.
 """
 import glob, json, os, re, sys
 
-start, end, out = sys.argv[1], sys.argv[2], sys.argv[3]
+start, end, out, marker = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+from datetime import datetime, timedelta
 LOGS = os.path.expanduser("~/Library/Logs/UsefulBotDev")
 HERE = os.path.dirname(os.path.abspath(__file__))
 REFUSALS = ["bot_context_missing", "bot_context_refused", "bot_claim_missing", "session_unbound", "session_bind_failed"]
@@ -59,7 +60,11 @@ for i, s in enumerate(sessions):
     nxt = sessions[i + 1]["boundAt"] if i + 1 < len(sessions) else end
     # This session's requests: dumps from 10 s before its binding (the first
     # turn may start before the binding exists) to the next session's binding.
-    lo = s["boundAt"][:17] + "%02d" % max(0, int(s["boundAt"][17:19]) - 10) + s["boundAt"][19:]
+    lo = (datetime.fromisoformat(s["boundAt"].replace("Z", "+00:00")) - timedelta(seconds=10)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:23] + "Z"
+    # Not before the previous session's binding, so a late request of the
+    # previous session is never taken as this one's first.
+    if i > 0:
+        lo = max(lo, sessions[i - 1]["boundAt"])
     mine = [p for p in dumps if lo <= dump_time(p) < nxt]
     p = mine[0] if mine else None
     sys_text = ""
@@ -71,7 +76,7 @@ for i, s in enumerate(sessions):
         "session": s["session"], "mode": s["mode"], "boundAt": s["boundAt"], "requests": len(mine),
         "first_dump": os.path.basename(p) if p else None,
         "has_your_bot": "Your bot" in sys_text,
-        "has_instructions": "MANGO" in sys_text,
+        "has_instructions": marker in sys_text,
     })
 
 refusals = []
