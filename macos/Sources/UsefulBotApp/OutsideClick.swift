@@ -86,8 +86,11 @@ private struct OutsideClickDismissal: ViewModifier {
         ) { event in
             switch event.type {
             case .leftMouseDown, .rightMouseDown:
+                // The click that activated the app was pressed before, or a
+                // hair after, the activation it caused. A click a person
+                // makes after Cmd-Tab or a Dock click comes later than that.
                 state.activationClick = !NSApp.isActive
-                    || abs(event.timestamp - state.lastActivation) < 0.5
+                    || event.timestamp - state.lastActivation < 0.1
             default:
                 if state.activationClick {
                     state.activationClick = false
