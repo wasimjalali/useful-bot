@@ -186,6 +186,7 @@ struct SubagentGroupCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .pointerOnHover()
             .accessibilityLabel(SubagentCardCopy.accessibility(header))
             .accessibilityHint(expanded ? "Hides the sub-agents" : "Shows the sub-agents")
             .accessibilityIdentifier("subagent-card-header")
@@ -360,6 +361,7 @@ private struct SubagentRow: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Theme.C.link)
+                        .pointerOnHover()
                         .accessibilityLabel(showsReport ? "Hide the \(run.title) report" : "View the \(run.title) report")
                 }
             }
@@ -376,6 +378,7 @@ private struct SubagentRow: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Theme.C.link)
+                        .pointerOnHover()
                         .accessibilityLabel(showsReport ? "Hide the \(run.title) report" : "View the \(run.title) report")
                 }
             }

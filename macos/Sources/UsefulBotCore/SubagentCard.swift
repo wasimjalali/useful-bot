@@ -481,6 +481,8 @@ extension TranscriptBlock {
 
 /// What the owner's Stop sends to running sub-agents.
 public struct ChildCancelTarget: Equatable, Sendable {
+    public var agentId: String
+    public var taskId: String
     public var title: String
     public var childSessionId: String
     public var parentSessionId: String
@@ -495,7 +497,43 @@ public enum SubagentCancel {
         runs.compactMap { run in
             guard run.state == .working, let child = run.childSessionId, !child.isEmpty,
                   let site = run.childCall, let parent = site.sessionId ?? fallbackParent, !parent.isEmpty else { return nil }
-            return ChildCancelTarget(title: run.title, childSessionId: child, parentSessionId: parent, calledAt: site.index)
+            return ChildCancelTarget(agentId: run.agentId, taskId: run.taskId, title: run.title, childSessionId: child, parentSessionId: parent, calledAt: site.index)
         }
+    }
+}
+
+/// eve's built-in agent tool cannot be overridden, so after the owner presses
+/// Stop the model may relaunch the agent it was told to leave alone: eve opens
+/// a parent turn for each cancelled report, and the model acts on it. This
+/// remembers what the owner stopped and recognises that turn, so the app can
+/// end it before the model acts.
+public struct StoppedRunGuard: Sendable {
+    public private(set) var stoppedTasks: Set<String> = []
+    public private(set) var stoppedAgents: Set<String> = []
+    private var handledTurns: Set<String> = []
+
+    public init() {}
+
+    public mutating func stop(taskId: String, agentId: String) {
+        stoppedTasks.insert(taskId)
+        stoppedAgents.insert(agentId)
+    }
+
+    /// Whether a message that opens a parent turn is nothing but cancellations
+    /// of tasks the owner stopped, and this turn has not been acted on yet.
+    /// Any other report, any owner text after one, or an unknown task is not.
+    public mutating func shouldCancel(message text: String, turnId: String?) -> Bool {
+        guard !stoppedTasks.isEmpty, let turnId, !handledTurns.contains(turnId) else { return false }
+        let details = EveStream.taskReportDetails(text)
+        guard !details.isEmpty else { return false }
+        for detail in details {
+            // A body with a second paragraph is a report with more after it.
+            guard detail.outcome == .failed || detail.outcome == .cancelled,
+                  stoppedTasks.contains(detail.taskId),
+                  EveStream.isCancellation(detail.body),
+                  !detail.body.contains("\n\n"), detail.body.count < 200 else { return false }
+        }
+        handledTurns.insert(turnId)
+        return true
     }
 }

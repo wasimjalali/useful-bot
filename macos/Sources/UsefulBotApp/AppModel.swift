@@ -1449,6 +1449,7 @@ final class AppModel: ObservableObject {
                        event.type != "input.resolved" {
                         continue
                     }
+                    guardStoppedReport(event, botId: current.id)
                     projection.apply(event, live: true)
                     if backgroundWorking != projection.pending { backgroundWorking = projection.pending }
                     markWorking(current.id, projection.pending)
@@ -2127,13 +2128,36 @@ final class AppModel: ObservableObject {
         return subagentWorkingBotIds.contains(id)
     }
 
+    /// What the owner stopped, by bot, for this app session.
+    private var stopGuards: [String: StoppedRunGuard] = [:]
+
+    /// eve opens a parent turn for each cancelled report, and the model may
+    /// relaunch the agent the owner stopped. A turn that is nothing but those
+    /// cancellations is ended here, before the model acts. Once per turn, and
+    /// never shown as an error.
+    private func guardStoppedReport(_ event: EveEvent, botId: String) {
+        guard event.type == "message.received", let text = event.message, stopGuards[botId] != nil,
+              stopGuards[botId]?.shouldCancel(message: text, turnId: event.turnId) == true,
+              let session = event.sessionId ?? store?.bots.first(where: { $0.id == botId })?.sessionId,
+              !session.isEmpty else { return }
+        NSLog("Useful Bot: ending a turn that only reports Stopped sub-agents (%@)", session)
+        Task { @MainActor [weak self] in
+            do {
+                try await self?.client.cancel(sessionId: session)
+            } catch {
+                NSLog("Useful Bot: cancelling the stopped-report turn failed: %@", String(describing: error))
+            }
+        }
+    }
+
     func cancel() {
         guard let bot = selectedBot else { return }
         // Sub-agents still out are stopped whether or not the bot's own turn
         // is live; each one is named to the proxy by its parent and call site.
         let children = SubagentCancel.targets(runs: projection.subagentRuns, fallbackParent: bot.sessionId)
-        for run in projection.subagentRuns where run.state == .working && children.contains(where: { $0.childSessionId == run.childSessionId }) {
-            stoppedByYou.insert(run.taskId)
+        for child in children {
+            stoppedByYou.insert(child.taskId)
+            stopGuards[bot.id, default: StoppedRunGuard()].stop(taskId: child.taskId, agentId: child.agentId)
         }
         if !children.isEmpty {
             let botId = bot.id
@@ -2144,7 +2168,7 @@ final class AppModel: ObservableObject {
                     do {
                         try await self.client.cancelChild(
                             botId: botId, childSessionId: child.childSessionId,
-                            parentSessionId: child.parentSessionId, at: child.calledAt
+                            parentSessionId: child.parentSessionId, at: child.calledAt, agentId: child.agentId
                         )
                     } catch {
                         NSLog("Useful Bot: stopping a sub-agent failed: %@", String(describing: error))
@@ -2421,6 +2445,7 @@ final class AppModel: ObservableObject {
     /// the transcript updates now; if the owner switched away, the projection
     /// is kept so coming back shows the progress that happened in the background.
     private func applyLiveEvent(_ event: EveEvent, botId: String) {
+        guardStoppedReport(event, botId: botId)
         if selectedBotId == botId {
             projection.apply(event, live: true)
             markWorking(botId, projection.pending)

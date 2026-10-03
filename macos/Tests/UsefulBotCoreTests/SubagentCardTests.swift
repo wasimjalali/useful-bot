@@ -572,7 +572,7 @@ private extension ChildProgress {
             run("e", call: SubagentCallSite(sessionId: nil, index: 3)),
         ]
         #expect(SubagentCancel.targets(runs: runs) == [
-            ChildCancelTarget(title: "Critic a", childSessionId: "ses_c", parentSessionId: "ses_p", calledAt: 7),
+            ChildCancelTarget(agentId: "a", taskId: "task_a", title: "Critic a", childSessionId: "ses_c", parentSessionId: "ses_p", calledAt: 7),
         ])
         // A call site with no session falls back to the open chat's.
         #expect(SubagentCancel.targets(runs: runs, fallbackParent: "ses_open").map(\.calledAt) == [7, 3])
@@ -603,5 +603,65 @@ private extension ChildProgress {
         let other = try decode(#"{"id":"a1","tool":"bash","botId":"bot_2","botName":"Growth"}"#)
         #expect(other.originLabel(openBotId: "bot_1") == "Growth")
         #expect(other.originLabel(openBotId: "bot_2") == nil)
+    }
+}
+
+@Suite struct StoppedRunGuardTests {
+    private func cancelled(_ task: String) -> String {
+        "Background task \(task) (agent) failed.\n\nError:\n{\"code\":\"SUBAGENT_EXECUTION_FAILED\",\"message\":\"The agent invocation was cancelled.\"}"
+    }
+
+    private func ask(_ g: inout StoppedRunGuard, _ text: String, _ turn: String?) -> Bool {
+        g.shouldCancel(message: text, turnId: turn)
+    }
+
+    private func guardWith(_ tasks: String...) -> StoppedRunGuard {
+        var g = StoppedRunGuard()
+        for (i, task) in tasks.enumerated() { g.stop(taskId: task, agentId: "ag_agent:\(i)") }
+        return g
+    }
+
+    @Test func onlyCancellationsOfStoppedTasksEndTheTurn() {
+        var g = guardWith("task_a", "task_b")
+        #expect(ask(&g, cancelled("task_a"), "turn_1"))
+        // Several reports in one message, all stopped ones.
+        #expect(ask(&g, cancelled("task_a") + "\n\n" + cancelled("task_b"), "turn_2"))
+    }
+
+    @Test func aMixedMessageDoesNothing() {
+        var g = guardWith("task_a")
+        // Another task's cancellation.
+        #expect(!ask(&g, cancelled("task_a") + "\n\n" + cancelled("task_z"), "turn_1"))
+        // A real report beside it.
+        let done = "Background task task_a (agent) is completed.\n\nResult:\nFine."
+        #expect(!ask(&g, cancelled("task_a") + "\n\n" + done, "turn_2"))
+        // Owner text after it.
+        #expect(!ask(&g, cancelled("task_a") + "\n\nPlease carry on", "turn_3"))
+        // A real failure of a stopped task.
+        let boom = "Background task task_a (agent) failed.\n\nError:\n{\"message\":\"upstream_timeout\"}"
+        #expect(!ask(&g, boom, "turn_4"))
+    }
+
+    @Test func anUnknownTaskOrPlainOwnerTextDoesNothing() {
+        var g = guardWith("task_a")
+        #expect(!ask(&g, cancelled("task_zzz"), "turn_1"))
+        #expect(!ask(&g, "Stop please", "turn_2"))
+        var none = StoppedRunGuard()
+        #expect(!ask(&none, cancelled("task_a"), "turn_1"))
+        // No turn id to count it by.
+        #expect(!ask(&g, cancelled("task_a"), nil))
+    }
+
+    @Test func aTurnIsEndedOnlyOnce() {
+        var g = guardWith("task_a")
+        #expect(ask(&g, cancelled("task_a"), "turn_1"))
+        #expect(!ask(&g, cancelled("task_a"), "turn_1"))
+        #expect(ask(&g, cancelled("task_a"), "turn_2"))
+    }
+
+    @Test func theStopRecordsTheAgentToo() {
+        let g = guardWith("task_a")
+        #expect(g.stoppedAgents == ["ag_agent:0"])
+        #expect(g.stoppedTasks == ["task_a"])
     }
 }
