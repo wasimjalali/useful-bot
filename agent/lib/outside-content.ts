@@ -25,6 +25,8 @@ export type OutsideCtx = ActiveBotContext & { session?: { id?: string; turn?: { 
  */
 const REGISTRY_KEY = Symbol.for("useful-bot.outside-content");
 const CAP = 256;
+/** Same alphabet as the session store's ids. */
+const SESSION_ID = /^[A-Za-z0-9_-]{1,200}$/;
 
 function seen(): Set<string> {
   const holder = globalThis as unknown as Record<symbol, Set<string> | undefined>;
@@ -61,19 +63,23 @@ export function markOutside(ctx: OutsideCtx | undefined): void {
   const key = keyOf(ctx);
   if (!key) return;
   add(key);
-  if (!ctx?.session?.parent) return;
+  const parent = ctx?.session?.parent;
+  if (!parent) return;
+  let rootSessionId: string | null = null;
   try {
-    const root = subAgentRoot(ctx);
-    if (root) {
-      const marks = roots();
-      marks.delete(root.rootSessionId);
-      marks.set(root.rootSessionId, { markedAt: Date.now(), reportAt: null });
-      if (marks.size > CAP) marks.delete(marks.keys().next().value as string);
-    }
+    rootSessionId = subAgentRoot(ctx)?.rootSessionId ?? null;
   } catch (err) {
-    // A child that cannot be verified has no tool that changes anything either.
     if (!isBotContextMissing(err)) throw err;
+    // Fail closed: a child that cannot be verified still names a root, and what
+    // it read must taint that root whatever it claims.
+    const claimed = typeof parent === "object" && !Array.isArray(parent) ? (parent as { rootSessionId?: unknown }).rootSessionId : undefined;
+    if (typeof claimed === "string" && SESSION_ID.test(claimed)) rootSessionId = claimed;
   }
+  if (!rootSessionId) return;
+  const marks = roots();
+  marks.delete(rootSessionId);
+  marks.set(rootSessionId, { markedAt: Date.now(), reportAt: null });
+  if (marks.size > CAP) marks.delete(marks.keys().next().value as string);
 }
 
 /** The root session started a turn on a sub-agent's report: that reading has now been delivered. */
@@ -85,8 +91,12 @@ export function noteRootReport(sessionId: string, now = Date.now()): void {
 /**
  * A positively owner-delivered turn starts clean of a sub-agent's reading, but
  * only once a report turn was seen since the last mark and no child of this
- * root was recorded after that report (one still out would bring its own
- * reading). An unreadable binding store keeps the mark. Returns whether it cleared.
+ * root was recorded after that report (a later child would bring its own
+ * reading). It cannot tell which earlier child a report belongs to: a report
+ * names a task, not a session, and eve batches reports, so "every recorded
+ * child has reported" is not knowable here. A child recorded before the report
+ * is therefore taken as reported. An unreadable binding store keeps the mark.
+ * Returns whether it cleared.
  */
 export function clearRootOutside(sessionId: string): boolean {
   const mark = roots().get(sessionId);

@@ -13,8 +13,9 @@ import { FORBIDDEN_PATH_SUBSTRINGS, foldPath } from "../../shared/policy.ts";
 import { APP_STATE_DIR, mentionsAppState } from "../../shared/stack.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { SUB_AGENT_BLOCKED } from "../lib/permission.ts";
 import { markOutside } from "../lib/outside-content.ts";
-import { authoritySessionId, BOT_CONTEXT_MISSING, isBotContextMissing } from "../lib/active-bot.ts";
+import { authoritySessionId, BOT_CONTEXT_MISSING, isBotContextMissing, isSubAgent } from "../lib/active-bot.ts";
 
 const OUTPUT_MAX_BYTES = 32 * 1024;
 const INPUT_MAX_BYTES = 1024 * 1024;
@@ -83,6 +84,9 @@ export default defineTool({
       if (isBotContextMissing(error)) return BOT_CONTEXT_MISSING;
       throw error;
     }
+    // A global tool install is the owner's own chat's: an approved line that
+    // writes the PATH directories is refused for a sub-agent, as install_cli is.
+    if (isSubAgent(ctx) && needsPathWrite(input.command)) return SUB_AGENT_BLOCKED;
     let workspace;
     try {
       workspace = effectiveRoot(grantSession);

@@ -350,16 +350,18 @@ export class ApprovalStore {
   }
 
   /**
-   * A stopped session can no longer act on its cards: retire them now. A root
-   * session's stop takes its sub-agents' cards with it (they name it as their
-   * root).
+   * A stopped session can no longer act on its cards: retire them now, the
+   * pending ones and the approved ones not yet consumed (an approval granted
+   * just before Stop must not run after it). A consumed card has already run.
+   * Only that session's own cards: a root's Stop leaves a sub-agent's cards
+   * alone, because each running child is stopped by its own cancel.
    */
   expireSession(sessionId: string): number {
     return this.locked(() => {
       this.load();
       let expired = 0;
       for (const record of this.records.values()) {
-        if (record.status === "pending" && (record.sessionId === sessionId || record.rootSessionId === sessionId)) {
+        if ((record.status === "pending" || record.status === "approved") && record.sessionId === sessionId) {
           record.status = "expired";
           expired += 1;
         }

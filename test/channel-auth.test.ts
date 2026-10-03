@@ -549,12 +549,19 @@ test("a send or cancel into a recorded child is refused by the authorisation, wh
 import { childCancelQuery } from "../shared/eve-proxy.ts";
 
 test("childCancelQuery reads parent and at only on a cancel POST", () => {
-  assert.deepEqual(childCancelQuery("POST", "session/kid/cancel", "?parent=p1&at=7"), { present: true, parent: "p1", at: 7, search: "" });
+  assert.deepEqual(childCancelQuery("POST", "session/kid/cancel", "?parent=p1&at=7"), { present: true, parent: "p1", at: 7, search: "", agentId: null, agentIdBad: false });
+  // agentId is parsed, validated and stripped from what is forwarded.
+  assert.deepEqual(childCancelQuery("POST", "session/kid/cancel", "?parent=p1&at=7&agentId=ag_agent:ab12&x=1"), { present: true, parent: "p1", at: 7, search: "?x=1", agentId: "ag_agent:ab12", agentIdBad: false });
+  for (const bad of ["agentId=nope", "agentId=ag_agent:A", "agentId=ag_agent:a&agentId=ag_agent:b", "agentId="]) {
+    const q = childCancelQuery("POST", "session/kid/cancel", `?parent=p1&at=7&${bad}`);
+    assert.equal(q.present && q.agentIdBad, true, bad);
+    assert.equal(q.present && q.agentId, null, bad);
+  }
   assert.deepEqual(childCancelQuery("POST", "session/kid/cancel", ""), { present: false });
   assert.deepEqual(childCancelQuery("GET", "session/kid/stream", "?parent=p1&at=7"), { present: false });
   assert.deepEqual(childCancelQuery("POST", "session/kid", "?parent=p1&at=7"), { present: false });
   // Malformed claims are present but unverifiable.
-  assert.deepEqual(childCancelQuery("POST", "session/kid/cancel", "?parent=p1&parent=p2&at=-1"), { present: true, parent: null, at: null, search: "" });
+  assert.deepEqual(childCancelQuery("POST", "session/kid/cancel", "?parent=p1&parent=p2&at=-1"), { present: true, parent: null, at: null, search: "", agentId: null, agentIdBad: false });
 });
 
 test("a cancel into a child is one verified decision; nothing else skips the write refusal", async () => {
@@ -607,5 +614,15 @@ test("only a verified child cancel names the child and parent a stop is recorded
       const r = await authorizeChildCancel("POST", suffix, search, childDeps());
       assert.notEqual(r.kind, "verified", suffix + search);
     }
+  });
+});
+
+test("a malformed agentId on a child cancel is refused, a good one is carried", async () => {
+  await withSecret(async () => {
+    const bad = childDeps();
+    assert.deepEqual(await authorizeChildCancel("POST", "session/kid-new/cancel", "?parent=p1&at=9&agentId=nope", bad), { kind: "refused", status: 403, error: "child_session_unverified" });
+    assert.equal(bad.reads.length, 0);
+    const ok = await authorizeChildCancel("POST", "session/kid-new/cancel", "?parent=p1&at=9&agentId=ag_agent:ab12", childDeps());
+    assert.equal(ok.kind === "verified" ? `${ok.agentId}|${ok.search}` : "", "ag_agent:ab12|");
   });
 });

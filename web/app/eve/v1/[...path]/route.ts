@@ -475,7 +475,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   // report reaches the parent. A marker that cannot be written is said, not hidden.
   if (childCancel) {
     try {
-      recordSubagentStop({ rootSessionId: childCancel.parent, childSessionId: childCancel.child, agentId: null });
+      recordSubagentStop({ rootSessionId: childCancel.parent, childSessionId: childCancel.child, agentId: childCancel.agentId });
     } catch (err) {
       console.error("owner stop of a sub-agent was not recorded", err instanceof Error ? err.message : err);
     }

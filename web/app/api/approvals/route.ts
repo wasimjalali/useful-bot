@@ -26,7 +26,8 @@ export async function GET(request: Request) {
     const approvals = store().listPending().map(({ rootSessionId, subagent, ...card }) => {
       const botId = resolveSessionBot(rootSessionId ?? card.sessionId, shell);
       const botName = shell.bots.find((bot) => bot.id === botId)?.name ?? null;
-      return { ...card, botId, botName, subagent: subagent === true };
+      // The root session names the chat a sub-agent's card belongs to; a root's own card is its session.
+      return { ...card, rootSessionId: rootSessionId ?? card.sessionId, botId, botName, subagent: subagent === true };
     });
     return NextResponse.json({ ok: true, approvals });
   } catch (err) {

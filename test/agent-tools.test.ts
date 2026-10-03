@@ -2454,3 +2454,37 @@ test("a child writing an .html file files no Library page or chat card and says 
     box.restore();
   }
 });
+
+test("a child that cannot be verified gets the structured refusal from read_file, list_dir and write_file", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  try {
+    const orphan = childOf("no-such-root", "kid-x");
+    for (const [tool, input] of [
+      [readFile, { path: "Desktop/todo.txt" }],
+      [listDir, { path: "Desktop" }],
+      [writeFileTool, { path: "a.txt", content: "x", expectedSha256: null }],
+    ] as const) {
+      assert.deepEqual(await run(tool as Tool, input as Record<string, unknown>, orphan), { status: "blocked", error: "bot_context_missing" });
+    }
+  } finally {
+    home.restore();
+    box.restore();
+  }
+});
+
+test("a sub-agent's bash line that needs a PATH write is refused; a plain one still runs", async () => {
+  const box = sandbox();
+  const home = homeFixture("full_access");
+  try {
+    bindSession("sess-home", DEFAULT_BOT_ID);
+    const kid = childOf("sess-home", "kid-3");
+    const blocked = await run<{ status?: string; error?: string }>(bash, { command: "npm install -g left-pad" }, kid);
+    assert.equal(blocked.error, "not_available_for_sub_agents");
+    const fine = await run<{ status?: string; error?: string }>(bash, { command: "pwd" }, kid);
+    assert.notEqual(fine.error, "not_available_for_sub_agents");
+  } finally {
+    home.restore();
+    box.restore();
+  }
+});

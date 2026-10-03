@@ -261,7 +261,7 @@ function stoppedByOwner(ctx: SnapshotCtx): string[] {
   const cancelled = turnInputs(ctx.messages).some((message) => CANCELLED_REPORT.test(textOf(message.content)));
   if (!cancelled) return [];
   try {
-    return readSubagentStops(ctx.session.id).map((stop) => stop.childSessionId);
+    return readSubagentStops(ctx.session.id).map((stop) => stop.agentId ?? stop.childSessionId);
   } catch (err) {
     console.error("[turn-snapshot] owner stops could not be read", err instanceof Error ? err.message : err);
     return [];

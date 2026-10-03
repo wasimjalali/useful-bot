@@ -785,7 +785,7 @@ test("a child holds exactly its root's permission and workspace, never its own g
     const listed = await run<{ entries?: unknown }>(listDirTool, { path: "." }, auto);
     assert.ok(JSON.stringify(listed).includes("a.txt"));
     // A refused child cannot even read.
-    await assert.rejects(run(readFileTool, { path: "a.txt" }, kid("kid-y", "root-unbound")), /bot_context_missing/);
+    assert.deepEqual(await run(readFileTool, { path: "a.txt" }, kid("kid-y", "root-unbound")), { status: "blocked", error: "bot_context_missing" });
     // The child of an Auto root writing outside the folder is still refused by the root's rules.
     await assert.rejects(run(writeFileTool, { path: "../escape.txt", content: "x", expectedSha256: null }, auto), /path_escape/);
   });

@@ -452,9 +452,13 @@ test("a child's outside reading marks its root for any turn", async () => {
     markOutside(kidCtx("kid-1", "root-1", alpha));
     assert.equal(seenOutside(rootTurn("a")), true);
     assert.equal(seenOutside(rootTurn("later")), true);
-    // A child that cannot be verified marks only itself.
+    // A child that cannot be verified still taints the root it names, and nothing else.
     markOutside(kidCtx("kid-9", "nobody", alpha));
-    assert.equal(seenOutside({ session: { id: "nobody", turn: { id: "a" } } }), false);
+    assert.equal(seenOutside({ session: { id: "nobody", turn: { id: "a" } } }), true);
+    assert.equal(seenOutside({ session: { id: "somebody-else", turn: { id: "a" } } }), false);
+    // A root that is not a session id is ignored.
+    markOutside({ ...kidCtx("kid-8", "x", alpha), session: { ...kidCtx("kid-8", "x", alpha).session, parent: { rootSessionId: "../x", sessionId: "../x" } } });
+    assert.equal(seenOutside({ session: { id: "../x", turn: { id: "a" } } }), false);
   });
 });
 
@@ -544,7 +548,8 @@ test("a cancelled report of a stopped child carries the do-not-restart line; a f
     try {
       bindSession("root-1", alpha);
       bindSession("root-2", alpha);
-      recordSubagentStop({ rootSessionId: "root-1", childSessionId: "kid-1", agentId: null });
+      recordSubagentStop({ rootSessionId: "root-1", childSessionId: "kid-1", agentId: "ag_agent:abc123" });
+      recordSubagentStop({ rootSessionId: "root-1", childSessionId: "kid-2", agentId: null });
       const cancelled = 'Background task task_ab12 (agent) failed.\n\nError:\n{"code":"SUBAGENT_EXECUTION_FAILED","message":"The agent invocation was cancelled."}';
       const failed = 'Background task task_cd34 (agent) failed.\n\nError:\n{"code":"SUBAGENT_EXECUTION_FAILED","message":"The model call timed out."}';
       const turn = (root: string, text: string | null, id: string) => ({
@@ -555,7 +560,7 @@ test("a cancelled report of a stopped child carries the do-not-restart line; a f
         const snap = await ensureTurnSnapshot(turn(root, text, id), id);
         return snap?.status === "ok" ? renderContext(snap.context) : "";
       };
-      assert.match(await line("root-1", cancelled, "t1"), /The owner pressed Stop on these sub-agents: kid-1\. .*Do not start them again unless the owner asks\./);
+      assert.match(await line("root-1", cancelled, "t1"), /The owner pressed Stop on these sub-agents: ag_agent:abc123, kid-2\. .*Do not start them again unless the owner asks\./);
       assert.doesNotMatch(await line("root-1", failed, "t2"), /pressed Stop/);
       assert.doesNotMatch(await line("root-1", null, "t3"), /pressed Stop/);
       assert.doesNotMatch(await line("root-2", cancelled, "t4"), /pressed Stop/);
