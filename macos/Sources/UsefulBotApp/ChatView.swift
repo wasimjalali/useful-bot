@@ -556,12 +556,7 @@ struct ChatView: View {
     /// A run is still out by what its card shows (working or quiet), not by
     /// the parent's state alone: one nobody has heard from for hours is not.
     private func cardIsLive(_ card: SubagentCardData) -> Bool {
-        SubagentStatus.hasActiveWork(
-            runs: card.runs,
-            progress: { run in run.childSessionId.flatMap { model.subagentProgress.progress[$0] } },
-            parentBusy: model.pending || model.backgroundWorking,
-            now: Date()
-        )
+        model.liveCardIds.contains(card.id)
     }
 
     private func subagentCard(_ card: SubagentCardData, bot: ShellBot) -> some View {
@@ -570,6 +565,7 @@ struct ChatView: View {
             chat: model.subagentCards,
             bot: bot,
             parentBusy: model.pending || model.backgroundWorking,
+            parked: !model.pendingRequests.isEmpty,
             idleSince: model.parentIdleSince,
             maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
             store: model.subagentProgress

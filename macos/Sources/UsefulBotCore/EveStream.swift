@@ -1521,7 +1521,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// message, and eve's replay of held owner text sits there. The body ends
     /// where a held message begins as its own blank-line segment.
     private func cutReplayedOwnerText(_ body: String) -> String {
-        guard !heldOrder.isEmpty else { return body }
+        guard replayOpen, pendingRequests.isEmpty, !heldOrder.isEmpty else { return body }
         let held = Set(heldOrder.compactMap { id in indexById[id].map { Self.replayKey(messages[$0].text) } }.filter { !$0.isEmpty })
         guard !held.isEmpty else { return body }
         let parts = body.components(separatedBy: "\n\n")

@@ -191,6 +191,7 @@ public enum SubagentStatus {
         batches: [[SubagentRun]],
         progress: (SubagentRun) -> ChildProgress?,
         parentBusy: Bool,
+        parked: Bool = false,
         parentIdleSince: Date? = nil,
         now: Date
     ) -> [[SubagentRowStatus]] {
@@ -202,7 +203,9 @@ public enum SubagentStatus {
             if let latest = done.finishes.compactMap({ $0 }).max(), latest > (last ?? .distantPast) { last = latest }
         }
         let settled = !all.joined().contains { $0.isWorking }
-        guard settled, !parentBusy, let last, now.timeIntervalSince(last) >= undeliveredAfter,
+        // A request parked in the session holds the finished reports too: eve
+        // replays them after it is answered, so they are not lost yet.
+        guard settled, !parentBusy, !parked, let last, now.timeIntervalSince(last) >= undeliveredAfter,
               parentIdleSince.map({ now.timeIntervalSince($0) >= undeliveredAfter }) ?? true else { return all }
         return all.map { statuses in
             statuses.map { if case .awaitingReport = $0 { return .notDelivered } else { return $0 } }
@@ -214,10 +217,11 @@ public enum SubagentStatus {
         runs: [SubagentRun],
         progress: (SubagentRun) -> ChildProgress?,
         parentBusy: Bool,
+        parked: Bool = false,
         parentIdleSince: Date? = nil,
         now: Date
     ) -> [SubagentRowStatus] {
-        resolveChat(batches: [runs], progress: progress, parentBusy: parentBusy, parentIdleSince: parentIdleSince, now: now)[0]
+        resolveChat(batches: [runs], progress: progress, parentBusy: parentBusy, parked: parked, parentIdleSince: parentIdleSince, now: now)[0]
     }
 
     /// Whether any run is still out, by what its card would show: working or
@@ -237,14 +241,35 @@ public enum SubagentStatus {
         batches: [[SubagentRun]],
         progress: (SubagentRun) -> ChildProgress?,
         parentBusy: Bool,
+        parked: Bool = false,
         parentIdleSince: Date? = nil,
         now: Date
     ) -> Bool {
-        resolveChat(batches: batches, progress: progress, parentBusy: parentBusy, parentIdleSince: parentIdleSince, now: now)
+        resolveChat(batches: batches, progress: progress, parentBusy: parentBusy, parked: parked, parentIdleSince: parentIdleSince, now: now)
             .joined().contains {
                 if case .awaitingReport = $0 { return true }
                 return $0.isWorking
             }
+    }
+
+    /// The same for one card of the chat: its own working runs, and its own
+    /// finished ones only while the chat-wide rule could still flip them
+    /// (nothing is working anywhere, and no request is parked).
+    public static func needsClock(
+        batches: [[SubagentRun]],
+        of index: Int,
+        progress: (SubagentRun) -> ChildProgress?,
+        parentBusy: Bool,
+        parked: Bool = false,
+        parentIdleSince: Date? = nil,
+        now: Date
+    ) -> Bool {
+        let all = resolveChat(batches: batches, progress: progress, parentBusy: parentBusy, parked: parked, parentIdleSince: parentIdleSince, now: now)
+        guard all.indices.contains(index) else { return false }
+        if all[index].contains(where: \.isWorking) { return true }
+        let chatWorking = all.joined().contains { $0.isWorking }
+        guard !chatWorking, !parked else { return false }
+        return all[index].contains { if case .awaitingReport = $0 { return true } else { return false } }
     }
 
     public static func needsClock(
@@ -368,12 +393,16 @@ public enum ChildFollowPlanner {
         runs: [SubagentRun],
         cap: Int = ChildFollowPlanner.cap,
         now: Date = Date(),
+        lastHeard: (SubagentRun) -> Date? = { _ in nil },
         skip: (ChildFollowTarget) -> Bool = { _ in false }
     ) -> [ChildFollowTarget] {
         var found: [ChildFollowTarget] = []
         for run in runs.reversed() where run.state == .working {
             guard let child = run.childSessionId, !child.isEmpty else { continue }
-            if let began = run.taskStartedAt ?? run.startedAt, now.timeIntervalSince(began) >= SubagentStatus.patience { continue }
+            // Patience from the child's last word, else from the task's start:
+            // the same rule the card uses.
+            if let base = lastHeard(run) ?? run.taskStartedAt ?? run.startedAt,
+               now.timeIntervalSince(base) >= SubagentStatus.patience { continue }
             let target = ChildFollowTarget(
                 childSessionId: child,
                 taskId: run.taskId,

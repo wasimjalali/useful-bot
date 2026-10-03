@@ -428,6 +428,43 @@ private extension ChildProgress {
         #expect(header([.noWord, work]) == SubagentHeader(title: "2 sub-agents", detail: "1 no word · 1 working"))
     }
 
+    @Test func aParkedRequestHoldsDeliveryJudgement() {
+        let a = sibling("a")
+        let p = ["a": finished("a", at: t0)]
+        let parked = SubagentStatus.resolveChat(batches: [[a]], progress: { p[$0.agentId] }, parentBusy: false, parked: true, now: t0 + 600)
+        #expect(parked == [[.awaitingReport(answer: "Report a.")]])
+        let open = SubagentStatus.resolveChat(batches: [[a]], progress: { p[$0.agentId] }, parentBusy: false, parked: false, now: t0 + 600)
+        #expect(open == [[.notDelivered]])
+        #expect(SubagentStatus.needsClock(batches: [[a]], progress: { p[$0.agentId] }, parentBusy: false, parked: true, now: t0 + 600))
+    }
+
+    @Test func patienceIsFromTheChildsLastWordForThePlannerToo() {
+        var r = run()
+        r.startedAt = t0
+        r.taskStartedAt = t0
+        let late = t0 + SubagentStatus.patience + 100
+        #expect(ChildFollowPlanner.targets(runs: [r], now: late).isEmpty)
+        // The child spoke a minute ago: still followed, as the card still shows it working.
+        #expect(ChildFollowPlanner.targets(runs: [r], now: late, lastHeard: { _ in late - 60 }).count == 1)
+        #expect(resolve([r], ["agent_1": spoke(at: late - 60)], now: late) == [.working(label: "Thinking")])
+    }
+
+    @Test func eachCardNeedsAClockOnlyForItsOwnWork() {
+        let a = sibling("a"), b = sibling("b"), c = sibling("c", .reported(at: t0 + 5))
+        let p = ["a": finished("a", at: t0 + 16), "b": busyChild("b", at: t0 + 30)]
+        func need(_ index: Int, batches: [[SubagentRun]], now: Date = t0 + 40) -> Bool {
+            SubagentStatus.needsClock(batches: batches, of: index, progress: { p[$0.agentId] }, parentBusy: false, now: now)
+        }
+        // Card 0 holds a finished child, card 1 a working one: only card 1 ticks.
+        #expect(need(0, batches: [[a], [b]]) == false)
+        #expect(need(1, batches: [[a], [b]]) == true)
+        // A fully settled card never ticks.
+        #expect(need(0, batches: [[c], [b]]) == false)
+        // Nothing working anywhere: the awaiting card ticks toward "not delivered".
+        #expect(need(0, batches: [[a], [c]]) == true)
+        #expect(need(1, batches: [[a], [c]]) == false)
+    }
+
     @Test func failedAndStoppedDurationsUseTheChildsOwnEnd() {
         var failedChild = busyChild("1", at: t0 + 9)
         failedChild.failure = "boom"

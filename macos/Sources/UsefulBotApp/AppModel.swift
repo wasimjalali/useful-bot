@@ -119,7 +119,7 @@ final class AppModel: ObservableObject {
     /// window from here, so a long turn ending is not mistaken for a lost report.
     private(set) var parentIdleSince: Date?
     private func noteParentIdle() {
-        if pending || backgroundWorking {
+        if pending || backgroundWorking || !pendingRequests.isEmpty {
             parentIdleSince = nil
         } else if parentIdleSince == nil {
             parentIdleSince = Date()
@@ -170,7 +170,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var openQuestions: [OwnerQuestion] = []
     /// Requests from eve that are not questions (a session limit, an
     /// approval), shown as the waiting card until eve resolves them.
-    @Published private(set) var pendingRequests: [PendingRequest] = []
+    @Published private(set) var pendingRequests: [PendingRequest] = [] {
+        // A parked request holds the parent: its idle window starts when it clears.
+        didSet { noteParentIdle() }
+    }
+    /// Cards with a run still out, by what each shows. Refreshed from the
+    /// child progress flush, which the transcript does not observe.
+    @Published private(set) var liveCardIds: Set<String> = []
     /// Requests whose answer is on its way; their buttons wait.
     @Published private(set) var busyRequests: Set<String> = []
     /// Owner rows eve is holding until a request is answered.
@@ -388,12 +394,14 @@ final class AppModel: ObservableObject {
         railFlagTimer = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
-                self?.refreshAllRailFlags()
+                guard let self else { return }
+                self.refreshAllRailFlags()
             }
         }
         subagentProgress.onChange = { [weak self] in
             guard let self else { return }
             self.refreshRailFlags(self.selectedBotId ?? "")
+            self.refreshLiveCards()
         }
         if let perf = PerfHarness.shared {
             for botId in perf.snapshotsToDrop { snapshots.remove(botId: botId) }
@@ -2828,12 +2836,28 @@ final class AppModel: ObservableObject {
     /// does not keep the rail moving. A report that never came stops counting
     /// after the same patience the working row has. Only the open chat has
     /// child progress; another bot's runs read as working until they report.
-    private var railFlagTimer: Task<Void, Never>?
+    private nonisolated(unsafe) var railFlagTimer: Task<Void, Never>?
+    deinit { railFlagTimer?.cancel() }
+
+    /// Which cards have a run still out, by what their cards show.
+    private func refreshLiveCards() {
+        let parked = !pendingRequests.isEmpty
+        let live = Set(subagentCards.filter { card in
+            SubagentStatus.hasActiveWork(
+                runs: card.runs,
+                progress: { run in run.childSessionId.flatMap { self.subagentProgress.progress[$0] } },
+                parentBusy: pending || backgroundWorking || parked,
+                now: Date()
+            )
+        }.map(\.id))
+        if live != liveCardIds { liveCardIds = live }
+    }
 
     private func refreshAllRailFlags() {
         let ids = Set(backgroundProjections.keys).union(subagentWorkingBotIds).union(waitingBotIds)
         for id in ids { refreshRailFlags(id) }
         if let selectedBotId { refreshRailFlags(selectedBotId) }
+        refreshLiveCards()
     }
 
     private func refreshRailFlags(_ botId: String) {
@@ -2846,13 +2870,13 @@ final class AppModel: ObservableObject {
             }
             return
         }
-        let cutoff = Date().addingTimeInterval(-Self.subagentPatience)
         let now = Date()
         let busy = isOpen && (pending || backgroundWorking)
+        // Past patience a run reads as "no word" by itself, so it needs no
+        // filter here.
         let working = proj.subagentBatches.contains { batch in
-            let live = batch.runs.filter { $0.state != .working || ($0.startedAt ?? now) > cutoff }
-            return SubagentStatus.hasActiveWork(
-                runs: live,
+            SubagentStatus.hasActiveWork(
+                runs: batch.runs,
                 progress: { run in isOpen ? run.childSessionId.flatMap { self.subagentProgress.progress[$0] } : nil },
                 parentBusy: busy,
                 now: now
@@ -2915,6 +2939,7 @@ final class AppModel: ObservableObject {
         let resent = Set(forRow.filter { sentAgain($0.value) }.keys)
         if resent != resentRowIds { resentRowIds = resent }
         refreshRailFlags(selectedBotId ?? "")
+        refreshLiveCards()
         syncChildFollows()
     }
 
@@ -2944,6 +2969,8 @@ final class AppModel: ObservableObject {
                     self.projection.dropHeldMessages()
                 } else {
                     self.backgroundProjections[botId]?.dropHeldMessages()
+                    // The at-rest copy would bring the held rows back on return.
+                    self.stashSnapshots[botId] = nil
                     self.refreshRailFlags(botId)
                 }
                 self.publishSubagents(rows: self.transcript)
@@ -3033,7 +3060,10 @@ final class AppModel: ObservableObject {
             return
         }
         let now = Date()
-        let wanted = Set(ChildFollowPlanner.targets(runs: projection.subagentRuns, now: now) {
+        let wanted = Set(ChildFollowPlanner.targets(runs: projection.subagentRuns, now: now, lastHeard: { run in
+            run.childSessionId.flatMap { self.subagentProgress.progress[$0] }
+                .flatMap { $0.taskId == run.taskId ? $0.lastEventAt : nil }
+        }) {
             finishedFollows.contains($0) || (childRetryAt[$0] ?? .distantPast) > now
         })
         let generation = loadGeneration

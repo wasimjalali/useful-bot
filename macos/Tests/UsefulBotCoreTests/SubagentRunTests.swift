@@ -628,6 +628,18 @@ import Testing
         #expect(p.subagentRuns[0].result == "Fine.\n\nSecond paragraph of the report.")
     }
 
+    @Test func aReportBodyIsNotCutWhenNoReplayIsOpen() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        // The request is still open: the report lands as it came.
+        let report = "Background task task_aaa (agent) is completed.\n\nResult:\nFine.\n\nProbe 19"
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"message.received","data":{"message":\#(json(report)),"kind":"\#(EveStream.backgroundTaskKind)","turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        #expect(p.subagentRuns[0].result == "Fine.\n\nProbe 19")
+    }
+
     @Test func heldRowsSurviveASnapshotBetweenTheAnswerAndTheReplay() throws {
         var head = StreamProjection()
         for event in try originTurn("turn_16", text: "Probe 18") { head.apply(event) }

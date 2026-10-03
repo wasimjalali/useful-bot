@@ -83,6 +83,8 @@ struct SubagentGroupCard: View {
     let chat: [SubagentCardData]
     let bot: ShellBot
     let parentBusy: Bool
+    /// A request is parked: eve holds the finished reports until it is answered.
+    let parked: Bool
     /// When the parent last went idle; nil while unknown or busy.
     let idleSince: Date?
     let maxWidth: CGFloat
@@ -99,10 +101,19 @@ struct SubagentGroupCard: View {
         run.childSessionId.flatMap { store.progress[$0] }
     }
 
-    var body: some View {
-        let live = SubagentStatus.needsClock(
-            batches: chat.map(\.runs), progress: progressOf, parentBusy: parentBusy, parentIdleSince: idleSince, now: Date()
+    /// This card's own work only; the chat-wide judgement stays in the status.
+    private func clockNeeded(now: Date) -> Bool {
+        guard let index = chat.firstIndex(where: { $0.id == card.id }) else {
+            return SubagentStatus.needsClock(runs: card.runs, progress: progressOf, parentBusy: parentBusy, now: now)
+        }
+        return SubagentStatus.needsClock(
+            batches: chat.map(\.runs), of: index, progress: progressOf,
+            parentBusy: parentBusy, parked: parked, parentIdleSince: idleSince, now: now
         )
+    }
+
+    var body: some View {
+        let live = clockNeeded(now: Date())
         Group {
             if live && !clockStopped {
                 // One timeline for the whole card: the header and every row
@@ -117,6 +128,7 @@ struct SubagentGroupCard: View {
         .onChange(of: store.progress) { _, _ in clockStopped = false }
         .onChange(of: card) { _, _ in clockStopped = false }
         .onChange(of: parentBusy) { _, _ in clockStopped = false }
+        .onChange(of: parked) { _, _ in clockStopped = false }
     }
 
     private func content(now: Date) -> some View {
@@ -124,6 +136,7 @@ struct SubagentGroupCard: View {
             batches: chat.map(\.runs),
             progress: progressOf,
             parentBusy: parentBusy,
+            parked: parked,
             parentIdleSince: idleSince,
             now: now
         )
@@ -131,10 +144,7 @@ struct SubagentGroupCard: View {
             ?? SubagentStatus.resolveAll(runs: card.runs, progress: progressOf, parentBusy: parentBusy, now: now)
         let header = SubagentCardCopy.header(statuses: statuses, botName: bot.name)
         let anyWorking = statuses.contains { $0.isWorking }
-        if !clockStopped,
-           !SubagentStatus.needsClock(
-               batches: chat.map(\.runs), progress: progressOf, parentBusy: parentBusy, parentIdleSince: idleSince, now: now
-           ) {
+        if !clockStopped, !clockNeeded(now: now) {
             // Nothing left to count: stop the timeline after this frame.
             DispatchQueue.main.async { clockStopped = true }
         }
