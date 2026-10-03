@@ -1,5 +1,5 @@
 {
- "about": "UB-009 cold start, stamp mode skip: each turn opens a new Test Bot session (the previous turn cleared the chat), replies, then clears so the next turn is a new session",
+ "about": "UB-009 cold start, stamp mode skip: the proxy never writes the session binding; each turn opens a new Test Bot session, replies, then clears",
  "turns": [
   {
    "id": "S01",
@@ -50,6 +50,16 @@
    "id": "S10",
    "approve": true,
    "text": "Cold start skip 10. Reply with the single word ready, then use your clear_history tool to clear your own chat."
+  },
+  {
+   "id": "S11",
+   "approve": true,
+   "text": "Cold start skip 11. Reply with the single word ready, then use your clear_history tool to clear your own chat."
+  },
+  {
+   "id": "S12",
+   "approve": true,
+   "text": "Cold start skip 12. Reply with the single word ready, then use your clear_history tool to clear your own chat."
   }
  ]
 }
