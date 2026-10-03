@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyShellAction, DEFAULT_BOT_ID, orchestratorId, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
-import { bindSession, readSessionBot } from "../shared/session-bindings.ts";
+import { bindChildSession, bindSession, readSessionBot, readSessionParent, resolveSessionBot } from "../shared/session-bindings.ts";
+import { authorizeChildStream, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { renderContext } from "../shared/context-blocks.ts";
 import { withBotSelection } from "../shared/shell-store.ts";
@@ -178,6 +179,39 @@ test("neither a claim nor a binding, and a child session, are refused", async ()
     assert.ok(Date.now() - started >= 100, "it waited for the binding first");
     const child = { ...ctxFor("sess-child", alpha), session: { ...ctxFor("sess-child", alpha).session, parent: { id: "p" } } };
     assert.equal((await silenced(() => boundBotId(child))).result, null);
+  });
+});
+
+test("a sub-agent's child turn never binds the child as a root, so the proxy can bind it under its parent", async () => {
+  await withWorld(async ({ alpha }) => {
+    const savedSecret = process.env.UB_CHANNEL_JWT_SECRET;
+    process.env.UB_CHANNEL_JWT_SECRET = "test-channel-secret";
+    try {
+      const parent = "wrun_PARENT01";
+      const child = "wrun_CHILD01";
+      bindSession(parent, alpha);
+      // What eve's dynamic resolvers hand a child's step: the root's claim
+      // (auth propagates), the subagent channel and no `session.parent`.
+      const ctx = { ...ctxFor(child, alpha), channel: { kind: "subagent" } };
+      assert.equal(await boundBotId(ctx), alpha);
+      assert.equal(readSessionBot(child), null, "the child was bound as a root session");
+      // The app's first read of the child's stream, through the proxy.
+      const deps: ChildStreamDeps = {
+        resolveBot: (id) => resolveSessionBot(id),
+        readParent: (id) => readSessionParent(id),
+        verify: async (p, c) => p === parent && c === child,
+        bind: (c, p, bot) => { bindChildSession(c, p, bot); },
+        cache: new Map(),
+      };
+      const read = await authorizeChildStream(parent, child, deps);
+      assert.equal(read.ok, true, JSON.stringify(read));
+      assert.equal(readSessionParent(child), parent);
+      // The child's next step agrees with the binding the proxy wrote.
+      assert.equal(await boundBotId(ctx), alpha);
+    } finally {
+      if (savedSecret === undefined) delete process.env.UB_CHANNEL_JWT_SECRET;
+      else process.env.UB_CHANNEL_JWT_SECRET = savedSecret;
+    }
   });
 });
 
