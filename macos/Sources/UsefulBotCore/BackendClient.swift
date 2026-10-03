@@ -2107,6 +2107,7 @@ public actor BackendClient {
         historyMarker: String? = nil,
         allowUntaggedTurn: Bool = true,
         parentSessionId: String? = nil,
+        calledAt: Int? = nil,
         tailCount: Int? = nil
     ) -> AsyncThrowingStream<EveEvent, Error> {
         stream(
@@ -2119,6 +2120,7 @@ public actor BackendClient {
             historyMarker: historyMarker,
             allowUntaggedTurn: allowUntaggedTurn,
             parentSessionId: parentSessionId,
+            calledAt: calledAt,
             tailCount: tailCount,
             tailBox: nil
         )
@@ -2134,6 +2136,7 @@ public actor BackendClient {
         historyMarker: String? = nil,
         allowUntaggedTurn: Bool = true,
         parentSessionId: String? = nil,
+        calledAt: Int? = nil,
         tailCount: Int? = nil,
         tailBox: TailBox?
     ) -> AsyncThrowingStream<EveEvent, Error> {
@@ -2169,9 +2172,13 @@ public actor BackendClient {
                         if wantsTail {
                             components?.queryItems?.append(URLQueryItem(name: "includeTailIndex", value: "1"))
                         }
-                        // A sub-agent's child session is read through its parent.
+                        // A sub-agent's child session is read through its parent,
+                        // naming where the parent's `subagent.called` for it sits.
                         if let parentSessionId {
                             components?.queryItems?.append(URLQueryItem(name: "parent", value: parentSessionId))
+                            if let calledAt {
+                                components?.queryItems?.append(URLQueryItem(name: "at", value: String(calledAt)))
+                            }
                         }
                         guard let url = components?.url else { throw BackendError.decoding }
                         var request = URLRequest(url: url)

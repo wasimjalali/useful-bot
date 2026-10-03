@@ -1,5 +1,7 @@
-import { bindTurnBody, isEveSessionPost } from "../../shared/eve-proxy.ts";
-import { readSessionParent, resolveSessionBot } from "../../shared/session-bindings.ts";
+import { CHILD_AT_MAX, bindTurnBody, isEveSessionPost } from "../../shared/eve-proxy.ts";
+import { eveStreamPayload } from "../../shared/eve-stream.ts";
+import { bindChildSession, readSessionParent, resolveSessionBot } from "../../shared/session-bindings.ts";
+import { eveOrigin } from "../../shared/stack.ts";
 import { channelJwt, channelJwtNoBot } from "./agent-exec.ts";
 import { readShell } from "../../shared/shell-io.ts";
 
@@ -74,13 +76,95 @@ export type ChildStreamDeps = {
   resolveBot: (sessionId: string) => string | null;
   /** The root a session was recorded as a child of, or null. */
   readParent: (sessionId: string) => string | null;
+  /** The first event of `parent`'s stream at the absolute index `at` (see readStreamEventAt). */
+  readEventAt: (parent: string, at: number, jwt: string, signal?: AbortSignal) => Promise<string | null>;
+  bind: (child: string, parent: string, botId: string) => void;
 };
 
 export function childStreamDeps(): ChildStreamDeps {
   return {
     resolveBot: (id) => resolveSessionBot(id, readShell()),
     readParent: (id) => readSessionParent(id),
+    readEventAt: (parent, at, jwt, signal) => readStreamEventAt(parent, at, jwt, { signal }),
+    bind: (child, parent, botId) => { bindChildSession(child, parent, botId); },
   };
+}
+
+/** How long, and how many bytes, the read of one parent event may take. */
+const EVENT_READ_MS = 5_000;
+const EVENT_READ_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The text of the first event on `parent`'s eve stream read from the absolute
+ * index `at`, which is event `at` itself: eve's non-negative `startIndex` is an
+ * absolute event count, and its stream route writes one blank line and then
+ * each event as one JSON line (no index on the line). The read stops at that
+ * first whole line, so events appended later are never read. Null when the
+ * stream ends, or passes `maxBytes`, before one whole line (a short read).
+ * Throws on an eve error status, a failed fetch, the time cap (a parent with
+ * nothing at `at` yet is followed live by eve) or the caller going away.
+ */
+export async function readStreamEventAt(
+  parent: string,
+  at: number,
+  jwt: string,
+  options: { fetch?: typeof fetch; origin?: string; timeoutMs?: number; maxBytes?: number; signal?: AbortSignal } = {},
+): Promise<string | null> {
+  if (!Number.isSafeInteger(at) || at < 0) throw new Error("eve_stream_index");
+  const maxBytes = options.maxBytes ?? EVENT_READ_MAX_BYTES;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, options.timeoutMs ?? EVENT_READ_MS);
+  const onAbort = () => controller.abort();
+  if (options.signal?.aborted) controller.abort();
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  const fail = (err: unknown): never => {
+    if (timedOut) throw new Error("eve_stream_timeout");
+    if (options.signal?.aborted) throw new Error("aborted");
+    throw err;
+  };
+  try {
+    const url = `${options.origin ?? eveOrigin()}/eve/v1/session/${encodeURIComponent(parent)}/stream?startIndex=${at}`;
+    const res = await (options.fetch ?? fetch)(url, { headers: { authorization: `Bearer ${jwt}` }, signal: controller.signal }).catch(fail);
+    if (!res.ok || !res.body) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new Error(`eve_stream_${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    // A body that does not end on the abort still loses the race to it.
+    const stopped = new Promise<never>((_, reject) => {
+      const stop = () => reject(new Error("aborted"));
+      if (controller.signal.aborted) stop();
+      else controller.signal.addEventListener("abort", stop, { once: true });
+    });
+    stopped.catch(() => undefined);
+    let buf = "";
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { value, done } = await Promise.race([reader.read(), stopped]).catch(fail);
+        if (done) return null;
+        bytes += value.byteLength;
+        buf += decoder.decode(value, { stream: true });
+        // Only a line eve finished with its newline is a whole event.
+        let newline = buf.indexOf("\n");
+        while (newline !== -1) {
+          const payload = eveStreamPayload(buf.slice(0, newline));
+          if (payload !== null) return payload;
+          buf = buf.slice(newline + 1);
+          newline = buf.indexOf("\n");
+        }
+        if (bytes > maxBytes) return null;
+      }
+    } finally {
+      controller.abort();
+      await reader.cancel().catch(() => undefined);
+    }
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 /**
@@ -105,30 +189,49 @@ export function childWriteRefusal(
 }
 
 /**
- * May a read of `child`'s stream go through, as a sub-agent of `parent`? Only
- * when the durable binding says so: `parent` is bound to a bot and is not
- * itself a child, and `child` is recorded (by the agent's hook, when eve
- * reported the delegation) as a child of that parent for that same bot. No
- * stream is read. A child with no row yet is `child_session_pending` (409), a
- * retryable answer: the hook can land a moment after the app sees the event.
- * Anything else (the parent itself, a root session, another parent or bot) is
- * refused. Read-only, GET streams only.
+ * May a read of `child`'s stream go through, as a sub-agent of `parent`?
+ * `parent` must be bound to a bot and not itself a child, and `child` must not
+ * be the parent, a root session or recorded under another parent or bot. A
+ * child already recorded under this parent and bot is served with no eve read.
+ * Otherwise `at`, the absolute index of the parent's `subagent.called` event
+ * for it, is checked: the one event at `at` on the parent's own stream must be
+ * exactly that event, raised by the parent and naming this child. Then the
+ * child is bound to the parent's bot with the parent recorded (eve holds every
+ * session call to a binding; the proxy refuses any write into a recorded
+ * child). Anything else is `child_session_unverified`. Nothing is cached: an
+ * eve or store failure throws, and the route answers 503. GET streams only.
  */
-export function authorizeChildStream(
+export async function authorizeChildStream(
   parent: string,
   child: string,
+  at: number | null,
   deps: ChildStreamDeps,
-): EveCallAuth {
+  signal?: AbortSignal,
+): Promise<EveCallAuth> {
   const bot = deps.resolveBot(parent);
   if (bot === null) return { ok: false, status: 400, error: "session_unbound" };
   const refused: EveCallAuth = { ok: false, status: 403, error: "child_session_unverified" };
   if (child === parent || deps.readParent(parent) !== null) return refused;
   const childParent = deps.readParent(child);
   const childBot = deps.resolveBot(child);
-  if (childParent === null) {
-    // No row at all is a child the hook has not recorded yet; a root is not a child.
-    return childBot === null ? { ok: false, status: 409, error: "child_session_pending" } : refused;
+  const allowed = (): EveCallAuth => ({ ok: true, jwt: channelJwt(bot), bound: bot, body: null });
+  if (childParent !== null) return childParent === parent && childBot === bot ? allowed() : refused;
+  // A session bound to a bot with no parent is a root, never a child.
+  if (childBot !== null) return refused;
+  if (at === null || !Number.isSafeInteger(at) || at < 0 || at > CHILD_AT_MAX) return refused;
+  const payload = await deps.readEventAt(parent, at, channelJwt(bot), signal);
+  if (payload === null || !isSubagentCall(payload, parent, child)) return refused;
+  deps.bind(child, parent, bot);
+  return allowed();
+}
+
+/** Whether a stream line is exactly `parent`'s `subagent.called` for `child`. */
+function isSubagentCall(payload: string, parent: string, child: string): boolean {
+  try {
+    const event = JSON.parse(payload) as { type?: unknown; data?: { sessionId?: unknown; childSessionId?: unknown } } | null;
+    return event !== null && typeof event === "object" && event.type === "subagent.called"
+      && event.data?.sessionId === parent && event.data?.childSessionId === child;
+  } catch {
+    return false;
   }
-  if (childParent !== parent || childBot !== bot) return refused;
-  return { ok: true, jwt: channelJwt(bot), bound: bot, body: null };
 }

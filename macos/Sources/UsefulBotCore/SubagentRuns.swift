@@ -1,5 +1,18 @@
 import Foundation
 
+/// Where eve's `subagent.called` for a child sits: the parent session whose
+/// stream carried it and its index on that stream. The proxy serves the
+/// child's stream once that one event checks out (web/lib/eve-session-auth.ts).
+public struct SubagentCallSite: Codable, Hashable, Sendable {
+    public var sessionId: String?
+    public var index: Int
+
+    public init(sessionId: String?, index: Int) {
+        self.sessionId = sessionId
+        self.index = index
+    }
+}
+
 /// One background sub-agent, stable across relaunches: eve reuses the same
 /// agent id with a new task id when the parent steers it again.
 public struct SubagentRun: Identifiable, Codable, Equatable, Sendable {
@@ -15,6 +28,9 @@ public struct SubagentRun: Identifiable, Codable, Equatable, Sendable {
     /// Nil until eve's `subagent.called` names the child session, which can
     /// arrive after the parent's turn ended.
     public var childSessionId: String?
+    /// Where the `subagent.called` that named the child sits; nil when no
+    /// stream position came with it.
+    public var childCall: SubagentCallSite?
     /// The task the run is on now. A relaunch replaces it.
     public var taskId: String
     public var title: String
@@ -32,6 +48,7 @@ public struct SubagentRun: Identifiable, Codable, Equatable, Sendable {
     public init(
         agentId: String,
         childSessionId: String? = nil,
+        childCall: SubagentCallSite? = nil,
         taskId: String,
         title: String,
         startedAt: Date? = nil,
@@ -42,6 +59,7 @@ public struct SubagentRun: Identifiable, Codable, Equatable, Sendable {
     ) {
         self.agentId = agentId
         self.childSessionId = childSessionId
+        self.childCall = childCall
         self.taskId = taskId
         self.title = title
         self.startedAt = startedAt

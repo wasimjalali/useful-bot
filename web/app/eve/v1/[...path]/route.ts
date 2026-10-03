@@ -138,15 +138,16 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   };
   if (method === "GET") {
     // A read of a sub-agent's child stream names the session it was delegated
-    // from (`parent`), which is checked and verified against that session's own
-    // stream (see authorizeChildStream). A session recorded as a child is never
-    // read without it.
+    // from (`parent`) and the index of that session's `subagent.called` event
+    // for it (`at`), which is checked against that one event on the parent's
+    // own stream (see authorizeChildStream). A session recorded as a child is
+    // never read without its parent.
     const child = sessionPath && suffix.endsWith("/stream") ? childStreamQuery(url.search) : null;
     let auth: EveCallAuth | Response;
     if (sessionPath && child?.present) {
       if (child.parent === null) return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
       try {
-        auth = authorizeChildStream(child.parent, sessionPath[1], childStreamDeps());
+        auth = await authorizeChildStream(child.parent, sessionPath[1], child.at, childStreamDeps(), request.signal);
       } catch (err) {
         console.error("child stream could not be verified", err instanceof Error ? err.message : err);
         const missing = err instanceof Error && err.message === "channel_credential_missing";

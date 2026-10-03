@@ -5,6 +5,8 @@ import Testing
 /// How this part can fail, written before the code:
 /// - the receipt (`action.result` / `subagent.completed`, status working) is not a completion;
 /// - `subagent.called` arrives after the receipt, even after the parent's turn ended, or before it;
+/// - the call's site (its session and its index on that session's own stream, which the proxy
+///   checks) is lost, or taken from the projection's journal count, which runs on across sessions;
 /// - a relaunch (same agentId, new taskId) must keep one row, and an old task's late report is stale;
 /// - a report for a task nobody launched must neither crash nor invent a row;
 /// - two reports in one message settle two rows, each with its own text;
@@ -118,6 +120,38 @@ import Testing
         #expect(p.subagentRuns.isEmpty)
         p.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
         #expect(p.subagentRuns[0].childSessionId == "wrun_child_a")
+    }
+
+    /// The proxy reads the parent's event at `at` from eve, so the site is the
+    /// raw index on the stream that carried it, never the journal position.
+    @Test func theCallKeepsItsSessionAndRawStreamIndex() throws {
+        func at(_ event: EveEvent, _ index: Int, _ session: String) -> EveEvent {
+            var event = event
+            event.index = index
+            event.sessionId = session
+            return event
+        }
+        var p = StreamProjection()
+        // An earlier session moves the journal on.
+        for i in 0..<6 {
+            p.apply(at(try line(#"{"type":"message.appended","data":{"messageDelta":"x","turnId":"turn_0"}}"#), i, "wrun_old"))
+        }
+        p.apply(at(try requested(call: "call_a", brief: critic, turn: "turn_1"), 0, "wrun_parent"))
+        p.apply(at(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"), 1, "wrun_parent"))
+        p.apply(at(try called(agent: "ag_agent:aaa", child: "wrun_child_a", turn: "turn_1"), 2, "wrun_parent"))
+        #expect(p.subagentRuns[0].childSessionId == "wrun_child_a")
+        #expect(p.subagentRuns[0].childCall == SubagentCallSite(sessionId: "wrun_parent", index: 2))
+        // Called before the receipt: the run is born with the site.
+        p.apply(at(try called(agent: "ag_agent:bbb", child: "wrun_child_b", turn: "turn_1"), 3, "wrun_parent"))
+        p.apply(at(try launched(call: "call_b", agent: "ag_agent:bbb", task: "task_bbb", turn: "turn_1"), 4, "wrun_parent"))
+        #expect(p.subagentRuns[1].childCall == SubagentCallSite(sessionId: "wrun_parent", index: 3))
+        let target = ChildFollowPlanner.targets(runs: p.subagentRuns).first
+        #expect(target == ChildFollowTarget(childSessionId: "wrun_child_a", taskId: "task_aaa", parentSessionId: "wrun_parent", calledAt: 2))
+        // A call with no stream position (no reader set one) has no site.
+        var q = StreamProjection()
+        q.apply(try launched(call: "call_a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        q.apply(try called(agent: "ag_agent:aaa", child: "wrun_child_a", turn: "turn_1"))
+        #expect(q.subagentRuns[0].childCall == nil)
     }
 
     @Test func aReportSettlesTheRunWithItsText() throws {

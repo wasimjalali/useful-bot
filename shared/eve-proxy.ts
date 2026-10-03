@@ -195,19 +195,28 @@ export function bodyHasInputResponses(raw: string): boolean {
 
 const CHILD_PARENT = new RegExp(`^${SESSION_ID}$`);
 
+/** The largest `at` a child stream read may name: far past any real session, small enough to stay exact. */
+export const CHILD_AT_MAX = 100_000_000;
+
 /**
- * The `parent` query of a sub-agent's stream read. The app names the parent
- * session the child was delegated from; the proxy never relays it to eve.
- * `parent` is null when it is present but not exactly one session id.
+ * The `parent` and `at` queries of a sub-agent's stream read. The app names
+ * the parent session the child was delegated from and `at`, the absolute
+ * index of the parent's `subagent.called` event for it; the proxy never relays
+ * either to eve. `parent` is null when it is present but not exactly one
+ * session id; `at` is null when it is missing or not exactly one plain
+ * non-negative integer up to `CHILD_AT_MAX`.
  */
-export function childStreamQuery(search: string): { present: false } | { present: true; parent: string | null; search: string } {
+export function childStreamQuery(search: string): { present: false } | { present: true; parent: string | null; at: number | null; search: string } {
   const params = new URLSearchParams(search);
   if (!params.has("parent")) return { present: false };
   const all = params.getAll("parent");
   const parent = all.length === 1 && CHILD_PARENT.test(all[0]) ? all[0] : null;
+  const ats = params.getAll("at");
+  const at = ats.length === 1 && /^\d{1,9}$/.test(ats[0]) && Number(ats[0]) <= CHILD_AT_MAX ? Number(ats[0]) : null;
   params.delete("parent");
+  params.delete("at");
   const rest = params.toString();
-  return { present: true, parent, search: rest ? `?${rest}` : "" };
+  return { present: true, parent, at, search: rest ? `?${rest}` : "" };
 }
 
 /** The text of a turn: the string itself, or its text parts joined. */

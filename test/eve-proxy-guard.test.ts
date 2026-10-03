@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CHILD_AT_MAX,
   childStreamQuery,
   eveGetAllowed,
   evePostAllowed,
@@ -191,17 +192,25 @@ test("an input answer takes exactly an array of requestId and optionId, nothing 
 
 // Failure modes for the child stream query: no parent, an empty one, one with a
 // path character, two of them (which wins is ambiguous), and a parent that is
-// the same as the child. The parent never reaches eve.
-test("the child stream names its parent in the query, and the parent is not relayed", () => {
-  assert.deepEqual(childStreamQuery("?startIndex=4&parent=sess-p&includeTailIndex=1"), {
+// the same as the child. `at` (the parent's subagent.called index) is missing,
+// empty, negative, fractional, signed, hex, exponent, padded, huge or given
+// twice. Neither the parent nor `at` ever reaches eve.
+test("the child stream names its parent and `at` in the query, and neither is relayed", () => {
+  assert.deepEqual(childStreamQuery("?startIndex=4&parent=sess-p&at=17&includeTailIndex=1"), {
     present: true,
     parent: "sess-p",
+    at: 17,
     search: "?startIndex=4&includeTailIndex=1",
   });
-  assert.deepEqual(childStreamQuery("?parent=sess-p"), { present: true, parent: "sess-p", search: "" });
+  assert.deepEqual(childStreamQuery("?parent=sess-p"), { present: true, parent: "sess-p", at: null, search: "" });
+  assert.deepEqual(childStreamQuery("?parent=sess-p&at=0"), { present: true, parent: "sess-p", at: 0, search: "" });
+  assert.deepEqual(childStreamQuery(`?parent=sess-p&at=${CHILD_AT_MAX}`), { present: true, parent: "sess-p", at: CHILD_AT_MAX, search: "" });
   assert.deepEqual(childStreamQuery("?startIndex=4"), { present: false });
   assert.deepEqual(childStreamQuery(""), { present: false });
   for (const search of ["?parent=", "?parent=a.b", "?parent=a/b", "?parent=..", "?parent=a%2Fb", "?parent=a&parent=b", "?parent=a%20b"]) {
-    assert.deepEqual(childStreamQuery(search), { present: true, parent: null, search: "" }, search);
+    assert.deepEqual(childStreamQuery(search), { present: true, parent: null, at: null, search: "" }, search);
+  }
+  for (const at of ["", "-1", "1.5", "+3", "0x10", "1e3", " 3", "03a", `${CHILD_AT_MAX + 1}`, "99999999999999999999", "3&at=4"]) {
+    assert.deepEqual(childStreamQuery(`?parent=sess-p&at=${at}`), { present: true, parent: "sess-p", at: null, search: "" }, at);
   }
 });

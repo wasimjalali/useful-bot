@@ -5,9 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyShellAction, DEFAULT_BOT_ID, orchestratorId, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
-import { bindSession, readSessionBot, readSessionParent, resolveSessionBot } from "../shared/session-bindings.ts";
-import { bindSubagentChild } from "../agent/lib/subagent-binding.ts";
-import { authorizeChildStream, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
+import { bindChildSession, bindSession, readSessionBot, readSessionParent, resolveSessionBot } from "../shared/session-bindings.ts";
+import { authorizeChildStream, authorizeEveCall, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { renderContext } from "../shared/context-blocks.ts";
 import { withBotSelection } from "../shared/shell-store.ts";
@@ -196,19 +195,28 @@ test("a sub-agent's child turn never binds the child as a root, so the proxy can
       const ctx = { ...ctxFor(child, alpha), channel: { kind: "subagent" } };
       assert.equal(await boundBotId(ctx), alpha);
       assert.equal(readSessionBot(child), null, "the child was bound as a root session");
-      // The app's read before the parent's hook has recorded the child: retry later.
+      // The app names the index of the parent's subagent.called; the proxy
+      // reads that one event from eve and binds the child under the parent.
+      const call = { type: "subagent.called", data: { sessionId: parent, childSessionId: child, callId: "c" } };
+      const reads: number[] = [];
       const deps: ChildStreamDeps = {
         resolveBot: (id) => resolveSessionBot(id),
         readParent: (id) => readSessionParent(id),
+        readEventAt: async (_parent, at) => { reads.push(at); return at === 12 ? JSON.stringify(call) : JSON.stringify({ type: "message.appended", data: {} }); },
+        bind: (kid, root, bot) => { bindChildSession(kid, root, bot); },
       };
-      const early = authorizeChildStream(parent, child, deps);
-      assert.deepEqual(early, { ok: false, status: 409, error: "child_session_pending" });
-      // The parent's hook records the delegation eve reported.
-      const event = { type: "subagent.called", data: { sessionId: parent, childSessionId: child } };
-      assert.equal(bindSubagentChild(event, { session: { id: parent } }), "bound");
-      const read = authorizeChildStream(parent, child, deps);
+      assert.deepEqual(await authorizeChildStream(parent, child, 11, deps), { ok: false, status: 403, error: "child_session_unverified" });
+      assert.equal(readSessionParent(child), null);
+      const read = await authorizeChildStream(parent, child, 12, deps);
       assert.equal(read.ok, true, JSON.stringify(read));
       assert.equal(readSessionParent(child), parent);
+      // Bound now: the next read needs no `at` and no eve read.
+      assert.equal((await authorizeChildStream(parent, child, null, deps)).ok, true);
+      assert.deepEqual(reads, [11, 12]);
+      // A bound child is read only: a send, an answer or a cancel into it is refused.
+      for (const [suffix, body] of [[`session/${child}`, JSON.stringify({ message: "hi" })], [`session/${child}`, JSON.stringify({ inputResponses: [{ requestId: "r", optionId: "continue" }] })], [`session/${child}/cancel`, ""]]) {
+        assert.deepEqual(authorizeEveCall("POST", suffix, body, (id) => resolveSessionBot(id)), { ok: false, status: 403, error: "child_session_readonly" }, suffix);
+      }
       // The child's next step agrees with the binding the proxy wrote.
       assert.equal(await boundBotId(ctx), alpha);
     } finally {

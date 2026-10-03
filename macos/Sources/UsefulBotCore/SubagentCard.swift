@@ -298,6 +298,9 @@ public enum SubagentCardCopy {
 public struct ChildFollowTarget: Hashable, Sendable {
     public var childSessionId: String
     public var taskId: String
+    /// The session whose stream carried the child's `subagent.called`, and its index there.
+    public var parentSessionId: String? = nil
+    public var calledAt: Int? = nil
 }
 
 public enum ChildFollowPlanner {
@@ -308,7 +311,12 @@ public enum ChildFollowPlanner {
         var found: [ChildFollowTarget] = []
         for run in runs where run.state == .working {
             guard let child = run.childSessionId, !child.isEmpty else { continue }
-            found.append(ChildFollowTarget(childSessionId: child, taskId: run.taskId))
+            found.append(ChildFollowTarget(
+                childSessionId: child,
+                taskId: run.taskId,
+                parentSessionId: run.childCall?.sessionId,
+                calledAt: run.childCall?.index
+            ))
             if found.count == cap { break }
         }
         return found

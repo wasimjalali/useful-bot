@@ -994,6 +994,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     private var taskAgents: [String: String] = [:]
     /// The child session eve named for each agent.
     private var childSessions: [String: String] = [:]
+    /// Where each agent's `subagent.called` sits on its parent's stream.
+    private var childCalls: [String: SubagentCallSite] = [:]
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -1533,6 +1535,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             subagentRuns.append(SubagentRun(
                 agentId: agent,
                 childSessionId: childSessions[agent],
+                childCall: childCalls[agent],
                 taskId: task,
                 title: SubagentRun.title(fromBrief: brief, fallbackIndex: subagentRuns.count + 1),
                 startedAt: stamp,
@@ -1687,6 +1690,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             if seen.contains(id) { return }
             remember(id)
         }
+        // The position on the event's own session stream, before it becomes
+        // the projection's count: a sub-agent's call site is named by it.
+        let streamIndex = event.index
         // Every journal comparison below reads this, so it is the one place a
         // session's positions are put in the projection's count.
         event.index = journalPosition(of: event)
@@ -2248,8 +2254,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             if let agent = event.data?["agentId"]?.stringValue, !agent.isEmpty,
                let child = event.data?["childSessionId"]?.stringValue, !child.isEmpty {
                 childSessions[agent] = child
+                let site = streamIndex.map { SubagentCallSite(sessionId: event.sessionId, index: $0) }
+                childCalls[agent] = site
                 if let index = subagentRuns.firstIndex(where: { $0.agentId == agent }) {
                     subagentRuns[index].childSessionId = child
+                    subagentRuns[index].childCall = site
                 }
             }
         case "step.started":

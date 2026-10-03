@@ -3059,7 +3059,6 @@ final class AppModel: ObservableObject {
         }
         let child = target.childSessionId
         var refusals = 0
-        var pending409 = 0
         // Consecutive reads that failed: drives a capped backoff. A quiet
         // child ends its read cleanly and is reopened at the usual pace.
         var barren = 0
@@ -3070,14 +3069,14 @@ final class AppModel: ObservableObject {
                 for try await event in client.stream(
                     sessionId: child,
                     startIndex: cursor ?? 0,
-                    parentSessionId: parent,
+                    parentSessionId: target.parentSessionId ?? parent,
+                    calledAt: target.calledAt,
                     tailCount: cursor == nil ? Self.childTail : nil
                 ) {
                     guard !Task.isCancelled, generation == loadGeneration else { return }
                     if let index = event.index { childCursors[child] = index + 1 }
                     subagentProgress.record(event, child: child, taskId: target.taskId)
                     refusals = 0
-                    pending409 = 0
                 }
             } catch is CancellationError {
                 return
@@ -3089,17 +3088,6 @@ final class AppModel: ObservableObject {
                 NSLog("Useful Bot: sub-agent stream refused for %@", child)
                 retryChild(target, after: 600)
                 return
-            } catch BackendError.http(409) {
-                // The child is not bound yet (`child_session_pending`): it will
-                // be in a moment. A short wait, a few times, then the usual backoff.
-                pending409 += 1
-                if pending409 > 8 { refusals += 1 }
-                if refusals >= 5 {
-                    retryChild(target, after: 60)
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                continue
             } catch BackendError.http(let status) {
                 refusals += 1
                 NSLog("Useful Bot: sub-agent stream answered %d (%d)", status, refusals)

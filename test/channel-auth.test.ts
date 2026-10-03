@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHmac } from "node:crypto";
 import { channelAuth } from "../agent/lib/channel-auth.ts";
-import { authorizeChildStream, authorizeEveCall, carryOverReader, childWriteRefusal, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
+import { authorizeChildStream, authorizeEveCall, carryOverReader, childWriteRefusal, readStreamEventAt, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
+import { CHILD_AT_MAX } from "../shared/eve-proxy.ts";
 import { channelJwt } from "../web/lib/agent-exec.ts";
 import type { ShellStore } from "../shared/shell-store.ts";
 
@@ -210,80 +211,302 @@ test("a carry-over reads the old session only as the bot that owns it", async ()
 
 // MARK: - child session streams
 //
-// Failure modes, written before the code: the parent is unbound, bound to
-// another bot, or itself a child (a nested read); the child is the parent, is
-// a root session of this or another bot, is recorded under a different parent,
-// or is recorded for another bot; the child has no row yet (the agent hook has
-// not landed): a retryable answer, never a read, never a bind by the proxy;
-// a store that cannot be read is loud.
+// Failure modes, written before the code. The parent is unbound, bound to
+// another bot, or itself a child (a nested read). The child is the parent, a
+// root session of this or another bot, recorded under a different parent, or
+// recorded for another bot. A child with no row yet must prove itself with
+// `at`, the absolute index of the parent's `subagent.called`: `at` is missing,
+// negative, fractional, huge or not a number; the event at `at` is another
+// type, a `subagent.called` for another child (a forged `at`), one raised by
+// another session (a nested child's call forwarded onto the parent), or one
+// whose JSON is cut off or does not parse; the read ends, or overflows its
+// byte cap, before one whole event; eve answers an error, or never answers
+// (time cap). Events appended after `at` (a live parent) change nothing and
+// the read stops after the first. An eve failure is loud (thrown, mapped to a
+// 503 by the route) and never remembered. A child already bound under this
+// parent and bot is served with no eve read at all. A store that cannot be
+// read is loud. A bind that conflicts is loud too.
 
-function childDeps(over: Partial<ChildStreamDeps> = {}): ChildStreamDeps {
+function childDeps(over: Partial<ChildStreamDeps> = {}): ChildStreamDeps & { reads: Array<{ parent: string; at: number }>; binds: string[] } {
   const owners = new Map<string, string>([
     ["p1", "bot-a"], ["p2", "bot-b"], ["root-a", "bot-a"],
     ["kid-1", "bot-a"], ["kid-b", "bot-b"], ["kid-other", "bot-a"], ["kid-old", "bot-a"], ["nested", "bot-a"],
   ]);
   const parents = new Map<string, string>([["kid-1", "p1"], ["kid-b", "p2"], ["kid-other", "p9"], ["kid-old", "p1"], ["nested", "kid-old"]]);
+  const reads: Array<{ parent: string; at: number }> = [];
+  const binds: string[] = [];
   return {
     resolveBot: (id) => owners.get(id) ?? null,
     readParent: (id) => parents.get(id) ?? null,
+    readEventAt: async (parent, at) => {
+      reads.push({ parent, at });
+      return JSON.stringify(called(parent, "kid-new"));
+    },
+    bind: (child, parent, bot) => { binds.push(`${child}<${parent}@${bot}`); },
     ...over,
+    reads,
+    binds,
   };
 }
 
-test("a child stream is read only when the durable binding makes it a child of a session the bot owns", async () => {
-  await withSecret(() => {
-    const ok = authorizeChildStream("p1", "kid-1", childDeps());
-    assert.ok(ok.ok);
-    assert.equal(claimsOf(ok.jwt).botId, "bot-a");
-    assert.equal(ok.bound, "bot-a");
-    assert.equal(ok.body, null);
+function called(sessionId: string, childSessionId: string) {
+  return { type: "subagent.called", data: { agentId: "agent_1", callId: "call_1", childSessionId, sessionId, toolName: "agent", turnId: "turn_0" }, meta: { id: "evt_1", at: "2026-10-03T00:00:00.000Z" } };
+}
+
+const unverified = { ok: false, status: 403, error: "child_session_unverified" };
+
+test("a child already bound under the parent and bot is served with no eve read", async () => {
+  await withSecret(async () => {
+    const deps = childDeps();
+    for (const at of [null, 0, 12]) {
+      const ok = await authorizeChildStream("p1", "kid-1", at, deps);
+      assert.ok(ok.ok);
+      assert.equal(claimsOf(ok.jwt).botId, "bot-a");
+      assert.equal(ok.bound, "bot-a");
+      assert.equal(ok.body, null);
+    }
+    assert.deepEqual(deps.reads, []);
+    assert.deepEqual(deps.binds, []);
   });
 });
 
-test("a child stream is refused for an unbound, foreign or nested parent and for a wrong child", async () => {
-  await withSecret(() => {
-    const refused = { ok: false, status: 403, error: "child_session_unverified" };
+test("a child stream is refused for an unbound, foreign or nested parent and for a wrong child, before any read", async () => {
+  await withSecret(async () => {
     const deps = childDeps();
-    assert.deepEqual(authorizeChildStream("ghost", "kid-1", deps), { ok: false, status: 400, error: "session_unbound" });
+    assert.deepEqual(await authorizeChildStream("ghost", "kid-1", 3, deps), { ok: false, status: 400, error: "session_unbound" });
     // The parent is bot-b's while the child is recorded for bot-a under p1.
-    assert.deepEqual(authorizeChildStream("p2", "kid-1", deps), refused);
+    assert.deepEqual(await authorizeChildStream("p2", "kid-1", 3, deps), unverified);
     // Nested: the parent is itself a child.
-    assert.deepEqual(authorizeChildStream("kid-old", "nested", deps), refused);
+    assert.deepEqual(await authorizeChildStream("kid-old", "nested", 3, deps), unverified);
+    assert.deepEqual(await authorizeChildStream("kid-old", "kid-new", 3, deps), unverified);
     // Recorded under a different parent than the one named.
-    assert.deepEqual(authorizeChildStream("p1", "kid-other", deps), refused);
+    assert.deepEqual(await authorizeChildStream("p1", "kid-other", 3, deps), unverified);
     // The parent as its own child, a root session as a child, another bot's child.
-    assert.deepEqual(authorizeChildStream("p1", "p1", deps), refused);
-    assert.deepEqual(authorizeChildStream("p1", "root-a", deps), refused);
-    assert.deepEqual(authorizeChildStream("p1", "p2", deps), refused);
-    assert.deepEqual(authorizeChildStream("p1", "kid-b", deps), refused);
+    assert.deepEqual(await authorizeChildStream("p1", "p1", 3, deps), unverified);
+    assert.deepEqual(await authorizeChildStream("p1", "root-a", 3, deps), unverified);
+    assert.deepEqual(await authorizeChildStream("p1", "p2", 3, deps), unverified);
+    assert.deepEqual(await authorizeChildStream("p1", "kid-b", 3, deps), unverified);
     // Same parent id, but the child's row names another bot than the parent's.
     const crossed = childDeps({ resolveBot: (id) => (id === "kid-1" ? "bot-b" : childDeps().resolveBot(id)) });
-    assert.deepEqual(authorizeChildStream("p1", "kid-1", crossed), refused);
+    assert.deepEqual(await authorizeChildStream("p1", "kid-1", 3, crossed), unverified);
+    assert.deepEqual(deps.reads, []);
+    assert.deepEqual(crossed.reads, []);
+    assert.deepEqual(deps.binds, []);
+    // A store that cannot be read is loud, not "refused".
+    await assert.rejects(authorizeChildStream("p1", "kid-1", 3, childDeps({ readParent: () => { throw new Error("session_owners_locked"); } })), /session_owners_locked/);
   });
 });
 
-test("a child with no row yet is a retryable 409, and the proxy never binds it", async () => {
-  await withSecret(() => {
-    let wrote = 0;
-    const deps = childDeps({ resolveBot: (id) => (id === "kid-new" ? null : childDeps().resolveBot(id)) });
-    Object.assign(deps, { bind: () => { wrote += 1; } });
-    assert.deepEqual(authorizeChildStream("p1", "kid-new", deps), { ok: false, status: 409, error: "child_session_pending" });
-    assert.equal(wrote, 0);
-    // A store that cannot be read is loud, not "pending" or "refused".
-    assert.throws(() => authorizeChildStream("p1", "kid-1", childDeps({ readParent: () => { throw new Error("session_owners_locked"); } })), /session_owners_locked/);
+test("a new child is bound only when the parent's event at `at` is its exact subagent.called", async () => {
+  await withSecret(async () => {
+    const deps = childDeps();
+    const ok = await authorizeChildStream("p1", "kid-new", 41, deps);
+    assert.ok(ok.ok, JSON.stringify(ok));
+    assert.equal(claimsOf(ok.jwt).botId, "bot-a");
+    assert.equal(ok.bound, "bot-a");
+    assert.deepEqual(deps.reads, [{ parent: "p1", at: 41 }]);
+    assert.deepEqual(deps.binds, ["kid-new<p1@bot-a"]);
+    // `at` 0 is a real index.
+    assert.ok((await authorizeChildStream("p1", "kid-new", 0, childDeps())).ok);
   });
+});
+
+test("a new child without a usable `at` is refused before eve is read", async () => {
+  await withSecret(async () => {
+    const deps = childDeps();
+    for (const at of [null, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, CHILD_AT_MAX + 1]) {
+      assert.deepEqual(await authorizeChildStream("p1", "kid-new", at, deps), unverified, String(at));
+    }
+    assert.deepEqual(deps.reads, []);
+    assert.deepEqual(deps.binds, []);
+  });
+});
+
+test("whatever else sits at `at` is refused and binds nothing", async () => {
+  await withSecret(async () => {
+    const at = (payload: string | null) => childDeps({ readEventAt: async () => payload });
+    const cases: Array<[string, string | null]> = [
+      // A forged `at` pointing at another child's call from the same parent.
+      ["another child's call", JSON.stringify(called("p1", "kid-sibling"))],
+      // A nested child's own call, forwarded onto the parent's stream.
+      ["a call raised by another session", JSON.stringify(called("kid-old", "kid-new"))],
+      ["a non-subagent event", JSON.stringify({ type: "message.completed", data: { sessionId: "p1", childSessionId: "kid-new", message: "kid-new" } })],
+      ["the admission receipt", JSON.stringify({ type: "subagent.completed", data: { sessionId: "p1", childSessionId: "kid-new" } })],
+      ["a wrapped child event", JSON.stringify({ type: "subagent.event", data: { event: called("p1", "kid-new") } })],
+      ["a call with no data", JSON.stringify({ type: "subagent.called" })],
+      ["a child id that is not a string", JSON.stringify({ type: "subagent.called", data: { sessionId: "p1", childSessionId: ["kid-new"] } })],
+      ["a truncated event", JSON.stringify(called("p1", "kid-new")).slice(0, 60)],
+      ["JSON that is not an object", "\"subagent.called\""],
+      ["a short read", null],
+    ];
+    for (const [name, payload] of cases) {
+      const deps = at(payload);
+      assert.deepEqual(await authorizeChildStream("p1", "kid-new", 7, deps), unverified, name);
+      assert.deepEqual(deps.binds, [], name);
+    }
+  });
+});
+
+test("an eve failure while verifying is loud and is not remembered", async () => {
+  await withSecret(async () => {
+    let fail = true;
+    const deps = childDeps({
+      readEventAt: async (parent) => {
+        if (fail) throw new Error("eve_stream_503");
+        return JSON.stringify(called(parent, "kid-new"));
+      },
+    });
+    await assert.rejects(authorizeChildStream("p1", "kid-new", 7, deps), /eve_stream_503/);
+    assert.deepEqual(deps.binds, []);
+    fail = false;
+    assert.ok((await authorizeChildStream("p1", "kid-new", 7, deps)).ok);
+    // A bind that conflicts (the child was bound as a root meanwhile) is loud too.
+    const conflict = childDeps({ bind: () => { throw new Error("session_owner_conflict"); } });
+    await assert.rejects(authorizeChildStream("p1", "kid-new", 7, conflict), /session_owner_conflict/);
+  });
+});
+
+// The reader against a stand-in for eve's stream route: eve 0.54.3 writes one
+// blank line, then each event as `JSON.stringify(event) + "\n"` starting at
+// the absolute `startIndex`, and with no `includeTailIndex` keeps following
+// the live stream (eve-channel/request.js serializeAsNdjson).
+function fakeEve(events: unknown[], options: { live?: boolean; status?: number; split?: number; raw?: string } = {}) {
+  const seen: { urls: string[]; auth: string[]; aborted: boolean; served: number } = { urls: [], auth: [], aborted: false, served: 0 };
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    seen.urls.push(url.toString());
+    seen.auth.push(new Headers(init?.headers).get("authorization") ?? "");
+    if (options.status) return new Response(JSON.stringify({ ok: false }), { status: options.status });
+    const start = Number(url.searchParams.get("startIndex"));
+    const encoder = new TextEncoder();
+    const text = options.raw ?? `\n${events.slice(start).map((e) => `${JSON.stringify(e)}\n`).join("")}`;
+    const step = options.split ?? text.length;
+    let offset = 0;
+    let gone = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset < text.length) {
+          controller.enqueue(encoder.encode(text.slice(offset, offset + step)));
+          offset += step;
+          seen.served = Math.min(offset, text.length);
+          return;
+        }
+        if (!options.live) {
+          controller.close();
+          return;
+        }
+        // Live: the parent keeps going; a new event lands every few ms until the reader goes.
+        return new Promise<void>((resolve) => setTimeout(() => {
+          if (!gone) controller.enqueue(encoder.encode(`${JSON.stringify({ type: "message.appended", data: { messageDelta: "x" } })}\n`));
+          resolve();
+        }, 5));
+      },
+      cancel() { gone = true; seen.aborted = true; },
+    });
+    init?.signal?.addEventListener("abort", () => { seen.aborted = true; });
+    return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+  }) as typeof fetch;
+  return { fetchImpl, seen };
+}
+
+function parentEvents(n: number, calls: Record<number, string>): unknown[] {
+  return Array.from({ length: n }, (_, i) => (calls[i] ? called("p1", calls[i]) : { type: "message.appended", data: { messageDelta: `e${i}` } }));
+}
+
+test("the reader asks eve for the absolute index and returns only the first event there", async () => {
+  const eve = fakeEve(parentEvents(40, { 3: "kid-a", 30: "kid-b" }));
+  const got = await readStreamEventAt("p1", 30, "jwt-1", { fetch: eve.fetchImpl, origin: "http://eve.test" });
+  assert.deepEqual(JSON.parse(got ?? "null"), called("p1", "kid-b"));
+  const url = new URL(eve.seen.urls[0]);
+  assert.equal(url.pathname, "/eve/v1/session/p1/stream");
+  assert.equal(url.searchParams.get("startIndex"), "30");
+  assert.equal(url.searchParams.has("includeTailIndex"), false);
+  assert.equal(eve.seen.auth[0], "Bearer jwt-1");
+  assert.equal(eve.seen.aborted, true, "the read stops after the first event");
+  // Index 0 is the first event, not the blank line before it.
+  const first = await readStreamEventAt("p1", 0, "jwt-1", { fetch: fakeEve(parentEvents(5, { 0: "kid-0" })).fetchImpl, origin: "http://eve.test" });
+  assert.deepEqual(JSON.parse(first ?? "null"), called("p1", "kid-0"));
+});
+
+test("a live parent appending past `at` changes nothing, and the read does not follow it", async () => {
+  const eve = fakeEve(parentEvents(10, { 9: "kid-live" }), { live: true, split: 7 });
+  const got = await readStreamEventAt("p1", 9, "jwt", { fetch: eve.fetchImpl, origin: "http://eve.test", timeoutMs: 2000 });
+  assert.deepEqual(JSON.parse(got ?? "null"), called("p1", "kid-live"));
+  assert.equal(eve.seen.aborted, true);
+  // End to end: the proxy binds the live parent's child.
+  await withSecret(async () => {
+    const binds: string[] = [];
+    const deps = childDeps({
+      readEventAt: (parent, at, jwt, signal) => readStreamEventAt(parent, at, jwt, { fetch: fakeEve(parentEvents(10, { 9: "kid-new" }), { live: true }).fetchImpl, origin: "http://eve.test", signal }),
+      bind: (child, parent, bot) => { binds.push(`${child}<${parent}@${bot}`); },
+    });
+    assert.ok((await authorizeChildStream("p1", "kid-new", 9, deps)).ok);
+    assert.deepEqual(binds, ["kid-new<p1@bot-a"]);
+    // A forged `at` one past the call reads the next event, which is not it.
+    const forged = childDeps({
+      readEventAt: (parent, at, jwt, signal) => readStreamEventAt(parent, at, jwt, { fetch: fakeEve(parentEvents(12, { 9: "kid-new" }), { live: true }).fetchImpl, origin: "http://eve.test", signal }),
+    });
+    assert.deepEqual(await authorizeChildStream("p1", "kid-new", 10, forged), unverified);
+    assert.deepEqual(forged.binds, []);
+  });
+});
+
+test("a first event split across chunks is read whole; one cut off is a short read", async () => {
+  const split = fakeEve(parentEvents(4, { 2: "kid-s" }), { split: 3 });
+  assert.deepEqual(JSON.parse((await readStreamEventAt("p1", 2, "jwt", { fetch: split.fetchImpl, origin: "http://eve.test" })) ?? "null"), called("p1", "kid-s"));
+  const cut = JSON.stringify(called("p1", "kid-s"));
+  for (const raw of ["", "\n", `\n${cut.slice(0, 40)}`, `\n${cut}`]) {
+    // A stream that ends with no newline after the event never yields a whole event.
+    const eve = fakeEve([], { raw });
+    assert.equal(await readStreamEventAt("p1", 2, "jwt", { fetch: eve.fetchImpl, origin: "http://eve.test" }), null, JSON.stringify(raw));
+  }
+});
+
+test("a first event past the byte cap is not read further", async () => {
+  const huge = { type: "subagent.called", data: { sessionId: "p1", childSessionId: "kid-h", pad: "x".repeat(64 * 1024) } };
+  const eve = fakeEve([huge], { split: 512, live: true });
+  assert.equal(await readStreamEventAt("p1", 0, "jwt", { fetch: eve.fetchImpl, origin: "http://eve.test", maxBytes: 1024 }), null);
+  // The cap plus the stream's own read-ahead, nowhere near the whole event.
+  assert.ok(eve.seen.served <= 1024 + 4 * 512, `read ${eve.seen.served} bytes`);
+  assert.equal(eve.seen.aborted, true);
+});
+
+test("an eve error status, a refused fetch or a read that never starts is loud", async () => {
+  for (const status of [500, 503, 404, 401]) {
+    const eve = fakeEve([], { status });
+    await assert.rejects(readStreamEventAt("p1", 0, "jwt", { fetch: eve.fetchImpl, origin: "http://eve.test" }), new RegExp(`eve_stream_${status}`));
+  }
+  const refused = (async () => { throw new TypeError("fetch failed"); }) as typeof fetch;
+  await assert.rejects(readStreamEventAt("p1", 0, "jwt", { fetch: refused, origin: "http://eve.test" }), /fetch failed/);
+  // `at` past the tail: eve waits for an event that never comes. The time cap ends it.
+  const idle = fakeEve([], { raw: "\n", live: false });
+  const silent = (async (input: string | URL | Request, init?: RequestInit) => {
+    const res = await idle.fetchImpl(input, init);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("\n")); },
+      cancel() { idle.seen.aborted = true; },
+    });
+    init?.signal?.addEventListener("abort", () => { idle.seen.aborted = true; });
+    void res.body?.cancel();
+    return new Response(body, { status: 200 });
+  }) as typeof fetch;
+  const started = Date.now();
+  await assert.rejects(readStreamEventAt("p1", 999, "jwt", { fetch: silent, origin: "http://eve.test", timeoutMs: 80 }), /eve_stream_timeout/);
+  assert.ok(Date.now() - started < 2000);
+  assert.equal(idle.seen.aborted, true);
+  // A caller that goes away stops the read.
+  const gone = new AbortController();
+  const pending = readStreamEventAt("p1", 999, "jwt", { fetch: silent, origin: "http://eve.test", timeoutMs: 5000, signal: gone.signal });
+  gone.abort();
+  await assert.rejects(pending, /aborted/);
 });
 
 // MARK: - review round 1
 //
-// Failure modes: (1) a send into a child that was unbound when the request
-// arrived but is recorded by the time it is authorised, and a cancel into a
-// child, must be refused by the authorisation itself, in whatever order the
-// requests land; (2) a long parent must still verify a new child (a window
-// from the tail, then only new events), and only an exact subagent.called
-// raised by the parent may add to its record; (3) many concurrent checks
-// share one scan, scans are bounded globally, a miss is remembered briefly,
-// and a client that went away stops the read.
+// Failure modes: a send into a child that was unbound when the request
+// arrived but is recorded by the time it is authorised (a child-stream read
+// binds it), and a cancel into a child, must be refused by the authorisation
+// itself, in whatever order the requests land.
 
 test("a send or cancel into a recorded child is refused by the authorisation, whatever the order", async () => {
   await withSecret(() => {
