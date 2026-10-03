@@ -196,6 +196,74 @@ private extension ChildProgress {
         #expect(SubagentStatus.plainFailure("HTTP 429 too many requests") == "Stopped: the model was rate limited")
     }
 
+    @Test func codesMatchWholeTokensOnly() {
+        #expect(SubagentStatus.plainFailure("rate_limit_exceeded") == "Stopped: the model was rate limited")
+        #expect(SubagentStatus.plainFailure("HTTP 429") == "Stopped: the model was rate limited")
+        #expect(SubagentStatus.plainFailure("upstream_timeout") == "Stopped: the model took too long")
+        #expect(SubagentStatus.plainFailure("HTTP 402 payment required") == "Stopped: the model plan ran out")
+        // Substrings of other words and numbers are not codes.
+        #expect(SubagentStatus.plainFailure("Failed after 1429 ms") == "Stopped: it hit an error")
+        #expect(SubagentStatus.plainFailure("could not tolerate the limit") == "Stopped: it hit an error")
+        #expect(SubagentStatus.plainFailure("accurate and limited") == "Stopped: it hit an error")
+        #expect(SubagentStatus.plainFailure("job 14020 broke") == "Stopped: it hit an error")
+    }
+
+    // MARK: Child failure and cancel
+
+    @Test func aFailedChildStreamShowsFailedWithoutTheParentsReport() throws {
+        var tracker = ChildTracker(taskId: "task_1")
+        try tracker.apply(event("turn.started"), at: t0)
+        try tracker.apply(event("turn.failed", data: "\"code\":\"upstream_timeout\""), at: t0 + 9)
+        #expect(resolve([run()], ["agent_1": tracker.progress], now: t0 + 10) == [.failed(reason: "Stopped: the model took too long")])
+        // The child went on to another turn: it is working again.
+        try tracker.apply(event("turn.started", turn: "turn_c2"), at: t0 + 20)
+        #expect(resolve([run()], ["agent_1": tracker.progress], now: t0 + 21) == [.working(label: "Thinking")])
+    }
+
+    @Test func aCancelledChildStreamShowsStopped() throws {
+        var tracker = ChildTracker(taskId: "task_1")
+        try tracker.apply(event("turn.started"), at: t0)
+        try tracker.apply(event("turn.cancelled"), at: t0 + 3)
+        #expect(resolve([run()], ["agent_1": tracker.progress], now: t0 + 4) == [.stopped])
+    }
+
+    @Test func aFailedChildCountsAsSettledForTheBatch() {
+        var failedChild = busyChild("b", at: t0 + 5)
+        failedChild.failure = "boom"
+        failedChild.endedAt = t0 + 5
+        let a = sibling("a"), b = sibling("b")
+        let out = resolve([a, b], ["a": finished("a", at: t0 + 16), "b": failedChild], now: t0 + 100)
+        #expect(out == [.notDelivered, .failed(reason: "Stopped: it hit an error")])
+    }
+
+    // MARK: Light tracker
+
+    @Test func theTrackerKeepsOnlyTheStepFromTheEvents() throws {
+        var tracker = ChildTracker(taskId: "task_1")
+        try tracker.apply(event("actions.requested", data: "\"actions\":[{\"callId\":\"c\",\"toolName\":\"read_file\",\"input\":{\"path\":\"a.txt\"}}]"), at: t0)
+        #expect(tracker.progress.label == TurnActivity.tool("read_file", detail: "a.txt").label)
+        try tracker.apply(event("message.appended", data: "\"messageDelta\":\"hi\""), at: t0 + 1)
+        #expect(tracker.progress.label == "Writing")
+        try tracker.apply(event("compaction.requested"), at: t0 + 2)
+        #expect(tracker.progress.label == "Compacting the conversation")
+        try tracker.apply(event("reasoning.appended"), at: t0 + 3)
+        #expect(tracker.progress.label == "Thinking")
+    }
+
+    // MARK: Block holds
+
+    @Test func aBlockHoldsItsOwnRowsAndAnImageRunsLaterOnes() {
+        let a = TranscriptRow(id: "i1", kind: .image, text: "a")
+        let b = TranscriptRow(id: "i2", kind: .image, text: "b")
+        let images = TranscriptBlock.images(rows: [a, b])
+        #expect(images.holds(rowId: "i2"))
+        #expect(images.holds(rowId: "i1"))
+        #expect(!images.holds(rowId: "x"))
+        let message = TranscriptBlock.message(row: TranscriptRow(id: "m", kind: .assistant, text: "t"), recipients: [])
+        #expect(message.holds(rowId: "m"))
+        #expect(!message.holds(rowId: "i1"))
+    }
+
     @Test func durationIsStartToTheChildsOwnFinish() {
         #expect(SubagentStatus.duration(of: run(.reported(at: t0 + 65))) == 65)
         // Reported at 42 s, but the child was done at 16 s.
@@ -224,11 +292,17 @@ private extension ChildProgress {
         #expect(header([.reported, .reported, .reported]) == SubagentHeader(title: "3 reports handed to Generalist", detail: nil))
         #expect(header([.reported]) == SubagentHeader(title: "1 report handed to Generalist", detail: nil))
         #expect(header([.reported, .reported, .failed(reason: "x")]) == SubagentHeader(title: "2 of 3 reports in · 1 failed", detail: nil))
-        #expect(header([.stopped, .failed(reason: "x")]) == SubagentHeader(title: "0 of 2 reports in · 2 failed", detail: nil))
+        #expect(header([.stopped, .failed(reason: "x")]) == SubagentHeader(title: "0 of 2 reports in · 1 failed · 1 stopped", detail: nil))
         #expect(SubagentCardCopy.accessibility(header([.reported, work])) == "2 sub-agents, 1 done · 1 working")
         let wait = SubagentRowStatus.awaitingReport(answer: nil)
         #expect(header([wait, work, work]) == SubagentHeader(title: "3 sub-agents", detail: "1 done · 2 working"))
-        #expect(header([wait, wait, .notDelivered]) == SubagentHeader(title: "3 sub-agents done, handing reports to Generalist", detail: nil))
+        #expect(header([wait, wait, wait]) == SubagentHeader(title: "3 sub-agents done, handing reports to Generalist", detail: nil))
+        // Not delivered is its own count, never "handing reports".
+        #expect(header([.notDelivered]) == SubagentHeader(title: "1 report not delivered", detail: nil))
+        #expect(header([.notDelivered, .notDelivered]) == SubagentHeader(title: "2 reports not delivered", detail: nil))
+        #expect(header([.reported, .notDelivered]) == SubagentHeader(title: "1 of 2 reports in · 1 not delivered", detail: nil))
+        #expect(header([.stopped, work]) == SubagentHeader(title: "2 sub-agents", detail: "1 stopped · 1 working"))
+        #expect(header([.reported, wait, .failed(reason: "x")]) == SubagentHeader(title: "1 of 3 reports in · 1 failed · 1 on its way", detail: nil))
     }
 
     @Test func tenRunsHeader() {

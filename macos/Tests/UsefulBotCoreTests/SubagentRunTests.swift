@@ -432,12 +432,76 @@ import Testing
         #expect(p.queuedMessageIds.isEmpty)
     }
 
-    @Test func theOwnersStopChoiceDropsHeldRowsWithoutWaitingForTheStream() throws {
+    @Test func theOwnersStopChoiceDropsHeldRowsDirectly() throws {
         var p = StreamProjection()
         for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
         p.dropHeldMessages()
         #expect(p.droppedMessageIds == Set(users(p).map(\.id)))
         #expect(p.queuedMessageIds.isEmpty)
+    }
+
+    @Test func aReplayInsideABatchedReportTurnJoinsTheHeldRow() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        p.apply(try line(resolved))
+        // eve merged the owner's replayed text with the sub-agent's report.
+        let merged = "Background task task_aaa (agent) is completed.\n\nResult:\nFine.\n\nProbe 19"
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"message.received","data":{"message":\#(json(merged)),"kind":"\#(EveStream.backgroundTaskKind)","turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"turn.completed","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        #expect(users(p).map(\.text) == ["Probe 18", "Probe 19"])
+        #expect(p.queuedMessageIds.isEmpty)
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+        // The next owner message does not drop the delivered row.
+        for event in try replayTurn("turn_19", text: "Thanks") { p.apply(event) }
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+    }
+
+    @Test func spacingDifferencesStillMatchTheHeldRow() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19 now") { p.apply(event) }
+        p.apply(try line(resolved))
+        for event in try replayTurn("turn_18", text: "  Probe  19\nnow \n") { p.apply(event) }
+        #expect(users(p).count == 2)
+        #expect(p.queuedMessageIds.isEmpty)
+    }
+
+    @Test func theVerdictWaitsForTheReplayTurnToEnd() throws {
+        var p = StreamProjection()
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        p.apply(try line(resolved))
+        let replay = try replayTurn("turn_18", text: "Probe 19")
+        for event in replay.dropLast() { p.apply(event) }
+        // Mid-turn: nothing is judged yet.
+        #expect(p.droppedMessageIds.isEmpty)
+        p.apply(replay.last!)
+        #expect(p.droppedMessageIds == [users(p)[0].id])
+    }
+
+    @Test func stopInTheResolutionDropsEveryHeldRowOnReplayToo() throws {
+        let stopped = #"{"type":"input.resolved","data":{"resolutions":[{"kind":"session-limit","outcome":"answered","requestId":"s:limit:input:41","response":{"optionId":"stop"}}]}}"#
+        var events: [EveEvent] = []
+        events += try originTurn("turn_16", text: "Probe 18")
+        events += try queuedTurn("turn_17", text: "Probe 19")
+        events.append(try line(stopped))
+        var live = StreamProjection()
+        for event in events { live.apply(event) }
+        #expect(live.droppedMessageIds == Set(users(live).map(\.id)))
+        #expect(live.queuedMessageIds.isEmpty)
+        // A replay from zero gives the same.
+        var replayed = StreamProjection()
+        for event in events { replayed.apply(event) }
+        #expect(replayed.droppedMessageIds == live.droppedMessageIds)
+        #expect(replayed.queuedMessageIds == live.queuedMessageIds)
+        // Continue is not Stop.
+        var other = StreamProjection()
+        for event in events.dropLast() { other.apply(event) }
+        other.apply(try line(resolved))
+        #expect(other.droppedMessageIds.isEmpty)
     }
 
     @Test func heldRowsSurviveASnapshotBetweenTheAnswerAndTheReplay() throws {

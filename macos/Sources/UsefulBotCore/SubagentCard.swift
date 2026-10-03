@@ -1,8 +1,8 @@
 import Foundation
 
 /// What a sub-agent's own stream says it is doing, read for the group card.
-/// Only the step, when the stream last spoke and the final answer are kept:
-/// the child's transcript is never drawn.
+/// Only the step, when the stream last spoke, how it ended and the final
+/// answer are kept: the child's transcript is never held or drawn.
 public struct ChildProgress: Equatable, Sendable {
     /// The task this progress belongs to. A relaunch starts a new one.
     public var taskId: String
@@ -11,19 +11,24 @@ public struct ChildProgress: Equatable, Sendable {
     public var lastEventAt: Date?
     /// The child's last answer that ended on `stop`, not a tool call.
     public var finalAnswer: String?
-    /// When the child's turn completed after that answer.
+    /// When the child's turn completed after that answer (its own stamp).
     public var finishedAt: Date?
+    /// Eve's code or words when the child's turn or session failed.
+    public var failure: String?
+    /// The child's turn was cancelled.
+    public var cancelled = false
+    /// When it failed or was cancelled.
+    public var endedAt: Date?
 
     public init(taskId: String) { self.taskId = taskId }
 
     public var label: String? { lastEventAt == nil ? nil : activity.label }
 }
 
-/// Folds a child's events into `ChildProgress`. The activity label comes from
-/// the same projection the parent chat uses, so the words match.
+/// Folds a child's events into `ChildProgress`, event by event, with no
+/// projection behind it.
 public struct ChildTracker: Sendable {
     public private(set) var progress: ChildProgress
-    private var projection = StreamProjection()
     private var stopAnswer: String?
 
     public init(taskId: String) { progress = ChildProgress(taskId: taskId) }
@@ -35,11 +40,30 @@ public struct ChildTracker: Sendable {
     }
 
     public mutating func apply(_ event: EveEvent, at now: Date) {
-        projection.apply(event, live: true)
         progress.lastEventAt = now
-        progress.activity = projection.activity
+        let stamp = event.metaAt.flatMap(Self.parseStamp) ?? now
         switch event.type {
+        case "turn.started", "message.received":
+            // The child went on to another turn: what ended the last one is over.
+            stopAnswer = nil
+            progress.finalAnswer = nil
+            progress.finishedAt = nil
+            progress.failure = nil
+            progress.cancelled = false
+            progress.endedAt = nil
+            progress.activity = .thinking
+        case "reasoning.appended", "reasoning.completed", "action.result", "step.started":
+            progress.activity = .thinking
+        case "actions.requested":
+            if let name = EveStream.requestedToolName(event.data) {
+                progress.activity = .tool(name, detail: EveStream.requestedToolDetail(event.data))
+            }
+        case "message.appended":
+            progress.activity = .working
+        case "compaction.requested":
+            progress.activity = .compacting
         case "message.completed":
+            progress.activity = .thinking
             let text = (event.message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if event.data?["finishReason"]?.stringValue == "stop", !text.isEmpty {
                 stopAnswer = text
@@ -49,16 +73,13 @@ public struct ChildTracker: Sendable {
             // The child's own clock: eve holds a finished child's report until
             // its siblings settle, so the parent's arrival says nothing about
             // when the child was done.
-            if stopAnswer != nil, progress.finishedAt == nil {
-                progress.finishedAt = event.metaAt.flatMap(Self.parseStamp) ?? now
-            }
-        case "turn.started", "message.received":
-            // The child went on to another turn: the earlier answer is not final.
-            if progress.finishedAt != nil {
-                stopAnswer = nil
-                progress.finalAnswer = nil
-                progress.finishedAt = nil
-            }
+            if stopAnswer != nil, progress.finishedAt == nil { progress.finishedAt = stamp }
+        case "turn.failed", "session.failed":
+            progress.failure = event.data?["code"]?.stringValue ?? event.message ?? event.type
+            progress.endedAt = stamp
+        case "turn.cancelled":
+            progress.cancelled = true
+            progress.endedAt = stamp
         default:
             break
         }
@@ -118,7 +139,11 @@ public enum SubagentStatus {
                 guard let p = progress(run), p.taskId == run.taskId, p.lastEventAt != nil else {
                     statuses.append(.working(label: nil)); finishes.append(nil); continue
                 }
-                if let finished = p.finishedAt, let answer = p.finalAnswer, !answer.isEmpty {
+                if let reason = p.failure {
+                    statuses.append(.failed(reason: plainFailure(reason))); finishes.append(p.endedAt)
+                } else if p.cancelled {
+                    statuses.append(.stopped); finishes.append(p.endedAt)
+                } else if let finished = p.finishedAt, let answer = p.finalAnswer, !answer.isEmpty {
                     statuses.append(.awaitingReport(answer: answer)); finishes.append(finished)
                 } else if let last = p.lastEventAt, p.finishedAt == nil, now.timeIntervalSince(last) >= quietAfter {
                     statuses.append(.quiet(minutes: max(5, Int(now.timeIntervalSince(last) / 60)), lastStep: p.label))
@@ -153,7 +178,7 @@ public enum SubagentStatus {
         if case .reported = run.state, let progress, progress.taskId == run.taskId, let own = progress.finishedAt {
             end = own
         }
-        if case .working = run.state, let progress, progress.taskId == run.taskId, let own = progress.finishedAt {
+        if case .working = run.state, let progress, progress.taskId == run.taskId, let own = progress.finishedAt ?? progress.endedAt {
             end = own
         }
         guard let end else { return nil }
@@ -162,17 +187,22 @@ public enum SubagentStatus {
 
     /// eve's `message` field, put in words the owner can act on. Never raw JSON.
     public static func plainFailure(_ message: String) -> String {
-        let lower = message.lowercased()
-        if lower.contains("upstream_timeout") || lower.contains("timeout") || lower.contains("timed out") {
+        // Whole tokens: "1429 ms" is not a 429 and "tolerate" is not "rate".
+        let tokens = message.lowercased().split { !($0.isLetter || $0.isNumber) }.map(String.init)
+        func has(_ words: String...) -> Bool { words.contains { tokens.contains($0) } }
+        func adjacent(_ first: String, _ second: String) -> Bool {
+            zip(tokens, tokens.dropFirst()).contains { $0 == first && $1 == second }
+        }
+        if has("timeout", "timedout") || adjacent("timed", "out") {
             return "Stopped: the model took too long"
         }
-        if lower.contains("rate") && lower.contains("limit") || lower.contains("429") {
+        if has("ratelimit", "ratelimited", "429") || adjacent("rate", "limit") || adjacent("rate", "limited") {
             return "Stopped: the model was rate limited"
         }
-        if lower.contains("upstream_protocol_error") || lower.contains("empty-model-response") {
+        if has("empty") && has("model") && has("response") || (has("upstream") && has("protocol") && has("error")) {
             return "Stopped: the model failed to answer"
         }
-        if lower.contains("credit") || lower.contains("quota") || lower.contains("402") {
+        if has("credit", "credits", "quota", "402") {
             return "Stopped: the model plan ran out"
         }
         return "Stopped: it hit an error"
@@ -189,26 +219,34 @@ public enum SubagentCardCopy {
         let total = statuses.count
         let working = statuses.filter(\.isWorking).count
         let reported = statuses.filter { $0 == .reported }.count
-        let awaiting = statuses.filter {
-            if case .awaitingReport = $0 { return true }
-            return $0 == .notDelivered
-        }.count
-        let done = reported + awaiting
-        let failed = total - working - done
+        let onItsWay = statuses.filter { if case .awaitingReport = $0 { return true } else { return false } }.count
+        let undelivered = statuses.filter { $0 == .notDelivered }.count
+        let stopped = statuses.filter { $0 == .stopped }.count
+        let failed = total - working - reported - onItsWay - undelivered - stopped
         let agents = total == 1 ? "1 sub-agent" : "\(total) sub-agents"
         if working == total { return SubagentHeader(title: "\(agents) working", detail: nil) }
         if working > 0 {
             var parts: [String] = []
-            if done > 0 { parts.append("\(done) done") }
+            if reported + onItsWay > 0 { parts.append("\(reported + onItsWay) done") }
             if failed > 0 { parts.append("\(failed) failed") }
+            if stopped > 0 { parts.append("\(stopped) stopped") }
+            if undelivered > 0 { parts.append("\(undelivered) not delivered") }
             parts.append("\(working) working")
             return SubagentHeader(title: agents, detail: parts.joined(separator: " · "))
         }
-        if failed == 0 {
-            if awaiting > 0 { return SubagentHeader(title: "\(agents) done, handing reports to \(botName)", detail: nil) }
+        if undelivered == total {
+            return SubagentHeader(title: "\(total == 1 ? "1 report" : "\(total) reports") not delivered", detail: nil)
+        }
+        if failed + stopped + undelivered == 0 {
+            if onItsWay > 0 { return SubagentHeader(title: "\(agents) done, handing reports to \(botName)", detail: nil) }
             return SubagentHeader(title: "\(total == 1 ? "1 report" : "\(total) reports") handed to \(botName)", detail: nil)
         }
-        return SubagentHeader(title: "\(reported) of \(total) \(total == 1 ? "report" : "reports") in · \(failed) failed", detail: nil)
+        var parts = ["\(reported) of \(total) \(total == 1 ? "report" : "reports") in"]
+        if failed > 0 { parts.append("\(failed) failed") }
+        if stopped > 0 { parts.append("\(stopped) stopped") }
+        if undelivered > 0 { parts.append("\(undelivered) not delivered") }
+        if onItsWay > 0 { parts.append("\(onItsWay) on its way") }
+        return SubagentHeader(title: parts.joined(separator: " · "), detail: nil)
     }
 
     /// The header button's spoken form: the same words, in one sentence.
@@ -284,5 +322,15 @@ extension Transcript {
         return rows.last { row in
             row.kind == kind && EveStream.stripThreadPrefix(row.text) == text
         }?.id
+    }
+}
+
+extension TranscriptBlock {
+    /// Whether this block draws the row: an image run holds every picture in it.
+    public func holds(rowId: String) -> Bool {
+        switch self {
+        case .images(let rows): return rows.contains { $0.id == rowId }
+        default: return id == rowId
+        }
     }
 }

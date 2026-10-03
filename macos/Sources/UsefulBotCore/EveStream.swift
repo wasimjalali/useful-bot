@@ -974,6 +974,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     private var heldOrder: [String] = []
     /// Held rows eve never replayed: the bot never got them.
     public private(set) var droppedMessageIds: Set<String> = []
+    /// A request was answered with rows still held: the next turn eve runs is
+    /// its replay. `replayTurn` is that turn once it has begun; its end is
+    /// when rows it did not include are judged dropped.
+    private var replayOpen = false
+    private var replayTurn: String?
     /// The brief of each sub-agent call, by call id, until its receipt claims it.
     private var callBriefs: [String: String] = [:]
     /// The turn each task's receipt was seen under, keyed by call id.
@@ -1555,41 +1560,60 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         for id in heldOrder { droppedMessageIds.insert(id) }
         heldOrder = []
         queuedMessageIds = []
+        replayOpen = false
+        replayTurn = nil
+    }
+
+    /// Owner text as eve repeats it: without the thread prefix, whitespace
+    /// folded, so a stray newline or a doubled space is the same message.
+    private static func replayKey(_ text: String) -> String {
+        EveStream.stripThreadPrefix(text).split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     /// eve answers a request by replaying what it held as one new message
     /// (several joined by a blank line), and never replays the message whose
     /// turn raised the request. A message that is that replay joins the rows
-    /// it repeats; whatever else was held is dropped. Returns whether it did.
-    private mutating func attachReplay(_ text: String, event: EveEvent, at stamp: Date?) -> Bool {
-        guard pendingRequests.isEmpty, !heldOrder.isEmpty else { return false }
-        let texts = heldOrder.map { id in indexById[id].map { messages[$0].text.trimmingCharacters(in: .whitespacesAndNewlines) } ?? "" }
-        let wanted = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        var matched: Range<Int>?
+    /// it repeats instead of adding new ones. `within` is a report turn eve
+    /// merged the replay into: the held text is found inside it. Nothing is
+    /// dropped here; the replay turn's end decides (`settleReplay`).
+    private mutating func attachReplay(_ text: String, within: Bool, at stamp: Date?) -> Bool {
+        guard replayOpen, pendingRequests.isEmpty, !heldOrder.isEmpty else { return false }
+        let here = currentTurnId ?? ""
+        if replayTurn == nil { replayTurn = here }
+        guard replayTurn == here else { return false }
+        let texts = heldOrder.map { id in indexById[id].map { Self.replayKey(messages[$0].text) } ?? "" }
+        let wanted = Self.replayKey(text)
+        var matched: [Int] = []
         search: for length in stride(from: texts.count, through: 1, by: -1) {
-            for start in 0...(texts.count - length) where texts[start..<start + length].joined(separator: "\n\n") == wanted {
-                matched = start..<start + length
+            for start in 0...(texts.count - length) where texts[start..<start + length].joined(separator: " ") == wanted {
+                matched = Array(start..<start + length)
                 break search
             }
         }
-        guard let matched else {
-            // Not a replay of anything held: eve went on without it.
-            dropHeldMessages()
-            return false
+        if matched.isEmpty, within {
+            matched = texts.indices.filter { !texts[$0].isEmpty && wanted.contains(texts[$0]) }
         }
-        for id in heldOrder[..<matched.lowerBound] { droppedMessageIds.insert(id) }
-        let attached = Array(heldOrder[matched])
-        let rest = Array(heldOrder[matched.upperBound...])
-        heldOrder = rest
-        queuedMessageIds = Set(rest)
-        for id in attached { Self.claimUserRow(id, on: &turn) }
-        turn.lastRowId = attached.last
-        turnStartedAt = stamp ?? Date()
-        failed = false
-        failure = nil
-        pending = true
-        activity = .thinking
+        guard !matched.isEmpty else { return false }
+        let attached = matched.map { heldOrder[$0] }
+        heldOrder = heldOrder.enumerated().filter { !matched.contains($0.offset) }.map(\.element)
+        queuedMessageIds = Set(heldOrder)
+        if heldOrder.isEmpty { replayOpen = false; replayTurn = nil }
+        if !within {
+            for id in attached { Self.claimUserRow(id, on: &turn) }
+            turn.lastRowId = attached.last
+            turnStartedAt = stamp ?? Date()
+            failed = false
+            failure = nil
+            pending = true
+            activity = .thinking
+        }
         return true
+    }
+
+    /// The replay turn ended: whatever it did not include never reached the bot.
+    private mutating func settleReplay(_ event: EveEvent) {
+        guard replayOpen, let turnId = replayTurn, (event.turnId ?? currentTurnId ?? "") == turnId else { return }
+        dropHeldMessages()
     }
 
     public mutating func beginTurn() {
@@ -1816,6 +1840,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // only in the working row.
             if fromTask {
                 settleReports(reports, text: text, at: stamp)
+                _ = attachReplay(text, within: true, at: stamp)
                 turn.fromTask = true
                 failed = false
                 failure = nil
@@ -1885,7 +1910,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 activity = .thinking
                 return
             }
-            if attachReplay(text, event: event, at: stamp) { return }
+            if attachReplay(text, within: false, at: stamp) { return }
             let userId = event.id ?? mintId("u")
             turnStartedAt = stamp ?? Date()
             appendMessage(ChatMessage(
@@ -2079,6 +2104,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // stale bubble.
             record.assistantId = nil
         case "turn.failed", "session.failed":
+            if event.type == "turn.failed" { settleReplay(event) }
             switch turnOwner(of: event) {
             case .ignored:
                 // Another turn's failure, replayed mid-turn, neither ends
@@ -2208,6 +2234,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // turns begin meanwhile, so neither the owner nor the turn rule
             // below closes it. A replayed one is removed by its own resolve.
             for request in EveStream.parsePendingRequests(event.data, eventId: event.id) {
+                replayOpen = false
+                replayTurn = nil
                 if let index = pendingRequests.firstIndex(where: { $0.id == request.id }) {
                     pendingRequests[index] = request
                 } else {
@@ -2244,9 +2272,21 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 .compactMap { $0["requestId"]?.stringValue })
             questions.removeAll { resolved.contains($0.id) }
             pendingRequests.removeAll { resolved.contains($0.id) }
+            // Stop is in the resolution, so a replay reads it the way a live
+            // stream does: nothing held will ever be replayed.
+            let stopped = (event.data?["resolutions"]?.arrayValue ?? []).contains {
+                $0["kind"]?.stringValue == "session-limit" && $0["response"]?["optionId"]?.stringValue == "stop"
+            }
+            if stopped {
+                dropHeldMessages()
+            } else if pendingRequests.isEmpty, !heldOrder.isEmpty {
+                replayOpen = true
+                replayTurn = nil
+            }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             // The session ended with rows still held: eve will not replay them.
             if event.type == "session.completed", pendingRequests.isEmpty { dropHeldMessages() }
+            if event.type == "turn.completed" || event.type == "turn.cancelled" { settleReplay(event) }
             switch turnOwner(of: event) {
             case .ignored:
                 // The same for another turn's end: this turn is still running.

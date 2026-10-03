@@ -241,6 +241,7 @@ struct ChatView: View {
                         botName: bot.name,
                         busy: model.busyRequests.contains(request.id)
                     ) { option in model.answerRequest(request, option: option) }
+                    dismiss: { model.dismissRequest(request) }
                 }
                 if let store = model.store {
                     ForEach(model.openProposals) { proposal in
@@ -552,6 +553,13 @@ struct ChatView: View {
         }
     }
 
+    /// A card with a run still out (working, or done and waiting for its
+    /// report) covers the sub-agent work; a finished one does not, so a later
+    /// background task still gets its working row.
+    private var hasActiveCard: Bool {
+        model.subagentCards.contains { $0.runs.contains { $0.state == .working } }
+    }
+
     private func subagentCard(_ card: SubagentCardData, bot: ShellBot) -> some View {
         SubagentGroupCard(
             card: card,
@@ -580,9 +588,20 @@ struct ChatView: View {
         let window = model.transcriptWindow
         // A bubble that follows a sub-agent card keeps the full gap: the card
         // broke its turn's stack, and the tight stacking would sit it 8 pt under.
-        let anchored = Set(model.subagentCards.compactMap(\.anchorRowId))
+        // A card sits under the block that draws its anchor row (a run of
+        // pictures draws several), and goes to the tail when none in the
+        // window does.
+        let cardsByBlock: [String: [SubagentCardData]] = model.subagentCards.reduce(into: [:]) { found, card in
+            guard let anchor = card.anchorRowId,
+                  let block = window.blocks.first(where: { $0.holds(rowId: anchor) }) else { return }
+            found[block.id, default: []].append(card)
+        }
+        let tailCards = model.subagentCards.filter { card in
+            guard let anchor = card.anchorRowId else { return true }
+            return !window.blocks.contains { $0.holds(rowId: anchor) }
+        }
         var afterCard = Set<String>()
-        for (above, below) in zip(window.blocks, window.blocks.dropFirst()) where anchored.contains(above.id) {
+        for (above, below) in zip(window.blocks, window.blocks.dropFirst()) where cardsByBlock[above.id] != nil {
             afterCard.insert(below.id)
         }
         return ScrollViewReader { proxy in
@@ -668,12 +687,12 @@ struct ChatView: View {
                                 if model.droppedRowIds.contains(row.id) {
                                     FailureRow(
                                         text: "\(bot.name) never got this message",
-                                        retryable: !Attachments.namesEchoedFile(row.text),
+                                        retryable: !Attachments.namesEchoedFile(row.text) && !model.resentRowIds.contains(row.id),
                                         enabled: !model.pending,
                                         until: nil,
                                         maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
                                         buttonTitle: "Send again"
-                                    ) { model.sendFromCard(row.text) }
+                                    ) { model.resendDropped(rowId: row.id, text: row.text) }
                                     .padding(.top, DesignTokens.Space.bubbleStackGap - DesignTokens.Space.transcriptGap)
                                 }
                             case .images(let rows):
@@ -689,14 +708,14 @@ struct ChatView: View {
                                 )
                             }
                             // The sub-agents a turn launched sit under its reply.
-                            ForEach(model.subagentCards.filter { $0.anchorRowId == block.id }) { card in
+                            ForEach(cardsByBlock[block.id] ?? []) { card in
                                 subagentCard(card, bot: bot)
                             }
                           }
                         }
                         // A card with no row to follow, or whose row is gone,
                         // goes at the tail where the working row would be.
-                        ForEach(model.subagentCards.filter { $0.anchorRowId == nil }) { card in
+                        ForEach(tailCards) { card in
                             subagentCard(card, bot: bot)
                         }
                         // Up for the whole turn, under whichever bubble is
@@ -706,7 +725,7 @@ struct ChatView: View {
                         // and a row that vanished pulled everything down by
                         // its height.
                         Group {
-                            if model.pending || model.backgroundWorking, !(model.activity.isSubagent && !model.subagentCards.isEmpty) {
+                            if model.pending || model.backgroundWorking, !(model.activity.isSubagent && hasActiveCard) {
                                 WorkingRow(
                                     bot: bot,
                                     activity: model.activity,
@@ -714,7 +733,7 @@ struct ChatView: View {
                                     toolkits: model.connectorApps,
                                     runningModel: model.runningModelNote(for: bot.id)
                                 )
-                            } else if let since = model.runningTaskSince, model.subagentCards.isEmpty {
+                            } else if let since = model.runningTaskSince, !hasActiveCard {
                                 // The turn that started a sub-agent is over,
                                 // and the sub-agent is still at it.
                                 WorkingRow(bot: bot, activity: .subagent(finished: false), since: since, toolkits: [])

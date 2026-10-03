@@ -32,9 +32,11 @@ final class SubagentProgressStore: ObservableObject {
     }
 
     /// From the trackers, not the throttled copy: the follower stops on it.
-    func hasFinished(child: String, taskId: String) -> Bool {
+    /// The child's turn finished, failed or was cancelled.
+    func hasEnded(child: String, taskId: String) -> Bool {
         guard let tracker = trackers[child], tracker.progress.taskId == taskId else { return false }
-        return tracker.progress.finishedAt != nil
+        let p = tracker.progress
+        return p.finishedAt != nil || p.failure != nil || p.cancelled
     }
 
     func clear() {
@@ -362,10 +364,11 @@ private struct SubagentRow: View {
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if let report = progress?.finalAnswer, !report.isEmpty {
-                    NativeButton("Send to \(botName)", small: true, enabled: !parentBusy) {
-                        model.sendFromCard("Report from the \(run.title) sub-agent:\n\n\(report)")
+                    let sent = model.handedOverTasks.contains(run.taskId)
+                    NativeButton(sent ? "Sent to \(botName)" : "Send to \(botName)", small: true, enabled: !parentBusy && !sent) {
+                        model.handOverReport(run, report: report)
                     }
-                    .accessibilityLabel("Send the \(run.title) report to \(botName)")
+                    .accessibilityLabel(sent ? "The \(run.title) report was sent to \(botName)" : "Send the \(run.title) report to \(botName)")
                 }
             }
         }
@@ -380,6 +383,7 @@ struct WaitingCard: View {
     let botName: String
     let busy: Bool
     let answer: (PendingRequest.Option) -> Void
+    let dismiss: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -399,7 +403,17 @@ struct WaitingCard: View {
                 .multilineTextAlignment(.leading)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if !request.options.isEmpty {
+            if request.options.isEmpty {
+                // Nothing to press: it can only be answered in words, or hidden.
+                HStack(spacing: 8) {
+                    Text("Reply below to answer.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Spacer(minLength: 0)
+                    NativeButton("Dismiss", small: true, action: dismiss)
+                        .accessibilityIdentifier("request-dismiss")
+                }
+            } else {
                 HStack(spacing: 8) {
                     ForEach(request.options) { option in
                         NativeButton(
