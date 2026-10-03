@@ -2118,11 +2118,42 @@ final class AppModel: ObservableObject {
         sendTask = task
     }
 
+    /// Whether the open chat has a sub-agent out, so Stop has something to stop
+    /// after the bot's own turn is over.
+    var subagentsRunning: Bool {
+        guard let id = selectedBotId else { return false }
+        return subagentWorkingBotIds.contains(id)
+    }
+
     func cancel() {
         guard let bot = selectedBot else { return }
-        // Nothing live to stop: never cancel a settled session or wipe a tail
-        // the user is reading. Only this bot: a teammate working in the
-        // background is not Stop's target.
+        // Sub-agents still out are stopped whether or not the bot's own turn
+        // is live; each one is named to the proxy by its parent and call site.
+        let children = SubagentCancel.targets(runs: projection.subagentRuns, fallbackParent: bot.sessionId)
+        if !children.isEmpty {
+            let botId = bot.id
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                var failed: [String] = []
+                for child in children {
+                    do {
+                        try await self.client.cancelChild(
+                            botId: botId, childSessionId: child.childSessionId,
+                            parentSessionId: child.parentSessionId, at: child.calledAt
+                        )
+                    } catch {
+                        NSLog("Useful Bot: stopping a sub-agent failed: %@", String(describing: error))
+                        failed.append(child.title)
+                    }
+                }
+                if !failed.isEmpty {
+                    self.recordSendError(botId, "Couldn't stop \(failed.joined(separator: ", ")). Try Stop again.", resendable: false)
+                }
+            }
+        }
+        // Nothing live to stop on the root: never cancel a settled session or
+        // wipe a tail the user is reading. Only this bot: a teammate working in
+        // the background is not Stop's target.
         guard pending || inflightSessions[bot.id] != nil || sendTasks[bot.id] != nil else { return }
         let target = inflightSessions[bot.id] ?? (activeSession?.botId == bot.id ? activeSession?.sessionId : nil) ?? bot.sessionId
         cancelSend(for: bot.id)

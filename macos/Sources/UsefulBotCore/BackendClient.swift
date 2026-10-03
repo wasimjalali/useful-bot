@@ -1172,6 +1172,28 @@ public actor BackendClient {
         try Self.expectOK(data, response)
     }
 
+    /// Cancel a sub-agent's own turn. The proxy verifies the child the same way
+    /// it does a stream read: by the parent session and the index of the
+    /// parent's `subagent.called` for it.
+    public func cancelChild(botId: String, childSessionId: String, parentSessionId: String, at: Int) async throws {
+        let (data, response) = try await perform { client, token in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(childSessionId))/cancel"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "parent", value: parentSessionId),
+                URLQueryItem(name: "at", value: String(at)),
+            ]
+            guard let url = components?.url else { throw BackendError.decoding }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectOK(data, response)
+    }
+
     // MARK: - Routines
 
     public func routines(botId: String) async throws -> [Routine] {

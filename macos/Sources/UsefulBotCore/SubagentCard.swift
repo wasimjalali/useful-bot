@@ -475,3 +475,24 @@ extension TranscriptBlock {
         }
     }
 }
+
+/// What the owner's Stop sends to running sub-agents.
+public struct ChildCancelTarget: Equatable, Sendable {
+    public var title: String
+    public var childSessionId: String
+    public var parentSessionId: String
+    public var calledAt: Int
+}
+
+public enum SubagentCancel {
+    /// Every working run that can be named to the proxy: it has a child
+    /// session and the call site on its parent's stream.
+    /// A call site that names no session was read off the open chat's own.
+    public static func targets(runs: [SubagentRun], fallbackParent: String? = nil) -> [ChildCancelTarget] {
+        runs.compactMap { run in
+            guard run.state == .working, let child = run.childSessionId, !child.isEmpty,
+                  let site = run.childCall, let parent = site.sessionId ?? fallbackParent, !parent.isEmpty else { return nil }
+            return ChildCancelTarget(title: run.title, childSessionId: child, parentSessionId: parent, calledAt: site.index)
+        }
+    }
+}

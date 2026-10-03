@@ -545,3 +545,52 @@ private extension ChildProgress {
         #expect(projection.subagentAnchor(forGroup: "turn_unknown") == nil)
     }
 }
+
+/// What Stop and approval cards need from the core.
+@Suite struct SubagentStopAndApprovalTests {
+    private func run(_ id: String, state: SubagentRun.State = .working, child: String? = "ses_c", call: SubagentCallSite? = SubagentCallSite(sessionId: "ses_p", index: 7)) -> SubagentRun {
+        SubagentRun(agentId: id, childSessionId: child, childCall: call, taskId: "task_\(id)", title: "Critic \(id)", state: state, groupId: "g")
+    }
+
+    @Test func stopNamesEveryWorkingRunThatCanBeNamed() {
+        let runs = [
+            run("a"),
+            run("b", state: .reported(at: nil)),
+            run("c", child: nil),
+            run("d", call: nil),
+            run("e", call: SubagentCallSite(sessionId: nil, index: 3)),
+        ]
+        #expect(SubagentCancel.targets(runs: runs) == [
+            ChildCancelTarget(title: "Critic a", childSessionId: "ses_c", parentSessionId: "ses_p", calledAt: 7),
+        ])
+        // A call site with no session falls back to the open chat's.
+        #expect(SubagentCancel.targets(runs: runs, fallbackParent: "ses_open").map(\.calledAt) == [7, 3])
+        #expect(SubagentCancel.targets(runs: []).isEmpty)
+    }
+
+    private func decode(_ json: String) throws -> ApprovalItem {
+        try JSONDecoder().decode(ApprovalItem.self, from: Data(json.utf8))
+    }
+
+    @Test func anOldServersCardStillDecodesAndSaysNothingOfItsOrigin() throws {
+        let item = try decode(#"{"id":"a1","actionSha256":"x","preview":"rm","tool":"bash"}"#)
+        #expect(!item.subagent)
+        #expect(item.botName == nil)
+        #expect(item.originLabel(openBotId: "bot_1") == nil)
+    }
+
+    @Test func aSubagentsCardSaysSo() throws {
+        let named = try decode(#"{"id":"a1","tool":"bash","botId":"bot_1","botName":"Generalist","sessionId":"ses_c","subagent":true}"#)
+        #expect(named.originLabel(openBotId: "bot_1") == "Sub-agent of Generalist")
+        let anonymous = try decode(#"{"id":"a1","tool":"bash","subagent":true}"#)
+        #expect(anonymous.originLabel(openBotId: "bot_1") == "Sub-agent")
+        let blank = try decode(#"{"id":"a1","tool":"bash","botName":"  ","subagent":true}"#)
+        #expect(blank.originLabel(openBotId: nil) == "Sub-agent")
+    }
+
+    @Test func anotherBotsOwnCardNamesTheBot() throws {
+        let other = try decode(#"{"id":"a1","tool":"bash","botId":"bot_2","botName":"Growth"}"#)
+        #expect(other.originLabel(openBotId: "bot_1") == "Growth")
+        #expect(other.originLabel(openBotId: "bot_2") == nil)
+    }
+}
