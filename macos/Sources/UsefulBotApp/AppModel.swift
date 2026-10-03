@@ -193,6 +193,8 @@ final class AppModel: ObservableObject {
     private var droppedMessageForRow: [String: String] = [:]
     /// Sub-agent tasks whose report the owner handed to the bot.
     @Published private(set) var handedOverTasks: Set<String> = []
+    /// Tasks whose cancel this app sent, by task id, for "Stopped by you".
+    @Published private(set) var stoppedByYou: Set<String> = []
     /// Reports the owner opened, by task id. Kept here so a card that swaps
     /// its view tree (the clock stopping) does not close them.
     @Published var openReports: Set<String> = []
@@ -2130,6 +2132,9 @@ final class AppModel: ObservableObject {
         // Sub-agents still out are stopped whether or not the bot's own turn
         // is live; each one is named to the proxy by its parent and call site.
         let children = SubagentCancel.targets(runs: projection.subagentRuns, fallbackParent: bot.sessionId)
+        for run in projection.subagentRuns where run.state == .working && children.contains(where: { $0.childSessionId == run.childSessionId }) {
+            stoppedByYou.insert(run.taskId)
+        }
         if !children.isEmpty {
             let botId = bot.id
             Task { @MainActor [weak self] in

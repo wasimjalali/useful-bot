@@ -141,7 +141,9 @@ public enum SubagentStatus {
             case .reported(let at):
                 statuses.append(.reported); finishes.append(at)
             case .failed(let at, let message):
-                statuses.append(.failed(reason: plainFailure(message))); finishes.append(at)
+                // A snapshot from before cancellations were told apart.
+                statuses.append(EveStream.isCancellation(message) ? .stopped : .failed(reason: plainFailure(message)))
+                finishes.append(at)
             case .cancelled(let at):
                 statuses.append(.stopped); finishes.append(at)
             case .working:
@@ -162,7 +164,8 @@ public enum SubagentStatus {
                     if let at = p.endedAt, at < since { p.endedAt = nil; p.failure = nil; p.cancelled = false }
                 }
                 if let reason = p.failure {
-                    statuses.append(.failed(reason: plainFailure(reason))); finishes.append(p.endedAt)
+                    statuses.append(EveStream.isCancellation(reason) ? .stopped : .failed(reason: plainFailure(reason)))
+                    finishes.append(p.endedAt)
                 } else if p.cancelled {
                     statuses.append(.stopped); finishes.append(p.endedAt)
                 } else if let finished = p.finishedAt, let answer = p.finalAnswer, !answer.isEmpty {

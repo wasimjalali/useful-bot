@@ -157,6 +157,13 @@ public struct TaskReportDetail: Equatable, Sendable {
 }
 
 extension EveStream {
+    /// Whether an error message is eve saying the agent was cancelled
+    /// ("The agent invocation was cancelled."), which is the owner's Stop.
+    public static func isCancellation(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("was cancelled") || lower.contains("was canceled")
+    }
+
     /// The same reports `taskReports` finds, with what each one said.
     public static func taskReportDetails(_ text: String) -> [TaskReportDetail] {
         let whole = NSRange(text.startIndex..., in: text)

@@ -477,6 +477,17 @@ private extension ChildProgress {
         #expect(SubagentStatus.duration(of: run(.cancelled(at: t0 + 90)), progress: stopped) == 4)
     }
 
+    @Test func aCancelledMessageReadsStoppedWhereverItCameFrom() {
+        // An older snapshot holds the cancel as a failure.
+        #expect(resolve([run(.failed(at: nil, message: "The agent invocation was cancelled."))], [:], now: t0) == [.stopped])
+        var child = busyChild("1", at: t0 + 3)
+        child.failure = "The agent invocation was cancelled."
+        child.endedAt = t0 + 3
+        #expect(resolve([run()], ["agent_1": child], now: t0 + 4) == [.stopped])
+        // Counted as stopped in the header, not failed.
+        #expect(header([.stopped, .stopped, work]) == SubagentHeader(title: "3 sub-agents", detail: "2 stopped · 1 working"))
+    }
+
     @Test func aRelaunchedRunCountsFromItsOwnStart() {
         var r = run(.reported(at: t0 + 130))
         r.taskStartedAt = t0 + 100

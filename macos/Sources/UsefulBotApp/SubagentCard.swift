@@ -409,7 +409,7 @@ private struct SubagentRow: View {
                 Image(systemName: "minus.circle.fill")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkFaint)
-                Text("Stopped before it reported")
+                Text(model.stoppedByYou.contains(run.taskId) ? "Stopped by you" : "Stopped")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
             }
