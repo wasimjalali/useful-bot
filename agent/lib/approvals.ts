@@ -356,12 +356,19 @@ export class ApprovalStore {
    * Only that session's own cards: a root's Stop leaves a sub-agent's cards
    * alone, because each running child is stopped by its own cancel.
    */
-  expireSession(sessionId: string): number {
+  expireSession(sessionId: string, options: { children?: boolean } = {}): number {
+    // Fail closed by default: an owner's Stop on a root also retires the cards
+    // of its sub-agents, so a child whose own cancel never landed cannot act on
+    // an approval granted before the Stop. Only the app's automatic cancel of a
+    // stopped-report turn passes children: false, since it must not expire the
+    // cards of sub-agents the owner did not stop.
+    const children = options.children ?? true;
     return this.locked(() => {
       this.load();
       let expired = 0;
       for (const record of this.records.values()) {
-        if ((record.status === "pending" || record.status === "approved") && record.sessionId === sessionId) {
+        const inScope = record.sessionId === sessionId || (children && record.rootSessionId === sessionId);
+        if ((record.status === "pending" || record.status === "approved") && inScope) {
           record.status = "expired";
           expired += 1;
         }

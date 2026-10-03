@@ -75,11 +75,15 @@ export async function POST(
  * session's cards are retired instead of staying up over the chat until they
  * expire.
  */
-function retireCards(method: string, suffix: string): void {
+function retireCards(method: string, suffix: string, search: string): void {
   const cancelled = method === "POST" ? /^session\/([^/]+)\/cancel$/.exec(suffix) : null;
   if (!cancelled) return;
+  // The app's automatic cancel of a stopped-report turn says so with
+  // scope=report: it retires only that session's own cards. Every other cancel
+  // (the owner's Stop) also retires its sub-agents' cards, failing closed.
+  const children = new URLSearchParams(search).get("scope") !== "report";
   try {
-    new ApprovalStore(Date.now, defaultApprovalsPath()).expireSession(cancelled[1]);
+    new ApprovalStore(Date.now, defaultApprovalsPath()).expireSession(cancelled[1], { children });
   } catch (err) {
     console.error("approval cards of a stopped session were left pending", err);
   }
@@ -499,13 +503,13 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         : (await upstream.body?.cancel().catch(() => undefined), "");
       const code = relayedEveCode(upstream.status, text);
       // A session eve already retired can't act on its cards either.
-      if (code === "session_not_active") retireCards(method, suffix);
+      if (code === "session_not_active") retireCards(method, suffix, url.search);
       return Response.json(
         { ok: false, error: "eve_error", status: upstream.status, ...(code ? { code } : {}) },
         { status: upstream.status },
       );
     }
-    retireCards(method, suffix);
+    retireCards(method, suffix, url.search);
     const out = new Headers();
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);

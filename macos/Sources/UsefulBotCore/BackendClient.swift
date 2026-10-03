@@ -1160,10 +1160,14 @@ public actor BackendClient {
     }
 
     /// Ask the proxy to cancel the active turn on a session.
-    public func cancel(sessionId: String) async throws {
+    /// `reportOnly` marks the app's own cancel of a turn that only carries
+    /// cancelled reports of sub-agents the owner stopped: the proxy then retires
+    /// that session's cards alone, not those of sub-agents still running.
+    public func cancel(sessionId: String, reportOnly: Bool = false) async throws {
         let (data, response) = try await perform { client, token in
+            let path = client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/cancel")
             var request = URLRequest(
-                url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/cancel")
+                url: reportOnly ? path.appending(queryItems: [URLQueryItem(name: "scope", value: "report")]) : path
             )
             request.httpMethod = "POST"
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")

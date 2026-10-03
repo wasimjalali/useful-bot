@@ -2143,7 +2143,7 @@ final class AppModel: ObservableObject {
         NSLog("Useful Bot: ending a turn that only reports Stopped sub-agents (%@)", session)
         Task { @MainActor [weak self] in
             do {
-                try await self?.client.cancel(sessionId: session)
+                try await self?.client.cancel(sessionId: session, reportOnly: true)
             } catch {
                 NSLog("Useful Bot: cancelling the stopped-report turn failed: %@", String(describing: error))
             }
