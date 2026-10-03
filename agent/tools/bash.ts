@@ -14,6 +14,7 @@ import { APP_STATE_DIR, mentionsAppState } from "../../shared/stack.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { markOutside } from "../lib/outside-content.ts";
+import { authoritySessionId, BOT_CONTEXT_MISSING, isBotContextMissing } from "../lib/active-bot.ts";
 
 const OUTPUT_MAX_BYTES = 32 * 1024;
 const INPUT_MAX_BYTES = 1024 * 1024;
@@ -73,9 +74,18 @@ export default defineTool({
     // from before a permission change with the permission after it. A
     // grant whose folder is gone still answers a tripwired line with the
     // block, not a workspace error.
+    // A sub-agent runs under its root session's grant; one that cannot be
+    // verified runs nothing.
+    let grantSession: string | undefined;
+    try {
+      grantSession = authoritySessionId(ctx);
+    } catch (error) {
+      if (isBotContextMissing(error)) return BOT_CONTEXT_MISSING;
+      throw error;
+    }
     let workspace;
     try {
-      workspace = effectiveRoot(ctx?.session?.id);
+      workspace = effectiveRoot(grantSession);
     } catch (error) {
       // The posture is unknown here, so only the list every posture shares.
       const blocked = blockedReason(input.command, false);
@@ -159,7 +169,7 @@ export default defineTool({
       // Same rule as the write path.
       let refreshed;
       try {
-        refreshed = effectiveRoot(ctx?.session?.id);
+        refreshed = effectiveRoot(grantSession);
       } catch {
         // A grant revoked with no legacy root configured leaves nothing to
         // run in. That is the workspace changing, not a tool crash.

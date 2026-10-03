@@ -182,6 +182,54 @@ test("neither a claim nor a binding, and a child session, are refused", async ()
   });
 });
 
+// W5 failure modes: a tool or hook context of a child (it carries `session.parent`)
+// resolves to its verified root's bot and shows the root's grant, never its own;
+// an unverifiable child, or one claiming another bot, is refused; a resolver
+// context of a child (no parent, `kind: "subagent"`) shows the root's grant
+// through the child's recorded parent, else the bot's own current chat, and
+// never the child id's grant.
+test("a child's tool context resolves to its root's bot and grant, and refuses what it cannot verify", async () => {
+  await withWorld(async ({ alpha, beta }) => {
+    bindSession("root-1", alpha);
+    upsertSessionGrant({ sessionId: "root-1", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    // A stronger grant on the child's own id must not count.
+    upsertSessionGrant({ sessionId: "kid-1", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const parent = { callId: "c", rootSessionId: "root-1", sessionId: "root-1", turn: { id: "t0", sequence: 0 } };
+    const toolCtx = { ...ctxFor("kid-1", alpha), session: { ...ctxFor("kid-1", alpha).session, parent } };
+    assert.equal(await boundBotId(toolCtx), alpha);
+    const snap = await ensureTurnSnapshot(toolCtx, "t1");
+    assert.equal(snap?.status, "ok");
+    assert.equal(snap?.status === "ok" ? snap.permission : null, "read_only");
+    assert.equal(readSessionParent("kid-1"), "root-1");
+    // A claim for another bot, an unbound root and a nested hop are refused.
+    const wrongClaim = { ...ctxFor("kid-2", beta), session: { ...ctxFor("kid-2", beta).session, parent } };
+    assert.equal((await silenced(() => boundBotId(wrongClaim))).result, null);
+    const unboundRoot = { ...ctxFor("kid-3", alpha), session: { ...ctxFor("kid-3", alpha).session, parent: { ...parent, rootSessionId: "nope", sessionId: "nope" } } };
+    assert.equal((await silenced(() => boundBotId(unboundRoot))).result, null);
+    const nested = { ...ctxFor("kid-4", alpha), session: { ...ctxFor("kid-4", alpha).session, parent: { ...parent, sessionId: "kid-1" } } };
+    assert.equal((await silenced(() => boundBotId(nested))).result, null);
+  });
+});
+
+test("a child's resolver context shows the root's grant, never the child id's", async () => {
+  forgetSnapshots();
+  await withWorld(async ({ alpha }) => {
+    bindSession("root-1", alpha);
+    upsertSessionGrant({ sessionId: "root-1", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    upsertSessionGrant({ sessionId: "kid-1", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const resolver = { ...ctxFor("kid-1", alpha), channel: { kind: "subagent" } };
+    // The child's recorded parent decides when the proxy has bound it.
+    bindChildSession("kid-1", "root-1", alpha);
+    const viaRow = await ensureTurnSnapshot(resolver, "t1");
+    assert.equal(viaRow?.status === "ok" ? viaRow.permission : null, "auto");
+    // Not yet bound: the bot's own current chat stands in, for the display only.
+    writeShell(applyShellAction(readShell(), { type: "touchChat", botId: alpha, preview: "hi", sessionId: "root-1" }).store);
+    upsertSessionGrant({ sessionId: "kid-2", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const viaPointer = await ensureTurnSnapshot({ ...ctxFor("kid-2", alpha), channel: { kind: "subagent" } }, "t1");
+    assert.equal(viaPointer?.status === "ok" ? viaPointer.permission : null, "auto");
+  });
+});
+
 test("a sub-agent's child turn never binds the child as a root, so the proxy can bind it under its parent", async () => {
   await withWorld(async ({ alpha }) => {
     const savedSecret = process.env.UB_CHANNEL_JWT_SECRET;

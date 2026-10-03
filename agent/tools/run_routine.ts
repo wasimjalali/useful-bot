@@ -13,9 +13,9 @@ export default defineTool({
   async execute(input, ctx) {
     // A run starts a teammate turn and writes transcripts, so Read only
     // refuses it like every other change inside the app.
-    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const who = await callerOf(readShell(), ctx);
     if (!who.ok) return who.result;
+    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const routine = readRoutine(input.routineId);
     if (!routine) {
       return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call list_routines." };

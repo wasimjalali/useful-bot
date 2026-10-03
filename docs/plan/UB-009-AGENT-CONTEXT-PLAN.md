@@ -28,7 +28,7 @@ The Generalist also gets a code-owned "Running the team" block. Every bot also g
   - Inside eve, dispatch refuses a non-child turn whose snapshot is missing (`bot_context_missing`). This backstop may retire the session (eve docs and the app's retire cascade differ). It is logged and counted, and the cold-start eval records which happens.
   - The JWT premise is confirmed (Fable): `jwtHmac` projects custom claims into `ctx.session.auth.current.attributes`.
   - Spike first: a per-request channel JWT with a bot claim, which removes the first-turn race entirely. Polling is the fallback.
-- **Child sessions** (eve `agent`) are disabled until ownership and grants propagate to them.
+- **Child sessions** (eve `agent`) are disabled until ownership and grants propagate to them (done 2026-10-03: `agent` and `task_cancel` are back; a child acts as its root session's bot under the root's grant, resolved from `ctx.session.parent.rootSessionId` in `agent/lib/active-bot.ts`; it reads and works in files but changes no memory, roster, routines or profiles).
 - **Admission check:** before dispatch, the proxy, and `runEveTurn` for routines and handoffs, compares the fixed envelope with the selected model's window. The envelope is instructions, description, the notes block, tool schemas, output reserve, and on a carry-over turn the brief, which is sized from the bot's window.
   - It refuses with a plain message rather than clipping instructions.
   - The Settings counter shows tokens against the bot's model window.

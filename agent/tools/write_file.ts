@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { lenientNullableString } from "../lib/lenient-null.ts";
 import { approvalActor } from "../lib/approvals.ts";
-import { awaitActiveBotId } from "../lib/active-bot.ts";
+import { authoritySessionId, awaitActiveBotId } from "../lib/active-bot.ts";
 import { approvedWrite } from "../lib/write.ts";
 import { appendAgentEvent } from "../../shared/agent-store.ts";
 import { isPagePath, recordPage } from "../../shared/media-store.ts";
@@ -21,6 +21,8 @@ export default defineTool({
       content: input.content,
       expectedSha256: input.expectedSha256,
       ...approvalActor(ctx),
+      // A sub-agent writes under its root session's grant, never one of its own.
+      grantSessionId: authoritySessionId(ctx),
     });
     if (!isPagePath(written.path)) return written;
     return { ...written, note: await showPage(written.path, input.content, ctx) };

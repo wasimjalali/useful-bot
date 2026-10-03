@@ -43,6 +43,8 @@ export async function approvedWrite(input: {
   content: string;
   expectedSha256: string | null;
   sessionId: string;
+  /** The session whose grant counts, when it is not `sessionId`: a sub-agent child's root. */
+  grantSessionId?: string;
   turnId: string;
   toolCallId: string;
   autoDecision?: "approve" | "deny";
@@ -52,7 +54,8 @@ export async function approvedWrite(input: {
   }
   // One grant read for root AND permission: two reads could pair a root from
   // before a permission change with the permission after it.
-  const { root, permission, scope } = effectiveRoot(input.sessionId || undefined);
+  const grantSession = input.grantSessionId ?? input.sessionId;
+  const { root, permission, scope } = effectiveRoot(grantSession || undefined);
   if (permission === "read_only") {
     throw new Error("workspace_read_only");
   }
@@ -100,7 +103,7 @@ export async function approvedWrite(input: {
     // configured leaves nothing to write into, which is the same answer.
     let refreshed;
     try {
-      refreshed = effectiveRoot(input.sessionId || undefined);
+      refreshed = effectiveRoot(grantSession || undefined);
     } catch {
       throw new Error("workspace_changed");
     }

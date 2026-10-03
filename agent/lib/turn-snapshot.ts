@@ -3,11 +3,11 @@ import type { ContextSnapshot } from "../../shared/context-blocks.ts";
 import { accountFullName, ownerName } from "../../shared/operator.ts";
 import { botComposerState, publicProviders, readProviderStore, type ProviderStore } from "../../shared/providers.ts";
 import { botSelection, type TurnSelection } from "../../shared/session-selection.ts";
-import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
+import { bindSession, readSessionParent, resolveSessionBot } from "../../shared/session-bindings.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID, orchestratorId, type BotKind, type ShellStore } from "../../shared/shell-store.ts";
 import { readSessionGrant, type WorkspacePermission } from "../../shared/workspace-store.ts";
-import { BINDING_WAIT_MS } from "./active-bot.ts";
+import { BINDING_WAIT_MS, isBotContextMissing, subAgentRoot } from "./active-bot.ts";
 import { windowTokensFor } from "./model-window.ts";
 
 /** The slice of an eve resolver, hook or tool context the snapshot reads. */
@@ -129,7 +129,7 @@ function refusal(sessionId: string, reason: string): null {
 /**
  * The bot a turn is for. The request's claim comes first, then the durable
  * session binding. A claim and a binding that name different bots, a child
- * session, and a session with neither are refused (null). A claim with no
+ * session whose root cannot be shown, and a session with neither are refused (null). A claim with no
  * binding yet binds the session to the claimed bot (a create's first turn can
  * run before the proxy writes the row), unless it is a sub-agent's child. With
  * no claim at all (a turn eve starts itself on a session from before claims),
@@ -140,7 +140,17 @@ export async function boundBotId(
   timeoutMs = Number(process.env.UB_BINDING_WAIT_MS ?? BINDING_WAIT_MS),
 ): Promise<string | null> {
   const sessionId = ctx.session.id;
-  if (ctx.session.parent) return refusal(sessionId, "child_session");
+  if (ctx.session.parent) {
+    // A tool or hook context of a sub-agent's child: its bot is its verified
+    // root session's (see subAgentRoot), or it is refused.
+    try {
+      const root = subAgentRoot(ctx);
+      return root ? root.botId : refusal(sessionId, "child_session");
+    } catch (err) {
+      if (isBotContextMissing(err)) return refusal(sessionId, "child_session");
+      throw err;
+    }
+  }
   const claim = claimedBotId(ctx);
   const deadline = Date.now() + (Number.isFinite(timeoutMs) ? timeoutMs : BINDING_WAIT_MS);
   for (;;) {
@@ -180,6 +190,25 @@ function ownerNames(): { owner: string; first: string } {
 }
 
 /**
+ * The session whose grant a turn shows. A sub-agent's child holds its root
+ * session's grant, never one of its own. A tool or hook context names the root
+ * (verified); eve's dynamic resolvers do not, so the child's recorded parent
+ * is used, else the bot's current chat when that is the bot's own. That last
+ * step only decides what "This turn" says: the tools enforce the verified root.
+ */
+function grantSessionFor(ctx: SnapshotCtx, botId: string, botSessionId: string | null): string {
+  if (ctx.session.parent) {
+    const root = subAgentRoot(ctx);
+    if (!root) throw new Error("bot_context_missing");
+    return root.rootSessionId;
+  }
+  if (ctx.channel?.kind !== "subagent") return ctx.session.id;
+  const parent = readSessionParent(ctx.session.id);
+  if (parent) return parent;
+  return botSessionId && resolveSessionBot(botSessionId) === botId ? botSessionId : ctx.session.id;
+}
+
+/**
  * One consistent read for one turn: the providers store FIRST, then the
  * roster (the web process moves a pick in the shell before the default in the
  * store, so store-first never pairs a fresh default with a stale pin). Throws
@@ -202,7 +231,7 @@ export function buildSnapshot(
   // A step with no turn id cannot be told from the turn before it, so it
   // re-reads. That re-read prefers the grant (written once, at turn start)
   // over the owner's live pick, so a pick made mid-turn cannot split the turn.
-  const grant = readSessionGrant(sessionId);
+  const grant = readSessionGrant(grantSessionFor(ctx, bot.id, bot.sessionId ?? null));
   const grantPick = turnId === undefined ? grant?.selection ?? null : null;
   const picked = grantPick ?? botSelection(bot, store);
   const selection: TurnSelection = { ...picked, windowTokens: windowTokensFor(picked) };

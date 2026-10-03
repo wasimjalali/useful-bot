@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { callerOf } from "../lib/permission.ts";
+import { callerOf, SUB_AGENT_BLOCKED } from "../lib/permission.ts";
+import { isSubAgent } from "../lib/active-bot.ts";
 import {
   appendAgentEvent,
   createProposal,
@@ -40,6 +41,7 @@ export default defineTool({
     requestId: z.string().min(1).max(120).optional(),
   }),
   async execute(input, ctx) {
+    if (isSubAgent(ctx)) return SUB_AGENT_BLOCKED;
     let url: string;
     try {
       url = assertConnectionUrl(input.url);

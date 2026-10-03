@@ -25,7 +25,6 @@ export default defineTool({
   async execute(input, ctx) {
     // An image costs real money at the provider and lands in the transcript,
     // so Read only refuses it like every other change inside the app.
-    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     if (input.connectionId && !input.model) {
       return { status: "failed", error: "connection_without_model", hint: "Pass the image model id as `model` with its connectionId, or neither for the default." };
     }
@@ -33,6 +32,7 @@ export default defineTool({
     // paid: an unbound session is refused here, never after the bill.
     const who = await callerOf(readShell(), ctx);
     if (!who.ok) return who.result;
+    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const token = process.env.UB_ROUTER_DESKTOP_TOKEN;
     if (!token) {
       throw new Error("router token missing");

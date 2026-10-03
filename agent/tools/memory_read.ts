@@ -10,7 +10,7 @@ export default defineTool({
   description: "Read one of this bot's own memory notes by id, in full.",
   inputSchema: z.object({ id: z.string() }),
   async execute(input, ctx) {
-    const who = await callerOf(readShell(), ctx);
+    const who = await callerOf(readShell(), ctx, { readOnly: true });
     if (!who.ok) return who.result;
     const note = sharedMemoryStore().read(input.id, who.caller.id);
     // A note written after outside content carries that content back into this

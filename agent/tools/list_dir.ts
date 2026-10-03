@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { effectiveRoot, resolveWorkspacePath } from "../lib/workspace.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { markOutside } from "../lib/outside-content.ts";
+import { authoritySessionId } from "../lib/active-bot.ts";
 
 const LIST_MAX_ENTRIES = 500;
 
@@ -22,7 +23,7 @@ export default defineTool({
   }),
   execute(input, ctx) {
     markOutside(ctx);
-    const { root } = effectiveRoot(ctx?.session?.id);
+    const { root } = effectiveRoot(authoritySessionId(ctx));
     const target = resolveWorkspacePath(input.path || ".", root);
     let stat;
     try {
