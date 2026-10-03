@@ -44,7 +44,11 @@ had 37,041 events; the five child sessions 1,167 to 19,067 each. Decoder: a 20-l
 - Router: streaming calls keep the 180 s cap only until headers arrive; then the idle timers govern,
   with a 15 minute backstop.
 - Proxy: accepts eve's structured `inputResponses`; serves a sub-agent's stream read-only once it is
-  verified against the bound parent's `subagent.called` event.
+  verified against the bound parent's `subagent.called` event. The app sends that event's absolute
+  stream index (`at=`); the proxy reads that one event from eve and binds the child read-only. Three
+  earlier designs were dropped: scanning the whole parent stream (three review rounds of edge
+  cases), an agent hook (eve 0.54.3 never dispatches hooks for `subagent.called`) and a channel
+  adapter handler (eve reserves the `http` adapter kind and refused every turn, caught live).
 - macOS: any non-question request shows as a "waiting on you" card; held messages are tagged
   queued; a collapsible sub-agent card per launching turn shows each sub-agent's live step, timer,
   report, failure with Retry, a quiet warning and a "report not delivered" hand-off.
@@ -72,6 +76,20 @@ Sub-agents are disabled on `main` since UB-009 PR A, so the checks ran on dev-on
   Fixed: a child (`channel.kind` "subagent") is never bound as a root.
 - Two child calls failed with the provider's own `upstream service timeout` (30 s) and `request
   failed` (122 s); not the router cap. The bot relaunched them and all reports landed.
+
+- **The incident, replayed end to end** (Test Bot session still on a 150k cap): three sub-agents
+  launched, their reports tripped the limit and were held; the waiting card and "WAITING ON YOU" on
+  the rail showed; after Continue eve replayed the held reports and the bot carried on. The reports
+  came back empty: eve splits the parent's remaining quota across children, and at the cap there
+  was nothing left. New sessions are uncapped; an old chat near its 40M cap can still see this.
+- The origin rows eve dropped earlier (probes 18 and 21) show "Test Bot never got this message"
+  with Send again after a replay.
+
+## Reviews
+
+Two reviewers per round, split by area (GPT-6.1-Sol medium via Codex on the server side, Sonnet 5.5
+high on macOS). Verdicts and DISMISSED lists are in `2026-10-03-subagent-stall/`. Round 1 found 3 +
+14, round 2 found 3 + 16, round 3 found 3 + 6, round 4 found 1 high (hook never runs) + 9.
 
 ## Open
 

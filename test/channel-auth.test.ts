@@ -471,6 +471,16 @@ test("a first event past the byte cap is not read further", async () => {
   assert.equal(eve.seen.aborted, true);
 });
 
+test("an event over the cap is refused even when its newline is in the chunk that crosses it", async () => {
+  // Review round 5: the cap was only checked after a whole line was returned.
+  const big = { type: "subagent.called", data: { sessionId: "p1", childSessionId: "kid-b", pad: "x".repeat(1100) } };
+  const eve = fakeEve([big], { split: 4096 });
+  assert.equal(await readStreamEventAt("p1", 0, "jwt", { fetch: eve.fetchImpl, origin: "http://eve.test", maxBytes: 1024 }), null);
+  // The same event under a cap it fits in is read.
+  const fits = fakeEve([big], { split: 4096 });
+  assert.notEqual(await readStreamEventAt("p1", 0, "jwt", { fetch: fits.fetchImpl, origin: "http://eve.test", maxBytes: 4096 }), null);
+});
+
 test("an eve error status, a refused fetch or a read that never starts is loud", async () => {
   for (const status of [500, 503, 404, 401]) {
     const eve = fakeEve([], { status });

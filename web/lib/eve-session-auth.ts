@@ -139,8 +139,13 @@ export async function readStreamEventAt(
       else controller.signal.addEventListener("abort", stop, { once: true });
     });
     stopped.catch(() => undefined);
+    const encoder = new TextEncoder();
     let buf = "";
     let bytes = 0;
+    // Bytes of the lines already read through, so the cap holds for the line
+    // that is returned even when its newline arrives in the chunk that
+    // crosses the cap.
+    let used = 0;
     try {
       for (;;) {
         const { value, done } = await Promise.race([reader.read(), stopped]).catch(fail);
@@ -150,7 +155,10 @@ export async function readStreamEventAt(
         // Only a line eve finished with its newline is a whole event.
         let newline = buf.indexOf("\n");
         while (newline !== -1) {
-          const payload = eveStreamPayload(buf.slice(0, newline));
+          const line = buf.slice(0, newline);
+          used += encoder.encode(line).byteLength + 1;
+          if (used > maxBytes) return null;
+          const payload = eveStreamPayload(line);
           if (payload !== null) return payload;
           buf = buf.slice(newline + 1);
           newline = buf.indexOf("\n");
