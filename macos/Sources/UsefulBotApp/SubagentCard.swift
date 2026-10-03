@@ -79,8 +79,12 @@ final class SubagentProgressStore: ObservableObject {
 /// count while closed, one row per sub-agent when open.
 struct SubagentGroupCard: View {
     let card: SubagentCardData
+    /// Every card of the chat: "not delivered" is judged across all of them.
+    let chat: [SubagentCardData]
     let bot: ShellBot
     let parentBusy: Bool
+    /// When the parent last went idle; nil while unknown or busy.
+    let idleSince: Date?
     let maxWidth: CGFloat
     @ObservedObject var store: SubagentProgressStore
     @EnvironmentObject private var model: AppModel
@@ -96,7 +100,9 @@ struct SubagentGroupCard: View {
     }
 
     var body: some View {
-        let live = SubagentStatus.needsClock(runs: card.runs, progress: progressOf, parentBusy: parentBusy, now: Date())
+        let live = SubagentStatus.needsClock(
+            batches: chat.map(\.runs), progress: progressOf, parentBusy: parentBusy, parentIdleSince: idleSince, now: Date()
+        )
         Group {
             if live && !clockStopped {
                 // One timeline for the whole card: the header and every row
@@ -114,20 +120,27 @@ struct SubagentGroupCard: View {
     }
 
     private func content(now: Date) -> some View {
-        let statuses = SubagentStatus.resolveAll(
-            runs: card.runs,
-            progress: { run in run.childSessionId.flatMap { store.progress[$0] } },
+        let resolved = SubagentStatus.resolveChat(
+            batches: chat.map(\.runs),
+            progress: progressOf,
             parentBusy: parentBusy,
+            parentIdleSince: idleSince,
             now: now
         )
+        let statuses = chat.firstIndex { $0.id == card.id }.map { resolved[$0] }
+            ?? SubagentStatus.resolveAll(runs: card.runs, progress: progressOf, parentBusy: parentBusy, now: now)
         let header = SubagentCardCopy.header(statuses: statuses, botName: bot.name)
         let anyWorking = statuses.contains { $0.isWorking }
         if !clockStopped,
-           !SubagentStatus.needsClock(runs: card.runs, progress: progressOf, parentBusy: parentBusy, now: now) {
+           !SubagentStatus.needsClock(
+               batches: chat.map(\.runs), progress: progressOf, parentBusy: parentBusy, parentIdleSince: idleSince, now: now
+           ) {
             // Nothing left to count: stop the timeline after this frame.
             DispatchQueue.main.async { clockStopped = true }
         }
-        let started = card.runs.compactMap(\.startedAt).min()
+        // From the task the runs are on now, so a relaunch counts from its own start.
+        let started = card.runs.enumerated().filter { statuses[$0.offset].isWorking }
+            .compactMap { $0.element.taskStartedAt ?? $0.element.startedAt }.min()
         return VStack(alignment: .leading, spacing: 0) {
             Button {
                 if expanded { model.expandedSubagentCards.remove(card.id) } else { model.expandedSubagentCards.insert(card.id) }
@@ -285,7 +298,7 @@ private struct SubagentRow: View {
     /// Counts up while at work; the final duration once settled.
     @ViewBuilder
     private var timer: some View {
-        if status.isWorking, let start = run.startedAt {
+        if status.isWorking, let start = run.taskStartedAt ?? run.startedAt {
             Text(WorkingElapsed.text(from: start, to: now))
                 .font(.system(size: 13).monospacedDigit())
                 .foregroundStyle(Theme.C.inkFaint)
@@ -368,6 +381,15 @@ private struct SubagentRow: View {
                     model.sendFromCard("Retry the \(run.title) sub-agent.")
                 }
                 .accessibilityLabel("Retry the \(run.title) sub-agent")
+            }
+        case .noWord:
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkFaint)
+                Text("No word from this sub-agent")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
             }
         case .stopped:
             HStack(spacing: 8) {

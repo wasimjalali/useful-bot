@@ -1506,7 +1506,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             switch detail.outcome {
             case .completed:
                 subagentRuns[index].state = .reported(at: stamp)
-                subagentRuns[index].result = detail.body
+                subagentRuns[index].result = cutReplayedOwnerText(detail.body)
             case .failed:
                 subagentRuns[index].state = .failed(at: stamp, message: detail.body)
             case .cancelled:
@@ -1515,6 +1515,24 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 break
             }
         }
+    }
+
+    /// A merged report turn runs its last report's body to the end of the
+    /// message, and eve's replay of held owner text sits there. The body ends
+    /// where a held message begins as its own blank-line segment.
+    private func cutReplayedOwnerText(_ body: String) -> String {
+        guard !heldOrder.isEmpty else { return body }
+        let held = Set(heldOrder.compactMap { id in indexById[id].map { Self.replayKey(messages[$0].text) } }.filter { !$0.isEmpty })
+        guard !held.isEmpty else { return body }
+        let parts = body.components(separatedBy: "\n\n")
+        for start in parts.indices.dropFirst() {
+            for end in start..<min(parts.count, start + 8) {
+                if held.contains(parts[start...end].map(Self.replayKey).joined(separator: " ")) {
+                    return parts[..<start].joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+        return body
     }
 
     /// A sub-agent's admission receipt, from the tool result or from

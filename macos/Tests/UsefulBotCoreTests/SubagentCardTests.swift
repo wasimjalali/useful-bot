@@ -352,27 +352,106 @@ private extension ChildProgress {
 
     // MARK: Following
 
-    @Test func followCapAndFilters() {
-        var runs: [SubagentRun] = []
-        for i in 0..<10 {
-            runs.append(SubagentRun(agentId: "a\(i)", childSessionId: "ses_\(i)", taskId: "task_\(i)", title: "R\(i)", groupId: "g"))
+    private func manyRuns(_ n: Int, startedAgo: (Int) -> TimeInterval = { _ in 10 }) -> [SubagentRun] {
+        (0..<n).map { i in
+            SubagentRun(agentId: "a\(i)", childSessionId: "ses_\(i)", taskId: "task_\(i)", title: "R\(i)",
+                        startedAt: t0 - startedAgo(i), groupId: "g")
         }
+    }
+
+    @Test func followCapAndFilters() {
+        var runs = manyRuns(10)
         runs[1].state = .reported(at: nil)
         runs[2].childSessionId = nil
-        let targets = ChildFollowPlanner.targets(runs: runs)
+        let targets = ChildFollowPlanner.targets(runs: runs, now: t0)
         #expect(targets.count == 8)
         #expect(!targets.contains { $0.childSessionId == "ses_1" || $0.childSessionId == "ses_2" })
-        #expect(targets.first == ChildFollowTarget(childSessionId: "ses_0", taskId: "task_0"))
+        // Newest first.
+        #expect(targets.first?.childSessionId == "ses_9")
         // Once one settles, the next waiting run takes its place.
-        runs[0].state = .failed(at: nil, message: "x")
-        #expect(ChildFollowPlanner.targets(runs: runs).contains { $0.childSessionId == "ses_9" })
+        runs[9].state = .failed(at: nil, message: "x")
+        #expect(ChildFollowPlanner.targets(runs: runs, now: t0).first?.childSessionId == "ses_8")
+    }
+
+    @Test func staleRunsNeverStarveNewOnes() {
+        // Eight lost runs from hours ago, then two new ones.
+        var runs = manyRuns(10) { $0 < 8 ? SubagentStatus.patience + 60 : 10 }
+        let targets = ChildFollowPlanner.targets(runs: runs, now: t0)
+        #expect(targets.map(\.childSessionId) == ["ses_9", "ses_8"])
+        // Runs ruled out by the caller (finished, refused) are skipped before the cap.
+        runs = manyRuns(12)
+        let skipped = ChildFollowPlanner.targets(runs: runs, now: t0) { $0.childSessionId == "ses_11" || $0.childSessionId == "ses_10" }
+        #expect(skipped.count == 8)
+        #expect(skipped.first?.childSessionId == "ses_9")
+        #expect(!skipped.contains { $0.childSessionId == "ses_11" })
+    }
+
+    // MARK: Chat-wide delivery
+
+    @Test func notDeliveredIsJudgedAcrossEveryBatch() {
+        let a = sibling("a"), b = sibling("b")
+        let p = ["a": finished("a", at: t0 + 16), "b": busyChild("b", at: t0 + 3000)]
+        // Batch two is still working: batch one is not undelivered however long ago it finished.
+        let out = SubagentStatus.resolveChat(batches: [[a], [b]], progress: { p[$0.agentId] }, parentBusy: false, now: t0 + 3010)
+        #expect(out[0] == [.awaitingReport(answer: "Report a.")])
+        #expect(out[1] == [.working(label: "Thinking")])
+        // Everything finished anywhere in the chat: all undelivered together.
+        let both = ["a": finished("a", at: t0 + 16), "b": finished("b", at: t0 + 100)]
+        let early = SubagentStatus.resolveChat(batches: [[a], [b]], progress: { both[$0.agentId] }, parentBusy: false, now: t0 + 159)
+        #expect(early == [[.awaitingReport(answer: "Report a.")], [.awaitingReport(answer: "Report b.")]])
+        let late = SubagentStatus.resolveChat(batches: [[a], [b]], progress: { both[$0.agentId] }, parentBusy: false, now: t0 + 160)
+        #expect(late == [[.notDelivered], [.notDelivered]])
+    }
+
+    @Test func theParentMustHaveBeenIdleForTheWholeWindow() {
+        let a = sibling("a")
+        let p = ["a": finished("a", at: t0)]
+        // Idle only 10 s, though the child finished long ago: a long turn just ended.
+        let fresh = SubagentStatus.resolveAll(runs: [a], progress: { p[$0.agentId] }, parentBusy: false, parentIdleSince: t0 + 590, now: t0 + 600)
+        #expect(fresh == [.awaitingReport(answer: "Report a.")])
+        let settled = SubagentStatus.resolveAll(runs: [a], progress: { p[$0.agentId] }, parentBusy: false, parentIdleSince: t0 + 540, now: t0 + 600)
+        #expect(settled == [.notDelivered])
+    }
+
+    @Test func aRunNobodyHeardFromForHoursIsGivenUp() {
+        var r = run()
+        r.startedAt = t0
+        r.taskStartedAt = t0
+        let late = t0 + SubagentStatus.patience + 1
+        #expect(resolve([r], [:], now: late) == [.noWord])
+        // A child still talking is working, however old the run.
+        #expect(resolve([r], ["agent_1": spoke(at: late - 10)], now: late) == [.working(label: "Thinking")])
+        #expect(resolve([r], ["agent_1": spoke(at: t0)], now: late) == [.noWord])
+        #expect(!SubagentRowStatus.noWord.isWorking)
+        #expect(SubagentStatus.needsClock(runs: [r], progress: { _ in nil }, parentBusy: false, now: late) == false)
+        #expect(header([.noWord, .reported]) == SubagentHeader(title: "1 of 2 reports in · 1 no word", detail: nil))
+        #expect(header([.noWord, work]) == SubagentHeader(title: "2 sub-agents", detail: "1 no word · 1 working"))
+    }
+
+    @Test func failedAndStoppedDurationsUseTheChildsOwnEnd() {
+        var failedChild = busyChild("1", at: t0 + 9)
+        failedChild.failure = "boom"
+        failedChild.endedAt = t0 + 9
+        #expect(SubagentStatus.duration(of: run(.failed(at: t0 + 300, message: "boom")), progress: failedChild) == 9)
+        #expect(SubagentStatus.duration(of: run(.failed(at: t0 + 300, message: "boom"))) == 300)
+        var stopped = busyChild("1", at: t0 + 4)
+        stopped.cancelled = true
+        stopped.endedAt = t0 + 4
+        #expect(SubagentStatus.duration(of: run(.cancelled(at: t0 + 90)), progress: stopped) == 4)
+    }
+
+    @Test func aRelaunchedRunCountsFromItsOwnStart() {
+        var r = run(.reported(at: t0 + 130))
+        r.taskStartedAt = t0 + 100
+        #expect(SubagentStatus.duration(of: r) == 30)
     }
 
     @Test func relaunchChangesTheTarget() {
         var r = run(task: "task_1")
-        let before = ChildFollowPlanner.targets(runs: [r])
+        let before = ChildFollowPlanner.targets(runs: [r], now: t0)
         r.taskId = "task_2"
-        #expect(ChildFollowPlanner.targets(runs: [r]) != before)
+        #expect(!before.isEmpty)
+        #expect(ChildFollowPlanner.targets(runs: [r], now: t0) != before)
     }
 
     @Test func facesAreValidAndDistinct() {

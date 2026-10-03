@@ -145,7 +145,7 @@ import Testing
         p.apply(at(try called(agent: "ag_agent:bbb", child: "wrun_child_b", turn: "turn_1"), 3, "wrun_parent"))
         p.apply(at(try launched(call: "call_b", agent: "ag_agent:bbb", task: "task_bbb", turn: "turn_1"), 4, "wrun_parent"))
         #expect(p.subagentRuns[1].childCall == SubagentCallSite(sessionId: "wrun_parent", index: 3))
-        let target = ChildFollowPlanner.targets(runs: p.subagentRuns).first
+        let target = ChildFollowPlanner.targets(runs: p.subagentRuns, now: p.subagentRuns[0].startedAt ?? Date()).first { $0.childSessionId == "wrun_child_a" }
         #expect(target == ChildFollowTarget(childSessionId: "wrun_child_a", taskId: "task_aaa", parentSessionId: "wrun_parent", calledAt: 2))
         // A call with no stream position (no reader set one) has no site.
         var q = StreamProjection()
@@ -614,6 +614,18 @@ import Testing
         #expect(p.subagentAnchor(forGroup: group) == "first_row")
         let restored = try JSONDecoder().decode(StreamProjection.self, from: JSONEncoder().encode(p))
         #expect(restored.subagentAnchor(forGroup: group) == "first_row")
+    }
+
+    @Test func aMergedReportsBodyStopsWhereTheReplayedOwnerTextBegins() throws {
+        var p = StreamProjection()
+        p.apply(try launched(call: "a", agent: "ag_agent:aaa", task: "task_aaa", turn: "turn_1"))
+        for event in try originTurn("turn_16", text: "Probe 18") { p.apply(event) }
+        for event in try queuedTurn("turn_17", text: "Probe 19") { p.apply(event) }
+        p.apply(try line(resolved))
+        let merged = "Background task task_aaa (agent) is completed.\n\nResult:\nFine.\n\nSecond paragraph of the report.\n\nProbe 19"
+        p.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        p.apply(try line(#"{"type":"message.received","data":{"message":\#(json(merged)),"kind":"\#(EveStream.backgroundTaskKind)","turnId":"turn_18"},"meta":{"id":"\#(nextId())"}}"#))
+        #expect(p.subagentRuns[0].result == "Fine.\n\nSecond paragraph of the report.")
     }
 
     @Test func heldRowsSurviveASnapshotBetweenTheAnswerAndTheReplay() throws {

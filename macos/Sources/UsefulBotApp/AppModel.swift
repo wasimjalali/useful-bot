@@ -100,13 +100,30 @@ final class AppModel: ObservableObject {
     private(set) var continuationIds = Set<String>()
     private(set) var latestReplyRunIds = Set<String>()
     @Published private(set) var pending = false {
-        didSet { if pending, !oldValue { activitySince = Date() } }
+        didSet {
+            if pending, !oldValue { activitySince = Date() }
+            noteParentIdle()
+        }
     }
     /// A turn is running in this bot's session that this app did not send (a
     /// handoff, a connect resume, a routine). Drives the working row the same
     /// way `pending` does; the follower keeps it in step with the stream.
     @Published private(set) var backgroundWorking = false {
-        didSet { if backgroundWorking, !oldValue, !pending { activitySince = Date() } }
+        didSet {
+            if backgroundWorking, !oldValue, !pending { activitySince = Date() }
+            noteParentIdle()
+        }
+    }
+    /// When the open chat's bot last went idle; nil while it is busy, or
+    /// before it has been seen busy. "Not delivered" waits out the whole
+    /// window from here, so a long turn ending is not mistaken for a lost report.
+    private(set) var parentIdleSince: Date?
+    private func noteParentIdle() {
+        if pending || backgroundWorking {
+            parentIdleSince = nil
+        } else if parentIdleSince == nil {
+            parentIdleSince = Date()
+        }
     }
     /// Failures with no turn to put them under (a send that never reached
     /// the server, a load that failed, a write that was refused), shown as a
@@ -366,6 +383,14 @@ final class AppModel: ObservableObject {
         TurnNotifier.shared.onOpenChat = { [weak self] botId in self?.select(botId) }
         TurnNotifier.shared.start()
         observeAppActivity()
+        // Rail flags of chats that are not open have no event to refresh
+        // them, and a run's patience runs out with the clock alone.
+        railFlagTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                self?.refreshAllRailFlags()
+            }
+        }
         subagentProgress.onChange = { [weak self] in
             guard let self else { return }
             self.refreshRailFlags(self.selectedBotId ?? "")
@@ -2803,6 +2828,14 @@ final class AppModel: ObservableObject {
     /// does not keep the rail moving. A report that never came stops counting
     /// after the same patience the working row has. Only the open chat has
     /// child progress; another bot's runs read as working until they report.
+    private var railFlagTimer: Task<Void, Never>?
+
+    private func refreshAllRailFlags() {
+        let ids = Set(backgroundProjections.keys).union(subagentWorkingBotIds).union(waitingBotIds)
+        for id in ids { refreshRailFlags(id) }
+        if let selectedBotId { refreshRailFlags(selectedBotId) }
+    }
+
     private func refreshRailFlags(_ botId: String) {
         let isOpen = botId == selectedBotId
         guard let proj = isOpen ? projection : backgroundProjections[botId] else {
@@ -2907,7 +2940,12 @@ final class AppModel: ObservableObject {
                 self.busyRequests.remove(request.id)
                 self.dismissedRequestIds.insert(request.id)
                 // Nothing held will ever be replayed: those rows offer Send again.
-                if self.selectedBotId == botId { self.projection.dropHeldMessages() }
+                if self.selectedBotId == botId {
+                    self.projection.dropHeldMessages()
+                } else {
+                    self.backgroundProjections[botId]?.dropHeldMessages()
+                    self.refreshRailFlags(botId)
+                }
                 self.publishSubagents(rows: self.transcript)
                 self.recordSendError(botId, "This chat ended. Send a message to start a new one.", resendable: false)
             } catch {
@@ -2995,8 +3033,8 @@ final class AppModel: ObservableObject {
             return
         }
         let now = Date()
-        let wanted = Set(ChildFollowPlanner.targets(runs: projection.subagentRuns).filter {
-            !finishedFollows.contains($0) && (childRetryAt[$0] ?? .distantPast) <= now
+        let wanted = Set(ChildFollowPlanner.targets(runs: projection.subagentRuns, now: now) {
+            finishedFollows.contains($0) || (childRetryAt[$0] ?? .distantPast) > now
         })
         let generation = loadGeneration
         // A reload bumps the generation and the old task is about to end on

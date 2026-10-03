@@ -553,11 +553,24 @@ struct ChatView: View {
         }
     }
 
+    /// A run is still out by what its card shows (working or quiet), not by
+    /// the parent's state alone: one nobody has heard from for hours is not.
+    private func cardIsLive(_ card: SubagentCardData) -> Bool {
+        SubagentStatus.hasActiveWork(
+            runs: card.runs,
+            progress: { run in run.childSessionId.flatMap { model.subagentProgress.progress[$0] } },
+            parentBusy: model.pending || model.backgroundWorking,
+            now: Date()
+        )
+    }
+
     private func subagentCard(_ card: SubagentCardData, bot: ShellBot) -> some View {
         SubagentGroupCard(
             card: card,
+            chat: model.subagentCards,
             bot: bot,
             parentBusy: model.pending || model.backgroundWorking,
+            idleSince: model.parentIdleSince,
             maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
             store: model.subagentProgress
         )
@@ -598,14 +611,12 @@ struct ChatView: View {
             if let anchor = card.anchorRowId, model.transcriptBlocks.contains(where: { $0.holds(rowId: anchor) }) {
                 return false
             }
-            return card.runs.contains { $0.state == .working }
+            return cardIsLive(card)
         }
         // A card covers the sub-agent work only when it sits under its own
         // reply and has a run still out. One parked at the tail does not, so
         // a real working row is never hidden by it.
-        let hasActiveCard = cardsByBlock.values.flatMap { $0 }.contains {
-            $0.runs.contains { $0.state == .working }
-        }
+        let hasActiveCard = cardsByBlock.values.flatMap { $0 }.contains { cardIsLive($0) }
         var afterCard = Set<String>()
         for (above, below) in zip(window.blocks, window.blocks.dropFirst()) where cardsByBlock[above.id] != nil {
             afterCard.insert(below.id)
