@@ -106,7 +106,7 @@ test("resolveIcon falls from serverInfo to the home page link, then to favicon.i
   assert.deepEqual(asked, ["https://cdn.tella.com/missing.png", "https://tella.com/", "https://tella.com/apple.png"]);
 
   asked = net({ "https://tella.com/favicon.ico": { type: "image/x-icon", body: PNG } });
-  assert.match((await resolveIcon("https://api.tella.com/mcp")) ?? "", /^data:image\/x-icon;base64,/);
+  assert.match((await resolveIcon("https://api.tella.com/mcp")) ?? "", /^data:image\/png;base64,/); // the bytes decide the type, not the header
   assert.deepEqual(asked, ["https://tella.com/", "https://www.tella.com/", "https://tella.com/favicon.ico"]);
 });
 

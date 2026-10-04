@@ -4106,16 +4106,17 @@ final class AppModel: ObservableObject {
         guard let accountId = row.accountId else { return false }
         connectorBusy = row.slug
         connectorsError = nil
-        var disconnected = false
         do {
             try await client.disconnectConnector(accountId: accountId)
-            disconnected = true
-            await loadConnectors(search: search, quiet: true)
         } catch {
-            if !disconnected { connectorsError = "Could not disconnect \(row.name)." }
+            connectorsError = "Could not disconnect \(row.name)."
+            connectorBusy = nil
+            return false
         }
+        // The disconnect went through; loadConnectors reports its own load failure.
+        await loadConnectors(search: search, quiet: true)
         connectorBusy = nil
-        return disconnected
+        return true
     }
 
     /// The tools of one connected app, or nil when they couldn't be loaded.

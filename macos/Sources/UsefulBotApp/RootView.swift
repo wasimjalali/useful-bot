@@ -881,6 +881,14 @@ private struct ConnectorDetailPage: View {
             actions
                 .padding(.horizontal, 28)
                 .padding(.top, 16)
+            // A failed Disconnect or Remove shows here, where the owner pressed it.
+            if let actionError = tile.source.isApp ? model.connectorsError : model.directConnectionsError {
+                Text(actionError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.danger)
+                    .padding(.horizontal, 28)
+                    .padding(.top, 8)
+            }
             if showsTools {
                 toolsSection
                     .padding(.horizontal, 28)
@@ -891,6 +899,8 @@ private struct ConnectorDetailPage: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task {
+            // An error left from the list page is not about this tile.
+            if tile.source.isApp { model.connectorsError = nil } else { model.directConnectionsError = nil }
             if case .app(let row) = tile.source {
                 if let list = await model.connectorTools(row) { appTools = list } else { toolsFailed = true }
             }
@@ -1041,6 +1051,11 @@ struct ConnectorsDialog: View {
 
     var body: some View {
         connectorsPanel
+        .onChange(of: selectedTile) { _, value in
+            // Back from a detail page lands on the search field again.
+            guard value == nil, model.connectors?.hasKey == true else { return }
+            Task { @MainActor in searchFocused = true }
+        }
         .onChange(of: addedTiles.map(\.id)) { _, ids in
             if let selectedTile, !ids.contains(selectedTile) { self.selectedTile = nil }
         }

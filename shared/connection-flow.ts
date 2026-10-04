@@ -28,6 +28,7 @@ import {
   dropOauthPendingForProposal,
   findOauthPending,
   oauthPendingExpired,
+  findOauthPendingForProposal,
   OAuthTokenError,
   startMcpOAuth,
 } from "./mcp-oauth.ts";
@@ -503,7 +504,7 @@ async function completeReauthorize(
       // Starting the sign-in again replaced this attempt's pending row. An older
       // exchange that lands after a newer one began must not put its tokens
       // over the newer sign-in's.
-      if (isSuperseded(state)) throw new Error("oauth_superseded");
+      assertAttemptCurrent(state, peek.proposalId);
       keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
     });
     await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
@@ -597,12 +598,17 @@ async function finishConnectionOAuth(
     exchanged = await completeMcpOAuth({ code, state, keepPending: true });
   } catch (err) {
     // The pending row vanished: there is no sign-in of ours to fail.
-    if (err instanceof Error && err.message === "oauth_state") throw err;
+    if (err instanceof Error && err.message === "oauth_state") {
+      // Replaced between the peek and the exchange: say so when a newer
+      // sign-in for this card exists.
+      if (newerAttemptExists(state, pendingPeek.proposalId)) throw new Error("oauth_superseded");
+      throw err;
+    }
     // The code is spent or refused either way, so the sign-in is over: the
     // card says why instead of waiting ten minutes to say it timed out, and the
     // verifier and client secret do not stay on disk. An older attempt, with a
     // newer sign-in started since (its row gone), is not what the card waits on.
-    const latest = !isSuperseded(state);
+    const latest = !isSuperseded(state, pendingPeek.proposalId);
     dropOauthPending(state);
     if (!latest) throw err;
     failCard(pendingPeek.proposalId, exchangeFailure(err), opts.now ?? Date.now(), storePath, true);
@@ -620,8 +626,24 @@ async function finishConnectionOAuth(
  * A row that is still on disk but past the 15-minute limit is an expired
  * attempt, not a superseded one.
  */
-function isSuperseded(state: string): boolean {
-  return findOauthPending(state) === null && !oauthPendingExpired(state);
+function isSuperseded(state: string, proposalId: string): boolean {
+  return findOauthPending(state) === null && !oauthPendingExpired(state) && newerAttemptExists(state, proposalId);
+}
+
+/** A live pending row for the same card (or reauthorize) that is not this attempt's. */
+function newerAttemptExists(state: string, proposalId: string): boolean {
+  const row = findOauthPendingForProposal(proposalId);
+  return row !== null && row.state !== state;
+}
+
+/**
+ * Throws when this attempt may no longer settle anything: `oauth_superseded`
+ * when a newer sign-in replaced it, `oauth_state` when its row went some other
+ * way (settled against an existing row, a refused callback, expiry pruning).
+ */
+function assertAttemptCurrent(state: string, proposalId: string): void {
+  if (findOauthPending(state) !== null || oauthPendingExpired(state)) return;
+  throw new Error(newerAttemptExists(state, proposalId) ? "oauth_superseded" : "oauth_state");
 }
 
 async function settleExchanged(
@@ -639,7 +661,7 @@ async function settleExchanged(
   // The exchange took a while: the owner may have started the sign-in again.
   // The newer attempt owns the card; this one stores, settles and starts
   // nothing.
-  if (isSuperseded(state)) throw new Error("oauth_superseded");
+  assertAttemptCurrent(state, pendingPeek.proposalId);
   logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
   const url = assertConnectionUrl(proposal.url);
   const entry: ConnectionEntry = {
@@ -662,7 +684,7 @@ async function settleExchanged(
   // never mounts, that the owner is told is connected, and that nothing can
   // remove: a spec that became readable later would even mount itself.
   await assertToolBudget(entry, bearer);
-  if (isSuperseded(state)) throw new Error("oauth_superseded");
+  assertAttemptCurrent(state, pendingPeek.proposalId);
   const outcome = upsertConnection(entry);
   if (!outcome.won) {
     // Another card connected this server between the check above and this
@@ -675,8 +697,10 @@ async function settleExchanged(
   const stored = outcome.entry;
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
   const status = await probeConnection(stored, bearer);
-  // A newer sign-in began while the listing was read: the card is waiting on it.
-  if (!isSuperseded(state)) settleProbe(pending.proposalId, stored, status, now, storePath);
+  // A newer sign-in began while the listing was read: the card is waiting on
+  // it, and this callback must not say Connected.
+  assertAttemptCurrent(state, pendingPeek.proposalId);
+  settleProbe(pending.proposalId, stored, status, now, storePath);
   return { proposalId: pending.proposalId };
 }
 

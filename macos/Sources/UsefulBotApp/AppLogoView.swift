@@ -13,6 +13,8 @@ struct AppLogo: View {
     var data: Data? = nil
 
     @State private var image: NSImage?
+    /// The key of the bytes `image` was decoded from, so the task skips a decode already done in init.
+    @State private var decodedKey: String?
 
     init(name: String, url: String?, size: CGFloat = 28, data: Data? = nil) {
         self.name = name
@@ -21,6 +23,11 @@ struct AppLogo: View {
         self.data = data
         // Built here, not in the task, so a tile that has the bytes never shows the monogram first.
         _image = State(initialValue: data.flatMap { NSImage(data: $0) })
+        _decodedKey = State(initialValue: data.map(Self.dataKey))
+    }
+
+    private static func dataKey(_ data: Data) -> String {
+        "\(data.count):\(data.prefix(16).map { String($0, radix: 16) }.joined())"
     }
 
     var body: some View {
@@ -36,9 +43,14 @@ struct AppLogo: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         .accessibilityHidden(true)
-        .task(id: "\(url ?? "")|\(data?.hashValue ?? 0)") {
+        // Keyed on the byte count and a short prefix: hashing the whole icon on every body pass is wasted work.
+        .task(id: "\(url ?? "")|\(data.map(Self.dataKey) ?? "")") {
             if let data {
-                image = NSImage(data: data)
+                let key = Self.dataKey(data)
+                if decodedKey != key {
+                    image = NSImage(data: data)
+                    decodedKey = key
+                }
             } else {
                 image = await LogoCache.shared.image(for: url)
             }

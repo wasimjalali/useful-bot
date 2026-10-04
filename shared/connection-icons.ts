@@ -45,7 +45,8 @@ export function readIcons(path = connectionIconsPath()): Record<string, IconReco
     for (const [id, raw] of Object.entries(parsed.icons ?? {})) {
       const r = raw as Partial<IconRecord> | null;
       if (!r || typeof r.host !== "string" || typeof r.checkedAt !== "string") continue;
-      const icon = typeof r.icon === "string" && r.icon.startsWith("data:image/") ? r.icon : null;
+      // Only raster types the fetch path can store; older SVG entries are dropped so they resolve again.
+      const icon = typeof r.icon === "string" && /^data:image\/(png|jpeg|x-icon|vnd\.microsoft\.icon);base64,/.test(r.icon) ? r.icon : null;
       out[id] = { host: r.host, icon, checkedAt: r.checkedAt };
     }
     return out;
@@ -168,12 +169,12 @@ async function readCapped(res: Response, max: number): Promise<Uint8Array | null
 
 const ICON_TYPES = new Set(["image/png", "image/jpeg", "image/x-icon", "image/vnd.microsoft.icon"]);
 
-/** PNG, JPEG or ICO leading bytes: the stored bytes are what the type said. */
-function hasIconMagic(b: Uint8Array): boolean {
+/** The content type the leading bytes prove (PNG, JPEG or ICO), or null. */
+function iconMagicType(b: Uint8Array): string | null {
   const png = b.length >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((v, i) => b[i] === v);
   const jpeg = b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
   const ico = b.length >= 4 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0;
-  return png || jpeg || ico;
+  return png ? "image/png" : jpeg ? "image/jpeg" : ico ? "image/x-icon" : null;
 }
 
 /** One image as a data: URI, or null when it isn't a small image. */
@@ -190,8 +191,9 @@ export async function fetchImageDataUri(url: string): Promise<string | null> {
       return null;
     }
     const bytes = await readCapped(res, ICON_MAX_BYTES);
-    if (!bytes || bytes.byteLength === 0 || !hasIconMagic(bytes)) return null;
-    return `data:${type};base64,${Buffer.from(bytes).toString("base64")}`;
+    const proven = bytes && bytes.byteLength > 0 ? iconMagicType(bytes) : null;
+    if (!bytes || !proven) return null;
+    return `data:${proven};base64,${Buffer.from(bytes).toString("base64")}`;
   } catch {
     return null;
   }
