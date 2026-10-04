@@ -825,7 +825,7 @@ private struct DirectServersSection: View {
                 .cardLift(cornerRadius: DesignTokens.Radius.md)
             }
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 20)
         .padding(.top, 16)
     }
 }

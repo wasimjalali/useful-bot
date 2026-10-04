@@ -143,6 +143,15 @@ import Testing
         #expect(!DirectConnection.State(raw: "ready").isChecking)
     }
 
+    @Test func reconnectRefusalsSayWhatToDo() {
+        #expect(DirectConnection.reconnectFailureCopy(code: "authorization_server_changed", name: "Tella")
+            == "The sign-in server changed. Remove this server and connect it again.")
+        #expect(DirectConnection.reconnectFailureCopy(code: "credential_missing", name: "Tella")
+            == "Remove this server and connect it again.")
+        #expect(DirectConnection.reconnectFailureCopy(code: "other", name: "Tella") == "Couldn't reconnect Tella.")
+        #expect(DirectConnection.reconnectFailureCopy(code: nil, name: "Tella") == "Couldn't reconnect Tella.")
+    }
+
     @Test func builtinRowsCannotBeRemoved() throws {
         #expect(!(try row("ready", auth: "none", builtin: true)).canRemove)
         #expect((try row("ready", auth: "none", builtin: false)).canRemove)

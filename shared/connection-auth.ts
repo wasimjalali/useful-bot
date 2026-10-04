@@ -9,7 +9,7 @@ import { refreshMcpOAuth, type OAuthTokenBundle } from "./mcp-oauth.ts";
  * inside the eve registry file that used to hold them.
  */
 
-function parseBundle(raw: string | null): OAuthTokenBundle | null {
+export function parseBundle(raw: string | null): OAuthTokenBundle | null {
   if (!raw) return null;
   try {
     const rec = JSON.parse(raw) as OAuthTokenBundle;

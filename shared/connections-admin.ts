@@ -1,8 +1,10 @@
+import { parseBundle } from "./connection-auth.ts";
 import { discoverConnection } from "./connection-tools.ts";
 import { reauthorizeProposalId } from "./connection-flow.ts";
 import {
   connectionIndex,
   connectionStatus,
+  listingIsDue,
   removeConnectionIndex,
   type ConnectionState,
 } from "./connection-tools-store.ts";
@@ -15,7 +17,7 @@ import {
   type ConnectionEntry,
   type ConnectionKind,
 } from "./connections-store.ts";
-import { connectionSecretService, keychainDel } from "./keychain.ts";
+import { connectionSecretService, keychainDel, keychainGet } from "./keychain.ts";
 import { startMcpOAuth } from "./mcp-oauth.ts";
 
 /**
@@ -69,6 +71,29 @@ export function listPublicConnections(): PublicConnection[] {
   return readConnectionsStore().connections.map(publicConnection);
 }
 
+const discovering = new Map<string, Promise<unknown>>();
+
+/**
+ * Start discovery in the background for every row whose listing is missing or
+ * due, one run per id at a time. Never awaited by the caller: a slow server
+ * must not hold the list. The row shows as checking until the run lands.
+ */
+export function startDueDiscoveries(): void {
+  for (const entry of readConnectionsStore().connections) {
+    if (discovering.has(entry.id)) continue;
+    if (!listingIsDue(connectionIndex(entry.id), connectionStatus(entry.id))) continue;
+    const run = discoverConnection(entry)
+      .catch((err) => console.error(`[connections] discovery for ${entry.id} failed: ${err instanceof Error ? err.message : "unknown"}`))
+      .finally(() => discovering.delete(entry.id));
+    discovering.set(entry.id, run);
+  }
+}
+
+/** Resolves when every discovery now running has finished. */
+export async function settleDiscoveries(): Promise<void> {
+  await Promise.all([...discovering.values()]);
+}
+
 export async function refreshConnection(id: string): Promise<PublicConnection> {
   const entry = findConnectionById(id);
   if (!entry) throw new Error("connection_missing");
@@ -89,7 +114,15 @@ export async function reauthorizeConnection(
   const entry = findConnectionById(id);
   if (!entry) throw new Error("connection_missing");
   if (entry.kind !== "mcp" || entry.authKind !== "oauth") throw new Error("not_oauth");
+  // The credential this connection already holds says which sign-in server it
+  // trusts; a server that now points somewhere else is not followed.
+  const bundle = parseBundle(keychainGet(connectionSecretService(entry.id)));
+  if (!bundle || typeof bundle.tokenEndpoint !== "string" || bundle.tokenEndpoint === "") {
+    throw new Error("credential_missing");
+  }
   const { authorizeUrl, redirectHost } = await startMcpOAuth({
+    reauthorize: true,
+    expectedTokenEndpoint: bundle.tokenEndpoint,
     mcpUrl: entry.url,
     name: entry.name,
     proposalId: reauthorizeProposalId(entry.id),

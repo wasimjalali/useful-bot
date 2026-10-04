@@ -3826,6 +3826,7 @@ final class AppModel: ObservableObject {
         do {
             directConnections = try await client.directConnections()
             if !quiet { directConnectionsError = nil }
+            if directConnections.contains(where: { $0.state.isChecking }) { startCheckingPoll() }
         } catch {
             if !quiet { directConnectionsError = "Couldn't load servers." }
         }
@@ -3864,7 +3865,9 @@ final class AppModel: ObservableObject {
                 directConnectionsError = "The server sent a sign-in link this app will not open."
             }
         } catch {
-            directConnectionsError = "Couldn't reconnect \(row.name)."
+            var code: String?
+            if case BackendError.provider(let value) = error { code = value }
+            directConnectionsError = DirectConnection.reconnectFailureCopy(code: code, name: row.name)
         }
         await loadDirectConnections(quiet: true)
         directConnectionBusy = nil
@@ -3892,6 +3895,25 @@ final class AppModel: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 await self.loadDirectConnections(quiet: true)
                 if Date().timeIntervalSince(started) > 120 {
+                    self.directConnectionPoll = nil
+                    return
+                }
+            }
+        }
+    }
+
+    /// A row still being checked: list again every 2 s, up to 60 s, until none
+    /// is. A sign-in poll already running is left alone.
+    private func startCheckingPoll() {
+        guard directConnectionPoll == nil else { return }
+        let started = Date()
+        directConnectionPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { return }
+                await self.loadDirectConnections(quiet: true)
+                if !self.directConnections.contains(where: { $0.state.isChecking })
+                    || Date().timeIntervalSince(started) > 60 {
                     self.directConnectionPoll = nil
                     return
                 }

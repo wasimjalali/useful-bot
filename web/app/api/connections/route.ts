@@ -5,6 +5,7 @@ import { runtimeConfig } from "../../../lib/auth";
 import {
   deleteConnection,
   listPublicConnections,
+  startDueDiscoveries,
   reauthorizeConnection,
   refreshConnection,
 } from "../../../../shared/connections-admin.ts";
@@ -39,6 +40,8 @@ const KNOWN: Record<string, number> = {
   connection_missing: 404,
   connection_builtin: 403,
   not_oauth: 400,
+  authorization_server_changed: 409,
+  credential_missing: 409,
 };
 
 function failure(err: unknown, fallback: string) {
@@ -60,6 +63,7 @@ export async function GET(request: Request) {
   if (rateLimited(`connections:${gate.session.callerId}`, 60)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
+  startDueDiscoveries();
   return NextResponse.json({ ok: true, connections: listPublicConnections() }, { headers: { "cache-control": "no-store" } });
 }
 

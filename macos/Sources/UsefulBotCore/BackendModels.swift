@@ -1207,6 +1207,19 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
     public var canReconnect: Bool { authKind == .oauth }
     public var reconnectProminent: Bool { canReconnect && state.needsSignIn }
 
+    /// What a refused reconnect tells the owner. The server's two refusals
+    /// both end in removing the server and connecting it again.
+    public static func reconnectFailureCopy(code: String?, name: String) -> String {
+        switch code {
+        case "authorization_server_changed":
+            return "The sign-in server changed. Remove this server and connect it again."
+        case "credential_missing":
+            return "Remove this server and connect it again."
+        default:
+            return "Couldn't reconnect \(name)."
+        }
+    }
+
     public static func toolCountLabel(_ count: Int?) -> String? {
         guard let count else { return nil }
         return count == 1 ? "1 tool" : "\(count) tools"

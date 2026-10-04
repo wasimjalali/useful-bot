@@ -8,6 +8,8 @@ import {
   listPublicConnections,
   reauthorizeConnection,
   refreshConnection,
+  settleDiscoveries,
+  startDueDiscoveries,
 } from "../shared/connections-admin.ts";
 import { connectionIndex, connectionStatus, putConnectionDiscovery } from "../shared/connection-tools-store.ts";
 import { setDiscoveryLogger } from "../shared/connection-tools.ts";
@@ -15,7 +17,7 @@ import { setConnectionLookup } from "../shared/connection-url.ts";
 import { EXCALIDRAW_CONNECTION, findConnectionById, seedDefaultConnections, upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { connectionSecretService, keychainGet, keychainSet, memoryKeychain, setKeychainDriver } from "../shared/keychain.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
+import { findOauthPending, setOauthFetch, startMcpOAuth } from "../shared/mcp-oauth.ts";
 
 const CALLBACK = "http://127.0.0.1:4320/api/connections/callback";
 
@@ -42,6 +44,12 @@ function row(overrides: Partial<ConnectionEntry> = {}): ConnectionEntry {
     createdAt: new Date().toISOString(),
     ...overrides,
   };
+}
+
+function storeBundle(tokenEndpoint: string): void {
+  keychainSet(connectionSecretService("tella"), JSON.stringify({
+    accessToken: "at_secret", refreshToken: "rt_secret", expiresAt: null, clientId: "client_0", clientSecret: null, tokenEndpoint,
+  }));
 }
 
 function server(mode: () => "down" | "ok") {
@@ -143,6 +151,7 @@ test("a row from before status was kept is described by its listing", () => {
 test("reauthorize starts a sign-in for the same connection, and only for an OAuth one", async () => {
   paths();
   upsertConnection(row({ authKind: "oauth", authHeader: null }));
+  storeBundle("https://authkit.tella.tv/oauth2/token");
   const json = (value: unknown, headers: Record<string, string> = {}) => () =>
     new Response(JSON.stringify(value), { headers: { "content-type": "application/json", ...headers } });
   const routes: Record<string, () => Response> = {
@@ -176,4 +185,94 @@ test("reauthorize starts a sign-in for the same connection, and only for an OAut
   upsertConnection(row({ id: "keyed", url: "https://keyed.example.com/mcp", authKind: "bearer", authHeader: null }));
   await assert.rejects(() => reauthorizeConnection("keyed", CALLBACK), /not_oauth/);
   await assert.rejects(() => reauthorizeConnection("nope", CALLBACK), /connection_missing/);
+});
+
+function oauthRoutes(asHost: string) {
+  const json = (value: unknown) => () =>
+    new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+  const routes: Record<string, () => Response> = {
+    "https://api.tella.com/mcp": () => new Response("{}", { status: 401 }),
+    "https://api.tella.com/.well-known/oauth-protected-resource/mcp": () => new Response("no", { status: 404 }),
+    "https://api.tella.com/.well-known/oauth-protected-resource": json({
+      resource: "https://api.tella.com",
+      authorization_servers: [`https://${asHost}`],
+    }),
+    [`https://${asHost}/.well-known/oauth-authorization-server`]: json({
+      authorization_endpoint: `https://${asHost}/oauth2/authorize`,
+      token_endpoint: `https://${asHost}/oauth2/token`,
+      registration_endpoint: `https://${asHost}/oauth2/register`,
+    }),
+    [`https://${asHost}/oauth2/register`]: json({ client_id: "client_1" }),
+  };
+  const seen: string[] = [];
+  setOauthFetch((async (input: unknown) => {
+    seen.push(String(input));
+    return (routes[String(input)] ?? (() => new Response("no", { status: 404 })))();
+  }) as typeof fetch);
+  return seen;
+}
+
+test("reauthorize refuses a sign-in server on another origin, before registering or opening anything", async () => {
+  paths();
+  upsertConnection(row({ authKind: "oauth", authHeader: null }));
+  storeBundle("https://authkit.tella.tv/oauth2/token");
+  const seen = oauthRoutes("evil.example.com");
+  await assert.rejects(() => reauthorizeConnection("tella", CALLBACK), /authorization_server_changed/);
+  assert.equal(seen.some((url) => url.endsWith("/oauth2/register")), false);
+  assert.equal(findOauthPending("anything-at-all"), null);
+});
+
+test("reauthorize with the credential deleted refuses with credential_missing", async () => {
+  paths();
+  upsertConnection(row({ authKind: "oauth", authHeader: null }));
+  const seen = oauthRoutes("authkit.tella.tv");
+  await assert.rejects(() => reauthorizeConnection("tella", CALLBACK), /credential_missing/);
+  assert.equal(seen.length, 0);
+});
+
+test("the list starts discovery for rows with no status, once per id, without waiting", async () => {
+  paths();
+  upsertConnection(row({ authKind: "none", authHeader: null }));
+  let calls = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    const json = (id: number | undefined, result: unknown) =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { headers: { "content-type": "application/json" } });
+    if (body.method === "initialize") { calls += 1; await gate; return json(1, { protocolVersion: "2025-06-18" }); }
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(body.id, { tools: [{ name: "list_videos", description: "d" }] });
+  }) as typeof fetch);
+  startDueDiscoveries();
+  startDueDiscoveries();
+  assert.equal(listPublicConnections()[0].state, "pending");
+  release();
+  await settleDiscoveries();
+  assert.equal(calls, 1);
+  assert.equal(listPublicConnections()[0].state, "ready");
+  // Fresh now: nothing starts again.
+  startDueDiscoveries();
+  await settleDiscoveries();
+  assert.equal(calls, 1);
+});
+
+test("a stored credential without a token endpoint refuses reauthorize", async () => {
+  paths();
+  upsertConnection(row({ authKind: "oauth", authHeader: null }));
+  keychainSet(connectionSecretService("tella"), JSON.stringify({ accessToken: "at", refreshToken: null, expiresAt: null, clientId: "c", clientSecret: null }));
+  const seen = oauthRoutes("authkit.tella.tv");
+  await assert.rejects(() => reauthorizeConnection("tella", CALLBACK), /credential_missing/);
+  assert.equal(seen.length, 0);
+});
+
+test("a reauthorize with an empty or missing expected endpoint fails closed; a first connect is unaffected", async () => {
+  paths();
+  const input = { mcpUrl: "https://api.tella.com/mcp", name: "Tella", proposalId: "p1", connectionId: "tella", redirectUri: CALLBACK };
+  oauthRoutes("authkit.tella.tv");
+  await assert.rejects(() => startMcpOAuth({ ...input, reauthorize: true, expectedTokenEndpoint: "" }), /authorization_server_changed/);
+  await assert.rejects(() => startMcpOAuth({ ...input, reauthorize: true }), /authorization_server_changed/);
+  await assert.rejects(() => startMcpOAuth({ ...input, reauthorize: true, expectedTokenEndpoint: "not a url" }), /authorization_server_changed/);
+  const first = await startMcpOAuth(input);
+  assert.equal(new URL(first.authorizeUrl).hostname, "authkit.tella.tv");
 });

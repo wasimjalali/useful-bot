@@ -328,9 +328,24 @@ export async function startMcpOAuth(input: {
   connectionId: string;
   redirectUri: string;
   pendingPath?: string;
+  /** A sign-in again for a connection that holds a credential: the token endpoint is then required and pinned. */
+  reauthorize?: boolean;
+  expectedTokenEndpoint?: string;
 }): Promise<{ authorizeUrl: string; redirectHost: string; state: string }> {
   const resource = await protectedResource(input.mcpUrl);
   const as = await authorizationServer(resource.authorizationServers[0]);
+  if (input.reauthorize === true) {
+    let same = false;
+    try {
+      same = typeof input.expectedTokenEndpoint === "string"
+        && input.expectedTokenEndpoint !== ""
+        && new URL(as.tokenEndpoint).origin === new URL(input.expectedTokenEndpoint).origin;
+    } catch {
+      same = false;
+    }
+    // Before a client is registered or anything is opened.
+    if (!same) throw new Error("authorization_server_changed");
+  }
   if (!as.registrationEndpoint) throw new Error("oauth_no_dcr");
   const client = await registerClient(as.registrationEndpoint, input.redirectUri, input.name);
   const { verifier, challenge } = pkce();
