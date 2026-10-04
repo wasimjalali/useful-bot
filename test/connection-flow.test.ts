@@ -1071,3 +1071,61 @@ test("a reauthorize that finishes after the connection was removed stores nothin
   assert.equal(keychainGet(connectionSecretService("tella")), held);
   assert.equal(connectionStatus("tella"), null);
 });
+
+test("a token exchange that fails settles the waiting card as failed with a sanitized reason, and drops the pending sign-in", async () => {
+  const cases: Array<[string, () => Response, string]> = [
+    ["400 invalid_grant", () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "secret detail" }), { status: 400 }), "auth_failed"],
+    ["401", () => new Response("no", { status: 401 }), "auth_failed"],
+    ["200 with no token", () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }), "auth_failed"],
+    ["503", () => new Response("down", { status: 503 }), "unreachable"],
+    ["429", () => new Response("slow", { status: 429 }), "unreachable"],
+    ["network", () => { throw new TypeError("fetch failed"); }, "unreachable"],
+  ];
+  for (const [name, answer, reason] of cases) {
+    setKeychainDriver(memoryKeychain());
+    setDiscoveryLogger(() => {});
+    const { storePath } = paths();
+    setOauthFetch(async () => answer());
+    const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+    oauthPending(card);
+    await assert.rejects(() => completeConnectionOAuth("code-1", "statevalue123456"), /./, name);
+    const stored = cardOf(card.id, storePath);
+    assert.equal(stored.phase, "failed", name);
+    assert.equal(stored.reason, reason, name);
+    assert.equal(stored.status, "pending", name);
+    assert.equal(listHandoffs().length, 0, name);
+    assert.equal(findOauthPending("statevalue123456"), null, `${name}: the verifier is not left on disk`);
+    assert.equal(findConnectionById("tella"), null, name);
+    assert.ok(!JSON.stringify(stored).includes("secret detail"), name);
+  }
+});
+
+test("the token audience log line carries no control characters and no query or fragment from the resource", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  const claims = Buffer.from(JSON.stringify({ aud: ["https://api.example.com\n[useful-bot] forged line\u001b[31m", "x".repeat(500)] })).toString("base64url");
+  const jwt = `eyJhbGciOiJub25lIn0.${claims}.sig`;
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos" }] }));
+  setOauthFetch(async () => new Response(JSON.stringify({ access_token: jwt, expires_in: 3600 }), { headers: { "content-type": "application/json" } }));
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  const file = process.env.UB_OAUTH_PENDING_PATH ?? "";
+  const rows = JSON.parse(readFileSync(file, "utf8")) as Array<Record<string, unknown>>;
+  rows[0].resource = "https://mcp.example.com/mcp?key=SECRETKEY#fragment";
+  writeFileSync(file, JSON.stringify(rows));
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { lines.push(args.join(" ")); };
+  try {
+    await completeConnectionOAuth("code-1", "statevalue123456", { storePath });
+  } finally {
+    console.error = original;
+  }
+  const audLines = lines.filter((line) => line.includes("token aud="));
+  assert.equal(audLines.length, 1);
+  assert.ok(!/[\u0000-\u001f\u007f]/.test(audLines[0]), "one line, no control characters");
+  assert.ok(audLines[0].length < 400, "capped");
+  assert.ok(audLines[0].endsWith("resource=https://mcp.example.com/mcp"), audLines[0]);
+  assert.ok(!audLines[0].includes("SECRETKEY") && !audLines[0].includes("fragment"));
+});

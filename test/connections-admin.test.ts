@@ -168,6 +168,7 @@ test("reauthorize starts a sign-in for the same connection, and only for an OAut
       authorization_endpoint: "https://authkit.tella.tv/oauth2/authorize",
       token_endpoint: "https://authkit.tella.tv/oauth2/token",
       registration_endpoint: "https://authkit.tella.tv/oauth2/register",
+      code_challenge_methods_supported: ["S256"],
     }),
     "https://authkit.tella.tv/oauth2/register": json({ client_id: "client_1" }),
   };
@@ -175,7 +176,7 @@ test("reauthorize starts a sign-in for the same connection, and only for an OAut
   const first = await reauthorizeConnection("tella", CALLBACK);
   const url = new URL(first.authorizeUrl);
   assert.equal(first.redirectHost, "authkit.tella.tv");
-  assert.equal(url.searchParams.get("resource"), "https://api.tella.com/");
+  assert.equal(url.searchParams.get("resource"), "https://api.tella.com");
   assert.equal(url.searchParams.get("scope"), "openid offline_access");
   const pending = findOauthPending(url.searchParams.get("state") ?? "");
   assert.equal(pending?.connectionId, "tella");
@@ -204,6 +205,7 @@ function oauthRoutes(asHost: string) {
       authorization_endpoint: `https://${asHost}/oauth2/authorize`,
       token_endpoint: `https://${asHost}/oauth2/token`,
       registration_endpoint: `https://${asHost}/oauth2/register`,
+      code_challenge_methods_supported: ["S256"],
     }),
     [`https://${asHost}/oauth2/register`]: json({ client_id: "client_1" }),
   };

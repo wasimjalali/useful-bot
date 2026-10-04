@@ -112,6 +112,7 @@ const TELLA_AS = {
   authorization_endpoint: "https://authkit.tella.tv/oauth2/authorize",
   token_endpoint: "https://authkit.tella.tv/oauth2/token",
   registration_endpoint: "https://authkit.tella.tv/oauth2/register",
+  code_challenge_methods_supported: ["S256"],
 };
 
 function tellaWorld(extra: Record<string, () => Response> = {}): Hit[] {
@@ -143,17 +144,17 @@ test("authorize, token and refresh all carry the resource, and authorize carries
   const { authorizeUrl, state } = await start();
   const authorize = new URL(authorizeUrl);
   // The PRM's own string, not a normalised one with a slash added.
-  assert.equal(authorize.searchParams.get("resource"), "https://api.tella.com/");
+  assert.equal(authorize.searchParams.get("resource"), "https://api.tella.com");
   assert.equal(authorize.searchParams.get("scope"), "openid profile email offline_access");
   const { bundle } = await completeMcpOAuth({ code: "code_1", state });
   const exchange = new URLSearchParams(hits.find((hit) => hit.url.endsWith("/oauth2/token"))?.body);
   assert.equal(exchange.get("grant_type"), "authorization_code");
-  assert.equal(exchange.get("resource"), "https://api.tella.com/");
-  assert.equal(bundle.resource, "https://api.tella.com/");
+  assert.equal(exchange.get("resource"), "https://api.tella.com");
+  assert.equal(bundle.resource, "https://api.tella.com");
   await refreshMcpOAuth(bundle);
   const refresh = new URLSearchParams(hits.filter((hit) => hit.url.endsWith("/oauth2/token")).at(-1)?.body);
   assert.equal(refresh.get("grant_type"), "refresh_token");
-  assert.equal(refresh.get("resource"), "https://api.tella.com/");
+  assert.equal(refresh.get("resource"), "https://api.tella.com");
 });
 
 test("a protected resource on another origin is refused", async () => {
@@ -401,4 +402,97 @@ test("a scope from the 401 is checked like one from the metadata, and both are c
   const scope = new URL((await start()).authorizeUrl).searchParams.get("scope") ?? "";
   assert.ok(scope.length > 0 && scope.length <= 1024, `${scope.length}`);
   assert.ok(scope.startsWith("scope0 scope1"));
+});
+
+// UB-003 review round 2.
+
+test("a server that does not say it supports S256 is refused before a client is registered", async () => {
+  box();
+  const { code_challenge_methods_supported: _kept, ...without } = TELLA_AS;
+  for (const [name, doc] of [
+    ["no field", without],
+    ["plain only", { ...TELLA_AS, code_challenge_methods_supported: ["plain"] }],
+    ["not a list", { ...TELLA_AS, code_challenge_methods_supported: "S256" }],
+    ["empty", { ...TELLA_AS, code_challenge_methods_supported: [] }],
+  ] as const) {
+    const hits = tellaWorld({ "https://authkit.tella.tv/.well-known/oauth-authorization-server": jsonResponse(doc) });
+    await assert.rejects(() => start(), /oauth_no_pkce/, name);
+    assert.equal(hits.some((hit) => hit.url.endsWith("/oauth2/register")), false, `${name}: nothing registered`);
+  }
+  tellaWorld({ "https://authkit.tella.tv/.well-known/oauth-authorization-server": jsonResponse({ ...TELLA_AS, code_challenge_methods_supported: ["plain", "S256"] }) });
+  assert.ok((await start()).authorizeUrl);
+});
+
+test("the exchange removes only its own pending row, even when another sign-in was written while it ran", async () => {
+  box();
+  tellaWorld({
+    "https://authkit.tella.tv/oauth2/token": () => {
+      // Another sign-in starts while this one's token request is out.
+      const path = process.env.UB_OAUTH_PENDING_PATH ?? "";
+      const rows = JSON.parse(readFileSync(path, "utf8")) as Array<Record<string, unknown>>;
+      rows.push({ ...rows[0], state: "other-state-123456", proposalId: "prp_other0000001" });
+      writeFileSync(path, JSON.stringify(rows));
+      return new Response(JSON.stringify({ access_token: "at_1", expires_in: 3600 }), { headers: { "content-type": "application/json" } });
+    },
+  });
+  const { state } = await start();
+  await completeMcpOAuth({ code: "c", state });
+  assert.equal(findOauthPending(state), null);
+  assert.ok(findOauthPending("other-state-123456"), "the sign-in written meanwhile survives");
+});
+
+test("the resource goes out as the metadata wrote it, less a fragment, and as the configured URL when it names none", async () => {
+  for (const [declared, expected] of [
+    ["https://api.tella.com", "https://api.tella.com"],
+    ["https://api.tella.com/", "https://api.tella.com/"],
+    ["https://api.tella.com/mcp", "https://api.tella.com/mcp"],
+    ["https://api.tella.com/mcp#frag", "https://api.tella.com/mcp"],
+    [undefined, "https://api.tella.com/mcp"],
+  ] as const) {
+    box();
+    tellaWorld({
+      "https://api.tella.com/.well-known/oauth-protected-resource": jsonResponse({
+        ...(declared === undefined ? {} : { resource: declared }),
+        authorization_servers: ["https://authkit.tella.tv"],
+        scopes_supported: ["openid"],
+      }),
+    });
+    const { authorizeUrl, state } = await start();
+    assert.equal(new URL(authorizeUrl).searchParams.get("resource"), expected, String(declared));
+    const { bundle } = await completeMcpOAuth({ code: "c", state });
+    assert.equal(bundle.resource, expected, String(declared));
+  }
+});
+
+test("offline_access asks for consent, and the registration carries the scope", async () => {
+  box();
+  const hits = tellaWorld();
+  const { authorizeUrl } = await start();
+  const url = new URL(authorizeUrl);
+  assert.equal(url.searchParams.get("scope"), "openid profile email offline_access");
+  assert.equal(url.searchParams.get("prompt"), "consent");
+  const registration = JSON.parse(hits.find((hit) => hit.url.endsWith("/oauth2/register"))?.body ?? "{}") as Record<string, unknown>;
+  assert.equal(registration.scope, "openid profile email offline_access");
+  // No offline_access: no prompt. No scope at all: none registered.
+  box();
+  const plain = tellaWorld({
+    "https://api.tella.com/.well-known/oauth-protected-resource": jsonResponse({
+      resource: "https://api.tella.com",
+      authorization_servers: ["https://authkit.tella.tv"],
+      scopes_supported: ["openid", "email"],
+    }),
+  });
+  const second = new URL((await start()).authorizeUrl);
+  assert.equal(second.searchParams.get("prompt"), null);
+  assert.equal(JSON.parse(plain.find((hit) => hit.url.endsWith("/oauth2/register"))?.body ?? "{}").scope, "openid email");
+  box();
+  const bare = tellaWorld({
+    "https://api.tella.com/.well-known/oauth-protected-resource": jsonResponse({
+      resource: "https://api.tella.com",
+      authorization_servers: ["https://authkit.tella.tv"],
+    }),
+  });
+  const third = new URL((await start()).authorizeUrl);
+  assert.equal(third.searchParams.get("prompt"), null);
+  assert.equal("scope" in JSON.parse(bare.find((hit) => hit.url.endsWith("/oauth2/register"))?.body ?? "{}"), false);
 });

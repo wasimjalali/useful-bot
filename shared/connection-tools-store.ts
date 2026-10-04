@@ -113,7 +113,17 @@ export type ConnectionToolsStore = {
   /** Per connection id, beside the listing it describes. */
   status: Record<string, ConnectionStatus>;
   sessions: Record<string, SessionTools>;
+  /**
+   * Connections removed, and when. A discovery that started before its
+   * connection was removed must not write the row back, and the status row
+   * that used to say so goes with the connection, so the removal is recorded
+   * here, in the same file the writes go to.
+   */
+  deleted: Record<string, string>;
 };
+
+/** Removals remembered. Far more than an owner has connections; the oldest go first. */
+const MAX_DELETED = 200;
 
 const LOCK_TIMEOUT_MS = 5000;
 const LOCK_STALE_MS = 2000;
@@ -172,7 +182,7 @@ export function mountedToolName(connectionId: string, toolName: string): string 
 }
 
 export function emptyConnectionToolsStore(): ConnectionToolsStore {
-  return { schemaVersion: 1, index: {}, status: {}, sessions: {} };
+  return { schemaVersion: 1, index: {}, status: {}, sessions: {}, deleted: {} };
 }
 
 function parseTool(raw: unknown): IndexedTool | null {
@@ -262,6 +272,10 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
       updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : new Date(0).toISOString(),
       tools: [...new Set(tools)],
     };
+  }
+  const deleted = rec.deleted && typeof rec.deleted === "object" ? rec.deleted as Record<string, unknown> : {};
+  for (const [id, value] of Object.entries(deleted)) {
+    if (typeof value === "string" && Number.isFinite(Date.parse(value))) store.deleted[id] = value;
   }
   return store;
 }
@@ -404,9 +418,41 @@ export function putConnectionListingFailed(
  */
 const checkedThisRuntime = new Set<string>();
 
+/** Whether this process has listed (or been told the state of) this connection yet. */
+export function checkedThisRuntimeFor(connectionId: string): boolean {
+  return checkedThisRuntime.has(connectionId);
+}
+
 /** Test hook: the next use of every connection is its first in a new process. */
 export function resetRuntimeChecks(): void {
   checkedThisRuntime.clear();
+}
+
+/**
+ * Every attempt is stamped when it starts, and the stamps only go up, so two
+ * attempts begun in the same millisecond still have an order the store can
+ * judge them by. A removal takes a stamp from the same counter, so an attempt
+ * begun after it is always later than it.
+ */
+let lastStamp = 0;
+export function nextStamp(): string {
+  lastStamp = Math.max(Date.now(), lastStamp + 1);
+  return new Date(lastStamp).toISOString();
+}
+
+/** When this process removed each connection, as an epoch. Backs up the stored record. */
+const removedHere = new Map<string, number>();
+
+/**
+ * Whether the connection was removed at or after the moment this write's
+ * attempt started. Independent of any status row: removal deletes that.
+ */
+function removedSince(store: ConnectionToolsStore, connectionId: string, startedAt: string): boolean {
+  const mine = Date.parse(startedAt);
+  if (!Number.isFinite(mine)) return false;
+  const stored = Date.parse(store.deleted[connectionId] ?? "");
+  const here = removedHere.get(connectionId) ?? Number.NEGATIVE_INFINITY;
+  return Math.max(Number.isFinite(stored) ? stored : Number.NEGATIVE_INFINITY, here) >= mine;
 }
 
 /**
@@ -436,6 +482,7 @@ export function putConnectionDiscovery(
   path = connectionToolsPath(),
 ): boolean {
   const written = updateConnectionToolsStore((store) => {
+    if (removedSince(store, connectionId, outcome.status.checkedAt)) return false;
     if (outcome.unlessNewer && supersededBy(store, connectionId, outcome.status.checkedAt)) return false;
     const broken = outcome.status.state !== "ready" && outcome.status.state !== "zero_tools";
     store.index[connectionId] = {
@@ -464,6 +511,7 @@ export function putConnectionPending(
   path = connectionToolsPath(),
 ): void {
   updateConnectionToolsStore((store) => {
+    if (removedSince(store, connectionId, startedAt)) return;
     if (supersededBy(store, connectionId, startedAt)) return;
     store.status[connectionId] = {
       state: "pending",
@@ -485,6 +533,7 @@ export function putConnectionStatus(
   opts: { unlessNewer?: boolean } = {},
 ): boolean {
   const written = updateConnectionToolsStore((store) => {
+    if (removedSince(store, connectionId, status.checkedAt)) return false;
     if (opts.unlessNewer && supersededBy(store, connectionId, status.checkedAt)) return false;
     store.status[connectionId] = status;
     return true;
@@ -500,11 +549,26 @@ export function connectionStatus(
   return readConnectionToolsStore(path).status[connectionId] ?? null;
 }
 
-/** Forget a connection's listing and status; its sessions shed the tools on their own. */
+/**
+ * Forget a connection's listing and status; its sessions shed the tools on
+ * their own. Also records the removal, so a write from an attempt that began
+ * before it (a slow discovery, a measurement) is dropped instead of bringing
+ * the row back.
+ */
 export function removeConnectionIndex(connectionId: string, path = connectionToolsPath()): void {
+  const at = nextStamp();
+  removedHere.set(connectionId, Date.parse(at));
   updateConnectionToolsStore((store) => {
     delete store.index[connectionId];
     delete store.status[connectionId];
+    store.deleted[connectionId] = at;
+    const ids = Object.keys(store.deleted);
+    if (ids.length > MAX_DELETED) {
+      ids
+        .sort((a, b) => Date.parse(store.deleted[b]) - Date.parse(store.deleted[a]))
+        .slice(MAX_DELETED)
+        .forEach((id) => delete store.deleted[id]);
+    }
   }, path);
   checkedThisRuntime.delete(connectionId);
 }
@@ -518,8 +582,11 @@ export function putConnectionOperations(
   connectionId: string,
   size: { operations: number; schemaBytes: number; textBytes: number; longestName: number } | null,
   path = connectionToolsPath(),
+  /** When the measurement started; nothing is written if the connection was removed since. */
+  startedAt?: string,
 ): void {
   updateConnectionToolsStore((store) => {
+    if (startedAt !== undefined && removedSince(store, connectionId, startedAt)) return;
     const last = store.index[connectionId];
     store.index[connectionId] = {
       fetchedAt: new Date().toISOString(),

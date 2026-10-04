@@ -8,6 +8,8 @@ import {
   isMountableToolName,
   listingIsDue,
   mountedToolName,
+  nextStamp,
+  checkedThisRuntimeFor,
   putConnectionDiscovery,
   putConnectionOperations,
   putConnectionPending,
@@ -16,7 +18,7 @@ import {
   type ConnectionStatus,
   type IndexedTool,
 } from "./connection-tools-store.ts";
-import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
+import { findConnectionById, readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
 import { listMcpToolsWithStats, MCP_READ_TIMEOUT_MS, McpError, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
 import { specWireBytes, type SpecSize } from "./tool-wire-size.ts";
 import { MAX_SESSION_TOOL_BYTES, MAX_SESSION_TOOLS, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
@@ -140,6 +142,7 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
   // Together, not one after another. This runs at a turn boundary and holds
   // the first model call of the turn for as long as it takes.
   await Promise.all(due.map(async (entry) => {
+    const startedAt = nextStamp();
     let size: SpecSize | null = null;
     try {
       size = await measureOpenApiConnection(entry.url, await headersFor(entry));
@@ -147,7 +150,7 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
       size = null;
     }
     try {
-      putConnectionOperations(entry.id, size, path);
+      putConnectionOperations(entry.id, size, path, startedAt);
     } catch {
       // The index is a cache; a write that failed costs one fetch later.
     }
@@ -250,45 +253,48 @@ function logOutcome(entry: ConnectionEntry, status: ConnectionStatus): void {
 
 export type Discovery = { status: ConnectionStatus; tools: IndexedTool[] };
 
-/**
- * Every attempt is stamped when it starts, and the stamps only go up, so two
- * attempts begun in the same millisecond still have an order the store can
- * judge them by.
- */
-let lastStamp = 0;
-function stamp(): string {
-  lastStamp = Math.max(Date.now(), lastStamp + 1);
-  return new Date(lastStamp).toISOString();
-}
+const stamp = nextStamp;
 
 type Run = { startedAt: string; controller: AbortController; promise: Promise<Discovery> };
 
 /**
- * The attempt now running for each connection. One process-wide map, so a
- * search past its TTL, the Connectors list, a Refresh and the connect flow all
- * share an attempt instead of racing each other to write the answer.
+ * The attempts now running for each connection, oldest first. One process-wide
+ * map, so a search past its TTL, the Connectors list, a Refresh and the connect
+ * flow all share an attempt instead of racing each other to write the answer.
+ * A set, not a single run: an attempt that a credential-bearing one supersedes
+ * is still out there until it finishes, and removal has to stop it too.
  */
-const running = new Map<string, Run>();
+const running = new Map<string, Set<Run>>();
+
+/** The newest attempt for this connection, or undefined. */
+function latestRun(connectionId: string): Run | undefined {
+  const runs = running.get(connectionId);
+  if (!runs) return undefined;
+  let latest: Run | undefined;
+  for (const run of runs) latest = run;
+  return latest;
+}
 
 /** Whether a discovery of this connection is in progress now. */
 export function discoveryRunning(connectionId: string): boolean {
-  return running.has(connectionId);
+  return (running.get(connectionId)?.size ?? 0) > 0;
 }
 
 /** Resolves when every discovery now running has finished. */
 export async function settleAllDiscoveries(): Promise<void> {
-  await Promise.all([...running.values()].map((run) => run.promise));
+  await Promise.all([...running.values()].flatMap((runs) => [...runs].map((run) => run.promise)));
 }
 
 /**
- * Stop whatever discovery of this connection is running and wait for it to
- * end, so removing the connection does not race a write for it.
+ * Stop every discovery of this connection that is running, the superseded
+ * ones included, and wait for them to end, so removing the connection does not
+ * race a write for it.
  */
 export async function cancelDiscovery(connectionId: string): Promise<void> {
-  const run = running.get(connectionId);
-  if (!run) return;
-  run.controller.abort();
-  await run.promise;
+  const runs = [...(running.get(connectionId) ?? [])];
+  if (runs.length === 0) return;
+  for (const run of runs) run.controller.abort();
+  await Promise.all(runs.map((run) => run.promise));
 }
 
 /**
@@ -313,7 +319,7 @@ export function discoverConnection(
   entry: ConnectionEntry,
   opts: { headers?: Record<string, string>; storePath?: string } = {},
 ): Promise<Discovery> {
-  const current = running.get(entry.id);
+  const current = latestRun(entry.id);
   if (current && opts.headers === undefined) return current.promise;
   const startedAt = stamp();
   const controller = new AbortController();
@@ -321,10 +327,14 @@ export function discoverConnection(
     startedAt,
     controller,
     promise: attempt(entry, opts, startedAt, controller.signal).finally(() => {
-      if (running.get(entry.id) === run) running.delete(entry.id);
+      const runs = running.get(entry.id);
+      runs?.delete(run);
+      if (runs && runs.size === 0) running.delete(entry.id);
     }),
   };
-  running.set(entry.id, run);
+  const runs = running.get(entry.id) ?? new Set<Run>();
+  runs.add(run);
+  running.set(entry.id, runs);
   return run.promise;
 }
 
@@ -375,7 +385,7 @@ async function attempt(
       }
       : { state: size.operations > 0 ? "ready" : "zero_tools", lastError: null, checkedAt, toolCount: size.operations };
     try {
-      putConnectionOperations(entry.id, size, store);
+      putConnectionOperations(entry.id, size, store, startedAt);
       if (!putConnectionStatus(entry.id, status, store, { unlessNewer: true })) {
         return superseded(entry.id, startedAt, store);
       }
@@ -453,7 +463,7 @@ function storeFailure(checkedAt: string): ConnectionStatus {
 
 /** What an attempt that lost to a newer one reports: the newer one's outcome. */
 async function superseded(connectionId: string, startedAt: string, store: string | undefined): Promise<Discovery> {
-  const newer = running.get(connectionId);
+  const newer = latestRun(connectionId);
   if (newer && newer.startedAt !== startedAt) return newer.promise;
   const status = connectionStatus(connectionId, store);
   const index = connectionIndex(connectionId, store);
@@ -464,12 +474,13 @@ async function superseded(connectionId: string, startedAt: string, store: string
 }
 
 /**
- * Record that a tool call found the sign-in expired: the status says so, and
- * the listing is emptied, so the connection stops being offered as working
- * until the owner signs in again.
+ * Write what a failed tool call found: the status says so, and the listing is
+ * emptied, so the connection stops being offered as working until the owner
+ * signs in again. Skipped for a connection that is no longer there, and yields
+ * to anything already written with a later stamp.
  */
-export function markConnectionExpired(connectionId: string, storePath?: string): void {
-  const failure = classifyDiscoveryError(new OAuthExpiredError());
+function markConnectionFailed(connectionId: string, failure: Failure, storePath?: string): void {
+  if (!findConnectionById(connectionId)) return;
   putConnectionDiscovery(connectionId, {
     tools: [],
     status: {
@@ -478,7 +489,18 @@ export function markConnectionExpired(connectionId: string, storePath?: string):
       checkedAt: stamp(),
       toolCount: null,
     },
+    unlessNewer: true,
   }, storePath);
+}
+
+/** A tool call found the sign-in expired. */
+export function markConnectionExpired(connectionId: string, storePath?: string): void {
+  markConnectionFailed(connectionId, classifyDiscoveryError(new OAuthExpiredError()), storePath);
+}
+
+/** A tool call, or its handshake, was refused by the server with a 401 or 403. */
+export function markConnectionAuthFailed(connectionId: string, status: number | null, storePath?: string): void {
+  markConnectionFailed(connectionId, classifyDiscoveryError(new McpError("auth", `mcp_http_${status ?? 401}`, { status: status ?? 401 })), storePath);
 }
 
 /**
@@ -512,6 +534,51 @@ export async function ensureConnectionIndex(
   storePath?: string,
 ): Promise<IndexedTool[]> {
   return (await ensureConnectionListing(entry, storePath)).tools;
+}
+
+/**
+ * Connections whose first check in this process did not end `ready`, so their
+ * saved tools stay unmounted until a later listing does.
+ */
+const heldBack = new Set<string>();
+
+/**
+ * Before a session's saved tools are mounted: list again any connection this
+ * process has not checked yet. The saved listing may be from before a restart
+ * (a tool the server dropped, a schema it changed, an access that was revoked),
+ * and a bot resuming a session mounted it without ever asking. Returns the
+ * connections whose tools must not be mounted now: the check did not finish
+ * inside the read timeout, or did not end `ready`. They stay held back until a
+ * later listing is `ready`. Never throws.
+ */
+export async function refreshBeforeMount(connectionIds: Iterable<string>, storePath?: string): Promise<Set<string>> {
+  const blocked = new Set<string>();
+  await Promise.all([...new Set(connectionIds)].map(async (id) => {
+    const entry = findConnectionById(id);
+    // Anything else is not mounted from the index at all.
+    if (!entry || entry.kind !== "mcp") return;
+    if (checkedThisRuntimeFor(id) && !heldBack.has(id)) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        ensureConnectionListing(entry, storePath),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("check_timeout")), MCP_READ_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (err) {
+      discoveryLog(`[useful-bot] connection ${id} could not be checked before mounting: ${errorName(err)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (connectionStatus(id, storePath)?.state === "ready") {
+      heldBack.delete(id);
+    } else {
+      heldBack.add(id);
+      blocked.add(id);
+    }
+  }));
+  return blocked;
 }
 
 /**

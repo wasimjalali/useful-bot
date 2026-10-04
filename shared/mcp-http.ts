@@ -277,15 +277,28 @@ function answerTo(messages: unknown[], id: number): Record<string, unknown> | nu
     ?? null;
 }
 
+/** A server's own request on the stream: it has a method and an id, so it expects an answer. */
+function serverRequest(message: unknown): { id: string | number; method: string } | null {
+  const rec = asRecord(message);
+  if (!rec || typeof rec.method !== "string") return null;
+  if (typeof rec.id !== "number" && typeof rec.id !== "string") return null;
+  return { id: rec.id, method: rec.method };
+}
+
 /**
  * Read a response until it holds this request's answer. An event stream is
  * parsed as it arrives and dropped the moment the answer is in: a server may
  * keep the stream open, or trail heartbeats, long after it has said what was
  * asked, and waiting for the end turned a finished call into a timeout.
+ *
+ * A server may also ask something on the stream and hold its answer until it
+ * hears back. `onServerRequest` is called for each such request, in order,
+ * before the next event is read.
  */
 async function readAnswer(
   res: Response,
   id: number,
+  onServerRequest: (request: { id: string | number; method: string }) => Promise<void>,
 ): Promise<{ answer: Record<string, unknown> | null; seen: number; unparsed: number }> {
   const contentType = res.headers.get("content-type") ?? "";
   if (!res.body || !contentType.toLowerCase().includes("text/event-stream")) {
@@ -298,13 +311,17 @@ async function readAnswer(
   let total = 0;
   let seen = 0;
   let unparsed = 0;
-  const take = (events: string[]): Record<string, unknown> | null => {
+  const take = async (events: string[]): Promise<Record<string, unknown> | null> => {
     for (const event of events) {
       const parsed = rpcMessages(event, contentType);
       seen += parsed.messages.length;
       unparsed += parsed.unparsed;
       const hit = answerTo(parsed.messages, id);
       if (hit) return hit;
+      for (const message of parsed.messages) {
+        const request = serverRequest(message);
+        if (request) await onServerRequest(request);
+      }
     }
     return null;
   };
@@ -318,11 +335,11 @@ async function readAnswer(
       buffer += decoder.decode(value, { stream: true });
       const events = buffer.split(/\r?\n\r?\n/);
       buffer = events.pop() ?? "";
-      const hit = take(events);
+      const hit = await take(events);
       if (hit) return { answer: hit, seen, unparsed };
     }
     buffer += decoder.decode();
-    return { answer: take([buffer]), seen, unparsed };
+    return { answer: await take([buffer]), seen, unparsed };
   } finally {
     try { await reader.cancel(); } catch { /* already done */ }
   }
@@ -337,16 +354,32 @@ async function rpcOnce(
 ): Promise<{ result: unknown; sessionId: string | null }> {
   const res = await post(session.url, { jsonrpc: "2.0", id, method, params }, session.headers, signal);
   const sessionId = res.headers.get("mcp-session-id");
+  // The server's request is answered the way the request was made: the
+  // caller's credentials, the negotiated version and the session (which, on
+  // `initialize`, is the one this very response just handed out).
+  const answerServer = async (request: { id: string | number; method: string }): Promise<void> => {
+    const reply = request.method === "ping"
+      ? { jsonrpc: "2.0", id: request.id, result: {} }
+      : { jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } };
+    const sent = await post(
+      session.url,
+      reply,
+      { ...session.headers, ...(sessionId ? { "mcp-session-id": sessionId } : {}) },
+      signal,
+    );
+    try { await sent.body?.cancel(); } catch { /* nothing to read */ }
+  };
   let read: Awaited<ReturnType<typeof readAnswer>>;
   try {
-    read = await readAnswer(res, id);
+    read = await readAnswer(res, id, answerServer);
   } catch (err) {
+    if (err instanceof McpError) throw err;
     if (err instanceof Error && err.message === "mcp_body_too_large") throw new McpError("protocol", err.message);
     throw new McpError("unreachable", err instanceof Error ? err.message.slice(0, 200) : "mcp_unreachable");
   }
   // The answer is the message carrying this request's id. Anything else in
-  // the stream is the server talking to us (a notification, a ping) and is
-  // not what was asked.
+  // the stream is the server talking to us (a notification, or a request that
+  // was answered above) and is not what was asked.
   const { answer } = read;
   if (!answer) {
     if (read.seen === 0 || read.unparsed > 0) throw new McpError("parse", "mcp_parse");

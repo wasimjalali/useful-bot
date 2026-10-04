@@ -177,26 +177,30 @@ function wellKnown(origin: string, path: string): string {
 }
 
 /**
- * The resource as RFC 8707 wants it, with no fragment, written the way the
- * official MCP SDK writes it (`new URL(...).href`, so a bare origin keeps its
- * slash). Tella's sign-in server minted a token Tella refused when the slash
- * was dropped: the string has to match what the server registered.
+ * The resource indicator, as the server wrote it, less any fragment (RFC 8707
+ * forbids one). Not normalised: `new URL(...).href` adds a slash to a bare
+ * origin such as `https://example.com`, and an authorization server that
+ * matches the indicator exactly then rejects it or mints a token for another
+ * audience. The official MCP SDK sends the metadata's string verbatim for the
+ * same reason (modelcontextprotocol/typescript-sdk #1968). Tella's sign-in
+ * server answered with its own project as the audience when this string
+ * differed from the one it knew (2026-10-04).
  */
-function canonicalResource(parsed: URL): string {
-  const out = new URL(parsed.href);
-  out.hash = "";
-  return out.href;
+function withoutFragment(value: string): string {
+  const at = value.indexOf("#");
+  return at === -1 ? value : value.slice(0, at);
 }
 
 /**
- * The resource a token is asked for. The metadata's own `resource` when it
- * sits on the server's origin, the server's URL when it names none. One on
- * another origin is refused: a server could otherwise have a token minted for
- * somebody else's API.
+ * The resource a token is asked for. The metadata's own `resource` string when
+ * it sits on the server's origin, the server's URL as configured when it names
+ * none. One on another origin is refused: a server could otherwise have a
+ * token minted for somebody else's API. The same string goes on the authorize
+ * request, the code exchange and every refresh.
  */
 function resourceFor(mcpUrl: string, declared: unknown): string {
   const server = new URL(assertConnectionUrl(mcpUrl));
-  if (typeof declared !== "string") return canonicalResource(server);
+  if (typeof declared !== "string") return withoutFragment(mcpUrl);
   let parsed: URL;
   try {
     parsed = new URL(declared);
@@ -204,7 +208,7 @@ function resourceFor(mcpUrl: string, declared: unknown): string {
     throw new Error("oauth_resource_invalid");
   }
   if (parsed.origin !== server.origin) throw new Error("oauth_resource_origin");
-  return canonicalResource(parsed);
+  return withoutFragment(declared);
 }
 
 /**
@@ -326,6 +330,8 @@ async function authorizationServer(issuer: string, declaredIssuer: string): Prom
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint: string | null;
+  /** The metadata lists `S256` among its code challenge methods. */
+  pkceS256: boolean;
 }> {
   const parsed = new URL(assertConnectionUrl(issuer));
   const path = parsed.pathname.replace(/\/$/, "");
@@ -356,7 +362,11 @@ async function authorizationServer(issuer: string, declaredIssuer: string): Prom
   // another is some other server's metadata served from this address.
   const named = typeof rec.issuer === "string" ? trimSlash(rec.issuer) : null;
   if (named === null || named !== trimSlash(declaredIssuer)) throw new Error("oauth_issuer_mismatch");
-  return { issuer: named, ...out };
+  // Only what the server says it supports counts: a document with no list is
+  // not a promise that it checks the challenge (RFC 8414 section 2).
+  const pkceS256 = Array.isArray(rec.code_challenge_methods_supported)
+    && rec.code_challenge_methods_supported.includes("S256");
+  return { issuer: named, ...out, pkceS256 };
 }
 
 function trimSlash(value: string): string {
@@ -389,6 +399,7 @@ async function registerClient(
   registrationEndpoint: string,
   redirectUri: string,
   name: string,
+  scope: string | null,
 ): Promise<{ clientId: string; clientSecret: string | null }> {
   const res = await activeFetch()(await assertResolvedPublic(registrationEndpoint), {
     method: "POST",
@@ -404,6 +415,8 @@ async function registerClient(
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
+      // As the official SDK registers: the scope the sign-in will ask for.
+      ...(scope ? { scope } : {}),
     }),
   });
   if (!res.ok) throw new Error("oauth_register");
@@ -456,7 +469,10 @@ export async function startMcpOAuth(input: {
     if (!same) throw new Error("authorization_server_changed");
   }
   if (!as.registrationEndpoint || !pin) throw new Error("oauth_no_dcr");
-  const client = await registerClient(as.registrationEndpoint, input.redirectUri, input.name);
+  // The challenge is sent as S256 and the verifier only protects the code if
+  // the server checks it. Before a client is registered.
+  if (!as.pkceS256) throw new Error("oauth_no_pkce");
+  const client = await registerClient(as.registrationEndpoint, input.redirectUri, input.name, resource.scope);
   const { verifier, challenge } = pkce();
   const state = b64url(randomBytes(24));
   const authorize = new URL(as.authorizationEndpoint);
@@ -468,6 +484,9 @@ export async function startMcpOAuth(input: {
   authorize.searchParams.set("state", state);
   authorize.searchParams.set("resource", resource.resource);
   if (resource.scope) authorize.searchParams.set("scope", resource.scope);
+  // Without it a server may answer the authorize request with no refresh
+  // token at all; the SDK asks for consent whenever offline_access is wanted.
+  if (resource.scope?.split(" ").includes("offline_access")) authorize.searchParams.set("prompt", "consent");
   const pending: OAuthPending = {
     state,
     verifier,
@@ -486,6 +505,21 @@ export async function startMcpOAuth(input: {
   rows.push(pending);
   writePending(rows, path);
   return { authorizeUrl: authorize.toString(), redirectHost: authorize.hostname.toLowerCase(), state };
+}
+
+/**
+ * The token endpoint refused the authorization code, or answered with no
+ * token. Carries the HTTP status so a caller can tell a refusal (4xx) from a
+ * server that is down (5xx, 429). Nothing the server said is kept.
+ */
+export class OAuthTokenError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super("oauth_token");
+    this.name = "OAuthTokenError";
+    this.status = status;
+  }
 }
 
 export async function completeMcpOAuth(input: {
@@ -513,10 +547,12 @@ export async function completeMcpOAuth(input: {
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body,
   });
-  if (!res.ok) throw new Error("oauth_token");
+  if (!res.ok) throw new OAuthTokenError(res.status);
   const rec = asRecord(await boundedJson(res));
-  if (!rec || typeof rec.access_token !== "string") throw new Error("oauth_token");
-  writePending(rows.filter((row) => row.state !== input.state), path);
+  if (!rec || typeof rec.access_token !== "string") throw new OAuthTokenError(res.status);
+  // Read again: the request above took a while, and a sign-in started or
+  // dropped meanwhile is in the file now, not in `rows`.
+  writePending(readPending(path).filter((row) => row.state !== input.state), path);
   const expiresIn = typeof rec.expires_in === "number" ? rec.expires_in : null;
   return {
     pending,

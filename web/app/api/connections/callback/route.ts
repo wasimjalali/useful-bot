@@ -1,5 +1,6 @@
 import { completeConnectionOAuth } from "../../../../../shared/connection-flow.ts";
 import { requestIsLoopback } from "../../../../../shared/origin.ts";
+import { errorCode } from "../../../../lib/api-guard";
 import { runtimeConfig } from "../../../../lib/auth";
 
 export const runtime = "nodejs";
@@ -76,7 +77,10 @@ export async function GET(request: Request) {
   try {
     await completeConnectionOAuth(code, state);
     return html(true, "You can close this tab and return to Useful Bot.");
-  } catch {
+  } catch (err) {
+    // The code only: an error's own text can carry a path or a piece of what
+    // the sign-in server answered.
+    console.error(`[useful-bot] connection sign-in did not finish: ${errorCode(err, "unknown")}`);
     return html(false, "The sign-in could not finish. You can close this tab and use Reopen.", 400);
   }
 }

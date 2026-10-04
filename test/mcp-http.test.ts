@@ -184,7 +184,14 @@ test("a server that answers with more than this side will take is cut off", asyn
   }
 });
 
-type Seen = { method: string; id?: number; params?: Record<string, unknown>; headers: Record<string, string> };
+type Seen = {
+  method: string;
+  id?: number;
+  params?: Record<string, unknown>;
+  headers: Record<string, string>;
+  result?: unknown;
+  error?: { code?: number };
+};
 
 /** A server that records what it was sent and answers by method. */
 function server(
@@ -193,12 +200,12 @@ function server(
   const seen: Seen[] = [];
   setConnectionLookup(async () => "8.8.8.8");
   setMcpFetch((async (_input: unknown, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body ?? "{}")) as { method: string; id?: number; params?: Record<string, unknown> };
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method: string; id?: number; params?: Record<string, unknown>; result?: unknown; error?: { code?: number } };
     const headers: Record<string, string> = {};
     for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
       headers[key.toLowerCase()] = value;
     }
-    const row: Seen = { method: body.method, id: body.id, params: body.params, headers };
+    const row: Seen = { method: body.method, id: body.id, params: body.params, headers, result: body.result, error: body.error };
     seen.push(row);
     return answer(row);
   }) as typeof fetch);
@@ -214,6 +221,13 @@ function json(id: number | undefined, result: unknown, headers: Record<string, s
 function reset(): void {
   setMcpFetch(null);
   setConnectionLookup(null);
+}
+
+/** Resolves when the promise does, or after a short wait, whichever comes first. */
+async function waitFor(done: Promise<void>, ms = 500): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([done, new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+  clearTimeout(timer);
 }
 
 const ONE_TOOL = { tools: [{ name: "list_videos", description: "List videos" }] };
@@ -287,6 +301,74 @@ test("a notification streamed ahead of the response does not break the parse", a
   try {
     const tools = await listMcpTools("https://api.example.com/mcp");
     assert.deepEqual(tools.map((tool) => tool.name), ["list_videos"]);
+  } finally {
+    reset();
+  }
+});
+
+test("a server ping on the stream is answered before the server sends its result", async () => {
+  const encoder = new TextEncoder();
+  let release: () => void = () => {};
+  const replied = new Promise<void>((resolve) => { release = resolve; });
+  const seen = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" }, { "mcp-session-id": "sess-9" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    // The reply to the server's ping: a response, so it has no method.
+    if (row.method === undefined && row.id === 77) {
+      release();
+      return new Response(null, { status: 202 });
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 77, method: "ping" })}\n\n`));
+        // A server that waits for the reply. Bounded, so a client that never
+        // answers fails the assertion below instead of hanging the run.
+        await waitFor(replied);
+        controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: row.id, result: ONE_TOOL })}\n\n`));
+        controller.close();
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  });
+  try {
+    const tools = await listMcpTools("https://api.example.com/mcp", { authorization: "Bearer abc" });
+    assert.deepEqual(tools.map((tool) => tool.name), ["list_videos"]);
+    const reply = seen.find((row) => row.method === undefined && row.id === 77);
+    assert.ok(reply, "the ping was answered");
+    assert.deepEqual(reply.result, {});
+    assert.equal(reply.headers["mcp-session-id"], "sess-9");
+    assert.equal(reply.headers["mcp-protocol-version"], "2025-06-18");
+    assert.equal(reply.headers.authorization, "Bearer abc");
+  } finally {
+    reset();
+  }
+});
+
+test("another server request on the stream is answered with method-not-found, not ignored", async () => {
+  const encoder = new TextEncoder();
+  let release: () => void = () => {};
+  const replied = new Promise<void>((resolve) => { release = resolve; });
+  const seen = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    if (row.method === undefined && row.id === 5) {
+      release();
+      return new Response(null, { status: 202 });
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: 5, method: "sampling/createMessage", params: {} })}\n\n`));
+        await waitFor(replied);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: row.id, result: ONE_TOOL })}\n\n`));
+        controller.close();
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  });
+  try {
+    const tools = await listMcpTools("https://api.example.com/mcp", {});
+    assert.equal(tools.length, 1);
+    assert.equal(seen.find((row) => row.method === undefined && row.id === 5)?.error?.code, -32601);
   } finally {
     reset();
   }

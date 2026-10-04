@@ -26,11 +26,12 @@ import {
   dropOauthPending,
   dropOauthPendingForProposal,
   findOauthPending,
+  OAuthTokenError,
   startMcpOAuth,
 } from "./mcp-oauth.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID, orchestratorId } from "./shell-store.ts";
-import type { ConnectionStatus } from "./connection-tools-store.ts";
+import type { ConnectionState, ConnectionStatus } from "./connection-tools-store.ts";
 import { specWireBytes } from "./tool-wire-size.ts";
 import {
   discoverConnection,
@@ -242,14 +243,29 @@ function settleProbe(
     markConnected(proposalId, entry, status.toolCount ?? 0, now, storePath);
     return;
   }
+  failCard(proposalId, status.state, now, storePath);
+}
+
+/** Put a pending card in `failed` with a short reason this app wrote. */
+function failCard(proposalId: string, reason: ConnectionState, now: number, storePath: string): void {
   updateProposal(proposalId, (item) => {
     if (item.kind !== "connectServer" || item.status !== "pending") return;
     item.phase = "failed";
-    item.reason = status.state;
+    item.reason = reason;
     item.toolCount = null;
     item.waitingSince = new Date(now).toISOString();
     item.redirectHost = null;
   }, storePath);
+}
+
+/**
+ * Why a token exchange failed, in the card's own vocabulary and nothing the
+ * server said: a refusal (4xx, or an answer with no token) is the credential,
+ * and a network error, a timeout, a 5xx or a 429 is the server.
+ */
+function exchangeFailure(err: unknown): ConnectionState {
+  if (err instanceof OAuthTokenError && err.status < 500 && err.status !== 429) return "auth_failed";
+  return "unreachable";
 }
 
 /**
@@ -522,7 +538,20 @@ export async function completeConnectionOAuth(
       throw err;
     }
   }
-  const { bundle, pending } = await completeMcpOAuth({ code, state });
+  let exchanged: Awaited<ReturnType<typeof completeMcpOAuth>>;
+  try {
+    exchanged = await completeMcpOAuth({ code, state });
+  } catch (err) {
+    // The pending row vanished: there is no sign-in of ours to fail.
+    if (err instanceof Error && err.message === "oauth_state") throw err;
+    // The code is spent or refused either way, so the sign-in is over: the
+    // card says why instead of waiting ten minutes to say it timed out, and the
+    // verifier and client secret do not stay on disk.
+    dropOauthPending(state);
+    failCard(pendingPeek.proposalId, exchangeFailure(err), opts.now ?? Date.now(), storePath);
+    throw err;
+  }
+  const { bundle, pending } = exchanged;
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");
   }
@@ -619,16 +648,30 @@ async function pumpOnce(
  * its other claims never reach the log.
  */
 function logTokenAudience(id: string, accessToken: string, resource: string | undefined): void {
+  // A claim is the sign-in server's text and goes into a log line: control
+  // characters (a newline would start a line of its own) are removed first.
+  const clean = (value: string): string => value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "").slice(0, 120);
   let aud = "opaque";
   const parts = accessToken.split(".");
   if (parts.length === 3) {
     try {
       const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { aud?: unknown };
       const value = Array.isArray(claims.aud) ? claims.aud.join(" ") : claims.aud;
-      aud = typeof value === "string" ? value.slice(0, 120) : "none";
+      aud = typeof value === "string" ? clean(value) : "none";
     } catch {
       aud = "unreadable";
     }
   }
-  console.error(`[useful-bot] connection ${id} token aud=${aud} resource=${resource ?? "none"}`);
+  // The resource is a URL the server published; a key in its query is not
+  // for the log, so only the origin and path are written.
+  let where = "none";
+  if (resource !== undefined) {
+    try {
+      const parsed = new URL(resource);
+      where = clean(`${parsed.origin}${parsed.pathname}`);
+    } catch {
+      where = "invalid";
+    }
+  }
+  console.error(`[useful-bot] connection ${id} token aud=${aud} resource=${where}`);
 }
