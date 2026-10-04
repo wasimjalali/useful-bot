@@ -3851,6 +3851,11 @@ final class AppModel: ObservableObject {
         connectorBusy = nil
     }
 
+    /// The tools of one connected app, or nil when they couldn't be loaded.
+    func connectorTools(_ row: ConnectorToolkit) async -> [DirectConnectionTool]? {
+        try? await client.connectorTools(toolkit: row.slug)
+    }
+
     func loadDirectConnections(quiet: Bool = false, countsTowardCheckingFailure: Bool = false) async {
         if !quiet { directConnectionsOpen = true }
         directLoadSeq += 1

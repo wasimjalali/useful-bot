@@ -9,6 +9,8 @@ struct AppLogo: View {
     let name: String
     let url: String?
     var size: CGFloat = 28
+    /// A logo the server already holds as bytes; wins over `url`, and an unreadable one falls back to the monogram.
+    var data: Data? = nil
 
     @State private var image: NSImage?
 
@@ -25,8 +27,12 @@ struct AppLogo: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         .accessibilityHidden(true)
-        .task(id: url) {
-            image = await LogoCache.shared.image(for: url)
+        .task(id: "\(url ?? "")|\(data?.count ?? 0)") {
+            if let data {
+                image = NSImage(data: data)
+            } else {
+                image = await LogoCache.shared.image(for: url)
+            }
         }
     }
 

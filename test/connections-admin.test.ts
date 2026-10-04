@@ -28,6 +28,7 @@ function paths(): void {
   process.env.UB_CONNECTIONS_PATH = join(dir, "connections.json");
   process.env.UB_CONNECTION_TOOLS_PATH = join(dir, "connection-tools.json");
   process.env.UB_OAUTH_PENDING_PATH = join(dir, "oauth.json");
+  process.env.UB_STATE_ROOT = dir;
   setConnectionLookup(async () => "8.8.8.8");
   setKeychainDriver(memoryKeychain());
   setDiscoveryLogger(() => {});
@@ -86,7 +87,7 @@ test("the list carries state and tools and never a credential", async () => {
   assert.equal(refreshed.state, "ready");
   const listed = listPublicConnections();
   assert.deepEqual(Object.keys(listed[0]).sort(), [
-    "authKind", "builtin", "checkedAt", "id", "kind", "lastError", "name", "state", "toolCount", "tools", "url",
+    "authKind", "builtin", "checkedAt", "icon", "id", "kind", "lastError", "name", "state", "toolCount", "tools", "url",
   ]);
   assert.equal(listed[0].toolCount, 2);
   assert.deepEqual(listed[0].tools, [

@@ -6,6 +6,7 @@ import {
   deleteConnection,
   listPublicConnections,
   startDueDiscoveries,
+  startDueIconLookups,
   reauthorizeConnection,
   refreshConnection,
 } from "../../../../shared/connections-admin.ts";
@@ -66,6 +67,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   startDueDiscoveries();
+  startDueIconLookups();
   return NextResponse.json({ ok: true, connections: listPublicConnections() }, { headers: { "cache-control": "no-store" } });
 }
 

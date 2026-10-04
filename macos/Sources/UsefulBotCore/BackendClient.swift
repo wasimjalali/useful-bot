@@ -1044,6 +1044,24 @@ public actor BackendClient {
         return decoded
     }
 
+    /// The tools one connected app offers, for the detail view.
+    public func connectorTools(toolkit: String) async throws -> [DirectConnectionTool] {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/connectors/tools"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "toolkit", value: toolkit)]
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        try Self.expectOK(data, response)
+        guard let decoded = try? JSONDecoder().decode(ConnectorToolsPayload.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.tools
+    }
+
     /// Stores the Composio key on the Mac. Pass nil to remove it.
     public func setConnectorsKey(_ key: String?) async throws {
         try await connectorsWrite(method: "PUT", body: ["apiKey": key ?? NSNull()])

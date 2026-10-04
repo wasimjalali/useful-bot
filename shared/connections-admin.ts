@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import { parseBundle, refreshLockPath, withRefreshLock } from "./connection-auth.ts";
 import { cancelDiscovery, discoverConnection, discoveryRunning, settleAllDiscoveries } from "./connection-tools.ts";
+import { connectionIcon, removeConnectionIcon, settleIcons, startDueIcons } from "./connection-icons.ts";
 import { reauthorizeProposalId } from "./connection-flow.ts";
 import {
   connectionIndex,
@@ -41,6 +42,8 @@ export type PublicConnection = {
   checkedAt: string | null;
   toolCount: number | null;
   tools: Array<{ name: string; description: string }>;
+  /** A data: URI found once for the server's site, or null. */
+  icon: string | null;
 };
 
 function oneLine(value: string, max: number): string {
@@ -77,6 +80,7 @@ export function publicConnection(entry: ConnectionEntry): PublicConnection {
     checkedAt: status?.checkedAt ?? index?.fetchedAt ?? null,
     toolCount: status?.toolCount ?? (index && !index.failed ? index.tools.length : null),
     tools: (index?.tools ?? []).map((tool) => ({ name: tool.name, description: oneLine(tool.description, 200) })),
+    icon: connectionIcon(entry.id),
   };
 }
 
@@ -99,9 +103,15 @@ export function startDueDiscoveries(): void {
   }
 }
 
-/** Resolves when every discovery now running has finished. */
+/** Look up, in the background, the icon of every connection that has none yet. */
+export function startDueIconLookups(): void {
+  startDueIcons(readConnectionsStore().connections);
+}
+
+/** Resolves when every discovery and icon lookup now running has finished. */
 export async function settleDiscoveries(): Promise<void> {
   await settleAllDiscoveries();
+  await settleIcons();
 }
 
 export async function refreshConnection(id: string): Promise<PublicConnection> {
@@ -166,5 +176,6 @@ export async function deleteConnection(id: string): Promise<void> {
   const lockFile = `${refreshLockPath(id)}.sqlite`;
   for (const file of [lockFile, `${lockFile}-journal`]) rmSync(file, { force: true });
   removeConnectionIndex(id);
+  removeConnectionIcon(id);
   dropOauthPendingForProposal(reauthorizeProposalId(id));
 }

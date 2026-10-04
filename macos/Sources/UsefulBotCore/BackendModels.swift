@@ -1190,6 +1190,8 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
     public let lastError: LastError?
     public let toolCount: Int?
     public let tools: [DirectConnectionTool]
+    /// A `data:image/...;base64,` logo the server found for this connection's site.
+    public let icon: String?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1204,6 +1206,7 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
         state = State(raw: (try? c.decode(String.self, forKey: .state)) ?? "")
         lastError = try? c.decodeIfPresent(LastError.self, forKey: .lastError)
         toolCount = try? c.decodeIfPresent(Int.self, forKey: .toolCount)
+        icon = try? c.decodeIfPresent(String.self, forKey: .icon)
         // Per element: one unreadable tool doesn't hide the rest.
         var decoded: [DirectConnectionTool] = []
         if var list = try? c.nestedUnkeyedContainer(forKey: .tools) {
@@ -1217,7 +1220,7 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
     private struct AnyValue: Decodable {}
 
     enum CodingKeys: String, CodingKey {
-        case id, name, url, kind, authKind, builtin, state, lastError, toolCount, tools
+        case id, name, url, kind, authKind, builtin, state, lastError, toolCount, tools, icon
     }
 
     public var host: String { URL(string: url)?.host ?? url }
@@ -1254,6 +1257,26 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
         guard let count else { return nil }
         return count == 1 ? "1 tool" : "\(count) tools"
     }
+}
+
+/// `/api/connectors/tools` payload: the tools one connected app offers.
+public struct ConnectorToolsPayload: Decodable, Equatable, Sendable {
+    public let tools: [DirectConnectionTool]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        var rows: [DirectConnectionTool] = []
+        if var list = try? c.nestedUnkeyedContainer(forKey: .tools) {
+            while !list.isAtEnd {
+                if let tool = try? list.decode(DirectConnectionTool.self) { rows.append(tool) } else { _ = try? list.decode(Skip.self) }
+            }
+        }
+        tools = rows
+    }
+
+    private struct Skip: Decodable {}
+
+    enum CodingKeys: String, CodingKey { case tools }
 }
 
 /// `/api/connections` payload. A row the app can't identify is dropped.
