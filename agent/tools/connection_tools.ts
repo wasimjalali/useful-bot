@@ -1,6 +1,6 @@
 import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
-import { connectionHeaders } from "../../shared/connection-auth.ts";
+import { connectionHeaders, OAuthExpiredError } from "../../shared/connection-auth.ts";
 import {
   activateSessionTools,
   mountedDescription,
@@ -8,8 +8,8 @@ import {
   readConnectionToolsStore,
 } from "../../shared/connection-tools-store.ts";
 import {
+  findConnectionTools,
   onDemandConnections,
-  searchConnectionTools,
   selectMountedTools,
 } from "../../shared/connection-tools.ts";
 import { findConnectionById } from "../../shared/connections-store.ts";
@@ -77,9 +77,25 @@ export default defineDynamic({
             markOutside(toolCtx);
             const id = toolCtx.session?.id ?? "";
             if (!id) return { status: "blocked", error: "no_session" };
-            const hits = await searchConnectionTools(input.query, MAX_HITS);
+            const { hits, unavailable } = await findConnectionTools(input.query, MAX_HITS);
+            // Said per server, so "found nothing" is never what a sign-in that
+            // ran out or a server that is down looks like. What the healthy
+            // servers had still comes back below.
+            const down = unavailable.length
+              ? {
+                unavailable: unavailable.map((item) => ({ server: item.server, state: item.state, hint: item.hint })),
+              }
+              : {};
             if (hits.length === 0) {
-              return { status: "ok", found: 0, tools: [], note: "No connected server has a tool like that." };
+              return {
+                status: "ok",
+                found: 0,
+                tools: [],
+                ...down,
+                note: unavailable.length
+                  ? "No tool found, and some connected servers could not be searched."
+                  : "No connected server has a tool like that.",
+              };
             }
             const outcome = activateSessionTools(
               id,
@@ -96,6 +112,7 @@ export default defineDynamic({
             return {
               status: "ok",
               found: hits.length,
+              ...down,
               // Named so the model can call them by name on its next step.
               tools: hits
                 .filter((hit) => !outcome.refused.includes(hit.name))
@@ -239,6 +256,16 @@ export default defineDynamic({
                 result: wrapUntrusted(`connection:${connectionId}/${toolName}`, text),
               };
             } catch (err) {
+              // A sign-in that ran out is the owner's to renew, and the bot
+              // can say so rather than relay an opaque failure.
+              if (err instanceof OAuthExpiredError) {
+                return {
+                  status: "blocked",
+                  error: "oauth_expired",
+                  connection: connectionId,
+                  hint: `Ask the owner to reconnect ${connectionName.replace(/[\r\n]+/g, " ").trim()} in Connectors.`,
+                };
+              }
               // The server's words, never the headers that reached it: a
               // server can echo the credential it was sent back in an error.
               let message = err instanceof Error ? err.message : "failed";

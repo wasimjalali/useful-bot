@@ -9,6 +9,7 @@ import {
 import { assertConnectionUrl } from "./connection-url.ts";
 import {
   allocateConnectionId,
+  findConnectionById,
   findConnectionByUrl,
   isAuthHeaderName,
   readConnectionsStore,
@@ -19,7 +20,7 @@ import {
 import { connectionSecretService, keychainSet } from "./keychain.ts";
 import { listHandoffs, queueHandoff } from "./handoffs.ts";
 import { wrapUntrusted } from "./untrusted.ts";
-import { listMcpTools, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
+import { measureOpenApiConnection } from "./mcp-http.ts";
 import {
   completeMcpOAuth,
   dropOauthPending,
@@ -29,9 +30,10 @@ import {
 } from "./mcp-oauth.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID, orchestratorId } from "./shell-store.ts";
-import { putConnectionIndex, putConnectionOperations } from "./connection-tools-store.ts";
+import type { ConnectionStatus } from "./connection-tools-store.ts";
 import { specWireBytes } from "./tool-wire-size.ts";
 import {
+  discoverConnection,
   eagerConnections,
   isEagerConnection,
   mountedToolBytes,
@@ -66,7 +68,10 @@ function oneLine(value: string, max: number): string {
 }
 
 function resumeMessage(card: Stored, connectionId: string): string {
-  return `The owner connected the server ${connectionId}. Continue the original task.\n${wrapUntrusted("connect-purpose", oneLine(card.purpose, 120))}`;
+  // A connected server with nothing to offer is still connected, and a bot
+  // told only "connected" would go looking for tools that are not there.
+  const empty = card.toolCount === 0 ? " It offers no tools, so say so if the task needed one." : "";
+  return `The owner connected the server ${connectionId}.${empty} Continue the original task.\n${wrapUntrusted("connect-purpose", oneLine(card.purpose, 120))}`;
 }
 
 /**
@@ -124,45 +129,13 @@ function queueResume(card: Stored, storePath: string, connectionId = card.connec
 }
 
 /**
- * How many tools a connection has, for the card. For an MCP server this also
- * writes the listing to the index `find_tools` searches, so the first search
- * after a connect answers from disk instead of going back to the server.
+ * What the connection offers, for the card. For an MCP server this also writes
+ * the listing to the index `find_tools` searches, so the first search after a
+ * connect answers from disk instead of going back to the server, and a status
+ * that says why when nothing came back.
  */
-async function probeToolCount(entry: ConnectionEntry, headers: Record<string, string> = {}): Promise<number | null> {
-  try {
-    if (entry.kind === "openapi") {
-      const size = await measureOpenApiConnection(entry.url, headers);
-      // Written down because eve builds this connection's tools from the spec
-      // and never hands them back: this is the only figure the mount-time
-      // clamp has to weigh it by.
-      if (size !== null) {
-        try { putConnectionOperations(entry.id, size); } catch { /* a cache */ }
-      }
-      return size?.operations ?? null;
-    }
-    const tools = await listMcpTools(entry.url, headers);
-    const visible = new Set(modelToolNames(tools));
-    const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
-    try {
-      putConnectionIndex(
-        entry.id,
-        tools
-          .filter((tool) => visible.has(tool.name) && (!allow || allow.has(tool.name)))
-          .map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-            inputSchemaBytes: tool.inputSchemaBytes,
-                })),
-      );
-    } catch {
-      // The index is a cache; a write that failed costs one listing later.
-    }
-    const names = entry.toolsAllow ?? [...visible];
-    return names.length;
-  } catch {
-    return null;
-  }
+async function probeConnection(entry: ConnectionEntry, headers: Record<string, string> = {}): Promise<ConnectionStatus> {
+  return (await discoverConnection(entry, { headers })).status;
 }
 
 /**
@@ -224,7 +197,7 @@ async function assertToolBudget(
     // Not written here. This runs before the row exists, and two cards for
     // same-named servers are handed the same id before either connects, so a
     // measurement stamped now can land on another connection's index and sit
-    // there for the six hours before anything re-measures it. `probeToolCount`
+    // there for the six hours before anything re-measures it. `probeConnection`
     // writes it afterwards, under the id the store actually gave this row.
   } else {
     // Unreachable while only OpenAPI is eager, and kept as a refusal rather
@@ -250,6 +223,34 @@ function writeSecret(connectionId: string, secret: string): void {
   keychainSet(connectionSecretService(connectionId), secret);
 }
 
+/**
+ * A card is honest about what it found: only a server that answered with its
+ * tools, or answered that it has none, is connected. Anything else leaves the
+ * row and its credential where they are, so the owner can reauthorize or
+ * remove it, and puts the card in `failed` with the state as the reason. No
+ * resume goes to the bot: nothing it could use was connected.
+ */
+function settleProbe(
+  proposalId: string,
+  entry: ConnectionEntry,
+  status: ConnectionStatus,
+  now: number,
+  storePath: string,
+): void {
+  if (status.state === "ready" || status.state === "zero_tools") {
+    markConnected(proposalId, entry, status.toolCount ?? 0, now, storePath);
+    return;
+  }
+  updateProposal(proposalId, (item) => {
+    if (item.kind !== "connectServer" || item.status !== "pending") return;
+    item.phase = "failed";
+    item.reason = status.state;
+    item.toolCount = null;
+    item.waitingSince = new Date(now).toISOString();
+    item.redirectHost = null;
+  }, storePath);
+}
+
 function markConnected(
   proposalId: string,
   entry: ConnectionEntry,
@@ -260,6 +261,7 @@ function markConnected(
   updateProposal(proposalId, (item) => {
     if (item.kind !== "connectServer" || item.status !== "pending") return;
     item.phase = "connected";
+    item.reason = null;
     item.toolCount = toolCount;
     item.waitingSince = new Date(now).toISOString();
     item.redirectHost = null;
@@ -336,6 +338,7 @@ export async function startConnectionConfirm(
       updateProposal(proposalId, (item) => {
         if (item.kind !== "connectServer" || item.status !== "pending" || item.phase === "connected") return;
         item.phase = "waiting";
+        item.reason = null;
         item.redirectHost = redirectHost;
         item.waitingSince = now;
       }, storePath);
@@ -388,12 +391,45 @@ export async function startConnectionConfirm(
       proposal.authKind === "none" ? null : (opts.secret ?? "").trim() || null,
       stored.authHeader,
     );
-    const toolCount = await probeToolCount(stored, headers);
-    markConnected(proposalId, stored, toolCount, opts.now ?? Date.now(), storePath);
+    settleProbe(proposalId, stored, await probeConnection(stored, headers), opts.now ?? Date.now(), storePath);
     return {};
   } finally {
     authorizing.delete(proposalId);
   }
+}
+
+/**
+ * The pending sign-in of a connection that is already connected and being
+ * signed in again, in place of a card's id. One per connection, so starting
+ * another replaces it.
+ */
+export const REAUTH_PREFIX = "reauth_";
+
+export function reauthorizeProposalId(connectionId: string): string {
+  return `${REAUTH_PREFIX}${connectionId}`;
+}
+
+/**
+ * Finish a sign-in for a connection that is already in the registry: the new
+ * tokens replace the old ones under the same id, the row is not touched and no
+ * card is involved. What the server then offers is listed again, so the
+ * connection's status says whether the new sign-in worked.
+ */
+async function completeReauthorize(
+  code: string,
+  state: string,
+  peek: { proposalId: string; connectionId: string },
+): Promise<{ proposalId: string }> {
+  const entry = findConnectionById(peek.connectionId);
+  if (!entry || entry.authKind !== "oauth" || reauthorizeProposalId(entry.id) !== peek.proposalId) {
+    dropOauthPending(state);
+    throw new Error("connection_missing");
+  }
+  const { bundle, pending } = await completeMcpOAuth({ code, state });
+  if (pending.proposalId !== peek.proposalId || pending.connectionId !== entry.id) throw new Error("oauth_state");
+  keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
+  await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
+  return { proposalId: peek.proposalId };
 }
 
 export async function completeConnectionOAuth(
@@ -402,6 +438,7 @@ export async function completeConnectionOAuth(
   opts: { storePath?: string; now?: number } = {},
 ): Promise<{ proposalId: string }> {
   const pendingPeek = findOauthPending(state);
+  if (pendingPeek?.proposalId.startsWith(REAUTH_PREFIX)) return completeReauthorize(code, state, pendingPeek);
   if (!pendingPeek || !pendingPeek.proposalId.startsWith("prp_")) throw new Error("oauth_state");
   const storePath = opts.storePath ?? agentStorePath();
   const proposal = readProposal(pendingPeek.proposalId, storePath);
@@ -486,8 +523,7 @@ export async function completeConnectionOAuth(
   }
   const stored = outcome.entry;
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
-  const toolCount = await probeToolCount(stored, bearer);
-  markConnected(pending.proposalId, stored, toolCount, opts.now ?? Date.now(), storePath);
+  settleProbe(pending.proposalId, stored, await probeConnection(stored, bearer), opts.now ?? Date.now(), storePath);
   return { proposalId: pending.proposalId };
 }
 

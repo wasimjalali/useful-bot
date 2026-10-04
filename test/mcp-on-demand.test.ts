@@ -9,6 +9,11 @@ import connectionTools from "../agent/tools/connection_tools.ts";
 import {
   activateSessionTools,
   connectionIndex,
+  connectionStatus,
+  listingIsDue,
+  LISTING_RETRY_MS,
+  INDEX_TTL_MS,
+  putConnectionDiscovery,
   indexedToolBytes,
   mountedDescription,
   mountedToolName,
@@ -19,8 +24,12 @@ import {
   updateConnectionToolsStore,
 } from "../shared/connection-tools-store.ts";
 import {
+  discoverConnection,
   eagerConnections,
+  ensureConnectionListing,
   ensureMeasured,
+  findConnectionTools,
+  setDiscoveryLogger,
   isEagerConnection,
   mountedToolBytes,
   mountedToolCount,
@@ -31,10 +40,12 @@ import {
   splitMountedName,
 } from "../shared/connection-tools.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
-import { connectionSecretService, keychainSet, memoryKeychain, setKeychainDriver } from "../shared/keychain.ts";
+import { connectionSecretService, keychainGet, keychainSet, memoryKeychain, setKeychainDriver } from "../shared/keychain.ts";
 import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
+import { OAuthExpiredError, connectionHeaders } from "../shared/connection-auth.ts";
+import { setOauthFetch } from "../shared/mcp-oauth.ts";
 import { longestOperationName, measureOpenApiSpec, measureOpenApiSpecText, specWireBytes } from "../shared/tool-wire-size.ts";
 import {
   MAX_SESSION_TOOLS,
@@ -67,6 +78,9 @@ function entry(overrides: Partial<ConnectionEntry> = {}): ConnectionEntry {
 
 test.afterEach(() => {
   setMcpFetch(null);
+  setOauthFetch(null);
+  setKeychainDriver(null);
+  setDiscoveryLogger(null);
   setConnectionLookup(null);
 });
 
@@ -157,6 +171,7 @@ test("find_tools' search ranks a name match over prose and reads the cached list
         headers: { "content-type": "application/json" },
       });
     }
+    if (body.method !== "tools/list") return new Response(null, { status: 202 });
     listings += 1;
     return new Response(JSON.stringify({
       jsonrpc: "2.0",
@@ -755,4 +770,179 @@ test("naming many clashing operations stays linear and matches eve", () => {
     "/b": { get: { operationId: "x_2" } },
     "/c": { get: { operationId: "x" } },
   } }), "x_3".length);
+});
+
+// UB-003: a connected server that is not working says so, instead of "found 0".
+
+/** An MCP server answering tools/list with `tools`, or with a status. Counts its listings. */
+function mcpServer(answer: () => Response | { tools: Array<Record<string, unknown>> } | "down"): { listings: number } {
+  const count = { listings: 0 };
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    const json = (id: number | undefined, result: unknown) =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { headers: { "content-type": "application/json" } });
+    if (body.method === "initialize") return json(1, { protocolVersion: "2025-06-18" });
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    count.listings += 1;
+    const out = answer();
+    if (out === "down") throw new TypeError("fetch failed");
+    if (out instanceof Response) return out;
+    return json(body.id, out);
+  }) as typeof fetch);
+  return count;
+}
+
+const bundleJson = (patch: Record<string, unknown> = {}) => JSON.stringify({
+  accessToken: "at_old",
+  refreshToken: null,
+  expiresAt: Date.now() - 60_000,
+  clientId: "cid",
+  clientSecret: null,
+  tokenEndpoint: "https://auth.example.com/token",
+  resource: "https://mcp.example.com",
+  ...patch,
+});
+
+test("an expired token with no refresh token is never sent, and the status says expired", async () => {
+  paths();
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+  keychainSet(connectionSecretService("tella"), bundleJson());
+  const server = mcpServer(() => ({ tools: [{ name: "list_videos" }] }));
+  await assert.rejects(() => connectionHeaders(row), (err: unknown) => err instanceof OAuthExpiredError);
+  const found = await discoverConnection(row);
+  assert.equal(found.status.state, "expired");
+  assert.equal(found.status.lastError?.code, "oauth_expired");
+  assert.equal(server.listings, 0, "the stale token went nowhere");
+});
+
+test("a refresh the server refuses is oauth_expired too, and a good one is saved and used", async () => {
+  paths();
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+  keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+  setOauthFetch(async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }));
+  const server = mcpServer(() => ({ tools: [{ name: "list_videos" }] }));
+  await assert.rejects(() => connectionHeaders(row), (err: unknown) => err instanceof OAuthExpiredError);
+  assert.equal((await discoverConnection(row)).status.state, "expired");
+  assert.equal(server.listings, 0);
+  // Now the server accepts it.
+  let body = "";
+  setOauthFetch(async (_input, init) => {
+    body = String(init?.body ?? "");
+    return new Response(JSON.stringify({ access_token: "at_new", refresh_token: "rt_new", expires_in: 3600 }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  assert.equal((await discoverConnection(row)).status.state, "ready");
+  assert.match(body, /resource=https%3A%2F%2Fmcp.example.com/);
+  assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_new"));
+});
+
+test("a failed or empty listing is retried after two minutes, a good one after six hours", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry()).entry;
+  let mode: "down" | "empty" | "ok" = "down";
+  const server = mcpServer(() => mode === "down" ? "down" : { tools: mode === "empty" ? [] : [{ name: "list_things", description: "List" }] });
+  assert.equal((await ensureConnectionListing(row)).status.state, "unreachable");
+  assert.equal(server.listings, 1);
+  // Inside the window it is not asked again.
+  await ensureConnectionListing(row);
+  assert.equal(server.listings, 1);
+  const backdate = (ms: number) => {
+    const status = connectionStatus("example")!;
+    putConnectionDiscovery("example", {
+      tools: null,
+      status: { ...status, checkedAt: new Date(Date.now() - ms).toISOString() },
+    });
+  };
+  mode = "empty";
+  backdate(LISTING_RETRY_MS + 1_000);
+  assert.equal((await ensureConnectionListing(row)).status.state, "zero_tools");
+  assert.equal(server.listings, 2);
+  // Empty is retried on the short clock too.
+  mode = "ok";
+  backdate(LISTING_RETRY_MS + 1_000);
+  const ok = await ensureConnectionListing(row);
+  assert.equal(ok.status.state, "ready");
+  assert.equal(server.listings, 3);
+  // A good listing three minutes old is left alone.
+  backdate(LISTING_RETRY_MS + 60_000);
+  await ensureConnectionListing(row);
+  assert.equal(server.listings, 3);
+  assert.equal(listingIsDue(connectionIndex("example"), connectionStatus("example"), Date.now() + INDEX_TTL_MS + 5 * 60_000), true);
+  // The same rule from the pure side, for a row that predates status.
+  const legacy = { fetchedAt: new Date(0).toISOString(), tools: [], failed: true };
+  assert.equal(listingIsDue(legacy, null, 60_000), false);
+  assert.equal(listingIsDue(legacy, null, LISTING_RETRY_MS + 1), true);
+});
+
+test("find_tools names a server that is not working instead of reporting found 0", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp" }));
+  upsertConnection(entry({ id: "slack", name: "Slack", url: "https://mcp.slack.example.com/mcp" }));
+  setMcpFetch((async (input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    if (String(input).includes("tella")) return new Response("no", { status: 401 });
+    if (body.method === "initialize") return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), { headers: { "content-type": "application/json" } });
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "send_message", description: "Post a message" }] } }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  const resolve = (connectionTools as unknown as {
+    events: { "step.started": (event: unknown, ctx: unknown) => Promise<Record<string, { execute: (input: unknown, ctx: unknown) => Promise<Record<string, unknown>> }> | null> };
+  }).events["step.started"];
+  const ctx = { session: { id: "s-down" } };
+  const tools = await resolve({}, ctx);
+  const both = await tools!.find_tools.execute({ query: "send a message" }, ctx);
+  assert.equal(both.found, 1);
+  assert.deepEqual(both.unavailable, [{
+    server: "Tella",
+    state: "auth_failed",
+    hint: "Ask the owner to reconnect Tella in Connectors.",
+  }]);
+  // Only the unavailable one matches the query: not "found 0" with nothing to say.
+  const only = await tools!.find_tools.execute({ query: "tella videos" }, ctx);
+  assert.equal(only.found, 0);
+  assert.equal((only.unavailable as unknown[]).length, 1);
+  assert.match(String(only.note), /could not be searched/);
+  // The search helper carries the same facts.
+  const detail = await findConnectionTools("send a message", 5);
+  assert.deepEqual(detail.unavailable.map((item) => [item.connectionId, item.state]), [["tella", "auth_failed"]]);
+});
+
+test("a query that names the server puts that server's tools first", () => {
+  const tool = (name: string, description: string) => ({ name, description, inputSchema: null, inputSchemaBytes: 2 });
+  const tella = scoreTool("tella upload", tool("list_videos", "Videos you own"), "Tella");
+  const other = scoreTool("tella upload", tool("upload_file", "Upload a file to storage"), "Drive");
+  assert.ok(tella > other, `${tella} vs ${other}`);
+  // The bare server name matches every tool it has.
+  assert.ok(scoreTool("tella", tool("anything", ""), "Tella") > 0);
+});
+
+test("a server outside the catalogue connects, lists and is searched with no Composio key and no network but its own", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const realFetch = globalThis.fetch;
+  const strays: string[] = [];
+  globalThis.fetch = (async (input: unknown) => {
+    strays.push(String(input));
+    throw new Error("unexpected network");
+  }) as typeof fetch;
+  try {
+    const row = upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp" })).entry;
+    mcpServer(() => ({ tools: [{ name: "list_videos", description: "List videos" }] }));
+    const found = await discoverConnection(row);
+    assert.equal(found.status.state, "ready");
+    const hits = await searchConnectionTools("tella videos", 3);
+    assert.deepEqual(hits.map((hit) => hit.name), ["tella__list_videos"]);
+    assert.deepEqual(strays, []);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

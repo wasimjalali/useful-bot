@@ -20,6 +20,8 @@ export type OAuthPending = {
   clientSecret: string | null;
   redirectUri: string;
   createdAt: string;
+  /** RFC 8707 resource the sign-in was started for; sent again on the exchange. */
+  resource?: string;
 };
 
 export type OAuthTokenBundle = {
@@ -29,6 +31,8 @@ export type OAuthTokenBundle = {
   clientId: string;
   clientSecret: string | null;
   tokenEndpoint: string;
+  /** Sent on every refresh. Absent on a bundle stored before it was kept. */
+  resource?: string;
 };
 
 type FetchFn = typeof fetch;
@@ -140,66 +144,147 @@ async function getJson(url: string): Promise<Record<string, unknown>> {
   return rec;
 }
 
-function originOf(url: string): string {
-  const parsed = new URL(assertConnectionUrl(url));
-  return parsed.origin;
-}
-
 function wellKnown(origin: string, path: string): string {
   return assertPublicHttpsUrl(`${origin}${path}`);
 }
 
-async function protectedResource(mcpUrl: string): Promise<{ authorizationServers: string[]; resource: string }> {
-  const origin = originOf(mcpUrl);
+/** The resource as RFC 8707 wants it: no fragment, and no slash a bare origin never had. */
+function canonicalResource(parsed: URL): string {
+  return `${parsed.origin}${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search}`;
+}
+
+/**
+ * The resource a token is asked for. The metadata's own `resource` when it
+ * sits on the server's origin, the server's URL when it names none. One on
+ * another origin is refused: a server could otherwise have a token minted for
+ * somebody else's API.
+ */
+function resourceFor(mcpUrl: string, declared: unknown): string {
+  const server = new URL(assertConnectionUrl(mcpUrl));
+  if (typeof declared !== "string") return canonicalResource(server);
+  let parsed: URL;
   try {
-    const rec = await getJson(wellKnown(origin, "/.well-known/oauth-protected-resource"));
-    const servers = Array.isArray(rec.authorization_servers)
-      ? rec.authorization_servers.filter((item): item is string => typeof item === "string")
-      : [];
-    if (servers.length === 0) throw new Error("oauth_no_as");
-    return {
-      authorizationServers: servers.map((item) => assertPublicHttpsUrl(item)),
-      resource: typeof rec.resource === "string" ? assertPublicHttpsUrl(rec.resource) : assertPublicHttpsUrl(mcpUrl),
-    };
-  } catch (err) {
-    if (err instanceof Error && err.message === "oauth_no_as") throw err;
-    if (err instanceof ConnectionUrlError) throw err;
-    // Probe the MCP URL for a 401 with resource_metadata.
+    parsed = new URL(declared);
+  } catch {
+    throw new Error("oauth_resource_invalid");
+  }
+  if (parsed.origin !== server.origin) throw new Error("oauth_resource_origin");
+  return canonicalResource(parsed);
+}
+
+/**
+ * What the MCP server says when asked without a token: the 401's
+ * `WWW-Authenticate` carries where its metadata is and which scope it wants.
+ * Best effort. A server that does not answer this way is found by the
+ * well-known documents instead; only a refused URL is fatal.
+ */
+async function probeChallenge(mcpUrl: string): Promise<{ resourceMetadata: string | null; scope: string | null }> {
+  try {
     const res = await activeFetch()(await assertResolvedPublic(mcpUrl), {
-      headers: { accept: "application/json, text/event-stream" },
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "useful-bot", version: "0.0.0" } },
+      }),
       redirect: "error",
       signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     });
+    try { await res.body?.cancel(); } catch { /* nothing to read */ }
     const www = res.headers.get("www-authenticate") ?? "";
-    const meta = /resource_metadata="([^"]+)"/.exec(www)?.[1];
-    if (meta) {
-      const rec = await getJson(meta);
-      const servers = Array.isArray(rec.authorization_servers)
-        ? rec.authorization_servers.filter((item): item is string => typeof item === "string")
-        : [];
-      if (servers.length === 0) throw new Error("oauth_no_as");
-      return {
-        authorizationServers: servers.map((item) => assertPublicHttpsUrl(item)),
-        resource: typeof rec.resource === "string" ? assertPublicHttpsUrl(rec.resource) : assertPublicHttpsUrl(mcpUrl),
-      };
-    }
-    throw new Error("oauth_no_as");
+    return {
+      resourceMetadata: /resource_metadata="([^"]+)"/i.exec(www)?.[1] ?? null,
+      scope: /(?:^|[\s,])scope="([^"]+)"/i.exec(www)?.[1] ?? null,
+    };
+  } catch (err) {
+    if (err instanceof ConnectionUrlError) throw err;
+    return { resourceMetadata: null, scope: null };
   }
 }
 
+/** The first of these documents that answers with something `accept` takes. */
+async function firstDocument(
+  urls: string[],
+  accept: (rec: Record<string, unknown>) => boolean,
+  failure: string,
+): Promise<Record<string, unknown>> {
+  for (const url of urls) {
+    try {
+      const rec = await getJson(url);
+      if (accept(rec)) return rec;
+    } catch (err) {
+      // A URL this side refuses to fetch ends the search; one that just did
+      // not answer is the next candidate's turn.
+      if (err instanceof ConnectionUrlError) throw err;
+    }
+  }
+  throw new Error(failure);
+}
+
+async function protectedResource(mcpUrl: string): Promise<{
+  authorizationServers: string[];
+  resource: string;
+  scope: string | null;
+}> {
+  const challenge = await probeChallenge(mcpUrl);
+  const server = new URL(assertConnectionUrl(mcpUrl));
+  const candidates: string[] = [];
+  // The server's own pointer first, then RFC 9728's path-aware location, then the root.
+  if (challenge.resourceMetadata) candidates.push(challenge.resourceMetadata);
+  if (server.pathname !== "/") {
+    candidates.push(wellKnown(server.origin, `/.well-known/oauth-protected-resource${server.pathname.replace(/\/$/, "")}`));
+  }
+  candidates.push(wellKnown(server.origin, "/.well-known/oauth-protected-resource"));
+  const rec = await firstDocument(
+    candidates,
+    (doc) => Array.isArray(doc.authorization_servers)
+      && doc.authorization_servers.some((item) => typeof item === "string"),
+    "oauth_no_as",
+  );
+  const servers = (rec.authorization_servers as unknown[]).filter((item): item is string => typeof item === "string");
+  const supported = Array.isArray(rec.scopes_supported)
+    ? rec.scopes_supported.filter((item): item is string => typeof item === "string" && /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(item))
+    : [];
+  return {
+    authorizationServers: servers.map((item) => assertPublicHttpsUrl(item)),
+    resource: resourceFor(mcpUrl, rec.resource),
+    scope: challenge.scope ?? (supported.length ? supported.join(" ") : null),
+  };
+}
+
+/**
+ * RFC 8414 first, then OIDC discovery, in the order the MCP authorization
+ * spec gives: for an issuer with a path, the well-known name is inserted
+ * ahead of it (and OIDC's is also tried appended); with none, the two root
+ * documents.
+ */
 async function authorizationServer(issuer: string): Promise<{
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint: string | null;
 }> {
-  const origin = originOf(issuer);
-  const rec = await getJson(wellKnown(origin, "/.well-known/oauth-authorization-server"));
-  if (typeof rec.authorization_endpoint !== "string" || typeof rec.token_endpoint !== "string") {
-    throw new Error("oauth_as_incomplete");
-  }
+  const parsed = new URL(assertConnectionUrl(issuer));
+  const path = parsed.pathname.replace(/\/$/, "");
+  const urls = path
+    ? [
+      wellKnown(parsed.origin, `/.well-known/oauth-authorization-server${path}`),
+      wellKnown(parsed.origin, `/.well-known/openid-configuration${path}`),
+      wellKnown(parsed.origin, `${path}/.well-known/openid-configuration`),
+    ]
+    : [
+      wellKnown(parsed.origin, "/.well-known/oauth-authorization-server"),
+      wellKnown(parsed.origin, "/.well-known/openid-configuration"),
+    ];
+  const rec = await firstDocument(
+    urls,
+    (doc) => typeof doc.authorization_endpoint === "string" && typeof doc.token_endpoint === "string",
+    "oauth_as_incomplete",
+  );
   return {
-    authorizationEndpoint: assertPublicHttpsUrl(rec.authorization_endpoint),
-    tokenEndpoint: assertPublicHttpsUrl(rec.token_endpoint),
+    authorizationEndpoint: assertPublicHttpsUrl(rec.authorization_endpoint as string),
+    tokenEndpoint: assertPublicHttpsUrl(rec.token_endpoint as string),
     registrationEndpoint: typeof rec.registration_endpoint === "string"
       ? assertPublicHttpsUrl(rec.registration_endpoint)
       : null,
@@ -258,6 +343,7 @@ export async function startMcpOAuth(input: {
   authorize.searchParams.set("code_challenge_method", "S256");
   authorize.searchParams.set("state", state);
   authorize.searchParams.set("resource", resource.resource);
+  if (resource.scope) authorize.searchParams.set("scope", resource.scope);
   const pending: OAuthPending = {
     state,
     verifier,
@@ -268,6 +354,7 @@ export async function startMcpOAuth(input: {
     clientSecret: client.clientSecret,
     redirectUri: input.redirectUri,
     createdAt: new Date().toISOString(),
+    resource: resource.resource,
   };
   const path = input.pendingPath ?? oauthPendingPath();
   const rows = readPending(path).filter((row) => row.proposalId !== input.proposalId);
@@ -296,6 +383,7 @@ export async function completeMcpOAuth(input: {
     redirect_uri: pending.redirectUri,
     client_id: pending.clientId,
     code_verifier: pending.verifier,
+    ...(pending.resource ? { resource: pending.resource } : {}),
   });
   const res = await activeFetch()(await assertResolvedPublic(pending.tokenEndpoint), {
     method: "POST",
@@ -318,6 +406,7 @@ export async function completeMcpOAuth(input: {
       clientId: pending.clientId,
       clientSecret: pending.clientSecret,
       tokenEndpoint: pending.tokenEndpoint,
+      ...(pending.resource ? { resource: pending.resource } : {}),
     },
   };
 }
@@ -328,6 +417,7 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
     grant_type: "refresh_token",
     refresh_token: bundle.refreshToken,
     client_id: bundle.clientId,
+    ...(bundle.resource ? { resource: bundle.resource } : {}),
   });
   const res = await activeFetch()(await assertResolvedPublic(bundle.tokenEndpoint), {
     method: "POST",
@@ -347,6 +437,7 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
     clientId: bundle.clientId,
     clientSecret: bundle.clientSecret,
     tokenEndpoint: bundle.tokenEndpoint,
+    ...(bundle.resource ? { resource: bundle.resource } : {}),
   };
 }
 

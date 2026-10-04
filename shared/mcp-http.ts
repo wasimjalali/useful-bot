@@ -137,57 +137,209 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function parseSseData(body: string): unknown {
-  const lines = body.split(/\r?\n/);
-  const data: string[] = [];
-  for (const line of lines) {
-    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+/**
+ * Why a call failed, in the four kinds the rest of the app acts on.
+ * `auth`: the server wants a credential or refused this one (401, 403).
+ * `unreachable`: nothing usable answered (network, DNS, timeout, 5xx).
+ * `protocol`: it answered, but not as an MCP server of a version we speak.
+ * `parse`: what came back was not JSON-RPC at all.
+ * `message` never carries a header or a token; the 401's `scope` and
+ * `resource_metadata` hints are kept apart for the OAuth side to use.
+ */
+export type McpErrorKind = "auth" | "unreachable" | "protocol" | "parse";
+
+export class McpError extends Error {
+  readonly kind: McpErrorKind;
+  readonly status: number | null;
+  readonly scope: string | null;
+  readonly resourceMetadata: string | null;
+
+  constructor(
+    kind: McpErrorKind,
+    message: string,
+    extra: { status?: number; scope?: string | null; resourceMetadata?: string | null } = {},
+  ) {
+    super(message);
+    this.name = "McpError";
+    this.kind = kind;
+    this.status = extra.status ?? null;
+    this.scope = extra.scope ?? null;
+    this.resourceMetadata = extra.resourceMetadata ?? null;
   }
-  if (data.length === 0) {
+}
+
+/** The versions this client speaks, newest first. */
+export const MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26"] as const;
+const MCP_PROTOCOL_VERSION = MCP_PROTOCOL_VERSIONS[0];
+const MAX_LIST_PAGES = 20;
+const MAX_LISTED_TOOLS = 200;
+
+function wwwAuthenticateParam(header: string, name: string): string | null {
+  const quoted = new RegExp(`${name}="([^"]*)"`, "i").exec(header)?.[1];
+  if (quoted) return quoted;
+  return new RegExp(`${name}=([^\\s,"]+)`, "i").exec(header)?.[1] ?? null;
+}
+
+/**
+ * The JSON-RPC messages in a response body. A JSON body is one message (or a
+ * batch); an event stream is one per event, events split on a blank line and
+ * the lines of one event's `data:` joined with a newline, as SSE defines it.
+ * An event that does not parse is skipped rather than fatal: a server may
+ * stream a comment or a ping ahead of its answer.
+ */
+function rpcMessages(body: string, contentType: string): { messages: unknown[]; unparsed: number } {
+  if (!contentType.toLowerCase().includes("text/event-stream")) {
     try {
-      return JSON.parse(body);
+      const parsed = JSON.parse(body) as unknown;
+      return { messages: Array.isArray(parsed) ? parsed : [parsed], unparsed: 0 };
     } catch {
-      throw new Error("mcp_parse");
+      // Some servers stream without saying so; fall through to the stream parse.
     }
   }
-  return JSON.parse(data.join("\n"));
+  const messages: unknown[] = [];
+  let unparsed = 0;
+  for (const event of body.split(/\r?\n\r?\n/)) {
+    const data: string[] = [];
+    for (const line of event.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const value = line.slice(5);
+      data.push(value.startsWith(" ") ? value.slice(1) : value);
+    }
+    if (data.length === 0) continue;
+    try {
+      messages.push(JSON.parse(data.join("\n")));
+    } catch {
+      unparsed += 1;
+    }
+  }
+  return { messages, unparsed };
+}
+
+type Session = {
+  url: string;
+  /** The caller's credentials, plus the session and version once negotiated. */
+  headers: Record<string, string>;
+};
+
+async function post(
+  url: string,
+  payload: Record<string, unknown>,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const target = await assertResolvedPublic(url);
+  let res: Response;
+  try {
+    res = await activeFetch()(target, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...headers,
+      },
+      body: JSON.stringify(payload),
+      // Never follow one. `assertResolvedPublic` pinned this host, and a
+      // redirect takes the request, its credential header and the SSRF check
+      // somewhere it never looked. Only `authorization` is stripped on a
+      // cross-origin hop; an `X-Api-Key` would go with it.
+      redirect: "error",
+      signal,
+    });
+  } catch (err) {
+    // Network, DNS, TLS, the deadline. Kept readable: `aborted` is the
+    // caller's own deadline firing.
+    throw new McpError("unreachable", err instanceof Error ? err.message.slice(0, 200) : "mcp_unreachable");
+  }
+  if (!res.ok) {
+    try { await res.body?.cancel(); } catch { /* already done */ }
+    if (res.status === 401 || res.status === 403) {
+      const www = res.headers.get("www-authenticate") ?? "";
+      throw new McpError("auth", `mcp_http_${res.status}`, {
+        status: res.status,
+        scope: wwwAuthenticateParam(www, "scope"),
+        resourceMetadata: wwwAuthenticateParam(www, "resource_metadata"),
+      });
+    }
+    throw new McpError(res.status >= 500 || res.status === 429 ? "unreachable" : "protocol", `mcp_http_${res.status}`, {
+      status: res.status,
+    });
+  }
+  return res;
 }
 
 async function rpc(
-  url: string,
+  session: Session,
   method: string,
   params: Record<string, unknown> | undefined,
-  headers: Record<string, string>,
   id: number,
   signal?: AbortSignal,
 ): Promise<{ result: unknown; sessionId: string | null }> {
-  const target = await assertResolvedPublic(url);
-  const res = await activeFetch()(target, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      ...headers,
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-    // Never follow one. `assertResolvedPublic` pinned this host, and a
-    // redirect takes the request, its credential header and the SSRF check
-    // somewhere it never looked. Only `authorization` is stripped on a
-    // cross-origin hop; an `X-Api-Key` would go with it.
-    redirect: "error",
-    signal,
-  });
-  if (!res.ok) throw new Error(`mcp_http_${res.status}`);
+  const res = await post(session.url, { jsonrpc: "2.0", id, method, params }, session.headers, signal);
   const sessionId = res.headers.get("mcp-session-id");
-  const body = await boundedText(res, MAX_RPC_BODY_BYTES);
-  const parsed = parseSseData(body);
-  const rec = asRecord(parsed);
-  if (!rec) throw new Error("mcp_parse");
-  if (rec.error) {
-    const err = asRecord(rec.error);
-    throw new Error(typeof err?.message === "string" ? err.message.slice(0, 200) : "mcp_error");
+  let body: string;
+  try {
+    body = await boundedText(res, MAX_RPC_BODY_BYTES);
+  } catch (err) {
+    if (err instanceof Error && err.message === "mcp_body_too_large") throw new McpError("protocol", err.message);
+    throw new McpError("unreachable", err instanceof Error ? err.message.slice(0, 200) : "mcp_unreachable");
   }
-  return { result: rec.result, sessionId };
+  const { messages, unparsed } = rpcMessages(body, res.headers.get("content-type") ?? "");
+  // The answer is the message carrying this request's id. Anything else in
+  // the stream is the server talking to us (a notification, a ping) and is
+  // not what was asked.
+  const answer = messages
+    .map(asRecord)
+    .find((rec) => rec && rec.id === id && ("result" in rec || "error" in rec));
+  if (!answer) {
+    if (messages.length === 0 || unparsed > 0) throw new McpError("parse", "mcp_parse");
+    throw new McpError("protocol", "mcp_no_response");
+  }
+  if (answer.error) {
+    const err = asRecord(answer.error);
+    throw new McpError("protocol", typeof err?.message === "string" ? err.message.slice(0, 200) : "mcp_error");
+  }
+  return { result: answer.result, sessionId };
+}
+
+/**
+ * `initialize`, then `notifications/initialized`, which the lifecycle
+ * requires before any other request. From here every request carries the
+ * negotiated `MCP-Protocol-Version` and the server's session id.
+ */
+async function openSession(
+  url: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<Session> {
+  const init = await rpc({ url, headers }, "initialize", {
+    protocolVersion: MCP_PROTOCOL_VERSION,
+    capabilities: {},
+    clientInfo: { name: "useful-bot", version: "0.0.0" },
+  }, 1, signal);
+  const result = asRecord(init.result);
+  // A server that names no version is taken at the one that was asked for.
+  const negotiated = typeof result?.protocolVersion === "string" ? result.protocolVersion : MCP_PROTOCOL_VERSION;
+  if (!(MCP_PROTOCOL_VERSIONS as readonly string[]).includes(negotiated)) {
+    throw new McpError("protocol", "mcp_unsupported_version");
+  }
+  const session: Session = {
+    url,
+    headers: {
+      ...headers,
+      "mcp-protocol-version": negotiated,
+      ...(init.sessionId ? { "mcp-session-id": init.sessionId } : {}),
+    },
+  };
+  try {
+    const res = await post(url, { jsonrpc: "2.0", method: "notifications/initialized" }, session.headers, signal);
+    try { await res.body?.cancel(); } catch { /* nothing to read */ }
+  } catch (err) {
+    // A server that rejects the notification with a client error has still
+    // answered `initialize`; only a missing credential or a dead server is
+    // worth failing for.
+    if (!(err instanceof McpError) || err.kind === "auth" || err.kind === "unreachable") throw err;
+  }
+  return session;
 }
 
 function toolVisibility(meta: unknown): Array<"model" | "app"> {
@@ -226,40 +378,60 @@ function toolResourceUri(meta: unknown): string | null {
  */
 export const MCP_READ_TIMEOUT_MS = 15_000;
 
+export type McpListing = {
+  tools: McpToolInfo[];
+  /** Entries the server sent, across every page read. */
+  total: number;
+  /** Entries dropped as invalid: not an object, no name, or a name too long. */
+  dropped: number;
+};
+
+export async function listMcpToolsWithStats(
+  url: string,
+  headers: Record<string, string> = {},
+  signal: AbortSignal = AbortSignal.timeout(MCP_READ_TIMEOUT_MS),
+): Promise<McpListing> {
+  const session = await openSession(url, headers, signal);
+  const out: McpToolInfo[] = [];
+  let total = 0;
+  let dropped = 0;
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_LIST_PAGES && out.length < MAX_LISTED_TOOLS; page += 1) {
+    const listed = await rpc(session, "tools/list", cursor ? { cursor } : {}, 2 + page, signal);
+    const rec = asRecord(listed.result);
+    const tools = Array.isArray(rec?.tools) ? rec.tools : [];
+    for (const item of tools) {
+      total += 1;
+      const row = asRecord(item);
+      // Skipped rather than clipped: a clipped name is one the server never
+      // published, and calling it fails at the server instead of here.
+      if (!row || typeof row.name !== "string" || row.name.length > 80) {
+        dropped += 1;
+        continue;
+      }
+      out.push({
+        name: row.name,
+        description: typeof row.description === "string" ? row.description.slice(0, 400) : "",
+        visibility: toolVisibility(row._meta),
+        appCallable: toolAppCallable(row._meta),
+        resourceUri: toolResourceUri(row._meta),
+        inputSchema: toolInputSchema(row.inputSchema),
+        inputSchemaBytes: mountedSchemaBytes(toolInputSchema(row.inputSchema)),
+      });
+      if (out.length >= MAX_LISTED_TOOLS) break;
+    }
+    cursor = typeof rec?.nextCursor === "string" && rec.nextCursor ? rec.nextCursor : undefined;
+    if (!cursor) break;
+  }
+  return { tools: out, total, dropped };
+}
+
 export async function listMcpTools(
   url: string,
   headers: Record<string, string> = {},
   signal: AbortSignal = AbortSignal.timeout(MCP_READ_TIMEOUT_MS),
 ): Promise<McpToolInfo[]> {
-  const init = await rpc(url, "initialize", {
-    protocolVersion: "2025-03-26",
-    capabilities: {},
-    clientInfo: { name: "useful-bot", version: "0.0.0" },
-  }, headers, 1, signal);
-  const sessionHeaders = init.sessionId
-    ? { ...headers, "mcp-session-id": init.sessionId }
-    : headers;
-  const listed = await rpc(url, "tools/list", {}, sessionHeaders, 2, signal);
-  const rec = asRecord(listed.result);
-  const tools = Array.isArray(rec?.tools) ? rec.tools : [];
-  const out: McpToolInfo[] = [];
-  for (const item of tools) {
-    const row = asRecord(item);
-    // Skipped rather than clipped: a clipped name is one the server never
-    // published, and calling it fails at the server instead of here.
-    if (!row || typeof row.name !== "string" || row.name.length > 80) continue;
-    out.push({
-      name: row.name,
-      description: typeof row.description === "string" ? row.description.slice(0, 400) : "",
-      visibility: toolVisibility(row._meta),
-      appCallable: toolAppCallable(row._meta),
-      resourceUri: toolResourceUri(row._meta),
-      inputSchema: toolInputSchema(row.inputSchema),
-      inputSchemaBytes: mountedSchemaBytes(toolInputSchema(row.inputSchema)),
-    });
-    if (out.length >= 200) break;
-  }
-  return out;
+  return (await listMcpToolsWithStats(url, headers, signal)).tools;
 }
 
 export function modelToolNames(tools: McpToolInfo[]): string[] {
@@ -273,15 +445,8 @@ export async function readMcpResource(
   signal: AbortSignal = AbortSignal.timeout(MCP_READ_TIMEOUT_MS),
 ): Promise<McpResource> {
   if (!uri.startsWith("ui://") && !uri.startsWith("https://")) throw new Error("mcp_resource_uri");
-  const init = await rpc(url, "initialize", {
-    protocolVersion: "2025-03-26",
-    capabilities: {},
-    clientInfo: { name: "useful-bot", version: "0.0.0" },
-  }, headers, 1, signal);
-  const sessionHeaders = init.sessionId
-    ? { ...headers, "mcp-session-id": init.sessionId }
-    : headers;
-  const read = await rpc(url, "resources/read", { uri }, sessionHeaders, 3, signal);
+  const session = await openSession(url, headers, signal);
+  const read = await rpc(session, "resources/read", { uri }, 3, signal);
   const rec = asRecord(read.result);
   const contents = Array.isArray(rec?.contents) ? rec.contents : [];
   const first = asRecord(contents[0]);
@@ -324,15 +489,8 @@ export async function callMcpTool(
   // spinner) open. A caller with more steps passes one shared deadline.
   signal: AbortSignal = AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS),
 ): Promise<Record<string, unknown>> {
-  const init = await rpc(url, "initialize", {
-    protocolVersion: "2025-03-26",
-    capabilities: {},
-    clientInfo: { name: "useful-bot", version: "0.0.0" },
-  }, headers, 1, signal);
-  const sessionHeaders = init.sessionId
-    ? { ...headers, "mcp-session-id": init.sessionId }
-    : headers;
-  const called = await rpc(url, "tools/call", { name, arguments: args }, sessionHeaders, 4, signal);
+  const session = await openSession(url, headers, signal);
+  const called = await rpc(session, "tools/call", { name, arguments: args }, 4, signal);
   const rec = asRecord(called.result);
   if (!rec) throw new Error("mcp_tool_result");
   if (JSON.stringify(rec).length > TOOL_RESULT_MAX) throw new Error("mcp_tool_result_too_large");

@@ -20,6 +20,20 @@ function parseBundle(raw: string | null): OAuthTokenBundle | null {
   }
 }
 
+/**
+ * An OAuth connection whose access token has run out and could not be renewed:
+ * there is no refresh token, or the server refused it. The stale token is
+ * never sent. The owner has to sign in again.
+ */
+export class OAuthExpiredError extends Error {
+  readonly code = "oauth_expired";
+
+  constructor() {
+    super("oauth_expired");
+    this.name = "OAuthExpiredError";
+  }
+}
+
 export async function bearerFromKeychain(id: string): Promise<{ token: string; expiresAt?: number }> {
   const raw = keychainGet(connectionSecretService(id));
   if (!raw) throw new Error(`connection_secret_missing:${id}`);
@@ -35,8 +49,13 @@ export async function oauthToken(entry: ConnectionEntry): Promise<{ token: strin
   const service = connectionSecretService(entry.id);
   let bundle = parseBundle(keychainGet(service));
   if (!bundle) throw new Error(`connection_secret_missing:${entry.id}`);
-  if (bundle.expiresAt && bundle.expiresAt < Date.now() + 30_000 && bundle.refreshToken) {
-    bundle = await refreshMcpOAuth(bundle);
+  if (bundle.expiresAt && bundle.expiresAt < Date.now() + 30_000) {
+    if (!bundle.refreshToken) throw new OAuthExpiredError();
+    try {
+      bundle = await refreshMcpOAuth(bundle);
+    } catch {
+      throw new OAuthExpiredError();
+    }
     keychainSet(service, JSON.stringify(bundle));
   }
   return { token: bundle.accessToken, expiresAt: bundle.expiresAt ?? undefined };

@@ -67,6 +67,40 @@ export type ConnectionIndex = {
   failed?: boolean;
 };
 
+/**
+ * What the last attempt to list a connection's tools found. `ready` and
+ * `zero_tools` are the two answers from a server that is working; the rest say
+ * why it is not. `malformed` is a listing that arrived with every tool dropped
+ * as invalid (a name or schema this app cannot mount).
+ */
+export type ConnectionState =
+  | "pending"
+  | "ready"
+  | "zero_tools"
+  | "auth_failed"
+  | "expired"
+  | "unreachable"
+  | "malformed"
+  | "discovery_failed";
+
+const CONNECTION_STATES = new Set<string>([
+  "pending", "ready", "zero_tools", "auth_failed", "expired", "unreachable", "malformed", "discovery_failed",
+]);
+
+export type ConnectionStatus = {
+  state: ConnectionState;
+  /**
+   * A short code and a short message this app wrote. Never a header, a token
+   * or a piece of what the server sent back.
+   */
+  lastError: { code: string; message: string } | null;
+  checkedAt: string;
+  /** Tools the owner's bots can reach; null when no listing arrived. */
+  toolCount: number | null;
+  /** How many listed tools were dropped as invalid. */
+  dropped?: number;
+};
+
 export type SessionTools = {
   updatedAt: string;
   /** `<connectionId>__<toolName>`, the name eve mounts and the app parses. */
@@ -76,6 +110,8 @@ export type SessionTools = {
 export type ConnectionToolsStore = {
   schemaVersion: 1;
   index: Record<string, ConnectionIndex>;
+  /** Per connection id, beside the listing it describes. */
+  status: Record<string, ConnectionStatus>;
   sessions: Record<string, SessionTools>;
 };
 
@@ -84,6 +120,12 @@ const LOCK_STALE_MS = 2000;
 const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 /** A listing older than this is refetched the next time a search needs it. */
 export const INDEX_TTL_MS = 6 * 60 * 60 * 1000;
+/**
+ * A listing that failed or came back empty is asked for again after this, not
+ * after the six hours a good one keeps: an owner who just reconnected should
+ * not wait for the cache to forget.
+ */
+export const LISTING_RETRY_MS = 2 * 60 * 1000;
 /** Sessions kept. The oldest go first; a dropped one just re-asks. */
 const MAX_SESSIONS = 100;
 /**
@@ -130,7 +172,7 @@ export function mountedToolName(connectionId: string, toolName: string): string 
 }
 
 export function emptyConnectionToolsStore(): ConnectionToolsStore {
-  return { schemaVersion: 1, index: {}, sessions: {} };
+  return { schemaVersion: 1, index: {}, status: {}, sessions: {} };
 }
 
 function parseTool(raw: unknown): IndexedTool | null {
@@ -148,6 +190,26 @@ function parseTool(raw: unknown): IndexedTool | null {
     inputSchemaBytes: typeof rec.inputSchemaBytes === "number" && Number.isFinite(rec.inputSchemaBytes)
       ? Math.max(0, Math.trunc(rec.inputSchemaBytes))
       : schemaBytesOf(schema),
+  };
+}
+
+function parseStatus(raw: unknown): ConnectionStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.state !== "string" || !CONNECTION_STATES.has(rec.state)) return null;
+  const err = rec.lastError && typeof rec.lastError === "object" ? rec.lastError as Record<string, unknown> : null;
+  return {
+    state: rec.state as ConnectionState,
+    lastError: err && typeof err.code === "string" && typeof err.message === "string"
+      ? { code: err.code.slice(0, 80), message: err.message.slice(0, 200) }
+      : null,
+    checkedAt: typeof rec.checkedAt === "string" ? rec.checkedAt : new Date(0).toISOString(),
+    toolCount: typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount)
+      ? Math.max(0, Math.trunc(rec.toolCount))
+      : null,
+    ...(typeof rec.dropped === "number" && Number.isFinite(rec.dropped)
+      ? { dropped: Math.max(0, Math.trunc(rec.dropped)) }
+      : {}),
   };
 }
 
@@ -181,6 +243,11 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
         : {}),
       ...(row.failed === true ? { failed: true } : {}),
     };
+  }
+  const statuses = rec.status && typeof rec.status === "object" ? rec.status as Record<string, unknown> : {};
+  for (const [id, value] of Object.entries(statuses)) {
+    const status = parseStatus(value);
+    if (status) store.status[id] = status;
   }
   const sessions = rec.sessions && typeof rec.sessions === "object"
     ? rec.sessions as Record<string, unknown>
@@ -329,6 +396,56 @@ export function putConnectionListingFailed(
 }
 
 /**
+ * Record what one attempt to list a connection found, with the listing it
+ * produced when there is one. `tools: null` keeps the last listing beside the
+ * attempt, which is what a server that merely went quiet should leave behind;
+ * a server that answered and refused should pass `[]`.
+ */
+export function putConnectionDiscovery(
+  connectionId: string,
+  outcome: { tools: IndexedTool[] | null; status: ConnectionStatus },
+  path = connectionToolsPath(),
+): void {
+  updateConnectionToolsStore((store) => {
+    const broken = outcome.status.state !== "ready" && outcome.status.state !== "zero_tools";
+    store.index[connectionId] = {
+      fetchedAt: outcome.status.checkedAt,
+      tools: (outcome.tools ?? store.index[connectionId]?.tools ?? [])
+        .filter((tool) => isMountableToolName(connectionId, tool.name))
+        .slice(0, 200),
+      ...(broken ? { failed: true } : {}),
+    };
+    store.status[connectionId] = outcome.status;
+  }, path);
+}
+
+/** Record a status with no listing change, for a connection whose tools are eve's. */
+export function putConnectionStatus(
+  connectionId: string,
+  status: ConnectionStatus,
+  path = connectionToolsPath(),
+): void {
+  updateConnectionToolsStore((store) => {
+    store.status[connectionId] = status;
+  }, path);
+}
+
+export function connectionStatus(
+  connectionId: string,
+  path = connectionToolsPath(),
+): ConnectionStatus | null {
+  return readConnectionToolsStore(path).status[connectionId] ?? null;
+}
+
+/** Forget a connection's listing and status; its sessions shed the tools on their own. */
+export function removeConnectionIndex(connectionId: string, path = connectionToolsPath()): void {
+  updateConnectionToolsStore((store) => {
+    delete store.index[connectionId];
+    delete store.status[connectionId];
+  }, path);
+}
+
+/**
  * Remember how big an OpenAPI connection is, since its tools are eve's.
  * `null` records the attempt without a figure, which is what keeps a spec
  * that cannot be read from being refetched at every turn boundary.
@@ -374,6 +491,24 @@ export function indexIsStale(index: ConnectionIndex | null, now = Date.now()): b
   if (!index) return true;
   const at = Date.parse(index.fetchedAt);
   return !Number.isFinite(at) || now - at > INDEX_TTL_MS;
+}
+
+/**
+ * Whether a connection's tools should be listed again. A working listing keeps
+ * for the full TTL; one that failed, came back empty or was never judged is
+ * tried again after `LISTING_RETRY_MS`.
+ */
+export function listingIsDue(
+  index: ConnectionIndex | null,
+  status: ConnectionStatus | null,
+  now = Date.now(),
+): boolean {
+  if (!index) return true;
+  const at = Date.parse(status?.checkedAt ?? index.fetchedAt);
+  if (!Number.isFinite(at)) return true;
+  // A row from before status was kept is judged by what it holds.
+  const working = status ? status.state === "ready" : index.failed !== true && index.tools.length > 0;
+  return now - at > (working ? INDEX_TTL_MS : LISTING_RETRY_MS);
 }
 
 /** What a session has picked up, in the order it picked it up. */

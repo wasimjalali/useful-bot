@@ -1,17 +1,22 @@
-import { connectionHeaders } from "./connection-auth.ts";
+import { connectionHeaders, OAuthExpiredError } from "./connection-auth.ts";
+import { ConnectionUrlError } from "./connection-url.ts";
 import {
   connectionIndex,
+  connectionStatus,
   indexIsStale,
   indexedToolBytes,
   isMountableToolName,
+  listingIsDue,
   mountedToolName,
-  putConnectionIndex,
-  putConnectionListingFailed,
+  putConnectionDiscovery,
   putConnectionOperations,
+  putConnectionStatus,
+  type ConnectionState,
+  type ConnectionStatus,
   type IndexedTool,
 } from "./connection-tools-store.ts";
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
-import { listMcpTools, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
+import { listMcpToolsWithStats, McpError, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
 import { specWireBytes, type SpecSize } from "./tool-wire-size.ts";
 import { MAX_SESSION_TOOL_BYTES, MAX_SESSION_TOOLS, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
@@ -186,52 +191,190 @@ export type ToolHit = {
   description: string;
 };
 
+let discoveryLog: (line: string) => void = (line) => console.warn(line);
+
+/** Where the one-line discovery outcome goes. Tests capture it. */
+export function setDiscoveryLogger(next: ((line: string) => void) | null): void {
+  discoveryLog = next ?? ((line) => console.warn(line));
+}
+
+type Failure = { state: ConnectionState; code: string; message: string };
+
 /**
- * Refresh one connection's listing from the server. Only tools the server
- * shows the model are kept, and an allow-list still applies: a tool the owner
- * did not allow is not one this bot may pick up later either.
+ * Why a listing failed, in words this app wrote. Nothing from the server's own
+ * answer or from a header goes in: a server can echo the credential it was
+ * sent, and a stored status is read by the app and, through find_tools, the
+ * model.
  */
-export async function refreshConnectionIndex(
+export function classifyDiscoveryError(err: unknown): Failure {
+  if (err instanceof OAuthExpiredError) {
+    return { state: "expired", code: "oauth_expired", message: "The sign-in expired. Reconnect to continue." };
+  }
+  if (err instanceof McpError) {
+    if (err.kind === "auth") {
+      return { state: "auth_failed", code: `http_${err.status ?? 401}`, message: "The server refused the credential." };
+    }
+    if (err.kind === "unreachable") {
+      return { state: "unreachable", code: err.status ? `http_${err.status}` : "network", message: "The server could not be reached." };
+    }
+    if (err.kind === "parse") {
+      return { state: "discovery_failed", code: "parse", message: "The server's answer was not JSON-RPC." };
+    }
+    return {
+      state: "discovery_failed",
+      code: err.status ? `http_${err.status}` : "protocol",
+      message: err.message === "mcp_unsupported_version"
+        ? "The server speaks a protocol version this app does not."
+        : "The server did not answer like an MCP server.",
+    };
+  }
+  if (err instanceof ConnectionUrlError) {
+    return err.message === "url_resolve"
+      ? { state: "unreachable", code: "dns", message: "The server's address could not be resolved." }
+      : { state: "discovery_failed", code: err.message, message: "The server's address is not one this app will call." };
+  }
+  if (err instanceof Error && err.message.startsWith("connection_secret_missing")) {
+    return { state: "auth_failed", code: "credential_missing", message: "The saved credential is missing." };
+  }
+  return { state: "discovery_failed", code: "unknown", message: "Listing the tools failed." };
+}
+
+function logOutcome(entry: ConnectionEntry, status: ConnectionStatus): void {
+  discoveryLog(
+    `[useful-bot] connection ${entry.id} discovery ${status.state}`
+      + `${status.lastError ? ` (${status.lastError.code})` : ""}`
+      + ` tools=${status.toolCount ?? "-"}${status.dropped ? ` dropped=${status.dropped}` : ""}`,
+  );
+}
+
+export type Discovery = { status: ConnectionStatus; tools: IndexedTool[] };
+
+/**
+ * Ask a connection what it offers, and write down what came of it: the
+ * listing for `find_tools` to search and a status that says why when there is
+ * none. The one place a listing is attempted for an MCP server (the connect
+ * flow, a search past its TTL and the Connectors page all come through here),
+ * and it never throws, so a server that is down cannot take a caller with it.
+ *
+ * Only tools the server shows the model are kept, and an allow-list still
+ * applies: a tool the owner did not allow is not one a bot may pick up later.
+ * `headers` is for a caller that holds the credential already, such as a
+ * connect whose row has not been read back.
+ */
+export async function discoverConnection(
   entry: ConnectionEntry,
-  storePath?: string,
-): Promise<IndexedTool[]> {
-  const headers = await connectionHeaders(entry);
-  const listed = await listMcpTools(entry.url, headers);
-  const visible = new Set(modelToolNames(listed));
-  const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
-  const tools: IndexedTool[] = listed
+  opts: { headers?: Record<string, string>; storePath?: string } = {},
+): Promise<Discovery> {
+  const checkedAt = new Date().toISOString();
+  const store = opts.storePath;
+  const done = (status: ConnectionStatus, tools: IndexedTool[] | null): Discovery => {
+    try {
+      putConnectionDiscovery(entry.id, { tools, status }, store);
+    } catch {
+      // The index is a cache; a write that failed costs one listing later.
+    }
+    logOutcome(entry, status);
+    return { status, tools: tools ?? connectionIndex(entry.id, store)?.tools ?? [] };
+  };
+  if (entry.kind === "openapi") {
+    let size = null;
+    try {
+      size = await measureOpenApiConnection(entry.url, opts.headers ?? await connectionHeaders(entry));
+    } catch {
+      size = null;
+    }
+    try { putConnectionOperations(entry.id, size, store); } catch { /* a cache */ }
+    const status: ConnectionStatus = size === null
+      ? {
+        state: "discovery_failed",
+        lastError: { code: "spec_unreadable", message: "The API description could not be read." },
+        checkedAt,
+        toolCount: null,
+      }
+      : { state: size.operations > 0 ? "ready" : "zero_tools", lastError: null, checkedAt, toolCount: size.operations };
+    try { putConnectionStatus(entry.id, status, store); } catch { /* a cache */ }
+    logOutcome(entry, status);
+    return { status, tools: [] };
+  }
+  try {
+    const headers = opts.headers ?? await connectionHeaders(entry);
+    const listed = await listMcpToolsWithStats(entry.url, headers);
     // Screened before it is kept or returned, not only when the store is next
     // read: a name the upstream would refuse was handed to the model as
     // callable, activated, and then silently never mounted.
-    .filter((tool) => isMountableToolName(entry.id, tool.name))
-    .filter((tool) => visible.has(tool.name) && (!allow || allow.has(tool.name)))
-    .map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      inputSchemaBytes: tool.inputSchemaBytes,
-    }));
-  putConnectionIndex(entry.id, tools, storePath);
-  return tools;
+    const valid = listed.tools.filter((tool) => isMountableToolName(entry.id, tool.name));
+    const dropped = listed.dropped + (listed.tools.length - valid.length);
+    if (listed.total > 0 && valid.length === 0) {
+      return done({
+        state: "malformed",
+        lastError: { code: "all_tools_invalid", message: `The server listed ${listed.total} tools and none could be used.` },
+        checkedAt,
+        toolCount: 0,
+        dropped,
+      }, []);
+    }
+    const visible = new Set(modelToolNames(valid));
+    const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
+    const tools: IndexedTool[] = valid
+      .filter((tool) => visible.has(tool.name) && (!allow || allow.has(tool.name)))
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        inputSchemaBytes: tool.inputSchemaBytes,
+      }));
+    return done({
+      state: tools.length > 0 ? "ready" : "zero_tools",
+      lastError: null,
+      checkedAt,
+      toolCount: tools.length,
+      ...(dropped ? { dropped } : {}),
+    }, tools);
+  } catch (err) {
+    const failure = classifyDiscoveryError(err);
+    // A server that went quiet keeps the listing it gave last time. One that
+    // answered and refused, or answered nonsense, does not: that listing is
+    // no longer something it will honour.
+    return done({
+      state: failure.state,
+      lastError: { code: failure.code, message: failure.message },
+      checkedAt,
+      toolCount: null,
+    }, failure.state === "unreachable" ? null : []);
+  }
 }
 
-/** The listing, refetched when it is missing or too old to trust. */
+/**
+ * The listing, refetched when it is missing, too old to trust, or when the
+ * last attempt did not work and enough time has passed to try again. The
+ * status comes back with it so a search can say why a server has nothing.
+ */
+export async function ensureConnectionListing(
+  entry: ConnectionEntry,
+  storePath?: string,
+): Promise<Discovery> {
+  const current = connectionIndex(entry.id, storePath);
+  const status = connectionStatus(entry.id, storePath);
+  if (!listingIsDue(current, status)) {
+    return {
+      tools: current?.tools ?? [],
+      status: status ?? {
+        state: current && current.tools.length > 0 ? "ready" : "zero_tools",
+        lastError: null,
+        checkedAt: current?.fetchedAt ?? new Date(0).toISOString(),
+        toolCount: current?.tools.length ?? null,
+      },
+    };
+  }
+  return discoverConnection(entry, { storePath });
+}
+
+/** The listing, refetched when it is due. */
 export async function ensureConnectionIndex(
   entry: ConnectionEntry,
   storePath?: string,
 ): Promise<IndexedTool[]> {
-  const current = connectionIndex(entry.id, storePath);
-  if (!indexIsStale(current)) return current?.tools ?? [];
-  try {
-    return await refreshConnectionIndex(entry, storePath);
-  } catch {
-    // A server that is down must not take the search down with it: what was
-    // listed last time is still the best answer available. The attempt is
-    // recorded so the next search does not wait fifteen seconds for the same
-    // silence, and the stale listing is kept beside it.
-    try { putConnectionListingFailed(entry.id, storePath); } catch { /* a cache */ }
-    return current?.tools ?? [];
-  }
+  return (await ensureConnectionListing(entry, storePath)).tools;
 }
 
 /**
@@ -251,32 +394,79 @@ export function scoreTool(query: string, tool: IndexedTool, connectionName: stri
     else if (name.includes(word)) score += 6;
     if (prose.includes(word)) score += 2;
   }
+  // A query that names the server ("tella", "send a slack message") is asking
+  // for that server's tools, whatever else the words matched elsewhere.
+  const serverWords = connectionName.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 1);
+  if (serverWords.some((word) => words.includes(word))) score += 20;
   // A tool that matched every word beats one that matched most of them.
   const matched = words.filter((word) => name.includes(word) || prose.includes(word)).length;
   if (matched === words.length) score += 5;
   return score;
 }
 
+/** A connected server a search could not use, and why. */
+export type UnavailableServer = {
+  connectionId: string;
+  server: string;
+  state: ConnectionState;
+  hint: string;
+};
+
+function oneLineName(value: string): string {
+  return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, 80);
+}
+
+/** What a bot should do about a server in this state, in words this app wrote. */
+function unavailableHint(state: ConnectionState, name: string): string {
+  switch (state) {
+    case "auth_failed":
+    case "expired":
+      return `Ask the owner to reconnect ${name} in Connectors.`;
+    case "unreachable":
+      return `${name} could not be reached. Try again in a couple of minutes.`;
+    case "malformed":
+      return `${name} answered, but none of its tools could be used. Tell the owner.`;
+    case "pending":
+      return `${name} is still being set up. Try again shortly.`;
+    default:
+      return `${name} did not answer like an MCP server. Ask the owner to check it in Connectors.`;
+  }
+}
+
 /**
- * The best matches for a query across the connections that are not mounted.
- * Reads each one's cached listing, refreshing a stale one, and never throws
- * for a single server being unreachable.
+ * The best matches for a query across the connections that are not mounted,
+ * and the servers that could not be searched. Reads each one's cached
+ * listing, refreshing one that is due, and never throws for a single server
+ * being unreachable.
  */
-export async function searchConnectionTools(
+export async function findConnectionTools(
   query: string,
   limit: number,
   connectionsPath?: string,
   storePath?: string,
-): Promise<ToolHit[]> {
+): Promise<{ hits: ToolHit[]; unavailable: UnavailableServer[] }> {
   const entries = onDemandConnections(connectionsPath);
   // Together, not one after another: each refresh is bounded at fifteen
   // seconds, and an owner with several servers that have gone quiet was
   // waiting that long for each of them before the search answered.
   const listings = await Promise.all(
-    entries.map(async (entry) => [entry, await ensureConnectionIndex(entry, storePath)] as const),
+    entries.map(async (entry) => [entry, await ensureConnectionListing(entry, storePath)] as const),
   );
   const hits: Array<ToolHit & { score: number }> = [];
-  for (const [entry, tools] of listings) {
+  const unavailable: UnavailableServer[] = [];
+  for (const [entry, { tools, status }] of listings) {
+    const working = status.state === "ready" || status.state === "zero_tools";
+    // A server that merely went quiet still has the listing from last time.
+    const stale = status.state === "unreachable" && tools.length > 0;
+    if (!working && !stale) {
+      unavailable.push({
+        connectionId: entry.id,
+        server: oneLineName(entry.name),
+        state: status.state,
+        hint: unavailableHint(status.state, oneLineName(entry.name)),
+      });
+      continue;
+    }
     // The listing can be hours old; an allow-list the owner narrowed since
     // applies now, or the tool is found, charged and then never mounted.
     const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
@@ -295,7 +485,16 @@ export async function searchConnectionTools(
     }
   }
   hits.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-  return hits.slice(0, limit).map(({ score: _score, ...hit }) => hit);
+  return { hits: hits.slice(0, limit).map(({ score: _score, ...hit }) => hit), unavailable };
+}
+
+export async function searchConnectionTools(
+  query: string,
+  limit: number,
+  connectionsPath?: string,
+  storePath?: string,
+): Promise<ToolHit[]> {
+  return (await findConnectionTools(query, limit, connectionsPath, storePath)).hits;
 }
 
 /** Split a mounted name back into the connection and the tool it names. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setConnectionLookup } from "../shared/connection-url.ts";
-import { MCP_READ_TIMEOUT_MS, callMcpTool, listMcpTools, modelToolNames, readMcpResource, setMcpFetch } from "../shared/mcp-http.ts";
+import { MCP_READ_TIMEOUT_MS, McpError, callMcpTool, listMcpTools, listMcpToolsWithStats, modelToolNames, readMcpResource, setMcpFetch } from "../shared/mcp-http.ts";
 import { parseWidgetDraft } from "../shared/mcp-apps.ts";
 
 test("tools/list parses SSE, drops app-only names from the model list", async () => {
@@ -29,7 +29,7 @@ test("tools/list parses SSE, drops app-only names from the model list", async ()
   });
   try {
     const tools = await listMcpTools("https://mcp.excalidraw.com/mcp");
-    assert.deepEqual(calls, ["initialize", "tools/list"]);
+    assert.deepEqual(calls, ["initialize", "notifications/initialized", "tools/list"]);
     assert.equal(tools.length, 3);
     assert.equal(tools[1].resourceUri, "ui://excalidraw/mcp-app.html");
     assert.deepEqual(modelToolNames(tools), ["read_me", "create_view"]);
@@ -74,7 +74,8 @@ test("tools/call runs one tool and hands back its result", async () => {
   });
   try {
     const result = await callMcpTool("https://mcp.excalidraw.com/mcp", "export_to_excalidraw", { json: "{}" });
-    assert.deepEqual(sent[1], {
+    assert.deepEqual(sent.map((item) => item.method), ["initialize", "notifications/initialized", "tools/call"]);
+    assert.deepEqual(sent[2], {
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
@@ -136,7 +137,7 @@ test("a listing and a resource read carry a deadline of their own", async () => 
       signals.push(init?.signal ?? null);
       const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
       const result = body.method === "initialize" ? {} : { tools: [] };
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.method === "initialize" ? 1 : 2, result }), {
         headers: { "content-type": "application/json" },
       });
     }) as typeof fetch);
@@ -180,5 +181,219 @@ test("a server that answers with more than this side will take is cut off", asyn
   } finally {
     setMcpFetch(null);
     setConnectionLookup(null);
+  }
+});
+
+type Seen = { method: string; id?: number; params?: Record<string, unknown>; headers: Record<string, string> };
+
+/** A server that records what it was sent and answers by method. */
+function server(
+  answer: (seen: Seen) => Response | Promise<Response>,
+): Seen[] {
+  const seen: Seen[] = [];
+  setConnectionLookup(async () => "8.8.8.8");
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method: string; id?: number; params?: Record<string, unknown> };
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
+      headers[key.toLowerCase()] = value;
+    }
+    const row: Seen = { method: body.method, id: body.id, params: body.params, headers };
+    seen.push(row);
+    return answer(row);
+  }) as typeof fetch);
+  return seen;
+}
+
+function json(id: number | undefined, result: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+function reset(): void {
+  setMcpFetch(null);
+  setConnectionLookup(null);
+}
+
+const ONE_TOOL = { tools: [{ name: "list_videos", description: "List videos" }] };
+
+test("the 2025-06-18 handshake sends initialized and carries the version and session on every later request", async () => {
+  const seen = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" }, { "mcp-session-id": "sess-1" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(row.id, ONE_TOOL);
+  });
+  try {
+    const tools = await listMcpTools("https://api.example.com/mcp", { authorization: "Bearer abc" });
+    assert.equal(tools.length, 1);
+    assert.deepEqual(seen.map((row) => row.method), ["initialize", "notifications/initialized", "tools/list"]);
+    assert.equal(seen[0].params?.protocolVersion, "2025-06-18");
+    assert.equal(seen[0].headers["mcp-protocol-version"], undefined);
+    // A notification has no id.
+    assert.equal(seen[1].id, undefined);
+    for (const row of seen.slice(1)) {
+      assert.equal(row.headers["mcp-protocol-version"], "2025-06-18");
+      assert.equal(row.headers["mcp-session-id"], "sess-1");
+      assert.equal(row.headers.authorization, "Bearer abc");
+    }
+  } finally {
+    reset();
+  }
+});
+
+test("a server that answers with the older version is spoken to in that version", async () => {
+  const seen = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-03-26" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 204 });
+    return json(row.id, ONE_TOOL);
+  });
+  try {
+    await listMcpTools("https://api.example.com/mcp");
+    assert.equal(seen[2].headers["mcp-protocol-version"], "2025-03-26");
+    assert.equal(seen[1].headers["mcp-protocol-version"], "2025-03-26");
+  } finally {
+    reset();
+  }
+});
+
+test("a version this side does not speak is a protocol error before anything else is sent", async () => {
+  const seen = server((row) => json(row.id, { protocolVersion: "2024-11-05" }));
+  try {
+    await assert.rejects(
+      () => listMcpTools("https://api.example.com/mcp"),
+      (err: unknown) => err instanceof McpError && err.kind === "protocol" && /version/.test(err.message),
+    );
+    assert.deepEqual(seen.map((row) => row.method), ["initialize"]);
+  } finally {
+    reset();
+  }
+});
+
+test("a notification streamed ahead of the response does not break the parse", async () => {
+  server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const note = { jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "working" } };
+    const ask = { jsonrpc: "2.0", id: 99, method: "ping" };
+    const answer = { jsonrpc: "2.0", id: row.id, result: ONE_TOOL };
+    // The answer's data is split over two lines of one event.
+    const split = JSON.stringify(answer).replace(",", ",\ndata: ");
+    return new Response(
+      `event: message\ndata: ${JSON.stringify(note)}\n\nevent: message\ndata: ${JSON.stringify(ask)}\n\nevent: message\ndata: ${split}\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  });
+  try {
+    const tools = await listMcpTools("https://api.example.com/mcp");
+    assert.deepEqual(tools.map((tool) => tool.name), ["list_videos"]);
+  } finally {
+    reset();
+  }
+});
+
+test("tools/list follows nextCursor across three pages and stops at the page cap", async () => {
+  const seen = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const cursor = row.params?.cursor;
+    if (cursor === undefined) return json(row.id, { tools: [{ name: "one" }], nextCursor: "c2" });
+    if (cursor === "c2") return json(row.id, { tools: [{ name: "two" }], nextCursor: "c3" });
+    return json(row.id, { tools: [{ name: "three" }] });
+  });
+  try {
+    const tools = await listMcpTools("https://api.example.com/mcp");
+    assert.deepEqual(tools.map((tool) => tool.name), ["one", "two", "three"]);
+    assert.deepEqual(seen.filter((row) => row.method === "tools/list").map((row) => row.params?.cursor), [undefined, "c2", "c3"]);
+  } finally {
+    reset();
+  }
+  // A server that never stops paging is cut off at twenty pages.
+  const endless = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(row.id, { tools: [{ name: `t${row.id}` }], nextCursor: `c${row.id}` });
+  });
+  try {
+    const tools = await listMcpTools("https://api.example.com/mcp");
+    assert.equal(endless.filter((row) => row.method === "tools/list").length, 20);
+    assert.equal(tools.length, 20);
+  } finally {
+    reset();
+  }
+});
+
+test("failures are typed: auth, unreachable, protocol and parse", async () => {
+  const outcome = async (answer: (row: Seen) => Response | Promise<Response>): Promise<McpError> => {
+    server(answer);
+    try {
+      await listMcpTools("https://api.example.com/mcp");
+    } catch (err) {
+      assert.ok(err instanceof McpError, `got ${String(err)}`);
+      return err;
+    } finally {
+      reset();
+    }
+    throw new Error("did not fail");
+  };
+  const auth = await outcome(() => new Response("{}", {
+    status: 401,
+    headers: {
+      "www-authenticate": 'Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource", scope="openid offline_access"',
+    },
+  }));
+  assert.equal(auth.kind, "auth");
+  assert.equal(auth.status, 401);
+  assert.equal(auth.scope, "openid offline_access");
+  assert.equal(auth.resourceMetadata, "https://api.example.com/.well-known/oauth-protected-resource");
+  assert.equal((await outcome(() => new Response("no", { status: 403 }))).kind, "auth");
+  assert.equal((await outcome(() => new Response("down", { status: 503 }))).kind, "unreachable");
+  assert.equal((await outcome(() => new Response("bad", { status: 400 }))).kind, "protocol");
+  assert.equal((await outcome(() => new Response("<html>hello</html>", { headers: { "content-type": "text/html" } }))).kind, "parse");
+  assert.equal((await outcome(() => {
+    throw new TypeError("fetch failed");
+  })).kind, "unreachable");
+  // A JSON-RPC error object is the server's answer, and a protocol one.
+  assert.equal((await outcome((row) => new Response(JSON.stringify({
+    jsonrpc: "2.0", id: row.id, error: { code: -32601, message: "Method not found" },
+  }), { headers: { "content-type": "application/json" } }))).kind, "protocol");
+  // An answer for some other id is not an answer to this request.
+  assert.equal((await outcome(() => json(77, {}))).kind, "protocol");
+});
+
+test("a tool call runs the same handshake and finds its own answer in a stream", async () => {
+  const seen = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" }, { "mcp-session-id": "s9" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const note = { jsonrpc: "2.0", method: "notifications/progress", params: {} };
+    const answer = { jsonrpc: "2.0", id: row.id, result: { content: [{ type: "text", text: "done" }] } };
+    return new Response(`data: ${JSON.stringify(note)}\n\ndata: ${JSON.stringify(answer)}\n\n`, {
+      headers: { "content-type": "text/event-stream" },
+    });
+  });
+  try {
+    const result = await callMcpTool("https://api.example.com/mcp", "x", {});
+    assert.deepEqual(result, { content: [{ type: "text", text: "done" }] });
+    assert.deepEqual(seen.map((row) => row.method), ["initialize", "notifications/initialized", "tools/call"]);
+    assert.equal(seen[2].headers["mcp-protocol-version"], "2025-06-18");
+    assert.equal(seen[2].headers["mcp-session-id"], "s9");
+  } finally {
+    reset();
+  }
+});
+
+test("a listing reports how many tools it dropped as invalid", async () => {
+  server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(row.id, { tools: [{ name: "ok_tool" }, { name: "x".repeat(81) }, { description: "no name" }, "junk"] });
+  });
+  try {
+    const out = await listMcpToolsWithStats("https://api.example.com/mcp");
+    assert.equal(out.tools.length, 1);
+    assert.equal(out.total, 4);
+    assert.equal(out.dropped, 3);
+  } finally {
+    reset();
   }
 });

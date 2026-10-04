@@ -21,7 +21,9 @@ function storePathOf(): string {
 import { listHandoffs, queueHandoff } from "../shared/handoffs.ts";
 import { memoryKeychain, setKeychainDriver, connectionSecretService, keychainGet, keychainSet } from "../shared/keychain.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { connectionIndex, putConnectionOperations } from "../shared/connection-tools-store.ts";
+import { connectionIndex, connectionStatus, putConnectionOperations } from "../shared/connection-tools-store.ts";
+import { setDiscoveryLogger } from "../shared/connection-tools.ts";
+import connectionTools from "../agent/tools/connection_tools.ts";
 import { MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
 import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
 import { writeShell } from "../shared/shell-io.ts";
@@ -671,4 +673,216 @@ test("a spec whose tool names would pass sixty-four under a reassigned id is ref
   serve("o".repeat(55));
   await startConnectionConfirm(refused.id, { callbackUrl: CALLBACK });
   assert.equal(findConnectionById("spec")?.id, "spec");
+});
+
+/** An MCP server whose tools/list answer is chosen by the test; initialize and the notification always work. */
+function listing(answer: (id: number | undefined) => Response | Promise<Response>) {
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return answer(body.id);
+  }) as typeof fetch);
+}
+
+const rpcJson = (id: number | undefined, result: unknown) =>
+  new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { headers: { "content-type": "application/json" } });
+
+function cardOf(id: string, storePath: string) {
+  const card = readProposal(id, storePath);
+  assert.equal(card?.kind, "connectServer");
+  return card as Extract<NonNullable<typeof card>, { kind: "connectServer" }>;
+}
+
+test("a failing listing leaves the card failed with its reason, keeps the row and tells the bot nothing", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  const cases: Array<[string, () => Response | Promise<Response>, string]> = [
+    ["auth_failed", () => new Response("no", { status: 401 }), "auth_failed"],
+    ["unreachable", () => { throw new TypeError("fetch failed"); }, "unreachable"],
+    ["malformed", () => rpcJson(2, { tools: [{ name: "has.a.dot" }, { name: "has space" }] }), "malformed"],
+    ["discovery_failed", () => new Response("<html>", { headers: { "content-type": "text/html" } }), "discovery_failed"],
+  ];
+  const cardIds: string[] = [];
+  for (const [name, answer, state] of cases) {
+    const id = `srv-${name.replace("_", "-")}`;
+    listing(answer);
+    const card = seedCard({
+      connectionId: id,
+      url: `https://${id}.example.com/mcp`,
+      urlHost: `${id}.example.com`,
+    });
+    cardIds.push(card.id);
+    await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+    const stored = cardOf(card.id, storePath);
+    assert.equal(stored.phase, "failed", name);
+    assert.equal(stored.reason, state, name);
+    assert.equal(stored.toolCount, null);
+    // Still pending: the owner can retry it, and nothing says it is done.
+    assert.equal(stored.status, "pending");
+    assert.equal(findConnectionById(id)?.url, `https://${id}.example.com/mcp`);
+    assert.equal(connectionStatus(id)?.state, state);
+    assert.ok(connectionStatus(id)?.lastError?.code, name);
+  }
+  assert.equal(listHandoffs().length, 0);
+  assert.equal(listThreadEvents("b1", storePath).some((e) => e.kind === "note" && /connected/.test(String(e.text))), false);
+  // The malformed one says how many it dropped.
+  assert.equal(connectionStatus("srv-malformed")?.dropped, 2);
+  // A pump has nothing to resume and does not settle it.
+  await pumpConnections();
+  for (const id of cardIds) assert.equal(cardOf(id, storePath).status, "pending");
+});
+
+test("a server with no tools is connected, and the resume says so", async () => {
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  listing((id) => rpcJson(id, { tools: [] }));
+  const card = seedCard();
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "connected");
+  assert.equal(stored.toolCount, 0);
+  assert.equal(stored.reason ?? null, null);
+  assert.equal(connectionStatus("example")?.state, "zero_tools");
+  assert.equal(listHandoffs().length, 1);
+  assert.match(listHandoffs()[0].message, /offers no tools/);
+});
+
+test("a retried failed card connects once the listing works", async () => {
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  listing(() => new Response("no", { status: 503 }));
+  const card = seedCard();
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  assert.equal(cardOf(card.id, storePath).reason, "unreachable");
+  listing((id) => rpcJson(id, { tools: [{ name: "list_widgets", description: "List" }] }));
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "connected");
+  assert.equal(stored.reason ?? null, null);
+  assert.equal(listHandoffs().length, 1);
+});
+
+function oauthPending(card: { id: string }, connectionId = "tella") {
+  writeFileSync(process.env.UB_OAUTH_PENDING_PATH ?? "", JSON.stringify([{
+    state: "statevalue123456",
+    verifier: "verifier-value-123456",
+    proposalId: card.id,
+    connectionId,
+    tokenEndpoint: "https://auth.example.com/token",
+    clientId: "cid",
+    clientSecret: null,
+    redirectUri: CALLBACK,
+    createdAt: new Date().toISOString(),
+    resource: "https://mcp.example.com",
+  }]));
+}
+
+const tokenReply = () => new Response(JSON.stringify({ access_token: "at_secret_1", refresh_token: "rt_secret_1", expires_in: 3600 }), {
+  headers: { "content-type": "application/json" },
+});
+
+test("an oauth callback whose listing fails leaves the card failed and fires no success resume", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  // The case that was real: sign-in worked, tools/list refused the token.
+  listing(() => new Response("no", { status: 401 }));
+  setOauthFetch(async () => tokenReply());
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  await completeConnectionOAuth("code-1", "statevalue123456");
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "failed");
+  assert.equal(stored.reason, "auth_failed");
+  assert.equal(stored.status, "pending");
+  assert.equal(listHandoffs().length, 0);
+  assert.equal(connectionStatus("tella")?.state, "auth_failed");
+  // The credential is kept for a refresh or a reauthorize.
+  assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_secret_1"));
+});
+
+test("a listing that works marks the card connected, and its tools are mounted on the next step", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  listing((id) => rpcJson(id, { tools: [
+    { name: "list_videos", description: "List the owner's Tella videos" },
+    { name: "create_video", description: "Create a video" },
+  ] }));
+  setOauthFetch(async () => tokenReply());
+  const card = seedCard({ connectionId: "tella", name: "Tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  await completeConnectionOAuth("code-1", "statevalue123456");
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "connected");
+  assert.equal(stored.toolCount, 2);
+  assert.equal(listHandoffs().length, 1);
+  assert.equal(connectionStatus("tella")?.state, "ready");
+  // No restart: the resolver reads the registry and the index as they are now.
+  const resolve = (connectionTools as unknown as {
+    events: { "step.started": (event: unknown, ctx: unknown) => Promise<Record<string, { execute: (input: unknown, ctx: unknown) => Promise<Record<string, unknown>> }> | null> };
+  }).events["step.started"];
+  const ctx = { session: { id: "s-tella" } };
+  const first = await resolve({}, ctx);
+  assert.ok(first?.find_tools);
+  const found = await first!.find_tools.execute({ query: "tella videos" }, ctx);
+  assert.equal(found.status, "ok");
+  assert.equal(found.unavailable, undefined);
+  const second = await resolve({}, ctx);
+  assert.ok(second?.tella__list_videos, "the tool is callable on the next step");
+  assert.ok(second?.tella__create_video);
+});
+
+test("reauthorize replaces the credential on the same row and relists", async () => {
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  setDiscoveryLogger(() => {});
+  paths();
+  listing(() => new Response("no", { status: 401 }));
+  const row = upsertConnection({
+    id: "tella",
+    kind: "mcp",
+    name: "Tella",
+    url: "https://mcp.example.com/mcp",
+    description: "Tella MCP server",
+    authKind: "oauth",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  }).entry;
+  keychainSet(connectionSecretService("tella"), JSON.stringify({ accessToken: "stale", refreshToken: null, expiresAt: null, clientId: "cid", clientSecret: null, tokenEndpoint: "https://auth.example.com/token" }));
+  writeFileSync(process.env.UB_OAUTH_PENDING_PATH ?? "", JSON.stringify([{
+    state: "statevalue123456",
+    verifier: "verifier-value-123456",
+    proposalId: "reauth_tella",
+    connectionId: "tella",
+    tokenEndpoint: "https://auth.example.com/token",
+    clientId: "cid",
+    clientSecret: null,
+    redirectUri: CALLBACK,
+    createdAt: new Date().toISOString(),
+  }]));
+  // The new token is the one tools/list accepts.
+  const seenAuth: string[] = [];
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    seenAuth.push(String((init?.headers as Record<string, string>).authorization));
+    if (body.method === "initialize") return rpcJson(1, { protocolVersion: "2025-06-18" });
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return rpcJson(body.id, { tools: [{ name: "list_videos", description: "List" }] });
+  }) as typeof fetch);
+  setOauthFetch(async () => tokenReply());
+  await completeConnectionOAuth("code-2", "statevalue123456");
+  assert.equal(readConnectionsStore().connections.filter((item) => item.id === "tella").length, 1);
+  assert.deepEqual(readConnectionsStore().connections.find((item) => item.id === "tella"), row);
+  assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_secret_1"));
+  assert.ok(seenAuth.every((value) => value === "Bearer at_secret_1"));
+  assert.equal(connectionStatus("tella")?.state, "ready");
+  assert.equal(findOauthPending("statevalue123456"), null);
 });
