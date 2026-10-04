@@ -871,7 +871,7 @@ private struct ConnectorDetailDialog: View {
     private var toolsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let tools {
-                Text("Tools \(tools.count)")
+                Text(tools.count == 1 ? "1 tool" : "\(tools.count) tools")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.C.inkMuted)
                 if tools.isEmpty {
@@ -918,10 +918,10 @@ private struct ConnectorDetailDialog: View {
     private var actions: some View {
         HStack(spacing: 8) {
             if confirming {
-                Text(tile.source.isApp ? "Disconnect \(tile.name)?" : "Remove \(tile.name)?")
+                Text("Disconnect \(tile.name)?")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.ink)
-                NativeButton(tile.source.isApp ? "Disconnect" : "Remove", kind: .danger, small: true, enabled: !busy, action: confirm)
+                NativeButton("Disconnect", kind: .danger, small: true, enabled: !busy, action: confirm)
                 NativeButton("Cancel", kind: .secondary, small: true) { confirming = false }
             } else {
                 switch tile.source {
@@ -940,7 +940,7 @@ private struct ConnectorDetailDialog: View {
                         Task { await model.refreshDirectConnection(row) }
                     }
                     if row.canRemove {
-                        NativeButton("Remove", kind: .ghost, small: true, enabled: !busy) { confirming = true }
+                        NativeButton("Disconnect", kind: .ghost, small: true, enabled: !busy) { confirming = true }
                     }
                 }
             }
@@ -1105,7 +1105,7 @@ struct ConnectorsDialog: View {
                 Spacer(minLength: 0)
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 28)
         .padding(.top, 16)
         .padding(.bottom, 24)
         .onAppear { keyFocused = true }

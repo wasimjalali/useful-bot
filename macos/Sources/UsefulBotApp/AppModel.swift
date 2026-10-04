@@ -3954,7 +3954,7 @@ final class AppModel: ObservableObject {
             try await client.removeDirectConnection(id: row.id)
         } catch is CancellationError {
         } catch {
-            directConnectionsError = "Couldn't remove \(row.name)."
+            directConnectionsError = "Couldn't disconnect \(row.name)."
         }
         await loadDirectConnections(quiet: true)
         directConnectionBusy.remove(row.id)
