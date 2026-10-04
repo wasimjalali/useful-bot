@@ -1871,8 +1871,12 @@ final class AppModel: ObservableObject {
 
     /// The server took a resent message: it is no longer unsent.
     private func completeUnsentRetry(_ id: String, botId: String) {
-        retryingUnsent[botId] = nil
-        retryingOptimisticIds[botId] = nil
+        // A stopped resend can still land late: it only clears the retry
+        // state when that state is still its own, not a newer Retry's.
+        if retryingUnsent[botId] == id {
+            retryingUnsent[botId] = nil
+            retryingOptimisticIds[botId] = nil
+        }
         var list = unsentList(for: botId)
         list.remove(id)
         setUnsent(list, botId: botId, force: true)

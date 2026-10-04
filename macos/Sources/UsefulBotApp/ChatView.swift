@@ -1335,6 +1335,8 @@ private struct UnsentRow: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(Theme.C.inkMuted)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss")
