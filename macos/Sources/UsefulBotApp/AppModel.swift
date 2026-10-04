@@ -1856,8 +1856,12 @@ final class AppModel: ObservableObject {
     /// entry comes back with the new reason, never a second one.
     /// Returns whether the new reason was saved.
     private func refuseAgain(_ id: String, reason: String, botId: String, hiding optimisticId: String) -> Bool {
-        retryingUnsent[botId] = nil
-        retryingOptimisticIds[botId] = nil
+        // Keyed on this attempt's own row: two Retries of the same message
+        // share its id, and a late answer to the older must not end the newer.
+        if retryingOptimisticIds[botId] == optimisticId {
+            retryingUnsent[botId] = nil
+            retryingOptimisticIds[botId] = nil
+        }
         var list = unsentList(for: botId)
         guard var item = list.item(id) else {
             if selectedBotId == botId { rebuildTranscript() }
@@ -1870,10 +1874,12 @@ final class AppModel: ObservableObject {
     }
 
     /// The server took a resent message: it is no longer unsent.
-    private func completeUnsentRetry(_ id: String, botId: String) {
+    private func completeUnsentRetry(_ id: String, botId: String, attempt optimisticId: String) {
         // A stopped resend can still land late: it only clears the retry
-        // state when that state is still its own, not a newer Retry's.
-        if retryingUnsent[botId] == id {
+        // state when that state is still its own attempt's, not a newer
+        // Retry's (two Retries of one message share its id, so the attempt's
+        // own optimistic row is the key).
+        if retryingOptimisticIds[botId] == optimisticId {
             retryingUnsent[botId] = nil
             retryingOptimisticIds[botId] = nil
         }
@@ -2185,7 +2191,7 @@ final class AppModel: ObservableObject {
                     )
                 }
                 delivered = true
-                if let retryId = retryingUnsentId { self.completeUnsentRetry(retryId, botId: bot.id) }
+                if let retryId = retryingUnsentId { self.completeUnsentRetry(retryId, botId: bot.id, attempt: optimisticId) }
                 if createdSession, self.selectedBotId == bot.id {
                     // A session this send created holds nothing older than the
                     // send, so the follower can start at its first event. Asked
