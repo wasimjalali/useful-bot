@@ -36,7 +36,7 @@ PERF = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # under test reads its scenario file at launch, and a checkout under ~/Desktop
 # sends that read to a Desktop-folder privacy prompt that a windowless
 # background launch never shows, so the run hung with no window.
-RUNS = os.environ.get("UB_PERF_RUNS") or os.path.expanduser("~/Library/Caches/UsefulBotPerf/runs")
+RUNS = os.path.expanduser(os.environ.get("UB_PERF_RUNS") or "~/Library/Caches/UsefulBotPerf/runs")
 ROOT = os.path.dirname(PERF)
 
 
@@ -720,7 +720,7 @@ def measure(args, quick):
     os.makedirs(outdir, exist_ok=True)
     # A display that sleeps or locks mid-run stops rendering the window.
     subprocess.Popen(["caffeinate", "-diu", "-w", str(os.getpid())])
-    print(f"run {stamp}: {app.path}\n  frames and marks in {os.path.relpath(outdir, ROOT)}")
+    print(f"run {stamp}: {app.path}\n  frames and marks in {outdir}")
     ids = {b["id"]: b["name"] for b in shell_state()["bots"]}
     samples, failures, done, loads = [], [], [], []
     started = time.time()
