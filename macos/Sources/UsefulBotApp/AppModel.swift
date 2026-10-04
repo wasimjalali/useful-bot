@@ -637,6 +637,10 @@ final class AppModel: ObservableObject {
     /// in the list and on disk until the server takes the turn; the transcript
     /// just hides its bubble so the resend shows once.
     private var retryingUnsent: [String: String] = [:]
+    /// The optimistic row of the resend in flight, per bot: hidden again when
+    /// the resend ends without delivery, so it never sits beside the restored
+    /// failed bubble.
+    private var retryingOptimisticIds: [String: String] = [:]
     private var started = false
     /// Rebuilding the transcript on every streamed event re-parses markdown
     /// for every row; the replay of a long session contains thousands of
@@ -1833,7 +1837,16 @@ final class AppModel: ObservableObject {
     private func recordUnsent(_ message: UnsentMessage, botId: String, hiding optimisticId: String) -> Bool {
         var list = unsentList(for: botId)
         list.add(message)
-        guard setUnsent(list, botId: botId) else { return false }
+        guard setUnsent(list, botId: botId) else {
+            // The composer takes a selected bot's message back. Another bot's
+            // stays on its bubble in memory until the app quits, and its text
+            // also waits in `unsentDrafts`, so it is never silently lost.
+            if selectedBotId != botId {
+                unsentLists[botId] = list
+                refusedOptimisticIds.insert(optimisticId)
+            }
+            return false
+        }
         refusedOptimisticIds.insert(optimisticId)
         if selectedBotId == botId { rebuildTranscript() }
         return true
@@ -1841,22 +1854,25 @@ final class AppModel: ObservableObject {
 
     /// A refused message resent from its bubble and refused again: the same
     /// entry comes back with the new reason, never a second one.
-    private func refuseAgain(_ id: String, reason: String, botId: String, hiding optimisticId: String) {
+    /// Returns whether the new reason was saved.
+    private func refuseAgain(_ id: String, reason: String, botId: String, hiding optimisticId: String) -> Bool {
         retryingUnsent[botId] = nil
+        retryingOptimisticIds[botId] = nil
         var list = unsentList(for: botId)
         guard var item = list.item(id) else {
             if selectedBotId == botId { rebuildTranscript() }
-            return
+            return true
         }
         item.reason = reason
         list.replace(item)
         refusedOptimisticIds.insert(optimisticId)
-        setUnsent(list, botId: botId)
+        return setUnsent(list, botId: botId)
     }
 
     /// The server took a resent message: it is no longer unsent.
     private func completeUnsentRetry(_ id: String, botId: String) {
         retryingUnsent[botId] = nil
+        retryingOptimisticIds[botId] = nil
         var list = unsentList(for: botId)
         list.remove(id)
         setUnsent(list, botId: botId, force: true)
@@ -1866,12 +1882,16 @@ final class AppModel: ObservableObject {
     /// the same item again.
     private func endUnsentRetry(botId: String) {
         guard retryingUnsent.removeValue(forKey: botId) != nil else { return }
+        if let optimisticId = retryingOptimisticIds.removeValue(forKey: botId) {
+            refusedOptimisticIds.insert(optimisticId)
+        }
         if selectedBotId == botId { rebuildTranscript() }
     }
 
     /// New Chat and delete: the bot's refused messages go with its chat.
     private func clearUnsent(botId: String) {
         retryingUnsent[botId] = nil
+        retryingOptimisticIds[botId] = nil
         unsentLists[botId] = UnsentList()
         unsentStore.clear(botId: botId)
     }
@@ -1892,8 +1912,19 @@ final class AppModel: ObservableObject {
     /// The held files with their bytes. Images are read back from the sent
     /// image store; one that is gone stops the action with a note rather
     /// than going out without it.
-    private func heldFiles(of message: UnsentMessage, botId: String) -> [Attachment]? {
+    /// `skippingMissingFiles` is Edit: a file whose body was never saved is
+    /// left out and named in a note, since the owner can attach it again.
+    /// Retry cannot send without it, so it stops there.
+    private func heldFiles(of message: UnsentMessage, botId: String, skippingMissingFiles: Bool = false) -> [Attachment]? {
         var out: [Attachment] = []
+        var missing: [String] = []
+        defer {
+            if !missing.isEmpty {
+                attachError = missing.count == 1
+                    ? "\(missing[0]) has to be attached again."
+                    : "\(missing.joined(separator: ", ")) have to be attached again."
+            }
+        }
         for file in message.files {
             switch UnsentMessage.heldState(of: file) {
             case .ready:
@@ -1905,8 +1936,8 @@ final class AppModel: ObservableObject {
                 }
                 out.append(restored)
             case .attachAgain:
-                attachError = "\(file.name) has to be attached again."
-                return nil
+                missing.append(file.name)
+                if !skippingMissingFiles { return nil }
             }
         }
         return out
@@ -1920,11 +1951,21 @@ final class AppModel: ObservableObject {
         send(item.message, retrying: false, keepsComposer: true, files: files, rawDraft: item.draft, retryingUnsentId: id)
     }
 
+    /// Discard a refused message the owner no longer wants.
+    func dismissUnsent(_ id: String) {
+        guard let botId = selectedBotId, retryingUnsent[botId] != id else { return }
+        var list = unsentList(for: botId)
+        guard list.item(id) != nil else { return }
+        list.remove(id)
+        setUnsent(list, botId: botId)
+    }
+
     /// Take a refused message back into the composer, which has to be empty.
     func editUnsent(_ id: String) {
         guard let botId = selectedBotId else { return }
         var list = unsentList(for: botId)
-        guard let item = list.item(id), canEditUnsent, let files = heldFiles(of: item, botId: botId),
+        guard let item = list.item(id), canEditUnsent,
+              let files = heldFiles(of: item, botId: botId, skippingMissingFiles: true),
               list.edit(id, draft: draft, attachmentCount: attachments.count) != nil,
               setUnsent(list, botId: botId) else { return }
         draft = item.draft
@@ -2017,6 +2058,7 @@ final class AppModel: ObservableObject {
         // one before this send, not another failed bubble.
         let anchorId = transcript.last { !UnsentMessage.isUnsentRowId($0.id) }?.id
         let optimisticId = "\(EveStream.optimisticUserPrefix)\(UUID().uuidString)"
+        if retryingUnsentId != nil { retryingOptimisticIds[bot.id] = optimisticId }
         projection.beginTurn()
         projection.apply(EveEvent(
             type: "message.received",
@@ -2262,8 +2304,14 @@ final class AppModel: ObservableObject {
                     // The failed bubble reads its pictures back from disk, so
                     // their copies have to have landed before it is saved.
                     await keptImages?.value
+                    // A New Chat or a newer send may have taken over while the
+                    // copies were written; this one must not touch the new state.
+                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                        self.finishSend(botId: bot.id, generation: generation)
+                        return
+                    }
                     if let retryId = retryingUnsentId {
-                        self.refuseAgain(retryId, reason: reason, botId: bot.id, hiding: optimisticId)
+                        kept = self.refuseAgain(retryId, reason: reason, botId: bot.id, hiding: optimisticId)
                     } else if !retrying {
                         let draftBack = rawDraft ?? (leavesComposer ? draftSnapshot : message)
                         kept = self.recordUnsent(
@@ -2284,8 +2332,12 @@ final class AppModel: ObservableObject {
                         // A refusal that cannot be saved must not lose the
                         // text: it goes back in the composer, and the note
                         // from the failed save stays.
-                        if !kept, self.selectedBotId == bot.id {
-                            self.restoreUnsentDraft(draftBack, sentAttachments: sentAttachments)
+                        if !kept {
+                            if self.selectedBotId == bot.id {
+                                self.restoreUnsentDraft(draftBack, sentAttachments: sentAttachments)
+                            } else {
+                                self.unsentDrafts[bot.id] = (text: draftBack, attachments: sentAttachments)
+                            }
                             if let quoteSnapshot, self.replyQuotes[bot.id] == nil { self.replyQuotes[bot.id] = quoteSnapshot }
                         }
                     }

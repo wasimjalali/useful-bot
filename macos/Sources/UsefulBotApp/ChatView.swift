@@ -663,7 +663,8 @@ struct ChatView: View {
                                     editEnabled: model.canEditUnsent,
                                     maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
                                     retry: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.retryUnsent(id) } },
-                                    edit: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.editUnsent(id) } }
+                                    edit: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.editUnsent(id) } },
+                                    dismiss: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.dismissUnsent(id) } }
                                 )
                             case .message(let row, let recipients):
                                 if row.id == model.continuationRowId {
@@ -1308,6 +1309,7 @@ private struct UnsentRow: View {
     let maxWidth: CGFloat
     let retry: () -> Void
     let edit: () -> Void
+    let dismiss: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1329,6 +1331,15 @@ private struct UnsentRow: View {
                     .help(editEnabled ? "" : UnsentMessage.editBlockedHint)
                     .accessibilityLabel(editEnabled ? "Edit" : UnsentMessage.editBlockedHint)
                     .accessibilityIdentifier("unsent-edit")
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss")
+                .accessibilityLabel("Dismiss")
+                .accessibilityIdentifier("unsent-dismiss")
             }
             .frame(maxWidth: max(160, maxWidth), alignment: .trailing)
         }
