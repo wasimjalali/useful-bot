@@ -579,7 +579,13 @@ export async function refreshBeforeMount(connectionIds: Iterable<string>, storeP
     const entry = findConnectionById(id);
     // Anything else is not mounted from the index at all.
     if (!entry || entry.kind !== "mcp") return;
-    if (checkedThisRuntimeFor(id) && working(connectionStatus(id, storePath)?.state)) return;
+    // Checked in this process is not the same as fresh: a session that lives
+    // for hours would otherwise keep mounting a listing the server dropped.
+    if (
+      checkedThisRuntimeFor(id)
+      && working(connectionStatus(id, storePath)?.state)
+      && !listingIsDue(connectionIndex(id, storePath), connectionStatus(id, storePath), Date.now(), id)
+    ) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([

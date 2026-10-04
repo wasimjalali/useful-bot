@@ -536,6 +536,13 @@ export async function completeMcpOAuth(input: {
   code: string;
   state: string;
   pendingPath?: string;
+  /**
+   * Leave the pending row where it is on success. It is this attempt's
+   * identity: starting the sign-in again replaces it, so a caller that still has
+   * work to do after the exchange can ask whether it is still the latest, and
+   * drops the row itself when it is done.
+   */
+  keepPending?: boolean;
 }): Promise<{ bundle: OAuthTokenBundle; pending: OAuthPending }> {
   const path = input.pendingPath ?? oauthPendingPath();
   const rows = readPending(path);
@@ -562,7 +569,7 @@ export async function completeMcpOAuth(input: {
   if (!rec || typeof rec.access_token !== "string") throw new OAuthTokenError(res.status);
   // Read again: the request above took a while, and a sign-in started or
   // dropped meanwhile is in the file now, not in `rows`.
-  writePending(readPending(path).filter((row) => row.state !== input.state), path);
+  if (input.keepPending !== true) writePending(readPending(path).filter((row) => row.state !== input.state), path);
   const expiresIn = typeof rec.expires_in === "number" ? rec.expires_in : null;
   return {
     pending,

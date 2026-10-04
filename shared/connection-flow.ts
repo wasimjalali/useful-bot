@@ -25,7 +25,6 @@ import { measureOpenApiConnection } from "./mcp-http.ts";
 import {
   completeMcpOAuth,
   dropOauthPending,
-  findOauthPendingForProposal,
   dropOauthPendingForProposal,
   findOauthPending,
   OAuthTokenError,
@@ -490,18 +489,29 @@ async function completeReauthorize(
     dropOauthPending(state);
     throw new Error("oauth_resource_origin");
   }
-  const { bundle, pending } = await completeMcpOAuth({ code, state });
-  logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
-  if (pending.proposalId !== peek.proposalId || pending.connectionId !== entry.id) throw new Error("oauth_state");
-  // The owner may have removed the connection while the browser was open; a
-  // credential stored now would have no row pointing at it.
-  // Written under the refresh lock: a refresh of the old sign-in that is out
-  // now would otherwise land after this and put the old credential back.
-  await withRefreshLock(entry.id, () => {
-    if (!findConnectionById(entry.id)) throw new Error("connection_missing");
-    keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
-  });
-  await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
+  try {
+    const { bundle, pending } = await completeMcpOAuth({ code, state, keepPending: true });
+    logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
+    if (pending.proposalId !== peek.proposalId || pending.connectionId !== entry.id) throw new Error("oauth_state");
+    // The owner may have removed the connection while the browser was open; a
+    // credential stored now would have no row pointing at it.
+    // Written under the refresh lock: a refresh of the old sign-in that is out
+    // now would otherwise land after this and put the old credential back.
+    let latest = true;
+    await withRefreshLock(entry.id, () => {
+      if (!findConnectionById(entry.id)) throw new Error("connection_missing");
+      // Starting the sign-in again replaced this attempt's pending row. An older
+      // exchange that lands after a newer one began must not put its tokens
+      // over the newer sign-in's.
+      latest = findOauthPending(state) !== null;
+      if (latest) keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
+    });
+    if (latest) await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
+  } finally {
+    // The code is spent whatever happened: the verifier and the client secret
+    // do not stay on disk.
+    dropOauthPending(state);
+  }
   return { proposalId: peek.proposalId };
 }
 
@@ -511,14 +521,16 @@ export async function completeConnectionOAuth(
   opts: { storePath?: string; now?: number } = {},
 ): Promise<{ proposalId: string }> {
   const pendingPeek = findOauthPending(state);
-  if (pendingPeek?.proposalId.startsWith(REAUTH_PREFIX)) return completeReauthorize(code, state, pendingPeek);
-  if (!pendingPeek || !pendingPeek.proposalId.startsWith("prp_")) throw new Error("oauth_state");
+  const reauthorizing = pendingPeek?.proposalId.startsWith(REAUTH_PREFIX) === true;
+  if (!pendingPeek || (!reauthorizing && !pendingPeek.proposalId.startsWith("prp_"))) throw new Error("oauth_state");
   // A second delivery of the same callback while the first is being finished
   // says nothing new: it neither spends the code again nor touches the card.
   if (exchanging.has(state)) return { proposalId: pendingPeek.proposalId };
   exchanging.add(state);
   try {
-    return await finishConnectionOAuth(code, state, pendingPeek, opts);
+    return reauthorizing
+      ? await completeReauthorize(code, state, pendingPeek)
+      : await finishConnectionOAuth(code, state, pendingPeek, opts);
   } finally {
     exchanging.delete(state);
   }
@@ -579,25 +591,51 @@ async function finishConnectionOAuth(
   }
   let exchanged: Awaited<ReturnType<typeof completeMcpOAuth>>;
   try {
-    exchanged = await completeMcpOAuth({ code, state });
+    // The pending row stays until this attempt is done with the card: it is the
+    // attempt's identity. Starting the sign-in again replaces it, and an attempt
+    // whose row is gone is an older one that may no longer settle anything.
+    exchanged = await completeMcpOAuth({ code, state, keepPending: true });
   } catch (err) {
     // The pending row vanished: there is no sign-in of ours to fail.
     if (err instanceof Error && err.message === "oauth_state") throw err;
     // The code is spent or refused either way, so the sign-in is over: the
     // card says why instead of waiting ten minutes to say it timed out, and the
-    // verifier and client secret do not stay on disk.
+    // verifier and client secret do not stay on disk. An older attempt, with a
+    // newer sign-in started since (its row gone), is not what the card waits on.
+    const latest = findOauthPending(state) !== null;
     dropOauthPending(state);
-    // An older attempt for this card, with a newer sign-in started since: the
-    // card now waits on that one, and this failure is not about it.
-    const current = findOauthPendingForProposal(pendingPeek.proposalId);
-    if (current && current.state !== state) throw err;
+    if (!latest) throw err;
     failCard(pendingPeek.proposalId, exchangeFailure(err), opts.now ?? Date.now(), storePath, true);
     throw err;
   }
+  try {
+    return await settleExchanged(exchanged, state, pendingPeek, proposal, opts.now ?? Date.now(), storePath);
+  } finally {
+    dropOauthPending(state);
+  }
+}
+
+/** Whether this sign-in attempt is still the newest for its card: its pending row is still there. */
+function isLatestAttempt(state: string): boolean {
+  return findOauthPending(state) !== null;
+}
+
+async function settleExchanged(
+  exchanged: Awaited<ReturnType<typeof completeMcpOAuth>>,
+  state: string,
+  pendingPeek: NonNullable<ReturnType<typeof findOauthPending>>,
+  proposal: Stored,
+  now: number,
+  storePath: string,
+): Promise<{ proposalId: string }> {
   const { bundle, pending } = exchanged;
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");
   }
+  // The exchange took a while: the owner may have started the sign-in again.
+  // The newer attempt owns the card; this one stores, settles and starts
+  // nothing.
+  if (!isLatestAttempt(state)) return { proposalId: pending.proposalId };
   logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
   const url = assertConnectionUrl(proposal.url);
   const entry: ConnectionEntry = {
@@ -609,7 +647,7 @@ async function finishConnectionOAuth(
     authKind: "oauth",
     authHeader: null,
     toolsAllow: null,
-    createdAt: new Date(opts.now ?? Date.now()).toISOString(),
+    createdAt: new Date(now).toISOString(),
   };
   // Same last word as the confirm path: only the store's lock can see a row
   // that landed for this URL while the browser had the sign-in open.
@@ -620,18 +658,21 @@ async function finishConnectionOAuth(
   // never mounts, that the owner is told is connected, and that nothing can
   // remove: a spec that became readable later would even mount itself.
   await assertToolBudget(entry, bearer);
+  if (!isLatestAttempt(state)) return { proposalId: pending.proposalId };
   const outcome = upsertConnection(entry);
   if (!outcome.won) {
     // Another card connected this server between the check above and this
     // write. Storing the bundle would replace the credential that row is
     // using, and leave this access and refresh token with nothing pointing
     // at them.
-    await settleAgainstRow(pending.proposalId, outcome.entry, opts.now ?? Date.now(), storePath);
+    await settleAgainstRow(pending.proposalId, outcome.entry, now, storePath);
     return { proposalId: pending.proposalId };
   }
   const stored = outcome.entry;
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
-  settleProbe(pending.proposalId, stored, await probeConnection(stored, bearer), opts.now ?? Date.now(), storePath);
+  const status = await probeConnection(stored, bearer);
+  // A newer sign-in began while the listing was read: the card is waiting on it.
+  if (isLatestAttempt(state)) settleProbe(pending.proposalId, stored, status, now, storePath);
   return { proposalId: pending.proposalId };
 }
 

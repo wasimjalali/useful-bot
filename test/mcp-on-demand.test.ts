@@ -1430,6 +1430,33 @@ test("after a restart the saved tools of a connection are listed again before th
   assert.equal(server.listings, settled, "one check per runtime, not one per step");
 });
 
+test("a connection already checked in this runtime is listed again before mounting once its listing is six hours old", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const sessionId = "s-ttl";
+  const row = upsertConnection(entry()).entry;
+  let tools: Array<Record<string, unknown>> = [{ name: "old_tool", description: "Old" }, { name: "other", description: "Other" }];
+  const server = mcpServer(() => ({ tools }));
+  await discoverConnection(row);
+  activateSessionTools(sessionId, ["example__old_tool"]);
+  const resolve = stepResolver();
+  const ctx = { session: { id: sessionId } };
+  assert.ok((await resolve({}, ctx))?.example__old_tool);
+  assert.equal(server.listings, 1);
+  // The same process, a long-lived session: the listing is now older than the TTL.
+  const status = connectionStatus("example")!;
+  putConnectionDiscovery("example", {
+    tools: null,
+    status: { ...status, checkedAt: new Date(Date.now() - INDEX_TTL_MS - 60_000).toISOString() },
+  });
+  tools = [{ name: "other", description: "Other" }];
+  const after = await resolve({}, ctx);
+  assert.equal(server.listings, 2, "a due listing is fetched again before mounting");
+  assert.equal(after?.example__old_tool, undefined, "a tool the server dropped is not mounted");
+  await resolve({}, ctx);
+  assert.equal(server.listings, 2, "a fresh listing is not fetched again");
+});
+
 test("saved tools stay unmounted when the first discovery after a restart came from elsewhere and did not end ready", async () => {
   paths();
   setDiscoveryLogger(() => {});

@@ -1221,6 +1221,170 @@ test("an exchange failure from an older sign-in does not fail the card while a n
   assert.equal(cardOf(card.id, storePath).phase, "connected");
 });
 
+/** The owner started the sign-in again: a newer state replaces the older one for the same card or connection. */
+function startNewerSignIn(state: string): void {
+  const file = process.env.UB_OAUTH_PENDING_PATH ?? "";
+  const rows = JSON.parse(readFileSync(file, "utf8")) as Array<Record<string, unknown>>;
+  writeFileSync(file, JSON.stringify([{ ...rows[0], state, verifier: `verifier-${state}` }]));
+}
+
+const tokenFor = (access: string) => new Response(JSON.stringify({ access_token: access, refresh_token: `rt_${access}`, expires_in: 3600 }), {
+  headers: { "content-type": "application/json" },
+});
+
+test("an older sign-in that succeeds after a newer one finished stores nothing, and the newer credential stays", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  let olderSent: () => void = () => {};
+  const olderOut = new Promise<void>((resolve) => { olderSent = resolve; });
+  setOauthFetch(async () => {
+    calls += 1;
+    if (calls === 1) {
+      olderSent();
+      await gate;
+      return tokenFor("at_older");
+    }
+    return tokenFor("at_newer");
+  });
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  const older = completeConnectionOAuth("code-A", "statevalue123456", { storePath });
+  await olderOut;
+  startNewerSignIn("newerstate987654");
+  await completeConnectionOAuth("code-B", "newerstate987654", { storePath });
+  assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_newer"));
+  assert.equal(cardOf(card.id, storePath).phase, "connected");
+  release();
+  assert.deepEqual(await older, { proposalId: card.id });
+  assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_newer"), "the older sign-in replaced the newer credential");
+  assert.ok(!keychainGet(connectionSecretService("tella"))?.includes("at_older"));
+  assert.equal(listHandoffs().length, 1, "one resume, from the newer sign-in");
+  assert.equal(findOauthPending("statevalue123456"), null);
+});
+
+test("an older sign-in whose listing is still being read when a newer one starts does not settle the card", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  // The server's listing is read after the exchange; the owner starts again while it is out.
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let held: () => void = () => {};
+  const heldOut = new Promise<void>((resolve) => { held = resolve; });
+  listing(async (id) => {
+    held();
+    await gate;
+    return rpcJson(id, { tools: [{ name: "list_videos", description: "List" }] });
+  });
+  setOauthFetch(async () => tokenFor("at_older"));
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  const older = completeConnectionOAuth("code-A", "statevalue123456", { storePath });
+  await heldOut;
+  startNewerSignIn("newerstate987654");
+  release();
+  await older;
+  assert.equal(cardOf(card.id, storePath).phase, "waiting", "the older sign-in settled the card the newer one waits on");
+  assert.equal(listHandoffs().length, 0);
+  assert.ok(findOauthPending("newerstate987654"), "the newer sign-in is still pending");
+});
+
+test("an older sign-in that fails after a newer one finished leaves the newer card alone", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  let olderSent: () => void = () => {};
+  const olderOut = new Promise<void>((resolve) => { olderSent = resolve; });
+  setOauthFetch(async () => {
+    calls += 1;
+    if (calls === 1) {
+      olderSent();
+      await gate;
+      return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    }
+    return tokenFor("at_newer");
+  });
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  const older = completeConnectionOAuth("code-A", "statevalue123456", { storePath });
+  const olderFailed = assert.rejects(older, /./);
+  await olderOut;
+  startNewerSignIn("newerstate987654");
+  await completeConnectionOAuth("code-B", "newerstate987654", { storePath });
+  release();
+  await olderFailed;
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "connected");
+  assert.equal(stored.reason ?? null, null);
+  assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_newer"));
+});
+
+test("an older reauthorize that finishes after a newer one stores nothing", async () => {
+  const held = reauthSetup("https://mcp.example.com/");
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  let olderSent: () => void = () => {};
+  const olderOut = new Promise<void>((resolve) => { olderSent = resolve; });
+  setOauthFetch(async () => {
+    calls += 1;
+    if (calls === 1) {
+      olderSent();
+      await gate;
+      return tokenFor("at_older");
+    }
+    return tokenFor("at_newer");
+  });
+  const older = completeConnectionOAuth("code-A", "statevalue123456");
+  await olderOut;
+  startNewerSignIn("newerstate987654");
+  await completeConnectionOAuth("code-B", "newerstate987654");
+  const afterNewer = keychainGet(connectionSecretService("tella"));
+  assert.notEqual(afterNewer, held);
+  assert.ok(afterNewer?.includes("at_newer"));
+  release();
+  await older;
+  assert.equal(keychainGet(connectionSecretService("tella")), afterNewer, "the older reauthorize put its credential over the newer one");
+  assert.equal(findOauthPending("statevalue123456"), null);
+});
+
+test("a duplicate callback of a reauthorize does not post the code twice", async () => {
+  reauthSetup("https://mcp.example.com/");
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let exchanges = 0;
+  setOauthFetch(async () => {
+    exchanges += 1;
+    await gate;
+    return tokenReply();
+  });
+  const first = completeConnectionOAuth("code-2", "statevalue123456");
+  const second = await completeConnectionOAuth("code-2", "statevalue123456");
+  assert.deepEqual(second, { proposalId: "reauth_tella" });
+  release();
+  await first;
+  assert.equal(exchanges, 1);
+});
+
+test("a reauthorize whose exchange fails drops its pending sign-in", async () => {
+  const held = reauthSetup("https://mcp.example.com/");
+  setOauthFetch(async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }));
+  await assert.rejects(() => completeConnectionOAuth("code-2", "statevalue123456"), /oauth_token/);
+  assert.equal(findOauthPending("statevalue123456"), null, "the verifier stays on disk");
+  assert.equal(keychainGet(connectionSecretService("tella")), held);
+});
+
 test("a reauthorize writes the new sign-in under the connection's refresh lock", async () => {
   const held = reauthSetup("https://mcp.example.com/");
   listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
