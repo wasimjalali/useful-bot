@@ -426,6 +426,7 @@ async function completeReauthorize(
     throw new Error("connection_missing");
   }
   const { bundle, pending } = await completeMcpOAuth({ code, state });
+  logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
   if (pending.proposalId !== peek.proposalId || pending.connectionId !== entry.id) throw new Error("oauth_state");
   keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
   await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
@@ -491,6 +492,7 @@ export async function completeConnectionOAuth(
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");
   }
+  logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
   const url = assertConnectionUrl(proposal.url);
   const entry: ConnectionEntry = {
     id: pending.connectionId,
@@ -573,4 +575,26 @@ async function pumpOnce(
     if (didExpire) expired.push(card.id);
   }
   return { connected, expired };
+}
+
+/**
+ * One line per sign-in naming the audience the sign-in server put in the
+ * access token and the resource it was asked for. A server that ignores an
+ * unknown resource mints a token its own API refuses (Tella, 2026-10-04), and
+ * this is the line that shows it. Only the `aud` claim is read; the token and
+ * its other claims never reach the log.
+ */
+function logTokenAudience(id: string, accessToken: string, resource: string | undefined): void {
+  let aud = "opaque";
+  const parts = accessToken.split(".");
+  if (parts.length === 3) {
+    try {
+      const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { aud?: unknown };
+      const value = Array.isArray(claims.aud) ? claims.aud.join(" ") : claims.aud;
+      aud = typeof value === "string" ? value.slice(0, 120) : "none";
+    } catch {
+      aud = "unreadable";
+    }
+  }
+  console.error(`[useful-bot] connection ${id} token aud=${aud} resource=${resource ?? "none"}`);
 }

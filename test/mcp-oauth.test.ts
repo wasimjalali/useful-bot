@@ -142,17 +142,17 @@ test("authorize, token and refresh all carry the resource, and authorize carries
   const { authorizeUrl, state } = await start();
   const authorize = new URL(authorizeUrl);
   // The PRM's own string, not a normalised one with a slash added.
-  assert.equal(authorize.searchParams.get("resource"), "https://api.tella.com");
+  assert.equal(authorize.searchParams.get("resource"), "https://api.tella.com/");
   assert.equal(authorize.searchParams.get("scope"), "openid profile email offline_access");
   const { bundle } = await completeMcpOAuth({ code: "code_1", state });
   const exchange = new URLSearchParams(hits.find((hit) => hit.url.endsWith("/oauth2/token"))?.body);
   assert.equal(exchange.get("grant_type"), "authorization_code");
-  assert.equal(exchange.get("resource"), "https://api.tella.com");
-  assert.equal(bundle.resource, "https://api.tella.com");
+  assert.equal(exchange.get("resource"), "https://api.tella.com/");
+  assert.equal(bundle.resource, "https://api.tella.com/");
   await refreshMcpOAuth(bundle);
   const refresh = new URLSearchParams(hits.filter((hit) => hit.url.endsWith("/oauth2/token")).at(-1)?.body);
   assert.equal(refresh.get("grant_type"), "refresh_token");
-  assert.equal(refresh.get("resource"), "https://api.tella.com");
+  assert.equal(refresh.get("resource"), "https://api.tella.com/");
 });
 
 test("a protected resource on another origin is refused", async () => {

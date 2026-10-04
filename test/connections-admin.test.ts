@@ -173,7 +173,7 @@ test("reauthorize starts a sign-in for the same connection, and only for an OAut
   const first = await reauthorizeConnection("tella", CALLBACK);
   const url = new URL(first.authorizeUrl);
   assert.equal(first.redirectHost, "authkit.tella.tv");
-  assert.equal(url.searchParams.get("resource"), "https://api.tella.com");
+  assert.equal(url.searchParams.get("resource"), "https://api.tella.com/");
   assert.equal(url.searchParams.get("scope"), "openid offline_access");
   const pending = findOauthPending(url.searchParams.get("state") ?? "");
   assert.equal(pending?.connectionId, "tella");

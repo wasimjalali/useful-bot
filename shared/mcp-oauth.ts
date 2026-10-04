@@ -148,9 +148,16 @@ function wellKnown(origin: string, path: string): string {
   return assertPublicHttpsUrl(`${origin}${path}`);
 }
 
-/** The resource as RFC 8707 wants it: no fragment, and no slash a bare origin never had. */
+/**
+ * The resource as RFC 8707 wants it, with no fragment, written the way the
+ * official MCP SDK writes it (`new URL(...).href`, so a bare origin keeps its
+ * slash). Tella's sign-in server minted a token Tella refused when the slash
+ * was dropped: the string has to match what the server registered.
+ */
 function canonicalResource(parsed: URL): string {
-  return `${parsed.origin}${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search}`;
+  const out = new URL(parsed.href);
+  out.hash = "";
+  return out.href;
 }
 
 /**
