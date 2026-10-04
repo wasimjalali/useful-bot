@@ -62,8 +62,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The server refused the request (\(code))."
         case .http(let status):
             // A status code is not an answer. The ones a send can actually
-            // meet get said in words; the rest keep the number, which is at
-            // least something to search for.
+            // meet get said in words, and the rest say it plainly too: a bare
+            // number told the owner nothing they could act on.
             switch status {
             case 409:
                 // Busy session, a replayed request and a stale revision all
@@ -77,8 +77,14 @@ public enum BackendError: Error, LocalizedError, Equatable {
                 return "The router refused this: either too many requests just now, or the daily token limit is used up."
             case 502, 503, 504:
                 return "The local server could not complete this request."
+            case 401:
+                return "The local server rejected the device token."
+            case 403:
+                return "The local server refused it."
+            case 400:
+                return "The local server couldn't accept it."
             default:
-                return "The local server answered with status \(status)."
+                return "The local server couldn't take it right now."
             }
         case .decoding:
             return "The local server sent data this app could not read."
