@@ -743,3 +743,16 @@ test("a server error that echoes the caller's token is redacted before it is cut
     setConnectionLookup(null);
   }
 });
+
+test("a stalled address lookup gives up at the caller's deadline", async () => {
+  setConnectionLookup(() => new Promise<string>(() => {}));
+  try {
+    const started = Date.now();
+    const err = await listMcpTools("https://mcp.example.com/mcp", {}, AbortSignal.timeout(200)).then(() => null, (e: unknown) => e);
+    assert.ok(err instanceof McpError);
+    assert.equal(err.kind, "unreachable");
+    assert.ok(Date.now() - started < 2000);
+  } finally {
+    setConnectionLookup(null);
+  }
+});

@@ -230,6 +230,24 @@ function redactHeaders(text: string, headers: Record<string, string>): string {
   return out;
 }
 
+/**
+ * The address check under the caller's deadline: the lookup itself takes no
+ * signal, and a resolver that stalls must not hold a discovery (and a
+ * disconnect waiting on it) past the deadline every other step keeps.
+ */
+function withinDeadline<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(new McpError("unreachable", "aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new McpError("unreachable", "aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (err) => { signal.removeEventListener("abort", onAbort); reject(err); },
+    );
+  });
+}
+
 type Session = {
   url: string;
   /** The caller's credentials, plus the session and version once negotiated. */
@@ -244,7 +262,7 @@ async function post(
   headers: Record<string, string>,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const target = await assertResolvedPublic(url);
+  const target = await withinDeadline(assertResolvedPublic(url), signal);
   let res: Response;
   try {
     res = await activeFetch()(target, {
