@@ -266,12 +266,13 @@ export async function completeUpstream(input: {
     && USAGE_OPTION_PROVIDERS.has(resolved.providerId)
     && payload.stream === true
     && !refusesStreamUsage.has(usageKey);
+  let dropUsage = refusesStreamUsage.has(usageKey);
   const bodyToSend = (): Record<string, unknown> => {
     if (askUsage) {
       const existing = forwarded.stream_options;
       return { ...forwarded, stream_options: { ...(existing && typeof existing === "object" ? existing : {}), include_usage: true } };
     }
-    if (!refusesStreamUsage.has(usageKey)) return forwarded;
+    if (!dropUsage) return forwarded;
     const { stream_options: _dropped, ...rest } = forwarded;
     return rest;
   };
@@ -337,18 +338,22 @@ export async function completeUpstream(input: {
     }
     response = await dispatch();
   }
-  // A server that rejects stream_options: log that attempt, ask without it once.
-  if (askUsage && response.status === 400) {
+  // A server that rejects stream_options (400, or 422 from strict schema
+  // servers): log that attempt, ask without it once. It is remembered only
+  // when the retry works, so an unrelated 400 that echoes the field can't
+  // switch usage off for the rest of the process.
+  if (askUsage && (response.status === 400 || response.status === 422)) {
     const text = await readPrefix(response.clone(), REFUSAL_BODY_BYTES);
     if (text.includes("stream_options")) {
       const refusedAt = Date.now();
       input.onRefusedAttempt?.({ startedAt: timing.startedAt, firstByteAt: timing.firstByteAt ?? refusedAt, endedAt: refusedAt });
-      refusesStreamUsage.add(usageKey);
       askUsage = false;
+      dropUsage = true;
       try {
         await response.body?.cancel();
       } catch { /* the retry carries on regardless */ }
       response = await dispatch();
+      if (response.status >= 200 && response.status < 300) refusesStreamUsage.add(usageKey);
     }
   }
   if (response.status >= 200 && response.status < 300) {

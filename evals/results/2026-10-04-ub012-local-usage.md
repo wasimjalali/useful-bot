@@ -18,7 +18,8 @@ pane?
   streamed `openai-chat` requests for the `lmstudio` and `custom` providers only. A Custom server
   that answers 400 naming `stream_options` gets one retry without it, and that connection and
   model skip the field from then on (memory only). Branch `fix/ub012-local-stream-usage`, commit
-  b59ac3b plus a body-cancel follow-up.
+  b59ac3b (the live run). Review lows fixed afterwards: a 422 refusal also retries, and a refusal
+  is remembered only once the retry works.
 - **App:** Useful Bot Dev built from that branch (`npm run build:dev-app`, `install:dev-app`).
 - **Model:** Qwen3-4B Q4_K_M (`Qwen/Qwen3-4B-GGUF`, 2.3 GB) on llama.cpp 0.5.0 (build 11146,
   `brew install llama.cpp`), removed after the run:

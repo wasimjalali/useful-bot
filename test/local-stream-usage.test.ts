@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { usageFromSseBlock } from "../shared/usage-parse.ts";
+import { createThinkStream, splitThinkBlock } from "../router/src/inline-think.ts";
+import { settleStreamBlock } from "../router/src/tool-finish.ts";
 import { completeUpstream, type ResolvedUpstream } from "../router/src/upstreams/opencode.ts";
 import type { RegistryEntry } from "../router/src/registry.ts";
 
@@ -97,8 +99,8 @@ test("another openai-chat provider streamed: no stream_options added", async () 
 });
 
 test("a caller's own stream_options is kept and merged", async () => {
-  const r = await run(resolvedFor("lmstudio", "lmstudio:t5"), { ...streamed, stream_options: { include_usage: true } }, ok);
-  assert.deepEqual(r.sent[0].stream_options, { include_usage: true });
+  const r = await run(resolvedFor("lmstudio", "lmstudio:t5"), { ...streamed, stream_options: { include_usage: false, extra: 1 } }, ok);
+  assert.deepEqual(r.sent[0].stream_options, { include_usage: true, extra: 1 });
 });
 
 test("an upstream that ignores the field streams on with no usage, no crash", async () => {
@@ -141,6 +143,29 @@ test("a retry that is refused again does not loop", async () => {
     new Response("bad stream_options", { status: 400 }));
   assert.equal(r.sent.length, 2);
   assert.ok(r.thrown);
+  // A retry that failed too proves nothing about the field: the next request still asks.
+  const next = await run(resolvedFor("custom", "custom:t8"), streamed, ok);
+  assert.equal("stream_options" in next.sent[0], true);
+});
+
+test("a 422 naming stream_options is retried without it too", async () => {
+  const resolved = resolvedFor("custom", "custom:t10");
+  const refuse = (_call: number, sent: Sent) =>
+    "stream_options" in sent
+      ? new Response(JSON.stringify({ detail: [{ loc: ["body", "stream_options"], msg: "extra fields not permitted" }] }), { status: 422 })
+      : ok();
+  const r = await run(resolved, streamed, refuse);
+  assert.equal(r.status, 200);
+  assert.equal(r.sent.length, 2);
+  assert.equal("stream_options" in r.sent[1], false);
+});
+
+test("the relay passes a final usage chunk with choices [] through unchanged", () => {
+  const block = 'data: {"id":"c1","object":"chat.completion.chunk","model":"m","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}';
+  const settled = settleStreamBlock(block, { toolCall: false });
+  assert.equal(settled, block);
+  assert.equal(splitThinkBlock(settled, createThinkStream()), block);
+  assert.equal(usageFromSseBlock(settled)?.inputTokens, 10);
 });
 
 test("a 400 that does not mention stream_options is not retried", async () => {
