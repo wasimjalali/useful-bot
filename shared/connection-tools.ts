@@ -346,12 +346,19 @@ async function attempt(
 ): Promise<Discovery> {
   const checkedAt = startedAt;
   const store = opts.storePath;
-  try {
-    putConnectionPending(entry.id, startedAt, store);
-  } catch (err) {
-    // Progress only: the outcome is written, and checked, below.
-    discoveryLog(`[useful-bot] connection ${entry.id} discovery could not record its start: ${errorName(err)}`);
-  }
+  /**
+   * Progress only: the outcome is written, and checked, below. Called once the
+   * credential has resolved, not before: an attempt that ends waiting on the
+   * refresh lock must leave no stamp newer than the holder's, which would
+   * block the holder's own `ready`.
+   */
+  const markStarted = () => {
+    try {
+      putConnectionPending(entry.id, startedAt, store);
+    } catch (err) {
+      discoveryLog(`[useful-bot] connection ${entry.id} discovery could not record its start: ${errorName(err)}`);
+    }
+  };
   /**
    * Writes the outcome, unless a newer attempt has already written. A write
    * that fails is a failed discovery: reporting ready for tools nobody can
@@ -372,7 +379,9 @@ async function attempt(
   if (entry.kind === "openapi") {
     let size = null;
     try {
-      size = await measureOpenApiConnection(entry.url, opts.headers ?? await connectionHeaders(entry));
+      const specHeaders = opts.headers ?? await connectionHeaders(entry);
+      markStarted();
+      size = await measureOpenApiConnection(entry.url, specHeaders);
     } catch (err) {
       // Not knowing yet is not a failed spec: nothing is recorded.
       if (err instanceof OAuthRefreshBusyError) return notKnownYet(entry.id, startedAt, store);
@@ -400,6 +409,7 @@ async function attempt(
   }
   try {
     const headers = opts.headers ?? await connectionHeaders(entry);
+    markStarted();
     const listed = await listMcpToolsWithStats(
       entry.url,
       headers,
@@ -667,21 +677,19 @@ export async function findConnectionTools(
   const unavailable: UnavailableServer[] = [];
   for (const [entry, { tools, status }] of listings) {
     const working = status.state === "ready" || status.state === "zero_tools";
-    // A server that merely went quiet, or is being checked again, still has
-    // the listing from last time.
-    const cached = (status.state === "unreachable" || status.state === "pending") && tools.length > 0;
-    // The outage is reported even when the cached tools are returned: they
-    // are not a promise that the server answers. A server being checked again
-    // is not an outage, so it is only named when there is nothing to search.
-    if (!working && !(cached && status.state === "pending")) {
+    // The same rule as the mount guard (`refreshBeforeMount`): a server whose
+    // latest status is not working offers nothing a bot could pick up, since
+    // the pick-up would be refused. Its cached listing stays on disk for when
+    // it recovers; it is just not searched.
+    if (!working) {
       unavailable.push({
         connectionId: entry.id,
         server: oneLineName(entry.name),
         state: status.state,
         hint: unavailableHint(status.state, oneLineName(entry.name)),
       });
+      continue;
     }
-    if (!working && !cached) continue;
     // The listing can be hours old; an allow-list the owner narrowed since
     // applies now, or the tool is found, charged and then never mounted.
     const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;

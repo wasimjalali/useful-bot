@@ -141,8 +141,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var proposals: [Proposal] = []
     @Published private(set) var busyProposals: Set<String> = []
     /// What a connect card looked like when its button was tapped, so busy
-    /// clears only once the card has moved on (or after a short cap).
-    private var proposalTapState: [String: (phase: Proposal.ConnectPhase, waitingSince: String?, at: Date)] = [:]
+    /// clears only once the card has moved on (or a short cap after the request returned).
+    private var proposalTapState: [String: (phase: Proposal.ConnectPhase, waitingSince: String?, requestFinishedAt: Date?)] = [:]
     @Published private(set) var operatorName = "Desktop owner"
     @Published private(set) var operatorInitials = "DO"
     /// The selected bot's own model chip. Never another bot's: every read and
@@ -1694,16 +1694,17 @@ final class AppModel: ObservableObject {
         // has done its job.
         // A failed card is settled too: Try again was applied and the card is
         // failed again, so both buttons must come back.
-        // A connect card's mark is capped at 10 s in any phase, and a waiting
-        // or failed one is settled sooner when it differs from what it was at
-        // tap time (another phase, or a newer waitingSince), so a busy mark
-        // can never stick (a card left proposed after a refused redirect
-        // included).
+        // A connect card's mark is capped at 10 s in any phase, counted from
+        // when its confirm request returned (a slow request keeps its mark
+        // until it does), and a waiting or failed one is settled sooner when
+        // it differs from what it was at tap time (another phase, or a newer
+        // waitingSince), so a busy mark can never stick (a card left proposed
+        // after a refused redirect included).
         let live = Set(proposals.filter { card in
             guard card.isOpen() else { return false }
             guard card.kind == .connectApp || card.kind == .connectServer else { return true }
             guard let tap = proposalTapState[card.id] else { return false }
-            return card.busyMarkHolds(tapPhase: tap.phase, tapWaitingSince: tap.waitingSince, tappedAt: tap.at)
+            return card.busyMarkHolds(tapPhase: tap.phase, tapWaitingSince: tap.waitingSince, requestFinishedAt: tap.requestFinishedAt)
         }.map(\.id))
         let next = busyProposals.intersection(live)
         if next != busyProposals { busyProposals = next }
@@ -4873,7 +4874,7 @@ final class AppModel: ObservableObject {
     func decideProposal(_ proposal: Proposal, confirmed: Bool, secret: String? = nil) {
         guard !busyProposals.contains(proposal.id) else { return }
         busyProposals.insert(proposal.id)
-        proposalTapState[proposal.id] = (proposal.phase, proposal.waitingSince, Date())
+        proposalTapState[proposal.id] = (proposal.phase, proposal.waitingSince, nil)
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
@@ -4894,6 +4895,8 @@ final class AppModel: ObservableObject {
                         proposalId: proposal.id,
                         proposalStatus: "confirmed"
                     )
+                    // The busy mark's 10 s cap runs from here, not from the tap.
+                    self.proposalTapState[proposal.id]?.requestFinishedAt = Date()
                     guard !Task.isCancelled, epoch == self.storeEpoch else {
                         self.busyProposals.remove(proposal.id)
                         return

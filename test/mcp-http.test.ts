@@ -567,6 +567,9 @@ test("a schema whose nested structure is broken drops the tool; real-world keywo
     ["required-ok", { type: "object", properties: { a: { type: "string" } }, required: ["a"], additionalProperties: false }],
     ["nested", { type: "object", properties: { a: { type: "object", properties: { b: { type: "boolean" } }, required: ["b"] } } }],
     ["unknown-keywords", { type: "object", properties: { a: { type: "string", "x-vendor": [1, 2], pattern: "^a" } }, "$schema": "http://json-schema.org/draft-07/schema#" }],
+    ["boolean-property", { type: "object", properties: { a: true, b: false, c: { type: "string" } } }],
+    ["boolean-items", { type: "object", properties: { a: { type: "array", items: true }, b: { type: "array", items: [{ type: "string" }, false] } } }],
+    ["boolean-nested", { type: "object", properties: { a: { type: "object", properties: { b: true } } } }],
   ];
   server((row) => {
     if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });

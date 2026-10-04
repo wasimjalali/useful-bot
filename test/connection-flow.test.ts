@@ -1185,6 +1185,42 @@ test("a token exchange that fails after the card was settled does not flip it", 
   assert.equal(stored.reason ?? null, null);
 });
 
+test("an exchange failure from an older sign-in does not fail the card while a newer sign-in is pending, and the newer callback completes", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  let olderSent: () => void = () => {};
+  const olderOut = new Promise<void>((resolve) => { olderSent = resolve; });
+  setOauthFetch(async () => {
+    calls += 1;
+    if (calls === 1) {
+      olderSent();
+      await gate;
+      return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    }
+    return tokenReply();
+  });
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  const older = completeConnectionOAuth("code-A", "statevalue123456");
+  const olderFailed = assert.rejects(older, /./);
+  await olderOut;
+  // The owner started the sign-in again: a newer state replaces the older one for this card.
+  const file = process.env.UB_OAUTH_PENDING_PATH ?? "";
+  const rows = JSON.parse(readFileSync(file, "utf8")) as Array<Record<string, unknown>>;
+  writeFileSync(file, JSON.stringify([{ ...rows[0], state: "newerstate987654", verifier: "verifier-newer-987654" }]));
+  release();
+  await olderFailed;
+  assert.equal(cardOf(card.id, storePath).phase, "waiting", "the older attempt failed the newer one's card");
+  assert.ok(findOauthPending("newerstate987654"), "the newer sign-in is still pending");
+  await completeConnectionOAuth("code-B", "newerstate987654", { storePath });
+  assert.equal(cardOf(card.id, storePath).phase, "connected");
+});
+
 test("a reauthorize writes the new sign-in under the connection's refresh lock", async () => {
   const held = reauthSetup("https://mcp.example.com/");
   listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));

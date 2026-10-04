@@ -60,7 +60,7 @@ export function setOauthFetch(next: FetchFn | null): void {
 }
 
 /** The deadline every call in this file carries. */
-const OAUTH_TIMEOUT_MS = 8_000;
+export const OAUTH_TIMEOUT_MS = 8_000;
 
 function activeFetch(): FetchFn {
   return injectedFetch ?? fetch;
@@ -118,6 +118,11 @@ function writePending(rows: OAuthPending[], path = oauthPendingPath()): void {
 export function findOauthPending(state: string, path = oauthPendingPath()): OAuthPending | null {
   if (typeof state !== "string" || state.length < 8 || state.length > 256) return null;
   return readPending(path).find((row) => row.state === state) ?? null;
+}
+
+/** The sign-in a card is waiting on now: starting another replaces the one before. */
+export function findOauthPendingForProposal(proposalId: string, path = oauthPendingPath()): OAuthPending | null {
+  return readPending(path).find((row) => row.proposalId === proposalId) ?? null;
 }
 
 function b64url(buf: Buffer): string {

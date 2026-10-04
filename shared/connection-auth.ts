@@ -2,7 +2,7 @@ import { acquireDirLockAsync } from "./dir-lock.ts";
 import { connectionsPath, findConnectionById, isAuthHeaderName, type ConnectionEntry } from "./connections-store.ts";
 import { connectionSecretService, keychainGet, keychainSet } from "./keychain.ts";
 import { McpError } from "./mcp-http.ts";
-import { OAuthRefreshError, refreshMcpOAuth, type OAuthTokenBundle } from "./mcp-oauth.ts";
+import { OAUTH_TIMEOUT_MS, OAuthRefreshError, refreshMcpOAuth, type OAuthTokenBundle } from "./mcp-oauth.ts";
 
 /**
  * How a connection proves who it is. eve owns this for the connections it
@@ -69,6 +69,9 @@ function refreshFailure(err: unknown): Error {
  * so two callers refreshing together spend it twice and the second is refused
  * for a token the first just replaced.
  */
+/** How often a waiter for the refresh lock looks at what the holder stored. */
+const GIVE_UP_CHECK_MS = 500;
+
 const refreshing = new Map<string, Promise<OAuthTokenBundle>>();
 
 /**
@@ -83,9 +86,13 @@ export function refreshLockPath(id: string): string {
  * How long to wait for it. The wait is a timer loop, not a blocking call, so
  * the service keeps answering while another process refreshes; past the
  * deadline the caller reads what the other process stored and otherwise gives
- * up with `OAuthRefreshBusyError`.
+ * up with `OAuthRefreshBusyError`. The deadline is longer than the holder's
+ * worst case, so a waiter does not give up on a refresh that is still
+ * inside its own limits: two token requests (the second only after a refused
+ * one) and a margin. Everything that takes the lock (a refresh, finishing a
+ * sign-in again, deleting a connection) waits that long.
  */
-const REFRESH_LOCK_TIMEOUT_DEFAULT_MS = 10_000;
+export const REFRESH_LOCK_TIMEOUT_DEFAULT_MS = 2 * OAUTH_TIMEOUT_MS + 5_000;
 let refreshLockTimeoutMs = REFRESH_LOCK_TIMEOUT_DEFAULT_MS;
 
 /** Test hook; `null` restores the default. */
@@ -185,7 +192,15 @@ function refreshOnce(id: string): Promise<OAuthTokenBundle> {
     const seen: { good: OAuthTokenBundle | null } = { good: null };
     // Another process is refreshing it: what it stores may already be good, and
     // then there is nothing left to wait for.
+    // Asked on every try (every 25 ms), but the Keychain is read at most every
+    // 500 ms: a read is a process spawn, and the holder cannot have finished
+    // faster than that to matter.
+    let lastLook = Number.NEGATIVE_INFINITY;
     const release = await acquireRefreshLock(id, () => {
+      if (seen.good !== null) return true;
+      const now = Date.now();
+      if (now - lastLook < GIVE_UP_CHECK_MS) return false;
+      lastLook = now;
       const stored = parseBundle(keychainGet(service));
       if (stored && !isExpiring(stored)) seen.good = stored;
       return seen.good !== null;

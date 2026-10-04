@@ -497,7 +497,7 @@ const SCHEMA_CHECK_DEPTH = 16;
  * Whether the parts of an input schema the app reads (and a model is shown)
  * are shaped the way JSON Schema says: `type` a type name or a list of them,
  * `properties` an object of objects, `required` a list of strings, `items` an
- * object or a list of objects, each checked down through nested properties and
+ * object or a list of objects (each of which may be a boolean), each checked down through nested properties and
  * items. A keyword this app does not interpret (`$ref`, `anyOf`, `format`...) is
  * not looked at: a valid schema that uses one is still a good schema.
  */
@@ -510,6 +510,8 @@ function schemaStructureIsValid(node: Record<string, unknown>, depth = 0): boole
     return false;
   }
   const below = (child: unknown): boolean => {
+    // `true` and `false` are subschemas too: anything, and nothing.
+    if (typeof child === "boolean") return true;
     const rec = asRecord(child);
     return rec !== null && (depth + 1 >= SCHEMA_CHECK_DEPTH || schemaStructureIsValid(rec, depth + 1));
   };

@@ -45,17 +45,17 @@ import {
 import { setConnectionLookup } from "../shared/connection-url.ts";
 import { connectionSecretService, keychainGet, keychainSet, memoryKeychain, setKeychainDriver, type KeychainDriver } from "../shared/keychain.ts";
 import { findConnectionById, removeConnection, upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
-import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
+import { toolInputSchema, rawSchemaHint, mountedSchemaBytes } from "../shared/json-schema-zod.ts";
 import { McpError, setMcpFetch } from "../shared/mcp-http.ts";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
 import { setApprovalStore } from "../agent/lib/write.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
-import { OAuthExpiredError, OAuthRefreshBusyError, connectionHeaders, refreshLockPath, setRefreshLockTimeoutMs } from "../shared/connection-auth.ts";
+import { OAuthExpiredError, OAuthRefreshBusyError, REFRESH_LOCK_TIMEOUT_DEFAULT_MS, connectionHeaders, refreshLockPath, setRefreshLockTimeoutMs } from "../shared/connection-auth.ts";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { deleteConnection } from "../shared/connections-admin.ts";
 import { markConnectionExpired } from "../shared/connection-tools.ts";
-import { setOauthFetch } from "../shared/mcp-oauth.ts";
+import { OAUTH_TIMEOUT_MS, setOauthFetch } from "../shared/mcp-oauth.ts";
 import { longestOperationName, measureOpenApiSpec, measureOpenApiSpecText, specWireBytes } from "../shared/tool-wire-size.ts";
 import {
   MAX_SESSION_TOOLS,
@@ -1060,7 +1060,7 @@ test("a discovery that started before a newer one never overwrites it", async ()
   assert.deepEqual(connectionIndex("tella")?.tools.map((tool) => tool.name), ["list_videos"]);
 });
 
-test("an unreachable server with cached tools still says so, beside the tools it returns", async () => {
+test("an unreachable server with cached tools returns no callable hits, and is listed as unavailable", async () => {
   paths();
   setDiscoveryLogger(() => {});
   const row = upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp" })).entry;
@@ -1071,8 +1071,9 @@ test("an unreachable server with cached tools still says so, beside the tools it
   const down = await discoverConnection(row);
   assert.equal(down.status.state, "unreachable");
   const found = await findConnectionTools("tella videos", 5);
-  assert.deepEqual(found.hits.map((hit) => hit.name), ["tella__list_videos"]);
+  assert.deepEqual(found.hits, [], "the mount guard refuses these tools, so a search must not offer them");
   assert.deepEqual(found.unavailable.map((item) => [item.connectionId, item.state]), [["tella", "unreachable"]]);
+  assert.equal(connectionIndex("tella")?.tools.length, 1, "the cached listing stays on disk for a later recovery");
   // Nothing matching: the outage is not hidden behind "no connected server has that".
   const none = await findConnectionTools("zebra crossing", 5);
   assert.equal(none.hits.length, 0);
@@ -1085,7 +1086,7 @@ test("a discovery in progress is recorded as pending and keeps the tools it had"
   const row = upsertConnection(entry()).entry;
   let hold = false;
   let release: () => void = () => {};
-  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let gate = new Promise<void>((resolve) => { release = resolve; });
   authedServer(async () => {
     if (hold) await gate;
     return rpcResult(2, { tools: [{ name: "list_things", description: "List" }, { name: "make_thing", description: "Make" }] });
@@ -1093,18 +1094,26 @@ test("a discovery in progress is recorded as pending and keeps the tools it had"
   assert.equal((await discoverConnection(row)).status.state, "ready");
   hold = true;
   const running = discoverConnection(row);
+  // Marked once the credential has resolved, a tick after the call.
+  await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(connectionStatus("example")?.state, "pending");
   assert.equal(connectionStatus("example")?.toolCount, 2);
   assert.equal(connectionIndex("example")?.tools.length, 2, "the cached tools stay while it is checked");
+  const meanwhile = await findConnectionTools("things", 5);
+  assert.deepEqual(meanwhile.hits, [], "a connection being checked is not offered as callable");
+  assert.deepEqual(meanwhile.unavailable.map((item) => [item.connectionId, item.state]), [["example", "pending"]]);
   release();
   assert.equal((await running).status.state, "ready");
   assert.equal(connectionStatus("example")?.state, "ready");
   // A row nobody has ever listed shows pending too, with nothing cached.
   const other = upsertConnection(entry({ id: "other", url: "https://other.example.com/mcp" })).entry;
+  gate = new Promise<void>((resolve) => { release = resolve; });
   hold = true;
   const first = discoverConnection(other);
+  await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(connectionStatus("other")?.state, "pending");
   assert.equal(connectionStatus("other")?.toolCount, null);
+  release();
   await first;
 });
 
@@ -1621,6 +1630,74 @@ test("a refresh that cannot get the lock in time reports it is not known yet, ne
     const held = await holdLockElsewhere(refreshLockPath("tella"), 900);
     await assert.rejects(() => connectionHeaders(row), (err: unknown) => err instanceof OAuthRefreshBusyError);
     assert.equal(requests, 0, "nothing was sent without the lock");
+    await held.done;
+  } finally {
+    setRefreshLockTimeoutMs(null);
+  }
+});
+
+test("boolean subschemas convert: true accepts anything, false accepts nothing, and the tool is not a passthrough", () => {
+  const built = toolInputSchema({ type: "object", properties: { any: true, none: false, list: { type: "array", items: true } }, required: ["any", "list"] });
+  assert.equal(built.passthrough, false);
+  assert.equal(built.schema.safeParse({ any: { x: 1 }, list: [1, "a"] }).success, true);
+  assert.equal(built.schema.safeParse({ any: 1, list: [], none: 1 }).success, false);
+  assert.equal(built.schema.safeParse({ any: 1, list: [] }).success, true);
+  assert.ok(mountedSchemaBytes({ type: "object", properties: { any: true, none: false } }) > 0);
+});
+
+test("a refresh waiting on a busy lock reads the Keychain at most every 500 ms, not on every 25 ms try", async () => {
+  paths();
+  const mem = memoryKeychain();
+  let reads = 0;
+  setKeychainDriver({
+    get: (service) => { reads += 1; return mem.get(service); },
+    set: (service, value) => mem.set(service, value),
+    del: (service) => mem.del(service),
+  });
+  setRefreshLockTimeoutMs(5_000);
+  try {
+    const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+    keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+    setOauthFetch(async () => tokenJson({ access_token: "at_new", refresh_token: "rt_new", expires_in: 3600 }));
+    const held = await holdLockElsewhere(refreshLockPath("tella"), 1_300);
+    reads = 0;
+    await connectionHeaders(row);
+    await held.done;
+    // Two before the wait (the token read and the stored read), a handful of
+    // checks across 1.3 s, and the reads of the refresh itself.
+    assert.ok(reads <= 12, `${reads} Keychain reads while waiting 1.3 s`);
+  } finally {
+    setRefreshLockTimeoutMs(null);
+  }
+});
+
+test("the refresh-lock wait outlasts the holder's worst case: two token requests and a margin", () => {
+  assert.ok(REFRESH_LOCK_TIMEOUT_DEFAULT_MS >= 2 * OAUTH_TIMEOUT_MS + 5_000);
+});
+
+test("a waiter that gave up on the refresh lock leaves no pending stamp, so the holder finishing later still ends ready", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  setRefreshLockTimeoutMs(300);
+  try {
+    const row = upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp", authKind: "oauth" })).entry;
+    keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+    setOauthFetch(async () => tokenJson({ access_token: "x", expires_in: 3600 }));
+    mcpServer(() => ({ tools: [{ name: "list_videos", description: "List" }] }));
+    const held = await holdLockElsewhere(refreshLockPath("tella"), 900);
+    const holderStamp = nextStamp();
+    await discoverConnection(row);
+    assert.notEqual(connectionStatus("tella")?.state, "pending", "the waiter that gave up left a pending stamp");
+    // The holder finishes after the waiter gave up, with its older stamp.
+    const wrote = putConnectionDiscovery("tella", {
+      tools: [{ name: "list_videos", description: "List", inputSchema: null, inputSchemaBytes: 2 }],
+      status: { state: "ready", lastError: null, checkedAt: holderStamp, toolCount: 1 },
+      unlessNewer: true,
+    });
+    assert.equal(wrote, true, "the holder's ready was blocked by the waiter's pending stamp");
+    assert.equal(connectionStatus("tella")?.state, "ready");
     await held.done;
   } finally {
     setRefreshLockTimeoutMs(null);

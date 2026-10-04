@@ -25,6 +25,7 @@ import { measureOpenApiConnection } from "./mcp-http.ts";
 import {
   completeMcpOAuth,
   dropOauthPending,
+  findOauthPendingForProposal,
   dropOauthPendingForProposal,
   findOauthPending,
   OAuthTokenError,
@@ -586,6 +587,10 @@ async function finishConnectionOAuth(
     // card says why instead of waiting ten minutes to say it timed out, and the
     // verifier and client secret do not stay on disk.
     dropOauthPending(state);
+    // An older attempt for this card, with a newer sign-in started since: the
+    // card now waits on that one, and this failure is not about it.
+    const current = findOauthPendingForProposal(pendingPeek.proposalId);
+    if (current && current.state !== state) throw err;
     failCard(pendingPeek.proposalId, exchangeFailure(err), opts.now ?? Date.now(), storePath, true);
     throw err;
   }

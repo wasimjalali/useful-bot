@@ -158,7 +158,9 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     }
 
     /// Whether the busy mark set when the owner tapped this card still holds.
-    /// A connect card's mark is capped at 10 s in any phase, so a card left
+    /// A connect card's mark is capped at 10 s in any phase, counted from when
+    /// the confirm request returned (`requestFinishedAt`; nil while it is still
+    /// out, so a slow request keeps its mark until it returns), so a card left
     /// where it was after a refused redirect gets its buttons back; one that
     /// is waiting or failed is settled sooner when it differs from what it was
     /// at tap time (another phase, or a newer `waitingSince`). Any other kind
@@ -166,11 +168,11 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     public func busyMarkHolds(
         tapPhase: ConnectPhase,
         tapWaitingSince: String?,
-        tappedAt: Date,
+        requestFinishedAt: Date?,
         now: Date = Date()
     ) -> Bool {
         guard kind == .connectApp || kind == .connectServer else { return true }
-        guard now.timeIntervalSince(tappedAt) < 10 else { return false }
+        if let finished = requestFinishedAt, now.timeIntervalSince(finished) >= 10 { return false }
         guard phase == .waiting || phase == .failed else { return true }
         return phase == tapPhase && waitingSince == tapWaitingSince
     }
