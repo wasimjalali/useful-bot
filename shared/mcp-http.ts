@@ -237,7 +237,11 @@ function redactHeaders(text: string, headers: Record<string, string>): string {
  */
 function withinDeadline<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return work;
-  if (signal.aborted) return Promise.reject(new McpError("unreachable", "aborted"));
+  if (signal.aborted) {
+    // The lookup is already running; its own failure has nowhere to go now.
+    work.catch(() => {});
+    return Promise.reject(new McpError("unreachable", "aborted"));
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new McpError("unreachable", "aborted"));
     signal.addEventListener("abort", onAbort, { once: true });

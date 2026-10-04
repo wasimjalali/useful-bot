@@ -62,6 +62,20 @@ export function setOauthFetch(next: FetchFn | null): void {
 /** The deadline every call in this file carries. */
 export const OAUTH_TIMEOUT_MS = 8_000;
 
+/**
+ * The address check under the same deadline as the request after it: the
+ * lookup takes no signal, and a stalled resolver must not hold a sign-in or a
+ * refresh (and the refresh lock) past that deadline.
+ */
+function resolvedWithin(url: string): Promise<string> {
+  const work = assertResolvedPublic(url);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new ConnectionUrlError("url_resolve")), OAUTH_TIMEOUT_MS);
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+}
+
 function activeFetch(): FetchFn {
   return injectedFetch ?? fetch;
 }
@@ -184,7 +198,7 @@ async function boundedJson(res: Response): Promise<unknown> {
 }
 
 async function getJson(url: string): Promise<Record<string, unknown>> {
-  const target = await assertResolvedPublic(assertPublicHttpsUrl(url));
+  const target = await resolvedWithin(assertPublicHttpsUrl(url));
   const res = await activeFetch()(target, {
     headers: { accept: "application/json" },
     redirect: "error",
@@ -248,7 +262,7 @@ function resourceFor(mcpUrl: string, declared: unknown): string {
  */
 async function probeChallenge(mcpUrl: string): Promise<{ resourceMetadata: string | null; scope: string | null }> {
   try {
-    const res = await activeFetch()(await assertResolvedPublic(mcpUrl), {
+    const res = await activeFetch()(await resolvedWithin(mcpUrl), {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
       body: JSON.stringify({
@@ -430,7 +444,7 @@ async function registerClient(
   name: string,
   scope: string | null,
 ): Promise<{ clientId: string; clientSecret: string | null }> {
-  const res = await activeFetch()(await assertResolvedPublic(registrationEndpoint), {
+  const res = await activeFetch()(await resolvedWithin(registrationEndpoint), {
     method: "POST",
     // Every other call here carries a deadline; these three did not, and a
     // token endpoint that never answers holds a tool call, a tool search and
@@ -576,7 +590,7 @@ export async function completeMcpOAuth(input: {
     code_verifier: pending.verifier,
     ...(pending.resource ? { resource: pending.resource } : {}),
   });
-  const res = await activeFetch()(await assertResolvedPublic(pending.tokenEndpoint), {
+  const res = await activeFetch()(await resolvedWithin(pending.tokenEndpoint), {
     method: "POST",
     signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     redirect: "error",
@@ -632,7 +646,7 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
     client_id: bundle.clientId,
     ...(bundle.resource ? { resource: bundle.resource } : {}),
   });
-  const res = await activeFetch()(await assertResolvedPublic(bundle.tokenEndpoint), {
+  const res = await activeFetch()(await resolvedWithin(bundle.tokenEndpoint), {
     method: "POST",
     signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     redirect: "error",
