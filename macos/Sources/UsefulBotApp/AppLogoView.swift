@@ -27,7 +27,11 @@ struct AppLogo: View {
     }
 
     private static func dataKey(_ data: Data) -> String {
-        "\(data.count):\(data.prefix(16).map { String($0, radix: 16) }.joined())"
+        let head = data.prefix(16).map { String($0, radix: 16) }.joined()
+        let tail = data.suffix(16).map { String($0, radix: 16) }.joined()
+        // A cheap checksum of every 64th byte, so same-size icons that share both ends still differ.
+        let sampled = stride(from: 0, to: data.count, by: 64).reduce(UInt32(0)) { ($0 &* 31) &+ UInt32(data[data.startIndex + $1]) }
+        return "\(data.count):\(head):\(tail):\(sampled)"
     }
 
     var body: some View {

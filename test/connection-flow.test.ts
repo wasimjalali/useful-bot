@@ -804,7 +804,9 @@ test("an oauth callback whose listing fails leaves the card failed and fires no 
   setOauthFetch(async () => tokenReply());
   const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
   oauthPending(card);
-  await completeConnectionOAuth("code-1", "statevalue123456");
+  const failedOut = await completeConnectionOAuth("code-1", "statevalue123456");
+  // The callback page says Connected only for a ready outcome.
+  assert.deepEqual(failedOut, { proposalId: card.id, ready: false, state: "auth_failed" });
   const stored = cardOf(card.id, storePath);
   assert.equal(stored.phase, "failed");
   assert.equal(stored.reason, "auth_failed");
@@ -913,7 +915,8 @@ test("reauthorize replaces the credential on the same row and relists", async ()
     return rpcJson(body.id, { tools: [{ name: "list_videos", description: "List" }] });
   }) as typeof fetch);
   setOauthFetch(async () => tokenReply());
-  await completeConnectionOAuth("code-2", "statevalue123456");
+  const reauthOut = await completeConnectionOAuth("code-2", "statevalue123456");
+  assert.deepEqual(reauthOut, { proposalId: "reauth_tella", ready: true, state: "ready" });
   assert.equal(readConnectionsStore().connections.filter((item) => item.id === "tella").length, 1);
   assert.deepEqual(readConnectionsStore().connections.find((item) => item.id === "tella"), row);
   assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_secret_1"));
@@ -1151,7 +1154,7 @@ test("a duplicate callback for a state that is being exchanged returns without a
   oauthPending(card);
   const first = completeConnectionOAuth("code-1", "statevalue123456");
   const second = await completeConnectionOAuth("code-1", "statevalue123456");
-  assert.deepEqual(second, { proposalId: card.id });
+  assert.deepEqual(second, { proposalId: card.id, ready: false, state: "pending" });
   assert.equal(cardOf(card.id, storePath).phase, "waiting", "the second callback did not settle it");
   release();
   await first;
@@ -1358,6 +1361,35 @@ test("an older reauthorize that finishes after a newer one stores nothing", asyn
   assert.equal(findOauthPending("statevalue123456"), null);
 });
 
+test("a reauthorize whose listing fails is not ready", async () => {
+  reauthSetup("https://mcp.example.com/");
+  listing(() => new Response("no", { status: 401 }));
+  setOauthFetch(async () => tokenReply());
+  const out = await completeConnectionOAuth("code-2", "statevalue123456");
+  assert.equal(out.ready, false);
+  assert.equal(out.state, "auth_failed");
+});
+
+test("a reauthorize whose listing is still being read when a newer one starts is superseded", async () => {
+  reauthSetup("https://mcp.example.com/");
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let held: () => void = () => {};
+  const heldOut = new Promise<void>((resolve) => { held = resolve; });
+  listing(async (id) => {
+    held();
+    await gate;
+    return rpcJson(id, { tools: [{ name: "list_videos", description: "List" }] });
+  });
+  setOauthFetch(async () => tokenFor("at_older"));
+  const older = completeConnectionOAuth("code-A", "statevalue123456");
+  await heldOut;
+  startNewerSignIn("newerstate987654");
+  release();
+  await assert.rejects(older, /oauth_superseded/);
+  assert.ok(findOauthPending("newerstate987654"), "the newer sign-in is still pending");
+});
+
 test("a duplicate callback of a reauthorize does not post the code twice", async () => {
   reauthSetup("https://mcp.example.com/");
   listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
@@ -1371,7 +1403,7 @@ test("a duplicate callback of a reauthorize does not post the code twice", async
   });
   const first = completeConnectionOAuth("code-2", "statevalue123456");
   const second = await completeConnectionOAuth("code-2", "statevalue123456");
-  assert.deepEqual(second, { proposalId: "reauth_tella" });
+  assert.deepEqual(second, { proposalId: "reauth_tella", ready: false, state: "pending" });
   release();
   await first;
   assert.equal(exchanges, 1);

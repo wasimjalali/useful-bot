@@ -78,7 +78,13 @@ export async function GET(request: Request) {
     return html(false, "The sign-in reply was missing. You can close this tab and use Reopen.", 400);
   }
   try {
-    await completeConnectionOAuth(code, state);
+    const outcome = await completeConnectionOAuth(code, state);
+    if (outcome.state === "pending") {
+      return html(true, "Finishing sign-in. You can close this tab; Useful Bot shows the result.", 200, "Signing in");
+    }
+    if (!outcome.ready) {
+      return html(false, "Signed in, but Useful Bot couldn't list this server's tools. Check it in Useful Bot.", 200, "Signed in");
+    }
     return html(true, "You can close this tab and return to Useful Bot.");
   } catch (err) {
     // The code only: an error's own text can carry a path or a piece of what

@@ -300,10 +300,11 @@ async function settleAgainstRow(
   row: ConnectionEntry,
   now: number,
   storePath: string,
-): Promise<void> {
+): Promise<ConnectionStatus> {
   const found = await ensureConnectionListing(row);
   const status = found.status.state === "pending" ? (await discoverConnection(row)).status : found.status;
   settleProbe(proposalId, row, status, now, storePath);
+  return status;
 }
 
 function markConnected(
@@ -468,11 +469,18 @@ export function reauthorizeProposalId(connectionId: string): string {
  * card is involved. What the server then offers is listed again, so the
  * connection's status says whether the new sign-in worked.
  */
+/** What a finished sign-in found when it listed the server's tools, for the callback page. */
+export type OAuthOutcome = { proposalId: string; ready: boolean; state: ConnectionState };
+
+function outcomeOf(proposalId: string, status: ConnectionStatus): OAuthOutcome {
+  return { proposalId, ready: status.state === "ready" || status.state === "zero_tools", state: status.state };
+}
+
 async function completeReauthorize(
   code: string,
   state: string,
   peek: { proposalId: string; connectionId: string; resource?: string },
-): Promise<{ proposalId: string }> {
+): Promise<OAuthOutcome> {
   const entry = findConnectionById(peek.connectionId);
   if (!entry || entry.authKind !== "oauth" || reauthorizeProposalId(entry.id) !== peek.proposalId) {
     dropOauthPending(state);
@@ -491,6 +499,7 @@ async function completeReauthorize(
     dropOauthPending(state);
     throw new Error("oauth_resource_origin");
   }
+  let status: ConnectionStatus;
   try {
     const { bundle, pending } = await completeMcpOAuth({ code, state, keepPending: true });
     logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
@@ -507,26 +516,31 @@ async function completeReauthorize(
       assertAttemptCurrent(state, peek.proposalId);
       keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
     });
-    await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
+    status = (await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } })).status;
+    // A newer reauthorize began while the listing was read: it owns the
+    // outcome, and this callback must not say Connected.
+    assertAttemptCurrent(state, peek.proposalId);
   } finally {
     // The code is spent whatever happened: the verifier and the client secret
     // do not stay on disk.
     dropOauthPending(state);
   }
-  return { proposalId: peek.proposalId };
+  return outcomeOf(peek.proposalId, status);
 }
 
 export async function completeConnectionOAuth(
   code: string,
   state: string,
   opts: { storePath?: string; now?: number } = {},
-): Promise<{ proposalId: string }> {
+): Promise<OAuthOutcome> {
   const pendingPeek = findOauthPending(state);
   const reauthorizing = pendingPeek?.proposalId.startsWith(REAUTH_PREFIX) === true;
   if (!pendingPeek || (!reauthorizing && !pendingPeek.proposalId.startsWith("prp_"))) throw new Error("oauth_state");
   // A second delivery of the same callback while the first is being finished
   // says nothing new: it neither spends the code again nor touches the card.
-  if (exchanging.has(state)) return { proposalId: pendingPeek.proposalId };
+  // A second delivery of a callback already being exchanged doesn't know the
+  // outcome yet: it says so rather than guessing Connected.
+  if (exchanging.has(state)) return { proposalId: pendingPeek.proposalId, ready: false, state: "pending" };
   exchanging.add(state);
   try {
     return reauthorizing
@@ -542,7 +556,7 @@ async function finishConnectionOAuth(
   state: string,
   pendingPeek: NonNullable<ReturnType<typeof findOauthPending>>,
   opts: { storePath?: string; now?: number },
-): Promise<{ proposalId: string }> {
+): Promise<OAuthOutcome> {
   const storePath = opts.storePath ?? agentStorePath();
   const proposal = readProposal(pendingPeek.proposalId, storePath);
   if (!isServer(proposal) || proposal.status !== "pending") throw new Error("proposal_missing");
@@ -561,8 +575,8 @@ async function finishConnectionOAuth(
     // it is not being called: the verifier and the client secret would sit on
     // disk for good, because a retry with this state is refused above.
     dropOauthPending(state);
-    await settleAgainstRow(pendingPeek.proposalId, settled, opts.now ?? Date.now(), storePath);
-    return { proposalId: pendingPeek.proposalId };
+    const status = await settleAgainstRow(pendingPeek.proposalId, settled, opts.now ?? Date.now(), storePath);
+    return outcomeOf(pendingPeek.proposalId, status);
   }
   const provisional: ConnectionEntry = {
     id: proposal.connectionId,
@@ -653,7 +667,7 @@ async function settleExchanged(
   proposal: Stored,
   now: number,
   storePath: string,
-): Promise<{ proposalId: string }> {
+): Promise<OAuthOutcome> {
   const { bundle, pending } = exchanged;
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");
@@ -691,8 +705,8 @@ async function settleExchanged(
     // write. Storing the bundle would replace the credential that row is
     // using, and leave this access and refresh token with nothing pointing
     // at them.
-    await settleAgainstRow(pending.proposalId, outcome.entry, now, storePath);
-    return { proposalId: pending.proposalId };
+    const lost = await settleAgainstRow(pending.proposalId, outcome.entry, now, storePath);
+    return outcomeOf(pending.proposalId, lost);
   }
   const stored = outcome.entry;
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
@@ -701,7 +715,7 @@ async function settleExchanged(
   // it, and this callback must not say Connected.
   assertAttemptCurrent(state, pendingPeek.proposalId);
   settleProbe(pending.proposalId, stored, status, now, storePath);
-  return { proposalId: pending.proposalId };
+  return outcomeOf(pending.proposalId, status);
 }
 
 /**
