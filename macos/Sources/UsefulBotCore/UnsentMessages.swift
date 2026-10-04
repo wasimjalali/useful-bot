@@ -1,5 +1,19 @@
 import Foundation
 
+/// The reply a refused message was quoting, kept so Edit and a refused Retry
+/// can put it back.
+public struct UnsentQuote: Codable, Equatable, Sendable {
+    public var botId: String
+    public var text: String
+    public var author: String?
+
+    public init(botId: String, text: String, author: String?) {
+        self.botId = botId
+        self.text = text
+        self.author = author
+    }
+}
+
 /// A message the owner sent that the server refused before eve took the turn.
 /// eve never stored it, so a reload cannot bring it back: it is kept here,
 /// per bot, and drawn as the owner's bubble with a failed line under it.
@@ -18,6 +32,8 @@ public struct UnsentMessage: Codable, Identifiable, Equatable, Sendable {
     public var at: Date
     /// The transcript row the bubble sits under; nil or gone means the end.
     public var anchorId: String?
+    /// The reply this message was quoting, if any.
+    public var quote: UnsentQuote?
 
     public init(
         id: String,
@@ -27,7 +43,8 @@ public struct UnsentMessage: Codable, Identifiable, Equatable, Sendable {
         files: [Attachment],
         reason: String,
         at: Date,
-        anchorId: String?
+        anchorId: String?,
+        quote: UnsentQuote? = nil
     ) {
         self.id = id
         self.message = message
@@ -37,6 +54,23 @@ public struct UnsentMessage: Codable, Identifiable, Equatable, Sendable {
         self.reason = reason
         self.at = at
         self.anchorId = anchorId
+        self.quote = quote
+    }
+
+    /// What a held file needs before it can go out again.
+    public enum HeldState: Equatable, Sendable {
+        /// Its bytes or body are here.
+        case ready
+        /// A picture read back from disk: the sent-image store holds its bytes.
+        case restoreImage
+        /// A file whose body was never written to disk.
+        case attachAgain
+    }
+
+    public static func heldState(of file: Attachment) -> HeldState {
+        if file.isImage { return .ready }
+        if file.mediaType != nil { return .restoreImage }
+        return file.text == nil ? .attachAgain : .ready
     }
 
     private static let bubblePrefix = "unsent-"
@@ -79,13 +113,15 @@ public struct UnsentMessage: Codable, Identifiable, Equatable, Sendable {
         return "Couldn't reach the local server."
     }
 
-    /// The copy that goes to disk: images keep their name and type, never
-    /// their bytes.
+    /// The copy that goes to disk: files keep their name and type, never their
+    /// bytes or body. A picture is read back from the sent-image store; any
+    /// other file has to be attached again.
     fileprivate var persistable: UnsentMessage {
         var copy = self
         copy.files = files.map { file in
             var kept = file
-            if kept.mediaType != nil { kept.dataUrl = nil }
+            kept.dataUrl = nil
+            if file.mediaType == nil { kept.text = nil }
             return kept
         }
         return copy
@@ -98,7 +134,22 @@ public struct UnsentList: Equatable, Sendable {
 
     public init(_ items: [UnsentMessage] = []) { self.items = items }
 
-    public mutating func add(_ message: UnsentMessage) { items.append(message) }
+    /// Most refused messages kept per bot; the oldest go first.
+    public static let cap = 20
+
+    public mutating func add(_ message: UnsentMessage) {
+        items.append(message)
+        if items.count > Self.cap { items.removeFirst(items.count - Self.cap) }
+    }
+
+    /// Puts an updated copy of a message where the old one was.
+    public mutating func replace(_ message: UnsentMessage) {
+        if let index = items.firstIndex(where: { $0.id == message.id }) {
+            items[index] = message
+        } else {
+            add(message)
+        }
+    }
 
     public func item(_ id: String) -> UnsentMessage? { items.first { $0.id == id } }
 
@@ -146,7 +197,7 @@ public struct UnsentStore: Sendable {
             return
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(messages.map(\.persistable))
+        let data = try JSONEncoder().encode(messages.suffix(UnsentList.cap).map(\.persistable))
         try data.write(to: url, options: .atomic)
     }
 

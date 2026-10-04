@@ -633,8 +633,10 @@ final class AppModel: ObservableObject {
     /// The optimistic rows of refused sends. The failed bubble replaces each
     /// one, so the projection's copy stays out of the transcript.
     private var refusedOptimisticIds = Set<String>()
-    /// The reply a refused message was quoting, kept for Edit.
-    private var unsentQuotes: [String: ReplyQuote] = [:]
+    /// The refused message each bot is resending right now, by bot. It stays
+    /// in the list and on disk until the server takes the turn; the transcript
+    /// just hides its bubble so the resend shows once.
+    private var retryingUnsent: [String: String] = [:]
     private var started = false
     /// Rebuilding the transcript on every streamed event re-parses markdown
     /// for every row; the replay of a long session contains thousands of
@@ -1797,34 +1799,89 @@ final class AppModel: ObservableObject {
         return loaded
     }
 
-    private func setUnsent(_ list: UnsentList, botId: String) {
-        unsentLists[botId] = list
+    /// Writes the list to disk, then holds it in memory. A failed write keeps
+    /// the previous list and says so in the composer note; `force` is for a
+    /// removal the server already made true (a delivered Retry): it tries the
+    /// write once more, logs a second failure and holds the new list anyway,
+    /// so a delivered message never shows as unsent.
+    @discardableResult
+    private func setUnsent(_ list: UnsentList, botId: String, force: Bool = false) -> Bool {
+        var saved = true
         do {
             try unsentStore.save(list.items, botId: botId)
         } catch {
             NSLog("Useful Bot: could not save unsent messages: \(error.localizedDescription)")
+            saved = false
+            if force {
+                do {
+                    try unsentStore.save(list.items, botId: botId)
+                    saved = true
+                } catch {
+                    NSLog("Useful Bot: could not save unsent messages on the second try: \(error.localizedDescription)")
+                }
+            }
+        }
+        if saved || force {
+            unsentLists[botId] = list
+        } else {
+            recordSendError(botId, "Couldn't save the unsent message on this Mac.", resendable: false, survivesReload: true)
         }
         if selectedBotId == botId { rebuildTranscript() }
+        return saved || force
     }
 
-    private func recordUnsent(_ message: UnsentMessage, botId: String, hiding optimisticId: String, quote: ReplyQuote?) {
-        refusedOptimisticIds.insert(optimisticId)
-        if let quote { unsentQuotes[message.id] = quote }
+    private func recordUnsent(_ message: UnsentMessage, botId: String, hiding optimisticId: String) -> Bool {
         var list = unsentList(for: botId)
         list.add(message)
+        guard setUnsent(list, botId: botId) else { return false }
+        refusedOptimisticIds.insert(optimisticId)
+        if selectedBotId == botId { rebuildTranscript() }
+        return true
+    }
+
+    /// A refused message resent from its bubble and refused again: the same
+    /// entry comes back with the new reason, never a second one.
+    private func refuseAgain(_ id: String, reason: String, botId: String, hiding optimisticId: String) {
+        retryingUnsent[botId] = nil
+        var list = unsentList(for: botId)
+        guard var item = list.item(id) else {
+            if selectedBotId == botId { rebuildTranscript() }
+            return
+        }
+        item.reason = reason
+        list.replace(item)
+        refusedOptimisticIds.insert(optimisticId)
         setUnsent(list, botId: botId)
+    }
+
+    /// The server took a resent message: it is no longer unsent.
+    private func completeUnsentRetry(_ id: String, botId: String) {
+        retryingUnsent[botId] = nil
+        var list = unsentList(for: botId)
+        list.remove(id)
+        setUnsent(list, botId: botId, force: true)
+    }
+
+    /// A resend that ended without the server taking the turn: the bubble is
+    /// the same item again.
+    private func endUnsentRetry(botId: String) {
+        guard retryingUnsent.removeValue(forKey: botId) != nil else { return }
+        if selectedBotId == botId { rebuildTranscript() }
     }
 
     /// New Chat and delete: the bot's refused messages go with its chat.
     private func clearUnsent(botId: String) {
-        for item in unsentList(for: botId).items { unsentQuotes[item.id] = nil }
+        retryingUnsent[botId] = nil
         unsentLists[botId] = UnsentList()
         unsentStore.clear(botId: botId)
     }
 
-    /// The open chat's refused messages, for the transcript.
+    /// The open chat's refused messages, for the transcript. One being
+    /// resent is hidden: its resend is on screen as the optimistic row.
     private var openUnsent: [UnsentMessage] {
-        selectedBotId.map { unsentList(for: $0).items } ?? []
+        guard let botId = selectedBotId else { return [] }
+        let hidden = retryingUnsent[botId]
+        return unsentList(for: botId).items.filter { $0.id != hidden }
     }
 
     /// Whether Edit may take the message into the composer right now.
@@ -1838,29 +1895,29 @@ final class AppModel: ObservableObject {
     private func heldFiles(of message: UnsentMessage, botId: String) -> [Attachment]? {
         var out: [Attachment] = []
         for file in message.files {
-            guard file.mediaType != nil, file.dataUrl == nil else { out.append(file); continue }
-            guard let restored = SentImageStore.restored(file, botId: botId) else {
-                attachError = "A picture from this message is no longer on this Mac."
+            switch UnsentMessage.heldState(of: file) {
+            case .ready:
+                out.append(file)
+            case .restoreImage:
+                guard let restored = SentImageStore.restored(file, botId: botId) else {
+                    attachError = "A picture from this message is no longer on this Mac."
+                    return nil
+                }
+                out.append(restored)
+            case .attachAgain:
+                attachError = "\(file.name) has to be attached again."
                 return nil
             }
-            out.append(restored)
         }
         return out
     }
 
-    /// Send a refused message again, once. Its failed bubble goes when the
-    /// resend starts; if that fails too, it comes back as a new one.
+    /// Send a refused message again. It stays saved until the server takes
+    /// the turn; if that fails too, the same bubble comes back.
     func retryUnsent(_ id: String) {
         guard !pending, let botId = selectedBotId, let item = unsentList(for: botId).item(id),
               let files = heldFiles(of: item, botId: botId) else { return }
-        send(item.message, retrying: false, keepsComposer: true, files: files, rawDraft: item.draft)
-        // `pending` is what says the send started; anything that stopped it
-        // leaves the message where it was.
-        guard pending, sendBotId == botId else { return }
-        var list = unsentList(for: botId)
-        list.remove(id)
-        unsentQuotes[id] = nil
-        setUnsent(list, botId: botId)
+        send(item.message, retrying: false, keepsComposer: true, files: files, rawDraft: item.draft, retryingUnsentId: id)
     }
 
     /// Take a refused message back into the composer, which has to be empty.
@@ -1868,12 +1925,14 @@ final class AppModel: ObservableObject {
         guard let botId = selectedBotId else { return }
         var list = unsentList(for: botId)
         guard let item = list.item(id), canEditUnsent, let files = heldFiles(of: item, botId: botId),
-              list.edit(id, draft: draft, attachmentCount: attachments.count) != nil else { return }
+              list.edit(id, draft: draft, attachmentCount: attachments.count) != nil,
+              setUnsent(list, botId: botId) else { return }
         draft = item.draft
         draftWriteToken &+= 1
         attachments = files
-        if let quote = unsentQuotes.removeValue(forKey: id), replyQuotes[botId] == nil { replyQuotes[botId] = quote }
-        setUnsent(list, botId: botId)
+        if let quote = item.quote, replyQuotes[botId] == nil {
+            replyQuotes[botId] = ReplyQuote(botId: quote.botId, text: quote.text, author: quote.author)
+        }
     }
 
     /// `retrying` resends a message the composer does not hold, so it must not
@@ -1887,7 +1946,8 @@ final class AppModel: ObservableObject {
         freshSession: Bool = false,
         keepsComposer: Bool = false,
         files: [Attachment] = [],
-        rawDraft: String? = nil
+        rawDraft: String? = nil,
+        retryingUnsentId: String? = nil
     ) {
         // The draft is capped in the composer; never clip the formatted
         // message here or attachment bodies and their fences get severed.
@@ -1924,6 +1984,7 @@ final class AppModel: ObservableObject {
         stickyThreadError = nil
         sendErrors[bot.id] = nil
         widgetSaveErrors[bot.id] = nil
+        if let retryingUnsentId { retryingUnsent[bot.id] = retryingUnsentId }
         sendGenerations[bot.id] = (sendGenerations[bot.id] ?? 0) + 1
         let generation = sendGenerations[bot.id] ?? 1
         let chatGen = chatGenerations[bot.id] ?? 0
@@ -1941,7 +2002,7 @@ final class AppModel: ObservableObject {
         // `[file: ...]` line per image, and that echo is what the optimistic
         // row, the rail preview and the stream arming have to match.
         let images = sentAttachments.filter(\.isImage)
-        SentImageStore.keep(images, botId: bot.id)
+        let keptImages = SentImageStore.keep(images, botId: bot.id)
         let echo = Attachments.echoedMessage(message, images: images)
         // Appended to the projection that is already on screen, never a fresh
         // one built from the durable rows. The durable store holds only the
@@ -2078,6 +2139,7 @@ final class AppModel: ObservableObject {
                     )
                 }
                 delivered = true
+                if let retryId = retryingUnsentId { self.completeUnsentRetry(retryId, botId: bot.id) }
                 if createdSession, self.selectedBotId == bot.id {
                     // A session this send created holds nothing older than the
                     // send, so the follower can start at its first event. Asked
@@ -2196,29 +2258,45 @@ final class AppModel: ObservableObject {
                     // cannot stack on it. A resend from the chat's own Retry
                     // has its original message already, so only the note.
                     let reason = UnsentMessage.reason(for: error)
-                    if !retrying {
-                        self.recordUnsent(
+                    var kept = true
+                    // The failed bubble reads its pictures back from disk, so
+                    // their copies have to have landed before it is saved.
+                    await keptImages?.value
+                    if let retryId = retryingUnsentId {
+                        self.refuseAgain(retryId, reason: reason, botId: bot.id, hiding: optimisticId)
+                    } else if !retrying {
+                        let draftBack = rawDraft ?? (leavesComposer ? draftSnapshot : message)
+                        kept = self.recordUnsent(
                             UnsentMessage(
                                 id: UUID().uuidString,
                                 message: message,
                                 echo: echo,
-                                draft: rawDraft ?? (leavesComposer ? draftSnapshot : message),
+                                draft: draftBack,
                                 files: sentAttachments,
                                 reason: reason,
                                 at: Date(),
-                                anchorId: anchorId
+                                anchorId: anchorId,
+                                quote: quoteSnapshot.map { UnsentQuote(botId: $0.botId, text: $0.text, author: $0.author) }
                             ),
                             botId: bot.id,
-                            hiding: optimisticId,
-                            quote: quoteSnapshot
+                            hiding: optimisticId
+                        )
+                        // A refusal that cannot be saved must not lose the
+                        // text: it goes back in the composer, and the note
+                        // from the failed save stays.
+                        if !kept, self.selectedBotId == bot.id {
+                            self.restoreUnsentDraft(draftBack, sentAttachments: sentAttachments)
+                            if let quoteSnapshot, self.replyQuotes[bot.id] == nil { self.replyQuotes[bot.id] = quoteSnapshot }
+                        }
+                    }
+                    if kept {
+                        self.recordSendError(
+                            bot.id,
+                            UnsentMessage.note(reason: reason),
+                            resendable: false,
+                            survivesReload: true
                         )
                     }
-                    self.recordSendError(
-                        bot.id,
-                        UnsentMessage.note(reason: reason),
-                        resendable: false,
-                        survivesReload: true
-                    )
                 }
                 self.finishSend(botId: bot.id, generation: generation)
                 if case BackendError.sessionMoved = error {
@@ -2406,6 +2484,7 @@ final class AppModel: ObservableObject {
             notifySuppressed = false
             if sendBotId == id { sendBotId = nil }
             if activeSession?.botId == id { activeSession = nil }
+            endUnsentRetry(botId: id)
         }
         if botId == nil || botId == selectedBotId, pending { pending = false }
         if botId == nil || botId == selectedBotId { sendTask = nil }
@@ -2426,6 +2505,7 @@ final class AppModel: ObservableObject {
         guard generation == (sendGenerations[botId] ?? 0) else { return }
         sendTasks[botId] = nil
         inflightSessions[botId] = nil
+        endUnsentRetry(botId: botId)
         markWorking(botId, false)
         if sendBotId == botId { sendBotId = nil }
         if selectedBotId == botId {
@@ -4258,7 +4338,6 @@ final class AppModel: ObservableObject {
         removeSnapshot(botId, blockWrites: false)
         sendErrors[botId] = nil
         unsentDrafts[botId] = nil
-        clearUnsent(botId: botId)
         instructionDrafts[botId] = nil
         forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
         let running = inflightSessions[botId]
@@ -4270,7 +4349,10 @@ final class AppModel: ObservableObject {
         }
         // Its pictures go only once the server has dropped the bot: a
         // refused delete leaves the chat, pictures and all.
-        perform(ShellActions.deleteBot(botId: botId)) { SentImageStore.forget(botId: botId) }
+        perform(ShellActions.deleteBot(botId: botId)) {
+            SentImageStore.forget(botId: botId)
+            self.clearUnsent(botId: botId)
+        }
     }
 
     /// New Bot from the rail: clear the thread server-side and start fresh.
@@ -4281,7 +4363,6 @@ final class AppModel: ObservableObject {
         let runningSession = inflightSessions[id] ?? (activeSession?.botId == id ? activeSession?.sessionId : nil)
         cancelSend(for: id)
         sendErrors[id] = nil
-        clearUnsent(botId: id)
         let generation = bumpChatGeneration(for: id)
         enqueue { [weak self] in
             guard let self else { return }
@@ -4300,6 +4381,9 @@ final class AppModel: ObservableObject {
             // let the next poll re-sync.
             do {
                 let cleared = try await self.client.shellAction(ShellActions.clearThread(botId: id))
+                // The chat is cleared server-side: its refused messages go
+                // with it, and only now.
+                self.clearUnsent(botId: id)
                 guard generation == (self.chatGenerations[id] ?? 0) else { return }
                 self.forgetTurnIds(of: self.store?.bots.first { $0.id == id }?.sessionId)
                 self.applyStore(cleared)

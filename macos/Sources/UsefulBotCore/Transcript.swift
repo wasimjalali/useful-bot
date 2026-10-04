@@ -188,17 +188,29 @@ public enum Transcript {
     }
 
     /// Each refused message goes under the row it was sent after, as the
-    /// owner's bubble and its failed line; one whose row is gone goes last.
+    /// owner's bubble and its failed line. One whose row is gone goes by its
+    /// time: after the last timed row at or before it, or before the first
+    /// timed row when every one is later. Only when no row has a time does it
+    /// go last.
     static func placeUnsent(_ unsent: [UnsentMessage], in rows: [TranscriptRow]) -> [TranscriptRow] {
         guard !unsent.isEmpty else { return rows }
         let ids = Set(rows.map(\.id))
         var byAnchor: [String: [UnsentMessage]] = [:]
-        var unplaced: [UnsentMessage] = []
+        var afterIndex: [Int: [UnsentMessage]] = [:]
+        var beforeIndex: [Int: [UnsentMessage]] = [:]
+        var atEnd: [UnsentMessage] = []
+        let firstTimed = rows.firstIndex { $0.at != nil }
         for message in unsent {
             if let anchor = message.anchorId, ids.contains(anchor) {
                 byAnchor[anchor, default: []].append(message)
+            } else if let firstTimed {
+                if let index = rows.lastIndex(where: { ($0.at ?? .distantFuture) <= message.at }) {
+                    afterIndex[index, default: []].append(message)
+                } else {
+                    beforeIndex[firstTimed, default: []].append(message)
+                }
             } else {
-                unplaced.append(message)
+                atEnd.append(message)
             }
         }
         func pair(_ message: UnsentMessage) -> [TranscriptRow] {
@@ -209,11 +221,13 @@ public enum Transcript {
         }
         var placed: [TranscriptRow] = []
         placed.reserveCapacity(rows.count + unsent.count * 2)
-        for row in rows {
+        for (index, row) in rows.enumerated() {
+            for message in beforeIndex[index] ?? [] { placed.append(contentsOf: pair(message)) }
             placed.append(row)
             for message in byAnchor[row.id] ?? [] { placed.append(contentsOf: pair(message)) }
+            for message in afterIndex[index] ?? [] { placed.append(contentsOf: pair(message)) }
         }
-        for message in unplaced { placed.append(contentsOf: pair(message)) }
+        for message in atEnd { placed.append(contentsOf: pair(message)) }
         return placed
     }
 

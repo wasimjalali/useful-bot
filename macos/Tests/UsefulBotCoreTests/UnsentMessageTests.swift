@@ -85,6 +85,101 @@ import Testing
         #expect(!got.contains { $0.hasPrefix("unsent:") })
     }
 
+    // MARK: timestamp placement
+
+    private func timed(_ id: String, _ kind: TranscriptRow.Kind, _ t: Double?) -> TranscriptRow {
+        TranscriptRow(id: id, kind: kind, text: id, at: t.map { Date(timeIntervalSince1970: $0) })
+    }
+
+    private func ids(_ rows: [TranscriptRow]) -> [String] { rows.map(\.id) }
+
+    /// A refusal in an empty chat has no anchor. When a good exchange lands
+    /// later, the refusal stays before it, by time.
+    @Test func aRefusalInAnEmptyChatStaysBeforeALaterExchange() {
+        let later = [timed("u1", .user, 5_000), timed("a1", .assistant, 5_010)]
+        let got = Transcript.placeUnsent([item(anchor: nil, at: Date(timeIntervalSince1970: 1_000))], in: later)
+        #expect(ids(got) == ["unsent-m1", "unsent-line-m1", "u1", "a1"])
+    }
+
+    /// With no anchor, a refusal goes after the last row at or before it.
+    @Test func aGoneAnchorFallsBackToTheTimeOrder() {
+        let rows = [timed("u1", .user, 100), timed("a1", .assistant, 200), timed("u2", .user, 5_000)]
+        let got = Transcript.placeUnsent([item(anchor: "gone", at: Date(timeIntervalSince1970: 1_000))], in: rows)
+        #expect(ids(got) == ["u1", "a1", "unsent-m1", "unsent-line-m1", "u2"])
+    }
+
+    /// Rows with no times at all leave only the end.
+    @Test func undatedRowsPutItAtTheEnd() {
+        let rows = [timed("u1", .user, nil), timed("a1", .assistant, nil)]
+        let got = Transcript.placeUnsent([item(anchor: nil)], in: rows)
+        #expect(ids(got) == ["u1", "a1", "unsent-m1", "unsent-line-m1"])
+    }
+
+    /// Two time-placed refusals keep the order they were sent in.
+    @Test func timePlacedRefusalsKeepTheirOrder() {
+        let rows = [timed("u1", .user, 5_000)]
+        let got = Transcript.placeUnsent([
+            item("m1", anchor: nil, at: Date(timeIntervalSince1970: 1_000)),
+            item("m2", anchor: nil, at: Date(timeIntervalSince1970: 2_000)),
+        ], in: rows)
+        #expect(ids(got) == ["unsent-m1", "unsent-line-m1", "unsent-m2", "unsent-line-m2", "u1"])
+    }
+
+    // MARK: retry bookkeeping, quote, caps
+
+    /// A refusal on Retry changes the reason and keeps the one entry.
+    @Test func replacingKeepsOneEntry() {
+        var list = UnsentList()
+        list.add(item("m1"))
+        var again = item("m1")
+        again.reason = "Couldn't reach the local server."
+        list.replace(again)
+        #expect(list.items.count == 1)
+        #expect(list.items[0].reason == "Couldn't reach the local server.")
+    }
+
+    /// The reply quote rides with the message through the disk.
+    @Test func theQuoteRoundTrips() throws {
+        let store = tempStore()
+        var original = item("m1")
+        original.quote = UnsentQuote(botId: "bot1", text: "an earlier reply", author: "Ada")
+        try store.save([original], botId: "bot1")
+        #expect(store.load(botId: "bot1")[0].quote == UnsentQuote(botId: "bot1", text: "an earlier reply", author: "Ada"))
+        // Files saved before the field existed still load.
+        #expect(store.load(botId: "bot2").isEmpty)
+    }
+
+    /// The file keeps the newest 20, and no bytes or file bodies reach it.
+    @Test func theStoreCapsTheListAndDropsBodies() throws {
+        let store = tempStore()
+        let doc = UsefulBotCore.Attachment(id: "f2", name: "notes.txt", bytes: 5, text: "secret body")
+        let picture = UsefulBotCore.Attachment(id: "f1", name: "c.png", bytes: 9, text: nil, mediaType: "image/png", dataUrl: "data:image/png;base64,AAAA")
+        let many = (0..<25).map { item("m\($0)", files: $0 == 24 ? [doc, picture] : []) }
+        try store.save(many, botId: "bot1")
+        let loaded = store.load(botId: "bot1")
+        #expect(loaded.count == UnsentList.cap)
+        #expect(loaded.first?.id == "m5")
+        #expect(loaded.last?.files[0].text == nil)
+        #expect(loaded.last?.files[0].mediaType == nil)
+        #expect(loaded.last?.files[1].dataUrl == nil)
+        #expect(loaded.last?.files[1].mediaType == "image/png")
+        var list = UnsentList()
+        for message in many { list.add(message) }
+        #expect(list.items.count == UnsentList.cap)
+    }
+
+    /// What a held file needs before a resend or an Edit.
+    @Test func heldFilesSayWhatTheyNeed() {
+        let live = UsefulBotCore.Attachment(id: "f1", name: "c.png", bytes: 9, text: nil, mediaType: "image/png", dataUrl: "data:image/png;base64,AAAA")
+        let reloadedImage = UsefulBotCore.Attachment(id: "f1", name: "c.png", bytes: 9, text: nil, mediaType: "image/png", dataUrl: nil)
+        let liveDoc = UsefulBotCore.Attachment(id: "f2", name: "n.txt", bytes: 5, text: "x")
+        let reloadedDoc = UsefulBotCore.Attachment(id: "f2", name: "n.txt", bytes: 5, text: nil)
+        #expect(UnsentMessage.heldState(of: live) == .ready)
+        #expect(UnsentMessage.heldState(of: reloadedImage) == .restoreImage)
+        #expect(UnsentMessage.heldState(of: liveDoc) == .ready)
+        #expect(UnsentMessage.heldState(of: reloadedDoc) == .attachAgain)
+    }
+
     // MARK: ledger
 
     /// Retry takes the one message out, so the next send is the only copy.
@@ -160,7 +255,8 @@ import Testing
         #expect(loaded[0].files.map(\.name) == ["cat-ab12.png", "notes.txt"])
         #expect(loaded[0].files[0].dataUrl == nil)
         #expect(loaded[0].files[0].mediaType == "image/png")
-        #expect(loaded[0].files[1].text == "notes")
+        // A file body stays in memory only.
+        #expect(loaded[0].files[1].text == nil)
         // Another bot's list is its own.
         #expect(store.load(botId: "bot2").isEmpty)
     }
