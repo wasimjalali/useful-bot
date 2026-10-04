@@ -425,6 +425,8 @@ struct NativeDialog<Content: View>: View {
     /// Off for a dialog whose own header row carries the close button.
     var closeRow = true
     let onClose: () -> Void
+    /// Esc, when it should do something other than close (a page that goes back first).
+    var onEscape: (() -> Void)? = nil
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -455,7 +457,7 @@ struct NativeDialog<Content: View>: View {
             // Never flush with the window's edges when the window is narrow.
             .padding(.horizontal, 24)
         }
-        .onExitCommand(perform: onClose)
+        .onExitCommand(perform: onEscape ?? onClose)
     }
 }
 
@@ -770,13 +772,14 @@ struct CreateGroupDialog: View {
     }
 }
 
-/// What one added tile opens: who it is, how it is doing, the tools it offers
-/// and what the owner can do with it.
-private struct ConnectorDetailDialog: View {
+/// What one added tile opens inside the Connectors dialog: who it is, how it
+/// is doing, what the owner can do with it and the tools it offers.
+private struct ConnectorDetailPage: View {
     @EnvironmentObject private var model: AppModel
     let tile: ConnectorTile
     let search: String
-    let onClose: () -> Void
+    /// Back to the Connectors list; also closes the page once the item is gone.
+    let onBack: () -> Void
 
     @State private var confirming = false
     @State private var appTools: [DirectConnectionTool]?
@@ -803,6 +806,18 @@ private struct ConnectorDetailDialog: View {
         }
     }
 
+    /// A server shows its tools only once they are known: ready, or listed as none.
+    private var showsTools: Bool {
+        switch tile.source {
+        case .app: return true
+        case .server(let row):
+            switch row.state {
+            case .ready, .zeroTools: return true
+            default: return false
+            }
+        }
+    }
+
     private var errorMessage: String? {
         if case .server(let row) = tile.source, !row.state.isChecking, let message = row.lastError?.message, !message.isEmpty {
             return message
@@ -811,55 +826,70 @@ private struct ConnectorDetailDialog: View {
     }
 
     var body: some View {
-        NativeDialog(maxWidth: 520, ariaLabel: tile.name, onClose: onClose) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 12) {
-                    AppLogo(name: tile.name, url: tile.logoURL, size: 26, data: tile.iconData)
-                        .frame(width: 40, height: 40)
-                        .background(Theme.C.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Theme.C.edge, lineWidth: 1)
-                        )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(tile.name)
-                            .font(.system(size: DesignTokens.FontSize.dialogTitle, weight: .semibold))
-                            .foregroundStyle(Theme.C.ink)
-                            .lineLimit(1)
-                        Text(kindLine)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.C.inkMuted)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onBack) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Connectors")
+                        .font(.system(size: 13, weight: .medium))
                 }
-                .padding(.horizontal, 20)
-                HStack(spacing: 6) {
-                    if tile.mark == .checking { ProgressView().controlSize(.small) }
-                    Text(tile.status)
-                        .font(.system(size: 13))
-                        .foregroundStyle(tile.mark == .added || tile.mark == .checking ? Theme.C.inkMuted : Theme.C.warning)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 14)
-                if let errorMessage {
-                    Text(errorMessage)
+                .foregroundStyle(Theme.C.inkMuted)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back to Connectors")
+            .padding(.horizontal, 28)
+            HStack(spacing: 12) {
+                AppLogo(name: tile.name, url: tile.logoURL, size: 26, data: tile.iconData)
+                    .frame(width: 40, height: 40)
+                    .background(Theme.C.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Theme.C.edge, lineWidth: 1)
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tile.name)
+                        .font(.system(size: DesignTokens.FontSize.dialogTitle, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Text(kindLine)
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.C.inkMuted)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 4)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                toolsSection
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                actions
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, 20)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 28)
+            .padding(.top, 14)
+            HStack(spacing: 6) {
+                if tile.mark == .checking { ProgressView().controlSize(.small) }
+                Text(tile.status)
+                    .font(.system(size: 13))
+                    .foregroundStyle(tile.mark == .added || tile.mark == .checking ? Theme.C.inkMuted : Theme.C.warning)
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 14)
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .padding(.horizontal, 28)
+                    .padding(.top, 4)
+            }
+            actions
+                .padding(.horizontal, 28)
+                .padding(.top, 16)
+            if showsTools {
+                toolsSection
+                    .padding(.horizontal, 28)
+                    .padding(.top, 20)
+                    .padding(.bottom, 16)
+            }
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .task {
             if case .app(let row) = tile.source {
                 if let list = await model.connectorTools(row) { appTools = list } else { toolsFailed = true }
@@ -871,38 +901,40 @@ private struct ConnectorDetailDialog: View {
     private var toolsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let tools {
-                Text(tools.count == 1 ? "1 tool" : "\(tools.count) tools")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.C.inkMuted)
                 if tools.isEmpty {
-                    Text("No tools.")
+                    Text("No tools")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.inkMuted)
                 } else {
+                    Text(tools.count == 1 ? "1 tool" : "\(tools.count) tools")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.C.inkMuted)
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3), spacing: 10) {
                             ForEach(Array(tools.enumerated()), id: \.offset) { _, tool in
-                                VStack(alignment: .leading, spacing: 1) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(tool.name)
                                         .font(.system(size: 13, weight: .medium))
                                         .foregroundStyle(Theme.C.ink)
                                         .lineLimit(1)
+                                        .truncationMode(.tail)
                                     if let description = tool.description, !description.isEmpty {
                                         Text(description)
                                             .font(.system(size: 12))
                                             .foregroundStyle(Theme.C.inkMuted)
-                                            .lineLimit(1)
+                                            .lineLimit(2)
                                             .truncationMode(.tail)
                                     }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                                .background(Theme.C.sunken)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                             }
                         }
                         .padding(.vertical, 2)
                     }
                     .uvScroll()
-                    .frame(maxHeight: 240)
-                    .fixedSize(horizontal: false, vertical: true)
                 }
             } else if toolsFailed {
                 Text("Couldn't load the tools.")
@@ -912,7 +944,7 @@ private struct ConnectorDetailDialog: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var actions: some View {
@@ -953,14 +985,13 @@ private struct ConnectorDetailDialog: View {
         switch tile.source {
         case .app(let row):
             Task {
-                await model.disconnectConnector(row, search: search)
                 // A failed disconnect leaves the app added; the dialog stays and the error shows behind it.
-                if model.connectors?.toolkits.first(where: { $0.slug == row.slug })?.connected != true { onClose() }
+                if await model.disconnectConnector(row, search: search) { onBack() }
             }
         case .server(let row):
             Task {
                 await model.removeDirectConnection(row)
-                if !model.directConnections.contains(where: { $0.id == row.id }) { onClose() }
+                if !model.directConnections.contains(where: { $0.id == row.id }) { onBack() }
             }
         }
     }
@@ -973,12 +1004,20 @@ private extension ConnectorTile.Source {
     }
 }
 
+private struct ConnectorsPageHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 struct ConnectorsDialog: View {
     @EnvironmentObject private var model: AppModel
     let onClose: () -> Void
 
     @State private var search = ""
     @State private var selectedTile: String?
+    /// The list page's height with the catalogue showing; the detail page keeps it.
+    @State private var pageHeight: CGFloat?
+    private static let fallbackPageHeight: CGFloat = 600
     @State private var keyDraft = ""
     /// What the owner has typed into the own-app form, by field name. Cleared
     /// when the form closes; it never outlives the dialog.
@@ -1001,18 +1040,48 @@ struct ConnectorsDialog: View {
     }
 
     var body: some View {
-        ZStack {
-            connectorsPanel
-            if let tile = selectedTileValue {
-                ConnectorDetailDialog(tile: tile, search: search, onClose: { selectedTile = nil })
-                    .id(tile.id)
-                    .transition(.opacity)
-            }
+        connectorsPanel
+        .onChange(of: addedTiles.map(\.id)) { _, ids in
+            if let selectedTile, !ids.contains(selectedTile) { self.selectedTile = nil }
         }
     }
 
     private var connectorsPanel: some View {
-        NativeDialog(maxWidth: 760, ariaLabel: "Connectors", onClose: close) {
+        NativeDialog(maxWidth: 760, ariaLabel: "Connectors", onClose: close, onEscape: {
+            // Esc on a detail page goes back to the list; on the list it closes.
+            if selectedTile != nil { selectedTile = nil } else { close() }
+        }) {
+            if let tile = selectedTileValue {
+                ConnectorDetailPage(tile: tile, search: search, onBack: { selectedTile = nil })
+                    .id(tile.id)
+                    // The page keeps the list's height, measured once the catalogue has shown.
+                    .frame(height: pageHeight ?? Self.fallbackPageHeight, alignment: .top)
+            } else {
+                listPage
+            }
+        }
+        .task {
+            async let direct: Void = model.loadDirectConnections()
+            await model.loadConnectors()
+            await direct
+        }
+        .onChange(of: search) { _, value in
+            model.connectorSearch = value
+            Task {
+                try? await Task.sleep(for: .milliseconds(150))
+                guard value == search else { return }
+                await model.loadConnectors(search: value, quiet: true)
+            }
+        }
+        .onChange(of: model.connectors?.hasKey) { _, hasKey in
+            if hasKey == true { searchFocused = true } else { keyFocused = true }
+        }
+        // Field names repeat across apps (client_id, client_secret), so a
+        // draft typed for one app must not prefill the next app's form.
+        .onChange(of: model.connectorOwnApp?.toolkit) { _, _ in ownAppDraft = [:] }
+    }
+
+    private var listPage: some View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
                     Text("Connectors")
@@ -1054,26 +1123,14 @@ struct ConnectorsDialog: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .task {
-            async let direct: Void = model.loadDirectConnections()
-            await model.loadConnectors()
-            await direct
-        }
-        .onChange(of: search) { _, value in
-            model.connectorSearch = value
-            Task {
-                try? await Task.sleep(for: .milliseconds(150))
-                guard value == search else { return }
-                await model.loadConnectors(search: value, quiet: true)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ConnectorsPageHeightKey.self, value: proxy.size.height)
+                }
+            )
+            .onPreferenceChange(ConnectorsPageHeightKey.self) { height in
+                if model.connectors?.hasKey == true, model.connectorOwnApp == nil, height > 0 { pageHeight = height }
             }
-        }
-        .onChange(of: model.connectors?.hasKey) { _, hasKey in
-            if hasKey == true { searchFocused = true } else { keyFocused = true }
-        }
-        // Field names repeat across apps (client_id, client_secret), so a
-        // draft typed for one app must not prefill the next app's form.
-        .onChange(of: model.connectorOwnApp?.toolkit) { _, _ in ownAppDraft = [:] }
     }
 
     private func close() {

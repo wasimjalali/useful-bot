@@ -87,10 +87,30 @@ public struct ConnectorTile: Identifiable, Equatable, Sendable {
     /// The bytes of a `data:image/...;base64,` URI the server cached, or nil
     /// for anything else, so the tile falls back to its monogram.
     public static func decodeIcon(_ uri: String?) -> Data? {
-        guard let uri, uri.hasPrefix("data:image/"), let comma = uri.firstIndex(of: ",") else { return nil }
-        guard uri[..<comma].hasSuffix(";base64") else { return nil }
-        guard let data = Data(base64Encoded: String(uri[uri.index(after: comma)...])),
-              !data.isEmpty, data.count <= 64 * 1024 else { return nil }
-        return data
+        guard let uri, uri.hasPrefix("data:image/") else { return nil }
+        return iconCache.data(for: uri) {
+            guard let comma = uri.firstIndex(of: ","), uri[..<comma].hasSuffix(";base64"),
+                  let data = Data(base64Encoded: String(uri[uri.index(after: comma)...])),
+                  !data.isEmpty, data.count <= 64 * 1024 else { return nil }
+            return data
+        }
+    }
+
+    /// Tiles are rebuilt on every refresh; the same icon is decoded once.
+    private static let iconCache = IconDecodeCache()
+
+    private final class IconDecodeCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var decoded: [String: Data?] = [:]
+
+        func data(for uri: String, decode: () -> Data?) -> Data? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let hit = decoded[uri] { return hit }
+            let value = decode()
+            if decoded.count >= 64 { decoded.removeAll() }
+            decoded[uri] = .some(value)
+            return value
+        }
     }
 }

@@ -3838,17 +3838,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func disconnectConnector(_ row: ConnectorToolkit, search: String) async {
-        guard let accountId = row.accountId else { return }
+    /// True when the disconnect call itself went through, whatever the reload after it did.
+    @discardableResult
+    func disconnectConnector(_ row: ConnectorToolkit, search: String) async -> Bool {
+        guard let accountId = row.accountId else { return false }
         connectorBusy = row.slug
         connectorsError = nil
+        var disconnected = false
         do {
             try await client.disconnectConnector(accountId: accountId)
+            disconnected = true
             await loadConnectors(search: search, quiet: true)
         } catch {
-            connectorsError = "Could not disconnect \(row.name)."
+            if !disconnected { connectorsError = "Could not disconnect \(row.name)." }
         }
         connectorBusy = nil
+        return disconnected
     }
 
     /// The tools of one connected app, or nil when they couldn't be loaded.

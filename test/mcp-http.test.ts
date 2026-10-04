@@ -721,3 +721,25 @@ test("a rejected initialized notification is a protocol failure; 200, 202 and 20
     }
   }
 });
+
+test("a server error that echoes the caller's token is redacted before it is cut to length", async () => {
+  setConnectionLookup(async () => "8.8.8.8");
+  const token = `tok_${"x".repeat(300)}`;
+  setMcpFetch(async (_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    if (body.method === "initialize") {
+      return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-06-18" } });
+    }
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32000, message: `bad token Bearer ${token}` } });
+  });
+  try {
+    const err = await callMcpTool("https://mcp.example.com/mcp", "t", {}, { authorization: `Bearer ${token}` }).then(() => null, (e: unknown) => e);
+    assert.ok(err instanceof McpError);
+    assert.equal(err.message.includes("x".repeat(16)), false);
+    assert.match(err.message, /\[redacted\]/);
+  } finally {
+    setMcpFetch(null);
+    setConnectionLookup(null);
+  }
+});

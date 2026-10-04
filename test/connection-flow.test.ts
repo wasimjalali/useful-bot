@@ -1260,7 +1260,7 @@ test("an older sign-in that succeeds after a newer one finished stores nothing, 
   assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_newer"));
   assert.equal(cardOf(card.id, storePath).phase, "connected");
   release();
-  assert.deepEqual(await older, { proposalId: card.id });
+  await assert.rejects(older, /oauth_superseded/);
   assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_newer"), "the older sign-in replaced the newer credential");
   assert.ok(!keychainGet(connectionSecretService("tella"))?.includes("at_older"));
   assert.equal(listHandoffs().length, 1, "one resume, from the newer sign-in");
@@ -1353,7 +1353,7 @@ test("an older reauthorize that finishes after a newer one stores nothing", asyn
   assert.notEqual(afterNewer, held);
   assert.ok(afterNewer?.includes("at_newer"));
   release();
-  await older;
+  await assert.rejects(older, /oauth_superseded/);
   assert.equal(keychainGet(connectionSecretService("tella")), afterNewer, "the older reauthorize put its credential over the newer one");
   assert.equal(findOauthPending("statevalue123456"), null);
 });

@@ -120,6 +120,25 @@ export function findOauthPending(state: string, path = oauthPendingPath()): OAut
   return readPending(path).find((row) => row.state === state) ?? null;
 }
 
+/**
+ * Whether a row for this state is still on disk but past its 15 minutes: an
+ * expired sign-in, as opposed to one whose row is gone because a newer
+ * sign-in replaced it or finished.
+ */
+export function oauthPendingExpired(state: string, path = oauthPendingPath()): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!Array.isArray(raw)) return false;
+    return raw.some((item) => {
+      const rec = asRecord(item);
+      return rec?.state === state && typeof rec.createdAt === "string" && !pendingIsLive(item as OAuthPending);
+    });
+  } catch {
+    return false;
+  }
+}
+
 /** The sign-in a card is waiting on now: starting another replaces the one before. */
 export function findOauthPendingForProposal(proposalId: string, path = oauthPendingPath()): OAuthPending | null {
   return readPending(path).find((row) => row.proposalId === proposalId) ?? null;

@@ -1,16 +1,16 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { assertPublicHttpsUrl, assertResolvedPublic } from "./connection-url.ts";
-import type { ConnectionEntry } from "./connections-store.ts";
+import { findConnectionById, type ConnectionEntry } from "./connections-store.ts";
 import { statePath } from "./stack.ts";
 
 /**
  * A logo for each direct connection, found once on the server and kept as a
  * data: URI so the app never fetches from a server the owner connected.
- * Order: an icon the server's own `serverInfo` named, then the site's icon
- * from the registrable domain's home page, then `/favicon.ico` there.
- * Every fetch goes through the SSRF guards, refuses redirects, times out at
- * 5 s and accepts only `image/*` up to 64 KB.
+ * Order: the site's icon from the registrable domain's home page, then
+ * `/favicon.ico` there. Every fetch goes through the SSRF guards, refuses
+ * redirects, times out at 5 s and accepts only PNG, JPEG or ICO images (by
+ * content type and leading bytes) up to 64 KB.
  */
 
 export const ICON_MAX_BYTES = 64 * 1024;
@@ -139,7 +139,10 @@ async function guardedFetch(rawUrl: string): Promise<Response> {
 /** At most `max` bytes of the body, or null when it runs past the cap. */
 async function readCapped(res: Response, max: number): Promise<Uint8Array | null> {
   const declared = Number(res.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > max) return null;
+  if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel();
+    return null;
+  }
   const reader = res.body?.getReader();
   if (!reader) return null;
   const chunks: Uint8Array[] = [];
@@ -163,15 +166,31 @@ async function readCapped(res: Response, max: number): Promise<Uint8Array | null
   return out;
 }
 
+const ICON_TYPES = new Set(["image/png", "image/jpeg", "image/x-icon", "image/vnd.microsoft.icon"]);
+
+/** PNG, JPEG or ICO leading bytes: the stored bytes are what the type said. */
+function hasIconMagic(b: Uint8Array): boolean {
+  const png = b.length >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((v, i) => b[i] === v);
+  const jpeg = b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+  const ico = b.length >= 4 && b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0;
+  return png || jpeg || ico;
+}
+
 /** One image as a data: URI, or null when it isn't a small image. */
 export async function fetchImageDataUri(url: string): Promise<string | null> {
   try {
     const res = await guardedFetch(url);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
     const type = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-    if (!/^image\/[a-z0-9.+-]+$/.test(type)) return null;
+    if (!ICON_TYPES.has(type)) {
+      await res.body?.cancel();
+      return null;
+    }
     const bytes = await readCapped(res, ICON_MAX_BYTES);
-    if (!bytes || bytes.byteLength === 0) return null;
+    if (!bytes || bytes.byteLength === 0 || !hasIconMagic(bytes)) return null;
     return `data:${type};base64,${Buffer.from(bytes).toString("base64")}`;
   } catch {
     return null;
@@ -182,9 +201,15 @@ async function iconFromHomePage(pageUrl: string): Promise<string | null> {
   let html: string;
   try {
     const res = await guardedFetch(pageUrl);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
     const type = (res.headers.get("content-type") ?? "").toLowerCase();
-    if (!type.includes("html")) return null;
+    if (!type.includes("html")) {
+      await res.body?.cancel();
+      return null;
+    }
     const bytes = await readCapped(res, PAGE_MAX_BYTES);
     if (!bytes) return null;
     html = new TextDecoder().decode(bytes);
@@ -198,7 +223,7 @@ async function iconFromHomePage(pageUrl: string): Promise<string | null> {
   return null;
 }
 
-/** Resolve one connection's icon. Null when none of the three steps finds one. */
+/** Resolve one connection's icon. Null when no step finds one; `serverInfo` is tried first when a caller has it. */
 export async function resolveIcon(mcpUrl: string, serverInfo?: unknown): Promise<string | null> {
   let host: string;
   try {
@@ -249,6 +274,8 @@ export function startDueIcons(entries: readonly ConnectionEntry[], path = connec
     const host = hostOf(entry.url);
     const run = resolveIcon(entry.url)
       .then((icon) => {
+        // The connection was removed while the lookup ran: nothing to record for it.
+        if (!findConnectionById(entry.id)) return;
         // Read again here: another id's run may have written since this one began.
         const latest = readIcons(path);
         latest[entry.id] = { host, icon, checkedAt: new Date().toISOString() };

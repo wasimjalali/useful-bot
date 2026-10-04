@@ -5,7 +5,7 @@ import { runtimeConfig } from "../../../../lib/auth";
 
 export const runtime = "nodejs";
 
-const PAGE = (ok: boolean, detail: string) => `<!doctype html>
+const PAGE = (heading: string, detail: string) => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -21,15 +21,15 @@ const PAGE = (ok: boolean, detail: string) => `<!doctype html>
 </head>
 <body>
 <main>
-  <h1>${ok ? "Connected" : "Sign-in failed"}</h1>
+  <h1>${heading}</h1>
   <p>${detail}</p>
 </main>
 </body>
 </html>
 `;
 
-function html(ok: boolean, detail: string, status = 200) {
-  return new Response(PAGE(ok, detail), {
+function html(ok: boolean, detail: string, status = 200, heading = ok ? "Connected" : "Sign-in failed") {
+  return new Response(PAGE(heading, detail), {
     status,
     headers: {
       "content-type": "text/html; charset=utf-8",
@@ -84,6 +84,9 @@ export async function GET(request: Request) {
     // The code only: an error's own text can carry a path or a piece of what
     // the sign-in server answered.
     console.error(`[useful-bot] connection sign-in did not finish: ${errorCode(err, "unknown")}`);
+    if (err instanceof Error && err.message === "oauth_superseded") {
+      return html(false, "A newer sign-in replaced this one. You can close this tab.", 200, "Sign-in replaced");
+    }
     return html(false, "The sign-in could not finish. You can close this tab and use Reopen.", 400);
   }
 }

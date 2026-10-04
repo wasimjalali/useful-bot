@@ -18,11 +18,11 @@ import {
 } from "../shared/connection-icons.ts";
 import { listPublicConnections } from "../shared/connections-admin.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
-import { seedDefaultConnections } from "../shared/connections-store.ts";
+import { seedDefaultConnections, upsertConnection } from "../shared/connections-store.ts";
 import type { ConnectionEntry } from "../shared/connections-store.ts";
 import { setDiscoveryLogger } from "../shared/connection-tools.ts";
 
-const PNG = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
 
 function env(): string {
   const dir = mkdtempSync(join(tmpdir(), "ub-icons-"));
@@ -118,7 +118,7 @@ test("resolveIcon refuses a non-image, an oversized image and a private address"
     "https://www.tella.com/big.png": { type: "image/png", body: new Uint8Array(64 * 1024 + 1) },
   });
   assert.equal(await resolveIcon("https://api.tella.com/mcp"), null);
-  net({ "https://tella.com/favicon.ico": { type: "image/png", body: new Uint8Array(64 * 1024) } });
+  net({ "https://tella.com/favicon.ico": { type: "image/png", body: new Uint8Array(64 * 1024).fill(1, 0).map((_, i) => PNG[i] ?? 0) } });
   assert.notEqual(await resolveIcon("https://api.tella.com/mcp"), null);
   setConnectionLookup(async () => "10.0.0.5");
   const asked = net({ "https://tella.com/favicon.ico": { type: "image/png", body: PNG } });
@@ -131,6 +131,7 @@ test("startDueIcons stores the answer once, dedupes, and retries a miss only aft
   env();
   const asked = net({ "https://tella.com/favicon.ico": { type: "image/png", body: PNG } });
   const row = entry();
+  upsertConnection({ ...row, description: "Tella MCP server" });
   startDueIcons([row]);
   startDueIcons([row]);
   await settleIcons();

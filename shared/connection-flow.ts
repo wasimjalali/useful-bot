@@ -27,6 +27,7 @@ import {
   dropOauthPending,
   dropOauthPendingForProposal,
   findOauthPending,
+  oauthPendingExpired,
   OAuthTokenError,
   startMcpOAuth,
 } from "./mcp-oauth.ts";
@@ -497,16 +498,15 @@ async function completeReauthorize(
     // credential stored now would have no row pointing at it.
     // Written under the refresh lock: a refresh of the old sign-in that is out
     // now would otherwise land after this and put the old credential back.
-    let latest = true;
     await withRefreshLock(entry.id, () => {
       if (!findConnectionById(entry.id)) throw new Error("connection_missing");
       // Starting the sign-in again replaced this attempt's pending row. An older
       // exchange that lands after a newer one began must not put its tokens
       // over the newer sign-in's.
-      latest = findOauthPending(state) !== null;
-      if (latest) keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
+      if (isSuperseded(state)) throw new Error("oauth_superseded");
+      keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
     });
-    if (latest) await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
+    await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
   } finally {
     // The code is spent whatever happened: the verifier and the client secret
     // do not stay on disk.
@@ -602,7 +602,7 @@ async function finishConnectionOAuth(
     // card says why instead of waiting ten minutes to say it timed out, and the
     // verifier and client secret do not stay on disk. An older attempt, with a
     // newer sign-in started since (its row gone), is not what the card waits on.
-    const latest = findOauthPending(state) !== null;
+    const latest = !isSuperseded(state);
     dropOauthPending(state);
     if (!latest) throw err;
     failCard(pendingPeek.proposalId, exchangeFailure(err), opts.now ?? Date.now(), storePath, true);
@@ -615,9 +615,13 @@ async function finishConnectionOAuth(
   }
 }
 
-/** Whether this sign-in attempt is still the newest for its card: its pending row is still there. */
-function isLatestAttempt(state: string): boolean {
-  return findOauthPending(state) !== null;
+/**
+ * Whether a newer sign-in replaced this attempt: its pending row is gone.
+ * A row that is still on disk but past the 15-minute limit is an expired
+ * attempt, not a superseded one.
+ */
+function isSuperseded(state: string): boolean {
+  return findOauthPending(state) === null && !oauthPendingExpired(state);
 }
 
 async function settleExchanged(
@@ -635,7 +639,7 @@ async function settleExchanged(
   // The exchange took a while: the owner may have started the sign-in again.
   // The newer attempt owns the card; this one stores, settles and starts
   // nothing.
-  if (!isLatestAttempt(state)) return { proposalId: pending.proposalId };
+  if (isSuperseded(state)) throw new Error("oauth_superseded");
   logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
   const url = assertConnectionUrl(proposal.url);
   const entry: ConnectionEntry = {
@@ -658,7 +662,7 @@ async function settleExchanged(
   // never mounts, that the owner is told is connected, and that nothing can
   // remove: a spec that became readable later would even mount itself.
   await assertToolBudget(entry, bearer);
-  if (!isLatestAttempt(state)) return { proposalId: pending.proposalId };
+  if (isSuperseded(state)) throw new Error("oauth_superseded");
   const outcome = upsertConnection(entry);
   if (!outcome.won) {
     // Another card connected this server between the check above and this
@@ -672,7 +676,7 @@ async function settleExchanged(
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
   const status = await probeConnection(stored, bearer);
   // A newer sign-in began while the listing was read: the card is waiting on it.
-  if (isLatestAttempt(state)) settleProbe(pending.proposalId, stored, status, now, storePath);
+  if (!isSuperseded(state)) settleProbe(pending.proposalId, stored, status, now, storePath);
   return { proposalId: pending.proposalId };
 }
 

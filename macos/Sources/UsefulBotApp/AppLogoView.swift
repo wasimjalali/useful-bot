@@ -14,6 +14,15 @@ struct AppLogo: View {
 
     @State private var image: NSImage?
 
+    init(name: String, url: String?, size: CGFloat = 28, data: Data? = nil) {
+        self.name = name
+        self.url = url
+        self.size = size
+        self.data = data
+        // Built here, not in the task, so a tile that has the bytes never shows the monogram first.
+        _image = State(initialValue: data.flatMap { NSImage(data: $0) })
+    }
+
     var body: some View {
         Group {
             if let image {
@@ -27,7 +36,7 @@ struct AppLogo: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         .accessibilityHidden(true)
-        .task(id: "\(url ?? "")|\(data?.count ?? 0)") {
+        .task(id: "\(url ?? "")|\(data?.hashValue ?? 0)") {
             if let data {
                 image = NSImage(data: data)
             } else {

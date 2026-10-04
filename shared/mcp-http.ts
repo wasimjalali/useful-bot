@@ -215,6 +215,21 @@ function rpcMessages(body: string, contentType: string): { messages: unknown[]; 
   return { messages, unparsed };
 }
 
+/**
+ * A server's error text with the caller's credentials taken out, before it is
+ * cut to length: cut first, and a token the server echoed back survives as a
+ * prefix no later redaction recognises.
+ */
+function redactHeaders(text: string, headers: Record<string, string>): string {
+  let out = text;
+  for (const value of Object.values(headers)) {
+    for (const part of [value, ...value.split(/\s+/)]) {
+      if (part.length >= 8) out = out.split(part).join("[redacted]");
+    }
+  }
+  return out;
+}
+
 type Session = {
   url: string;
   /** The caller's credentials, plus the session and version once negotiated. */
@@ -387,7 +402,7 @@ async function rpcOnce(
   }
   if (answer.error) {
     const err = asRecord(answer.error);
-    throw new McpError("protocol", typeof err?.message === "string" ? err.message.slice(0, 200) : "mcp_error");
+    throw new McpError("protocol", typeof err?.message === "string" ? redactHeaders(err.message, session.headers).slice(0, 200) : "mcp_error");
   }
   return { result: answer.result, sessionId };
 }
