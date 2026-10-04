@@ -197,6 +197,7 @@ private struct ProvidersResponse: Decodable {
 }
 private struct ProvidersErrorResponse: Decodable { let error: String?; let message: String? }
 private struct ApprovalsResponse: Decodable { let approvals: [ApprovalItem] }
+private struct ConnectionRefreshAnswer: Decodable { let connection: DirectConnection }
 private struct ConnectorAuthorizeResponse: Decodable {
     let ok: Bool?
     let redirectUrl: String?
@@ -1114,6 +1115,47 @@ public actor BackendClient {
             throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "connectors_failed", typed: BackendError.provider)
         }
         return data
+    }
+
+    // MARK: - Direct connections
+
+    /// The direct MCP and OpenAPI connections, with their state and tools.
+    public func directConnections() async throws -> [DirectConnection] {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/connections"))
+        }
+        try Self.expectOK(data, response)
+        guard let decoded = try? JSONDecoder().decode(DirectConnectionsPayload.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.connections
+    }
+
+    /// Re-lists one connection's tools and answers with its new row.
+    public func refreshDirectConnection(id: String) async throws -> DirectConnection {
+        let data = try await connectorsWrite(
+            path: "api/connections", method: "POST", body: ["id": id, "action": "refresh"]
+        )
+        guard let decoded = try? JSONDecoder().decode(ConnectionRefreshAnswer.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.connection
+    }
+
+    /// Starts a fresh sign-in for one OAuth connection.
+    public func reauthorizeDirectConnection(id: String) async throws -> ConnectionReauthorize {
+        let data = try await connectorsWrite(
+            path: "api/connections", method: "POST", body: ["id": id, "action": "reauthorize"]
+        )
+        guard let decoded = try? JSONDecoder().decode(ConnectionReauthorize.self, from: data),
+              !decoded.authorizeUrl.isEmpty else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
+    public func removeDirectConnection(id: String) async throws {
+        _ = try await connectorsWrite(path: "api/connections", method: "DELETE", body: ["id": id])
     }
 
     /// Observed token traffic for the settings Usage tab.

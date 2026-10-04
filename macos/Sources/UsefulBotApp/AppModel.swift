@@ -283,6 +283,11 @@ final class AppModel: ObservableObject {
     /// The dialog's live search, so a poll started earlier reloads what is on screen.
     @Published var connectorSearch = ""
     private var connectorPoll: Task<Void, Never>?
+    /// Direct MCP and OpenAPI connections, shown above the catalogue.
+    @Published private(set) var directConnections: [DirectConnection] = []
+    @Published private(set) var directConnectionBusy: String?
+    @Published var directConnectionsError: String?
+    private var directConnectionPoll: Task<Void, Never>?
     private static let connectorUpstreamError = "Composio did not answer. Try again in a moment."
     private static let connectorKeyRejected = "Composio rejected this key. Remove it and paste a fresh one from platform.composio.dev."
     private static let connectorLoadErrors: Set<String> = [
@@ -3815,6 +3820,88 @@ final class AppModel: ObservableObject {
             connectorsError = "Could not disconnect \(row.name)."
         }
         connectorBusy = nil
+    }
+
+    func loadDirectConnections(quiet: Bool = false) async {
+        do {
+            directConnections = try await client.directConnections()
+            if !quiet { directConnectionsError = nil }
+        } catch {
+            if !quiet { directConnectionsError = "Couldn't load servers." }
+        }
+    }
+
+    func refreshDirectConnection(_ row: DirectConnection) async {
+        directConnectionBusy = row.id
+        directConnectionsError = nil
+        do {
+            let updated = try await client.refreshDirectConnection(id: row.id)
+            if let index = directConnections.firstIndex(where: { $0.id == updated.id }) {
+                directConnections[index] = updated
+            }
+        } catch {
+            directConnectionsError = "Couldn't refresh \(row.name)."
+        }
+        await loadDirectConnections(quiet: true)
+        directConnectionBusy = nil
+    }
+
+    /// Opens the server's sign-in in the default browser, then polls the list
+    /// every 2 s for up to 2 minutes so the row updates when it finishes.
+    func reconnectDirectConnection(_ row: DirectConnection) async {
+        directConnectionBusy = row.id
+        directConnectionsError = nil
+        do {
+            let answer = try await client.reauthorizeDirectConnection(id: row.id)
+            if Proposal.connectRedirectAllowed(answer.authorizeUrl, kind: .connectServer, expectedHost: answer.redirectHost),
+               let url = URL(string: answer.authorizeUrl) {
+                if NSWorkspace.shared.open(url) {
+                    startDirectConnectionPoll()
+                } else {
+                    directConnectionsError = "The sign-in page could not be opened in the browser."
+                }
+            } else {
+                directConnectionsError = "The server sent a sign-in link this app will not open."
+            }
+        } catch {
+            directConnectionsError = "Couldn't reconnect \(row.name)."
+        }
+        await loadDirectConnections(quiet: true)
+        directConnectionBusy = nil
+    }
+
+    func removeDirectConnection(_ row: DirectConnection) async {
+        guard row.canRemove else { return }
+        directConnectionBusy = row.id
+        directConnectionsError = nil
+        do {
+            try await client.removeDirectConnection(id: row.id)
+        } catch {
+            directConnectionsError = "Couldn't remove \(row.name)."
+        }
+        await loadDirectConnections(quiet: true)
+        directConnectionBusy = nil
+    }
+
+    private func startDirectConnectionPoll() {
+        stopDirectConnectionPoll()
+        let started = Date()
+        directConnectionPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { return }
+                await self.loadDirectConnections(quiet: true)
+                if Date().timeIntervalSince(started) > 120 {
+                    self.directConnectionPoll = nil
+                    return
+                }
+            }
+        }
+    }
+
+    func stopDirectConnectionPoll() {
+        directConnectionPoll?.cancel()
+        directConnectionPoll = nil
     }
 
     func stopConnectorPoll() {

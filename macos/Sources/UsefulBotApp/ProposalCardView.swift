@@ -130,8 +130,8 @@ struct ProposalCardView: View {
                                 .font(.system(size: 13))
                                 .foregroundStyle(Theme.C.inkMuted)
                         }
-                        if proposal.phase == .connected, let count = proposal.toolCount {
-                            Text(count == 1 ? "1 tool" : "\(count) tools")
+                        if let line = proposal.connectedToolsLine {
+                            Text(line)
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.C.inkFaint)
                         }
@@ -142,7 +142,7 @@ struct ProposalCardView: View {
                     }
                 }
                 switch proposal.phase {
-                case .proposed:
+                case .proposed, .failed:
                     actions(confirm: "Authorize", dismiss: "Not now")
                 case .waiting:
                     waitingRow(text: "Waiting for \(name) sign-in", tone: Theme.C.inkMuted)
@@ -183,8 +183,8 @@ struct ProposalCardView: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.C.inkFaint)
                         }
-                        if proposal.phase == .connected, let count = proposal.toolCount {
-                            Text(count == 1 ? "1 tool" : "\(count) tools")
+                        if let line = proposal.connectedToolsLine {
+                            Text(line)
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.C.inkFaint)
                         }
@@ -229,6 +229,25 @@ struct ProposalCardView: View {
                     waitingRow(text: "Waiting for \(name) sign-in", tone: Theme.C.inkMuted)
                 case .expired:
                     waitingRow(text: "Sign-in timed out", tone: Theme.C.warning)
+                case .failed:
+                    Text(Proposal.ConnectFailure.line(for: proposal.reason))
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.warning)
+                        .padding(.top, 12)
+                    HStack(spacing: 8) {
+                        NativeButton(
+                            "Try again",
+                            kind: .primary,
+                            small: true,
+                            enabled: !pending && ProposalActions.confirm(proposal) != nil
+                        ) {
+                            onDecision(true)
+                        }
+                        NativeButton("Not now", kind: .secondary, small: true, enabled: !pending) {
+                            onDecision(false)
+                        }
+                    }
+                    .padding(.top, 10)
                 case .connected:
                     HStack {
                         Spacer(minLength: 0)

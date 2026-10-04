@@ -146,6 +146,54 @@ import Testing
         #expect(action["connectionId"] as? String == "excalidraw")
     }
 
+    @Test func aFailedServerCardIsFailedWithItsReasonNotProposed() throws {
+        let reasons: [(String, Proposal.ConnectFailure, String)] = [
+            ("auth_failed", .authFailed, "Signed in, but the server refused access."),
+            ("expired", .expired, "The sign-in expired."),
+            ("unreachable", .unreachable, "Couldn't reach the server."),
+            ("malformed", .malformed, "The server's tools couldn't be read."),
+            ("discovery_failed", .discoveryFailed, "Couldn't list the server's tools."),
+        ]
+        for (raw, reason, line) in reasons {
+            let proposal = try decode("""
+            {"id":"p8","kind":"connectServer","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+             "connectionId":"tella","name":"Tella","urlHost":"api.tella.com","authKind":"oauth",
+             "phase":"failed","reason":"\(raw)"}
+            """)
+            #expect(proposal.phase == .failed)
+            #expect(proposal.reason == reason)
+            #expect(proposal.isOpen())
+            #expect(Proposal.ConnectFailure.line(for: proposal.reason) == line)
+            // Try again is the normal confirm action.
+            let action = try #require(ProposalActions.confirm(proposal))
+            #expect(action["type"] as? String == "connectServer")
+        }
+    }
+
+    @Test func aFailedCardWithAnUnknownReasonStillFails() throws {
+        let proposal = try decode("""
+        {"id":"p9","kind":"connectServer","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "connectionId":"tella","phase":"failed","reason":"from_the_future"}
+        """)
+        #expect(proposal.phase == .failed)
+        #expect(proposal.reason == nil)
+        #expect(Proposal.ConnectFailure.line(for: proposal.reason) == "The connection failed.")
+    }
+
+    @Test func connectedToolsLine() throws {
+        func line(_ phase: String, _ count: String) throws -> String? {
+            try decode("""
+            {"id":"p10","kind":"connectServer","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+             "connectionId":"x","phase":"\(phase)","toolCount":\(count)}
+            """).connectedToolsLine
+        }
+        #expect(try line("connected", "0") == "Connected, no tools")
+        #expect(try line("connected", "1") == "1 tool")
+        #expect(try line("connected", "5") == "5 tools")
+        #expect(try line("connected", "null") == nil)
+        #expect(try line("failed", "0") == nil)
+    }
+
     @Test func serverRedirectsFailClosedWithoutAStoredHost() {
         #expect(!Proposal.connectRedirectAllowed(
             "https://auth.example.com/authorize",

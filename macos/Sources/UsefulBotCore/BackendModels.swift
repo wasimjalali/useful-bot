@@ -1097,3 +1097,145 @@ public enum ImageFetch: Equatable, Sendable {
     case moved
     case missing
 }
+
+/// One tool a direct connection offers.
+public struct DirectConnectionTool: Decodable, Equatable, Sendable {
+    public let name: String
+    public let description: String?
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        description = try? c.decodeIfPresent(String.self, forKey: .description)
+    }
+
+    enum CodingKeys: String, CodingKey { case name, description }
+}
+
+/// One direct MCP or OpenAPI connection from `/api/connections`. No secrets
+/// travel in it.
+public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
+    public enum Kind: String, Sendable {
+        case mcp, openapi
+
+        public var label: String { self == .mcp ? "MCP" : "OpenAPI" }
+    }
+
+    /// An unknown future state stays visible as its own case and is never
+    /// treated as ready.
+    public enum State: Equatable, Sendable {
+        case pending, ready, zeroTools, authFailed, expired, unreachable, malformed, discoveryFailed
+        case unknown(String)
+
+        public init(raw: String) {
+            switch raw {
+            case "pending": self = .pending
+            case "ready": self = .ready
+            case "zero_tools": self = .zeroTools
+            case "auth_failed": self = .authFailed
+            case "expired": self = .expired
+            case "unreachable": self = .unreachable
+            case "malformed": self = .malformed
+            case "discovery_failed": self = .discoveryFailed
+            default: self = .unknown(raw)
+            }
+        }
+
+        public var label: String {
+            switch self {
+            case .pending: return "Checking..."
+            case .ready: return "Ready"
+            case .zeroTools: return "No tools"
+            case .authFailed: return "Needs sign-in"
+            case .expired: return "Sign-in expired"
+            case .unreachable: return "Can't reach server"
+            case .malformed: return "Tools unreadable"
+            case .discoveryFailed: return "Couldn't list tools"
+            case .unknown: return "Status unknown"
+            }
+        }
+
+        public var isChecking: Bool { self == .pending }
+        public var needsSignIn: Bool { self == .authFailed || self == .expired }
+    }
+
+    public struct LastError: Decodable, Equatable, Sendable {
+        public let code: String?
+        public let message: String
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            code = try? c.decodeIfPresent(String.self, forKey: .code)
+            message = (try? c.decode(String.self, forKey: .message)) ?? ""
+        }
+
+        enum CodingKeys: String, CodingKey { case code, message }
+    }
+
+    public let id: String
+    public let name: String
+    public let url: String
+    public let kind: Kind
+    public let authKind: Proposal.ServerAuthKind
+    public let builtin: Bool
+    public let state: State
+    public let lastError: LastError?
+    public let toolCount: Int?
+    public let tools: [DirectConnectionTool]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = (try? c.decode(String.self, forKey: .name)) ?? id
+        url = (try? c.decode(String.self, forKey: .url)) ?? ""
+        kind = Kind(rawValue: (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "") ?? .mcp
+        authKind = Proposal.ServerAuthKind(rawValue: (try? c.decodeIfPresent(String.self, forKey: .authKind)) ?? "") ?? .none
+        builtin = (try? c.decodeIfPresent(Bool.self, forKey: .builtin)) ?? false
+        state = State(raw: (try? c.decode(String.self, forKey: .state)) ?? "")
+        lastError = try? c.decodeIfPresent(LastError.self, forKey: .lastError)
+        toolCount = try? c.decodeIfPresent(Int.self, forKey: .toolCount)
+        tools = (try? c.decode([DirectConnectionTool].self, forKey: .tools)) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, url, kind, authKind, builtin, state, lastError, toolCount, tools
+    }
+
+    public var host: String { URL(string: url)?.host ?? url }
+    /// The server refuses a built-in row; the app doesn't offer it.
+    public var canRemove: Bool { !builtin }
+    public var canReconnect: Bool { authKind == .oauth }
+    public var reconnectProminent: Bool { canReconnect && state.needsSignIn }
+
+    public static func toolCountLabel(_ count: Int?) -> String? {
+        guard let count else { return nil }
+        return count == 1 ? "1 tool" : "\(count) tools"
+    }
+}
+
+/// `/api/connections` payload. A row the app can't identify is dropped.
+public struct DirectConnectionsPayload: Decodable, Equatable, Sendable {
+    public let connections: [DirectConnection]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        var rows: [DirectConnection] = []
+        if var list = try? c.nestedUnkeyedContainer(forKey: .connections) {
+            while !list.isAtEnd {
+                if let row = try? list.decode(DirectConnection.self) { rows.append(row) } else { _ = try? list.decode(Skip.self) }
+            }
+        }
+        connections = rows
+    }
+
+    private struct Skip: Decodable {}
+
+    enum CodingKeys: String, CodingKey { case connections }
+}
+
+/// `{id, action:"reauthorize"}` answer: the page to open and the host it
+/// must be on.
+public struct ConnectionReauthorize: Decodable, Equatable, Sendable {
+    public let authorizeUrl: String
+    public let redirectHost: String?
+}

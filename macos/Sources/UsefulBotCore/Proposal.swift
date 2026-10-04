@@ -23,6 +23,32 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     /// Where a connect card is, mirroring `ConnectPhase` in the store.
     public enum ConnectPhase: String, Sendable {
         case proposed, waiting, connected, expired
+        /// The sign-in or the tool listing failed; `reason` says how.
+        case failed
+    }
+
+    /// Why a failed connect card failed, mirroring the server's `reason`.
+    public enum ConnectFailure: String, Sendable {
+        case authFailed = "auth_failed"
+        case expired
+        case unreachable
+        case malformed
+        case discoveryFailed = "discovery_failed"
+
+        public var line: String {
+            switch self {
+            case .authFailed: return "Signed in, but the server refused access."
+            case .expired: return "The sign-in expired."
+            case .unreachable: return "Couldn't reach the server."
+            case .malformed: return "The server's tools couldn't be read."
+            case .discoveryFailed: return "Couldn't list the server's tools."
+            }
+        }
+
+        /// A reason this app doesn't know still reads as a failure.
+        public static func line(for reason: ConnectFailure?) -> String {
+            reason?.line ?? "The connection failed."
+        }
     }
 
     public struct ProfilePatch: Decodable, Equatable, Sendable {
@@ -57,6 +83,7 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     public let logo: String?
     public let purpose: String?
     public let phase: ConnectPhase
+    public let reason: ConnectFailure?
     public let toolCount: Int?
     public let connectionId: String?
     public let urlHost: String?
@@ -90,6 +117,7 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         logo = try? c.decodeIfPresent(String.self, forKey: .logo)
         purpose = try? c.decodeIfPresent(String.self, forKey: .purpose)
         phase = ConnectPhase(rawValue: (try? c.decodeIfPresent(String.self, forKey: .phase)) ?? "") ?? .proposed
+        reason = ConnectFailure(rawValue: (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? "")
         toolCount = try? c.decodeIfPresent(Int.self, forKey: .toolCount)
         connectionId = try? c.decodeIfPresent(String.self, forKey: .connectionId)
         urlHost = try? c.decodeIfPresent(String.self, forKey: .urlHost)
@@ -100,8 +128,16 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, kind, status, expiresAt, name, petname, title, description
         case sectionId, brief, memberIds, botId, patch, message, targetIds, groupId, sourceBotId
-        case slug, logo, purpose, phase, toolCount
+        case slug, logo, purpose, phase, reason, toolCount
         case connectionId, urlHost, authKind, redirectHost
+    }
+
+    /// The tool-count line of a connected card: a listing that came back empty
+    /// says so rather than "0 tools". Nil when the count is unknown.
+    public var connectedToolsLine: String? {
+        guard phase == .connected, let count = toolCount else { return nil }
+        if count == 0 { return "Connected, no tools" }
+        return count == 1 ? "1 tool" : "\(count) tools"
     }
 
     /// Pending and not past its TTL. A date that does not parse is treated as

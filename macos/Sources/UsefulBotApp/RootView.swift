@@ -770,6 +770,204 @@ struct CreateGroupDialog: View {
     }
 }
 
+/// The direct MCP and OpenAPI connections, one collapsed row each.
+private struct DirectServersSection: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var openId: String?
+    @State private var confirmingRemove: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Servers")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.C.inkMuted)
+            if let error = model.directConnectionsError {
+                HStack(spacing: 12) {
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.danger)
+                    NativeButton("Retry", kind: .secondary, small: true) {
+                        Task { await model.loadDirectConnections() }
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            if !model.directConnections.isEmpty {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(model.directConnections.enumerated()), id: \.element.id) { index, row in
+                            if index > 0 { Hairline() }
+                            DirectServerRow(
+                                row: row,
+                                open: openId == row.id,
+                                confirmingRemove: confirmingRemove == row.id,
+                                busy: model.directConnectionBusy == row.id,
+                                toggle: {
+                                    withAnimation(.easeOut(duration: 0.16)) { openId = openId == row.id ? nil : row.id }
+                                },
+                                refresh: { Task { await model.refreshDirectConnection(row) } },
+                                reconnect: { Task { await model.reconnectDirectConnection(row) } },
+                                askRemove: { confirmingRemove = row.id },
+                                cancelRemove: { confirmingRemove = nil },
+                                remove: {
+                                    confirmingRemove = nil
+                                    Task { await model.removeDirectConnection(row) }
+                                }
+                            )
+                        }
+                    }
+                }
+                .uvScroll()
+                .frame(maxHeight: 260)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(Theme.C.surface)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                .cardLift(cornerRadius: DesignTokens.Radius.md)
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 16)
+    }
+}
+
+private struct DirectServerRow: View {
+    let row: DirectConnection
+    let open: Bool
+    let confirmingRemove: Bool
+    let busy: Bool
+    let toggle: () -> Void
+    let refresh: () -> Void
+    let reconnect: () -> Void
+    let askRemove: () -> Void
+    let cancelRemove: () -> Void
+    let remove: () -> Void
+
+    @State private var hovering = false
+
+    private var stateTone: Color {
+        switch row.state {
+        case .ready: return Theme.C.inkMuted
+        case .pending, .zeroTools, .unknown: return Theme.C.inkMuted
+        default: return Theme.C.warning
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.C.inkFaint)
+                    .rotationEffect(.degrees(open ? 90 : 0))
+                    .animation(.easeOut(duration: 0.16), value: open)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Text("\(row.host) · \(row.kind.label)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkFaint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if row.state.isChecking {
+                    ProgressView().controlSize(.small)
+                }
+                Text(row.state.label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(stateTone)
+                if let count = DirectConnection.toolCountLabel(row.toolCount) {
+                    Text(count)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkFaint)
+                        .monospacedDigit()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .frame(minHeight: 44)
+            .background(hovering ? Theme.C.sunken.opacity(0.5) : .clear)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: toggle)
+            .onHover { hovering = $0 }
+            .pointerOnHover()
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityValue(open ? "expanded" : "collapsed")
+            .accessibilityAction(.default, toggle)
+            .accessibilityIdentifier("server-row-\(row.id)")
+
+            if let message = row.lastError?.message, !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if open {
+                VStack(alignment: .leading, spacing: 10) {
+                    if row.tools.isEmpty {
+                        Text("No tools.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
+                    } else {
+                        ForEach(Array(row.tools.enumerated()), id: \.offset) { _, tool in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(tool.name)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(Theme.C.ink)
+                                if let description = tool.description, !description.isEmpty {
+                                    Text(description)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.C.inkMuted)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
+            }
+
+            HStack(spacing: 8) {
+                if confirmingRemove {
+                    Text("Remove \(row.name)?")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                    NativeButton("Remove", kind: .danger, small: true, enabled: !busy, action: remove)
+                    NativeButton("Cancel", kind: .secondary, small: true, action: cancelRemove)
+                } else {
+                    if row.canReconnect {
+                        NativeButton(
+                            "Reconnect",
+                            kind: row.reconnectProminent ? .primary : .secondary,
+                            small: true,
+                            enabled: !busy,
+                            action: reconnect
+                        )
+                    }
+                    NativeButton("Refresh", kind: .secondary, small: true, enabled: !busy, action: refresh)
+                    if row.canRemove {
+                        NativeButton("Remove", kind: .ghost, small: true, enabled: !busy, action: askRemove)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        }
+        .clipped()
+    }
+}
+
 struct ConnectorsDialog: View {
     @EnvironmentObject private var model: AppModel
     let onClose: () -> Void
@@ -800,6 +998,9 @@ struct ConnectorsDialog: View {
                 }
                 .padding(.horizontal, 28)
                 .padding(.top, 4)
+                if !model.directConnections.isEmpty || model.directConnectionsError != nil {
+                    DirectServersSection()
+                }
                 if let payload = model.connectors {
                     if payload.hasKey {
                         catalogue(payload)
@@ -814,7 +1015,11 @@ struct ConnectorsDialog: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task { await model.loadConnectors() }
+        .task {
+            async let direct: Void = model.loadDirectConnections()
+            await model.loadConnectors()
+            await direct
+        }
         .onChange(of: search) { _, value in
             model.connectorSearch = value
             Task {
@@ -833,6 +1038,7 @@ struct ConnectorsDialog: View {
 
     private func close() {
         model.stopConnectorPoll()
+        model.stopDirectConnectionPoll()
         model.dismissOwnApp()
         ownAppDraft = [:]
         onClose()

@@ -72,3 +72,103 @@ import Testing
         #expect(!mirror.children.contains { "\($0.value)".contains("ak_should_not_exist") })
     }
 }
+
+@Suite struct DirectConnectionsTests {
+    private func decode(_ json: String) throws -> DirectConnectionsPayload {
+        try JSONDecoder().decode(DirectConnectionsPayload.self, from: Data(json.utf8))
+    }
+
+    private func row(_ state: String, auth: String = "oauth", builtin: Bool = false) throws -> DirectConnection {
+        let payload = try decode("""
+        {"ok":true,"connections":[{"id":"c1","name":"Tella","url":"https://api.tella.com/mcp","kind":"mcp",
+         "authKind":"\(auth)","builtin":\(builtin),"state":"\(state)","lastError":null,"checkedAt":null,
+         "toolCount":null,"tools":[]}]}
+        """)
+        return payload.connections[0]
+    }
+
+    @Test func decodesAFullRow() throws {
+        let payload = try decode("""
+        {"ok":true,"connections":[{"id":"tella","name":"Tella","url":"https://api.tella.com/mcp","kind":"mcp",
+         "authKind":"oauth","builtin":false,"state":"auth_failed",
+         "lastError":{"code":"auth","message":"Token refused"},"checkedAt":"2026-10-04T10:00:00.000Z",
+         "toolCount":2,"tools":[{"name":"list_videos","description":"List videos"},{"name":"get_video"}]}]}
+        """)
+        let c = try #require(payload.connections.first)
+        #expect(c.id == "tella")
+        #expect(c.host == "api.tella.com")
+        #expect(c.kind == .mcp)
+        #expect(c.authKind == .oauth)
+        #expect(c.state == .authFailed)
+        #expect(c.lastError?.message == "Token refused")
+        #expect(c.toolCount == 2)
+        #expect(c.tools.map(\.name) == ["list_videos", "get_video"])
+        #expect(c.tools[1].description == nil)
+    }
+
+    @Test func toleratesMissingOptionalFields() throws {
+        let payload = try decode(#"{"connections":[{"id":"x","name":"X","url":"https://x.example","state":"ready"}]}"#)
+        let c = try #require(payload.connections.first)
+        #expect(c.kind == .mcp)
+        #expect(c.authKind == .none)
+        #expect(!c.builtin)
+        #expect(c.lastError == nil)
+        #expect(c.toolCount == nil)
+        #expect(c.tools.isEmpty)
+    }
+
+    @Test func aRowWithoutAnIdIsDroppedNotInvented() throws {
+        let payload = try decode(#"{"connections":[{"name":"X"},{"id":"y","name":"Y","url":"https://y.example","state":"ready"}]}"#)
+        #expect(payload.connections.map(\.id) == ["y"])
+    }
+
+    @Test func aFutureStateStaysVisibleAndNeverReady() throws {
+        let c = try row("quantum")
+        #expect(c.state == .unknown("quantum"))
+        #expect(c.state.label == "Status unknown")
+        #expect(c.state != .ready)
+    }
+
+    @Test func everyStateHasItsLabel() {
+        let labels: [(String, String)] = [
+            ("ready", "Ready"), ("zero_tools", "No tools"), ("pending", "Checking..."),
+            ("auth_failed", "Needs sign-in"), ("expired", "Sign-in expired"),
+            ("unreachable", "Can't reach server"), ("malformed", "Tools unreadable"),
+            ("discovery_failed", "Couldn't list tools"),
+        ]
+        for (raw, label) in labels {
+            #expect(DirectConnection.State(raw: raw).label == label)
+        }
+        #expect(DirectConnection.State(raw: "pending").isChecking)
+        #expect(!DirectConnection.State(raw: "ready").isChecking)
+    }
+
+    @Test func builtinRowsCannotBeRemoved() throws {
+        #expect(!(try row("ready", auth: "none", builtin: true)).canRemove)
+        #expect((try row("ready", auth: "none", builtin: false)).canRemove)
+    }
+
+    @Test func reconnectIsOnlyForOAuthAndProminentWhenSignInIsBroken() throws {
+        #expect((try row("ready", auth: "oauth")).canReconnect)
+        #expect(!(try row("ready", auth: "apiKey")).canReconnect)
+        #expect(!(try row("auth_failed", auth: "bearer")).canReconnect)
+        #expect(!(try row("auth_failed", auth: "none")).canReconnect)
+        #expect((try row("auth_failed")).reconnectProminent)
+        #expect((try row("expired")).reconnectProminent)
+        #expect(!(try row("ready")).reconnectProminent)
+        #expect(!(try row("expired", auth: "apiKey")).reconnectProminent)
+    }
+
+    @Test func toolCountLine() throws {
+        #expect(DirectConnection.toolCountLabel(nil) == nil)
+        #expect(DirectConnection.toolCountLabel(0) == "0 tools")
+        #expect(DirectConnection.toolCountLabel(1) == "1 tool")
+        #expect(DirectConnection.toolCountLabel(12) == "12 tools")
+    }
+
+    @Test func decodesTheReauthorizeAnswer() throws {
+        let a = try JSONDecoder().decode(ConnectionReauthorize.self, from: Data(#"{"ok":true,"authorizeUrl":"https://auth.tella.com/a","redirectHost":"auth.tella.com"}"#.utf8))
+        #expect(a.authorizeUrl == "https://auth.tella.com/a")
+        #expect(a.redirectHost == "auth.tella.com")
+    }
+}
