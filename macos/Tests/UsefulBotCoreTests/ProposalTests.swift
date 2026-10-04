@@ -112,7 +112,7 @@ import Testing
 
     @Test func decodesAConnectAppProposalInEveryPhase() throws {
         let cases: [(String, Proposal.ConnectPhase)] = [
-            ("proposed", .proposed), ("waiting", .waiting), ("connected", .connected), ("expired", .expired), ("bogus", .proposed),
+            ("proposed", .proposed), ("waiting", .waiting), ("connected", .connected), ("expired", .expired), ("bogus", .unknown),
         ]
         for (raw, expected) in cases {
             let proposal = try decode("""

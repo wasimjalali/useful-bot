@@ -142,8 +142,16 @@ struct ProposalCardView: View {
                     }
                 }
                 switch proposal.phase {
-                case .proposed, .failed:
+                case .proposed:
                     actions(confirm: "Authorize", dismiss: "Not now")
+                case .failed:
+                    Text(Proposal.ConnectFailure.line(for: proposal.reason))
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.warning)
+                        .padding(.top, 12)
+                    actions(confirm: "Authorize", dismiss: "Not now")
+                case .unknown:
+                    unknownPhaseRow
                 case .waiting:
                     waitingRow(text: "Waiting for \(name) sign-in", tone: Theme.C.inkMuted)
                 case .expired:
@@ -197,14 +205,7 @@ struct ProposalCardView: View {
                 switch proposal.phase {
                 case .proposed:
                     if proposal.authKind == .apiKey || proposal.authKind == .bearer {
-                        SecureField("Paste key", text: $secretDraft)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: DesignTokens.FontSize.fieldInput))
-                            .padding(.horizontal, 10)
-                            .frame(minHeight: DesignTokens.Control.fieldMinHeight)
-                            .background(Theme.C.sunken)
-                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
-                            .padding(.top, 12)
+                        secretField
                         HStack(spacing: 8) {
                             NativeButton(
                                 "Connect",
@@ -234,20 +235,27 @@ struct ProposalCardView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.warning)
                         .padding(.top, 12)
+                    let needsKey = proposal.authKind == .apiKey || proposal.authKind == .bearer
+                    if needsKey {
+                        secretField
+                    }
                     HStack(spacing: 8) {
                         NativeButton(
                             "Try again",
                             kind: .primary,
                             small: true,
                             enabled: !pending && ProposalActions.confirm(proposal) != nil
+                                && (!needsKey || !secretDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         ) {
-                            onDecision(true)
+                            if needsKey { onConfirmSecret(secretDraft) } else { onDecision(true) }
                         }
                         NativeButton("Not now", kind: .secondary, small: true, enabled: !pending) {
                             onDecision(false)
                         }
                     }
                     .padding(.top, 10)
+                case .unknown:
+                    unknownPhaseRow
                 case .connected:
                     HStack {
                         Spacer(minLength: 0)
@@ -343,6 +351,33 @@ struct ProposalCardView: View {
             }
         }
         .padding(.top, 14)
+    }
+
+    private var secretField: some View {
+        SecureField("Paste key", text: $secretDraft)
+            .textFieldStyle(.plain)
+            .font(.system(size: DesignTokens.FontSize.fieldInput))
+            .padding(.horizontal, 10)
+            .frame(minHeight: DesignTokens.Control.fieldMinHeight)
+            .background(Theme.C.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
+            .padding(.top, 12)
+    }
+
+    /// A connect phase this build doesn't know: a plain line, and the card
+    /// can only be put away.
+    @ViewBuilder
+    private var unknownPhaseRow: some View {
+        Text("This card needs a newer app.")
+            .font(.system(size: 13))
+            .foregroundStyle(Theme.C.inkMuted)
+            .padding(.top, 12)
+        HStack(spacing: 8) {
+            NativeButton("Not now", kind: .secondary, small: true, enabled: !pending) {
+                onDecision(false)
+            }
+        }
+        .padding(.top, 10)
     }
 
     private var connectedPill: some View {

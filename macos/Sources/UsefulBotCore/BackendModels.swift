@@ -1117,8 +1117,16 @@ public struct DirectConnectionTool: Decodable, Equatable, Sendable {
 public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
     public enum Kind: String, Sendable {
         case mcp, openapi
+        /// A kind this build doesn't know, or a row without one.
+        case unknown
 
-        public var label: String { self == .mcp ? "MCP" : "OpenAPI" }
+        public var label: String {
+            switch self {
+            case .mcp: return "MCP"
+            case .openapi: return "OpenAPI"
+            case .unknown: return "Server"
+            }
+        }
     }
 
     /// An unknown future state stays visible as its own case and is never
@@ -1188,14 +1196,25 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
         id = try c.decode(String.self, forKey: .id)
         name = (try? c.decode(String.self, forKey: .name)) ?? id
         url = (try? c.decode(String.self, forKey: .url)) ?? ""
-        kind = Kind(rawValue: (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "") ?? .mcp
+        kind = Kind(rawValue: (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "") ?? .unknown
         authKind = Proposal.ServerAuthKind(rawValue: (try? c.decodeIfPresent(String.self, forKey: .authKind)) ?? "") ?? .none
-        builtin = (try? c.decodeIfPresent(Bool.self, forKey: .builtin)) ?? false
+        // Fails closed: a row that doesn't say it isn't built in is treated as
+        // built in, so the app never offers Remove on a guess.
+        builtin = (try? c.decodeIfPresent(Bool.self, forKey: .builtin)) ?? true
         state = State(raw: (try? c.decode(String.self, forKey: .state)) ?? "")
         lastError = try? c.decodeIfPresent(LastError.self, forKey: .lastError)
         toolCount = try? c.decodeIfPresent(Int.self, forKey: .toolCount)
-        tools = (try? c.decode([DirectConnectionTool].self, forKey: .tools)) ?? []
+        // Per element: one unreadable tool doesn't hide the rest.
+        var decoded: [DirectConnectionTool] = []
+        if var list = try? c.nestedUnkeyedContainer(forKey: .tools) {
+            while !list.isAtEnd {
+                if let tool = try? list.decode(DirectConnectionTool.self) { decoded.append(tool) } else { _ = try? list.decode(AnyValue.self) }
+            }
+        }
+        tools = decoded
     }
+
+    private struct AnyValue: Decodable {}
 
     enum CodingKeys: String, CodingKey {
         case id, name, url, kind, authKind, builtin, state, lastError, toolCount, tools
@@ -1218,6 +1237,15 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
         default:
             return "Couldn't reconnect \(name)."
         }
+    }
+
+    /// The expanded row says "No tools." only when the list is known empty.
+    public var showsNoToolsNote: Bool { state == .ready || state == .zeroTools }
+
+    /// The count beside the state. A no-tools row already says so in its
+    /// state label, so it adds nothing.
+    public var toolCountLine: String? {
+        state == .zeroTools ? nil : Self.toolCountLabel(toolCount)
     }
 
     public static func toolCountLabel(_ count: Int?) -> String? {

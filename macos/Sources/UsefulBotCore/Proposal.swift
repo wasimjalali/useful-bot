@@ -25,6 +25,9 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         case proposed, waiting, connected, expired
         /// The sign-in or the tool listing failed; `reason` says how.
         case failed
+        /// A phase this build doesn't know. The card renders as a plain line
+        /// and can only be put away.
+        case unknown
     }
 
     /// Why a failed connect card failed, mirroring the server's `reason`.
@@ -116,7 +119,11 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         slug = try? c.decodeIfPresent(String.self, forKey: .slug)
         logo = try? c.decodeIfPresent(String.self, forKey: .logo)
         purpose = try? c.decodeIfPresent(String.self, forKey: .purpose)
-        phase = ConnectPhase(rawValue: (try? c.decodeIfPresent(String.self, forKey: .phase)) ?? "") ?? .proposed
+        if let rawPhase = try? c.decodeIfPresent(String.self, forKey: .phase), !rawPhase.isEmpty {
+            phase = ConnectPhase(rawValue: rawPhase) ?? .unknown
+        } else {
+            phase = .proposed
+        }
         reason = ConnectFailure(rawValue: (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? "")
         toolCount = try? c.decodeIfPresent(Int.self, forKey: .toolCount)
         connectionId = try? c.decodeIfPresent(String.self, forKey: .connectionId)

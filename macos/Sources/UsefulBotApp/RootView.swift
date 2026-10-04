@@ -801,7 +801,7 @@ private struct DirectServersSection: View {
                                 row: row,
                                 open: openId == row.id,
                                 confirmingRemove: confirmingRemove == row.id,
-                                busy: model.directConnectionBusy == row.id,
+                                busy: model.directConnectionBusy.contains(row.id),
                                 toggle: {
                                     withAnimation(.easeOut(duration: 0.16)) { openId = openId == row.id ? nil : row.id }
                                 },
@@ -878,7 +878,7 @@ private struct DirectServerRow: View {
                 Text(row.state.label)
                     .font(.system(size: 13))
                     .foregroundStyle(stateTone)
-                if let count = DirectConnection.toolCountLabel(row.toolCount) {
+                if let count = row.toolCountLine {
                     Text(count)
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.inkFaint)
@@ -911,9 +911,11 @@ private struct DirectServerRow: View {
             if open {
                 VStack(alignment: .leading, spacing: 10) {
                     if row.tools.isEmpty {
-                        Text("No tools.")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Theme.C.inkMuted)
+                        if row.showsNoToolsNote {
+                            Text("No tools.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
                     } else {
                         ForEach(Array(row.tools.enumerated()), id: \.offset) { _, tool in
                             VStack(alignment: .leading, spacing: 1) {

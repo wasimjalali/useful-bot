@@ -109,12 +109,43 @@ import Testing
     @Test func toleratesMissingOptionalFields() throws {
         let payload = try decode(#"{"connections":[{"id":"x","name":"X","url":"https://x.example","state":"ready"}]}"#)
         let c = try #require(payload.connections.first)
-        #expect(c.kind == .mcp)
+        #expect(c.kind == .unknown)
+        #expect(c.kind.label == "Server")
         #expect(c.authKind == .none)
-        #expect(!c.builtin)
+        #expect(c.builtin)
+        #expect(!c.canRemove)
         #expect(c.lastError == nil)
         #expect(c.toolCount == nil)
         #expect(c.tools.isEmpty)
+    }
+
+    @Test func anUnknownKindIsServerAndNotRemovable() throws {
+        let payload = try decode(#"{"connections":[{"id":"x","name":"X","url":"https://x.example","kind":"grpc","state":"ready"}]}"#)
+        let c = try #require(payload.connections.first)
+        #expect(c.kind == .unknown)
+        #expect(c.kind.label == "Server")
+        #expect(DirectConnection.Kind.openapi.label == "OpenAPI")
+    }
+
+    @Test func aBadToolIsSkippedAndTheRestKept() throws {
+        let payload = try decode(#"{"connections":[{"id":"x","name":"X","url":"https://x.example","state":"ready","tools":[{"name":"a"},{"description":"no name"},{"name":"b","description":"B"}]}]}"#)
+        let c = try #require(payload.connections.first)
+        #expect(c.tools.map(\.name) == ["a", "b"])
+    }
+
+    @Test func noToolsNoteOnlyWhenTheListIsKnownEmpty() throws {
+        #expect(try row("ready").showsNoToolsNote)
+        #expect(try row("zero_tools").showsNoToolsNote)
+        #expect(!(try row("pending")).showsNoToolsNote)
+        #expect(!(try row("unreachable")).showsNoToolsNote)
+        #expect(!(try row("quantum")).showsNoToolsNote)
+    }
+
+    @Test func zeroToolsRowSaysNoToolsOnce() throws {
+        let c = try JSONDecoder().decode(DirectConnectionsPayload.self, from: Data(#"{"connections":[{"id":"x","name":"X","url":"https://x.example","state":"zero_tools","toolCount":0}]}"#.utf8)).connections[0]
+        #expect(c.toolCountLine == nil)
+        let ready = try JSONDecoder().decode(DirectConnectionsPayload.self, from: Data(#"{"connections":[{"id":"x","name":"X","url":"https://x.example","state":"ready","toolCount":3}]}"#.utf8)).connections[0]
+        #expect(ready.toolCountLine == "3 tools")
     }
 
     @Test func aRowWithoutAnIdIsDroppedNotInvented() throws {
