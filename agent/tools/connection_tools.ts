@@ -5,6 +5,7 @@ import {
   activateSessionTools,
   mountedDescription,
   mountedToolName,
+  nextStamp,
   readConnectionToolsStore,
 } from "../../shared/connection-tools-store.ts";
 import {
@@ -256,6 +257,10 @@ export default defineDynamic({
               return { status: "blocked", error: "tool_not_allowed", connection: connectionId };
             }
             let headers: Record<string, string> = {};
+            // Stamped as the call begins: a refusal that comes back after the
+            // owner reconnected is about the old credential, and the store
+            // keeps the newer answer.
+            const callStamp = nextStamp();
             try {
               headers = await connectionHeaders(current);
               const raw = await callMcpTool(url, toolName, args, headers);
@@ -278,7 +283,7 @@ export default defineDynamic({
               // offered again as working.
               if (err instanceof McpError && err.kind === "auth") {
                 try {
-                  markConnectionAuthFailed(connectionId, err.status);
+                  markConnectionAuthFailed(connectionId, err.status, callStamp);
                 } catch (writeErr) {
                   console.warn(`[useful-bot] connection ${connectionId} refused credential could not be recorded: ${writeErr instanceof Error ? writeErr.message : "unknown"}`);
                 }
@@ -296,7 +301,7 @@ export default defineDynamic({
                 // too, not only to this call: the tool is not offered again
                 // as working until the owner signs in.
                 try {
-                  markConnectionExpired(connectionId);
+                  markConnectionExpired(connectionId, callStamp);
                 } catch (writeErr) {
                   console.warn(`[useful-bot] connection ${connectionId} expired sign-in could not be recorded: ${writeErr instanceof Error ? writeErr.message : "unknown"}`);
                 }

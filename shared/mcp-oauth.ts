@@ -193,22 +193,27 @@ function withoutFragment(value: string): string {
 
 /**
  * The resource a token is asked for. The metadata's own `resource` string when
- * it sits on the server's origin, the server's URL as configured when it names
- * none. One on another origin is refused: a server could otherwise have a
+ * it sits on the server's origin and is already canonical, the server's URL as
+ * configured when it names none. One on another origin is refused: a server could otherwise have a
  * token minted for somebody else's API. The same string goes on the authorize
  * request, the code exchange and every refresh.
  */
 function resourceFor(mcpUrl: string, declared: unknown): string {
   const server = new URL(assertConnectionUrl(mcpUrl));
   if (typeof declared !== "string") return withoutFragment(mcpUrl);
+  const sent = withoutFragment(declared);
   let parsed: URL;
   try {
-    parsed = new URL(declared);
+    parsed = new URL(sent);
   } catch {
     throw new Error("oauth_resource_invalid");
   }
   if (parsed.origin !== server.origin) throw new Error("oauth_resource_origin");
-  return withoutFragment(declared);
+  // Sent as written, so it must already be the form a URL parser would write
+  // (a bare origin may omit its slash): a spelling that needs rewriting is one
+  // the authorization server may compare differently from this app.
+  if (sent !== parsed.href && `${sent}/` !== parsed.href) throw new Error("oauth_resource_invalid");
+  return sent;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { completeConnectionOAuth } from "../../../../../shared/connection-flow.ts";
+import { completeConnectionOAuth, failConnectionOAuth } from "../../../../../shared/connection-flow.ts";
 import { requestIsLoopback } from "../../../../../shared/origin.ts";
 import { errorCode } from "../../../../lib/api-guard";
 import { runtimeConfig } from "../../../../lib/auth";
@@ -69,6 +69,9 @@ export async function GET(request: Request) {
   const state = url.searchParams.get("state") ?? "";
   const error = url.searchParams.get("error");
   if (error) {
+    // The pending sign-in and its card are ended here, so the card says so
+    // instead of waiting for its ten minutes to run out.
+    if (state) failConnectionOAuth(state);
     return html(false, "The server refused sign-in. You can close this tab and use Reopen.", 400);
   }
   if (!code || !state) {

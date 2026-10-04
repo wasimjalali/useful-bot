@@ -6,6 +6,7 @@ import {
   updateProposal,
   type Proposal,
 } from "./agent-store.ts";
+import { withRefreshLock } from "./connection-auth.ts";
 import { assertConnectionUrl } from "./connection-url.ts";
 import {
   allocateConnectionId,
@@ -55,8 +56,16 @@ export const SERVER_LINGER_MS = 10 * 60 * 1000;
 
 const authorizing = new Set<string>();
 
+/**
+ * Sign-in states whose callback is being finished in this process. A browser
+ * that delivers the callback twice must not spend the code twice: the second
+ * delivery would be refused by the server and read as a failed sign-in.
+ */
+const exchanging = new Set<string>();
+
 export function resetConnectionMemo(): void {
   authorizing.clear();
+  exchanging.clear();
 }
 
 type Stored = Extract<Proposal, { kind: "connectServer" }>;
@@ -247,9 +256,17 @@ function settleProbe(
 }
 
 /** Put a pending card in `failed` with a short reason this app wrote. */
-function failCard(proposalId: string, reason: ConnectionState, now: number, storePath: string): void {
+function failCard(
+  proposalId: string,
+  reason: ConnectionState,
+  now: number,
+  storePath: string,
+  /** Only a card still waiting for its sign-in: one already settled is not flipped back. */
+  onlyWaiting = false,
+): void {
   updateProposal(proposalId, (item) => {
     if (item.kind !== "connectServer" || item.status !== "pending") return;
+    if (onlyWaiting && item.phase !== "waiting") return;
     item.phase = "failed";
     item.reason = reason;
     item.toolCount = null;
@@ -477,8 +494,12 @@ async function completeReauthorize(
   if (pending.proposalId !== peek.proposalId || pending.connectionId !== entry.id) throw new Error("oauth_state");
   // The owner may have removed the connection while the browser was open; a
   // credential stored now would have no row pointing at it.
-  if (!findConnectionById(entry.id)) throw new Error("connection_missing");
-  keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
+  // Written under the refresh lock: a refresh of the old sign-in that is out
+  // now would otherwise land after this and put the old credential back.
+  await withRefreshLock(entry.id, () => {
+    if (!findConnectionById(entry.id)) throw new Error("connection_missing");
+    keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
+  });
   await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
   return { proposalId: peek.proposalId };
 }
@@ -491,6 +512,23 @@ export async function completeConnectionOAuth(
   const pendingPeek = findOauthPending(state);
   if (pendingPeek?.proposalId.startsWith(REAUTH_PREFIX)) return completeReauthorize(code, state, pendingPeek);
   if (!pendingPeek || !pendingPeek.proposalId.startsWith("prp_")) throw new Error("oauth_state");
+  // A second delivery of the same callback while the first is being finished
+  // says nothing new: it neither spends the code again nor touches the card.
+  if (exchanging.has(state)) return { proposalId: pendingPeek.proposalId };
+  exchanging.add(state);
+  try {
+    return await finishConnectionOAuth(code, state, pendingPeek, opts);
+  } finally {
+    exchanging.delete(state);
+  }
+}
+
+async function finishConnectionOAuth(
+  code: string,
+  state: string,
+  pendingPeek: NonNullable<ReturnType<typeof findOauthPending>>,
+  opts: { storePath?: string; now?: number },
+): Promise<{ proposalId: string }> {
   const storePath = opts.storePath ?? agentStorePath();
   const proposal = readProposal(pendingPeek.proposalId, storePath);
   if (!isServer(proposal) || proposal.status !== "pending") throw new Error("proposal_missing");
@@ -548,7 +586,7 @@ export async function completeConnectionOAuth(
     // card says why instead of waiting ten minutes to say it timed out, and the
     // verifier and client secret do not stay on disk.
     dropOauthPending(state);
-    failCard(pendingPeek.proposalId, exchangeFailure(err), opts.now ?? Date.now(), storePath);
+    failCard(pendingPeek.proposalId, exchangeFailure(err), opts.now ?? Date.now(), storePath, true);
     throw err;
   }
   const { bundle, pending } = exchanged;
@@ -590,6 +628,25 @@ export async function completeConnectionOAuth(
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
   settleProbe(pending.proposalId, stored, await probeConnection(stored, bearer), opts.now ?? Date.now(), storePath);
   return { proposalId: pending.proposalId };
+}
+
+/**
+ * The sign-in server sent the owner back with `error=` (access denied, or a
+ * refusal): drop the pending sign-in so its verifier does not stay on disk, and
+ * fail the card that was waiting for it, so it says so instead of timing out
+ * ten minutes later. A reauthorize has no card. A state nothing holds is
+ * ignored. Never throws.
+ */
+export function failConnectionOAuth(state: string, opts: { storePath?: string; now?: number } = {}): void {
+  try {
+    const pending = findOauthPending(state);
+    if (!pending) return;
+    dropOauthPending(state);
+    if (!pending.proposalId.startsWith("prp_")) return;
+    failCard(pending.proposalId, "auth_failed", opts.now ?? Date.now(), opts.storePath ?? agentStorePath(), true);
+  } catch (err) {
+    console.error(`[useful-bot] a refused sign-in could not be recorded: ${err instanceof Error ? err.message.slice(0, 120) : "unknown"}`);
+  }
 }
 
 let pumpQueue: Promise<unknown> = Promise.resolve();

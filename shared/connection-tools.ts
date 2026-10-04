@@ -1,4 +1,4 @@
-import { connectionHeaders, OAuthExpiredError } from "./connection-auth.ts";
+import { connectionHeaders, OAuthExpiredError, OAuthRefreshBusyError } from "./connection-auth.ts";
 import { ConnectionUrlError } from "./connection-url.ts";
 import {
   connectionIndex,
@@ -373,7 +373,9 @@ async function attempt(
     let size = null;
     try {
       size = await measureOpenApiConnection(entry.url, opts.headers ?? await connectionHeaders(entry));
-    } catch {
+    } catch (err) {
+      // Not knowing yet is not a failed spec: nothing is recorded.
+      if (err instanceof OAuthRefreshBusyError) return notKnownYet(entry.id, startedAt, store);
       size = null;
     }
     const status: ConnectionStatus = size === null
@@ -435,6 +437,10 @@ async function attempt(
       ...(dropped ? { dropped } : {}),
     }, tools);
   } catch (err) {
+    // The refresh lock stayed busy: what the sign-in is now is not known yet,
+    // and a status written for it could supersede the ready the lock holder is
+    // writing. Nothing is recorded; the next discovery retries.
+    if (err instanceof OAuthRefreshBusyError) return notKnownYet(entry.id, startedAt, store);
     const failure = classifyDiscoveryError(err);
     // A server that went quiet keeps the listing it gave last time. One that
     // answered and refused, or answered nonsense, does not: that listing is
@@ -461,6 +467,11 @@ function storeFailure(checkedAt: string): ConnectionStatus {
   };
 }
 
+/** What an attempt that could not find out reports, having written nothing: what is stored now. */
+function notKnownYet(connectionId: string, startedAt: string, store: string | undefined): Promise<Discovery> {
+  return superseded(connectionId, startedAt, store);
+}
+
 /** What an attempt that lost to a newer one reports: the newer one's outcome. */
 async function superseded(connectionId: string, startedAt: string, store: string | undefined): Promise<Discovery> {
   const newer = latestRun(connectionId);
@@ -477,16 +488,18 @@ async function superseded(connectionId: string, startedAt: string, store: string
  * Write what a failed tool call found: the status says so, and the listing is
  * emptied, so the connection stops being offered as working until the owner
  * signs in again. Skipped for a connection that is no longer there, and yields
- * to anything already written with a later stamp.
+ * to anything already written with a later stamp. `startedAt` is the stamp the
+ * call took when it began (`nextStamp()`): a refusal that comes back after a
+ * reconnect succeeded is about the old credential, and must not overwrite it.
  */
-function markConnectionFailed(connectionId: string, failure: Failure, storePath?: string): void {
+function markConnectionFailed(connectionId: string, failure: Failure, startedAt: string | undefined, storePath?: string): void {
   if (!findConnectionById(connectionId)) return;
   putConnectionDiscovery(connectionId, {
     tools: [],
     status: {
       state: failure.state,
       lastError: { code: failure.code, message: failure.message },
-      checkedAt: stamp(),
+      checkedAt: startedAt ?? stamp(),
       toolCount: null,
     },
     unlessNewer: true,
@@ -494,13 +507,13 @@ function markConnectionFailed(connectionId: string, failure: Failure, storePath?
 }
 
 /** A tool call found the sign-in expired. */
-export function markConnectionExpired(connectionId: string, storePath?: string): void {
-  markConnectionFailed(connectionId, classifyDiscoveryError(new OAuthExpiredError()), storePath);
+export function markConnectionExpired(connectionId: string, startedAt?: string, storePath?: string): void {
+  markConnectionFailed(connectionId, classifyDiscoveryError(new OAuthExpiredError()), startedAt, storePath);
 }
 
 /** A tool call, or its handshake, was refused by the server with a 401 or 403. */
-export function markConnectionAuthFailed(connectionId: string, status: number | null, storePath?: string): void {
-  markConnectionFailed(connectionId, classifyDiscoveryError(new McpError("auth", `mcp_http_${status ?? 401}`, { status: status ?? 401 })), storePath);
+export function markConnectionAuthFailed(connectionId: string, status: number | null, startedAt?: string, storePath?: string): void {
+  markConnectionFailed(connectionId, classifyDiscoveryError(new McpError("auth", `mcp_http_${status ?? 401}`, { status: status ?? 401 })), startedAt, storePath);
 }
 
 /**
@@ -537,31 +550,30 @@ export async function ensureConnectionIndex(
 }
 
 /**
- * Connections whose first check in this process did not end `ready`, so their
- * saved tools stay unmounted until a later listing does.
- */
-const heldBack = new Set<string>();
-
-/**
- * Before a session's saved tools are mounted: list again any connection this
- * process has not checked yet. The saved listing may be from before a restart
- * (a tool the server dropped, a schema it changed, an access that was revoked),
- * and a bot resuming a session mounted it without ever asking. Returns the
- * connections whose tools must not be mounted now: the check did not finish
- * inside the read timeout, or did not end `ready`. They stay held back until a
- * later listing is `ready`. Never throws.
+ * Before a session's saved tools are mounted: make sure each connection's
+ * latest status in this process is `ready` (or `zero_tools`). The saved listing
+ * may be from before a restart (a tool the server dropped, a schema it changed,
+ * an access that was revoked), and a bot resuming a session mounted it without
+ * ever asking. A connection nothing has listed yet is listed now; one a
+ * discovery is already working on is waited for; one whose latest outcome was a
+ * failure (whoever ran it: this check, the Connectors page, `find_tools`) is
+ * given its retry chance by the usual schedule. Returns the connections whose
+ * tools must not be mounted now: the check did not finish inside the read
+ * timeout, or the status is still not `ready`. Never throws.
  */
 export async function refreshBeforeMount(connectionIds: Iterable<string>, storePath?: string): Promise<Set<string>> {
   const blocked = new Set<string>();
+  // A listing written before statuses were kept has none, and is judged as it always was.
+  const working = (state: ConnectionState | undefined) => state === undefined || state === "ready" || state === "zero_tools";
   await Promise.all([...new Set(connectionIds)].map(async (id) => {
     const entry = findConnectionById(id);
     // Anything else is not mounted from the index at all.
     if (!entry || entry.kind !== "mcp") return;
-    if (checkedThisRuntimeFor(id) && !heldBack.has(id)) return;
+    if (checkedThisRuntimeFor(id) && working(connectionStatus(id, storePath)?.state)) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        ensureConnectionListing(entry, storePath),
+        discoveryRunning(id) ? discoverConnection(entry, { storePath }) : ensureConnectionListing(entry, storePath),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => reject(new Error("check_timeout")), MCP_READ_TIMEOUT_MS);
         }),
@@ -571,12 +583,7 @@ export async function refreshBeforeMount(connectionIds: Iterable<string>, storeP
     } finally {
       clearTimeout(timer);
     }
-    if (connectionStatus(id, storePath)?.state === "ready") {
-      heldBack.delete(id);
-    } else {
-      heldBack.add(id);
-      blocked.add(id);
-    }
+    if (!checkedThisRuntimeFor(id) || !working(connectionStatus(id, storePath)?.state)) blocked.add(id);
   }));
   return blocked;
 }

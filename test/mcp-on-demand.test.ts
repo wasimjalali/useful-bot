@@ -16,6 +16,7 @@ import {
   INDEX_TTL_MS,
   putConnectionDiscovery,
   indexedToolBytes,
+  nextStamp,
   mountedDescription,
   mountedToolName,
   putConnectionIndex,
@@ -49,7 +50,7 @@ import { McpError, setMcpFetch } from "../shared/mcp-http.ts";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
 import { setApprovalStore } from "../agent/lib/write.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
-import { OAuthExpiredError, connectionHeaders, refreshLockPath, setRefreshLockTimeoutMs } from "../shared/connection-auth.ts";
+import { OAuthExpiredError, OAuthRefreshBusyError, connectionHeaders, refreshLockPath, setRefreshLockTimeoutMs } from "../shared/connection-auth.ts";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { deleteConnection } from "../shared/connections-admin.ts";
@@ -1332,6 +1333,57 @@ test("a server refusing the credential on initialize or on a call records auth_f
   }
 });
 
+test("a late refusal from a call that began before a reconnect cannot overwrite the newer ready", async () => {
+  for (const failure of ["auth", "expired"] as const) {
+    paths();
+    setDiscoveryLogger(() => {});
+    const mem = memoryKeychain();
+    setKeychainDriver(mem);
+    const sessionId = `s-race-${failure}`;
+    grantedSession(sessionId);
+    const row = upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp", authKind: "oauth" })).entry;
+    keychainSet(connectionSecretService("tella"), bundleJson({ expiresAt: Date.now() + 3_600_000 }));
+    let reconnect: (() => Promise<void>) | null = null;
+    setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+      if (body.method === "initialize") return rpcResult(1, { protocolVersion: "2025-06-18" });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "tools/call" && reconnect && failure === "auth") {
+        // While the old-token call is out, the owner reconnects and discovery succeeds.
+        const again = reconnect;
+        reconnect = null;
+        await again();
+        return new Response("no", { status: 401 });
+      }
+      return rpcResult(body.id, { tools: [{ name: "list_videos", description: "List the videos" }] });
+    }) as typeof fetch);
+    assert.equal((await discoverConnection(row)).status.state, "ready");
+    const resolve = stepResolver();
+    const ctx = { session: { id: sessionId } };
+    await (await resolve({}, ctx))!.find_tools.execute({ query: "tella videos" }, ctx);
+    const second = await resolve({}, ctx);
+    assert.ok(second?.tella__list_videos, failure);
+    reconnect = async () => {
+      assert.equal((await discoverConnection(row, { headers: { authorization: "Bearer new" } })).status.state, "ready");
+    };
+    if (failure === "expired") {
+      // The token has run out; the refresh is slow, and the reconnect lands while it is out.
+      keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+      setOauthFetch(async () => {
+        const again = reconnect!;
+        reconnect = null;
+        await again();
+        return tokenJson({ error: "invalid_grant" }, 400);
+      });
+    }
+    const called = await second!.tella__list_videos.execute({}, ctx);
+    assert.equal(called.status, "blocked", failure);
+    assert.equal(called.error, failure === "auth" ? "auth_failed" : "oauth_expired", failure);
+    assert.equal(connectionStatus("tella")?.state, "ready", `${failure}: the old call's refusal did not overwrite the reconnect`);
+    assert.equal(connectionIndex("tella")?.tools.length, 1, failure);
+  }
+});
+
 test("after a restart the saved tools of a connection are listed again before they are mounted", async () => {
   paths();
   setDiscoveryLogger(() => {});
@@ -1367,6 +1419,37 @@ test("after a restart the saved tools of a connection are listed again before th
   const settled = server.listings;
   await resolve({}, ctx);
   assert.equal(server.listings, settled, "one check per runtime, not one per step");
+});
+
+test("saved tools stay unmounted when the first discovery after a restart came from elsewhere and did not end ready", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const sessionId = "s-restart-elsewhere";
+  const row = upsertConnection(entry()).entry;
+  let down = false;
+  const server = mcpServer(() => (down ? "down" : { tools: [{ name: "other", description: "Other" }] }));
+  await discoverConnection(row);
+  activateSessionTools(sessionId, ["example__other"]);
+  const resolve = stepResolver();
+  const ctx = { session: { id: sessionId } };
+  assert.ok((await resolve({}, ctx))?.example__other);
+  // A new process; the Connectors page (or find_tools) is the first to list, and the server is down.
+  resetRuntimeChecks();
+  down = true;
+  assert.equal((await discoverConnection(row)).status.state, "unreachable");
+  assert.equal(connectionIndex("example")?.tools.length, 1, "an outage keeps the listing beside the status");
+  const before = server.listings;
+  assert.equal((await resolve({}, ctx))?.example__other, undefined, "the failed discovery holds the saved tools back");
+  assert.equal(server.listings, before, "inside the retry window it does not ask again");
+  // It comes back once a listing works again.
+  down = false;
+  await discoverConnection(row);
+  assert.ok((await resolve({}, ctx))?.example__other);
+  // A discovery that is still running is waited for, not skipped.
+  resetRuntimeChecks();
+  const pending = discoverConnection(row);
+  assert.ok((await resolve({}, ctx))?.example__other);
+  await pending;
 });
 
 test("removing a connection stops every discovery of it, and a write that started before the removal is dropped", async () => {
@@ -1470,6 +1553,28 @@ test("a refresh refused as invalid_grant uses what another process stored meanwh
   await assert.rejects(() => connectionHeaders(row), (err: unknown) => err instanceof OAuthExpiredError);
 });
 
+test("a refresh that finishes after the owner signed in again does not write over the new sign-in", async () => {
+  paths();
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+  const service = connectionSecretService("tella");
+  keychainSet(service, bundleJson({ refreshToken: "rt_old" }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setOauthFetch(async () => {
+    await gate;
+    return tokenJson({ access_token: "at_refreshed", refresh_token: "rt_refreshed", expires_in: 3600 });
+  });
+  const headers = connectionHeaders(row);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // A sign-in completed while the refresh request was out.
+  mem.set(service, packed(bundleJson({ accessToken: "at_signin", refreshToken: "rt_signin", expiresAt: Date.now() + 3_600_000 })));
+  release();
+  assert.deepEqual(await headers, { authorization: "Bearer at_signin" });
+  assert.match(String(keychainGet(service)), /at_signin/, "the new sign-in is still what is stored");
+});
+
 /** Holds a connection's refresh lock in another process for `ms`, and resolves once it is held. */
 function holdLockElsewhere(file: string, ms: number): Promise<{ done: Promise<void> }> {
   const dirLock = fileURLToPath(new URL("../shared/dir-lock.ts", import.meta.url));
@@ -1503,43 +1608,87 @@ test("a refresh waits for another process's refresh of the same connection, then
   assert.ok(sentAt - started >= 500, `the refresh went out ${sentAt - started}ms in, before the other process let go`);
 });
 
-test("a refresh that cannot get the lock in time uses a token that is now good, and otherwise reports the server unreachable", async () => {
+test("a refresh that cannot get the lock in time reports it is not known yet, never the server unreachable", async () => {
   paths();
   const mem = memoryKeychain();
   setKeychainDriver(mem);
   setRefreshLockTimeoutMs(150);
   try {
     const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+    keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+    let requests = 0;
+    setOauthFetch(async () => { requests += 1; return tokenJson({ access_token: "x", expires_in: 3600 }); });
+    const held = await holdLockElsewhere(refreshLockPath("tella"), 900);
+    await assert.rejects(() => connectionHeaders(row), (err: unknown) => err instanceof OAuthRefreshBusyError);
+    assert.equal(requests, 0, "nothing was sent without the lock");
+    await held.done;
+  } finally {
+    setRefreshLockTimeoutMs(null);
+  }
+});
+
+test("a refresh waiting on another process stops as soon as what it stored is good, and the event loop keeps running", async () => {
+  paths();
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  setRefreshLockTimeoutMs(5_000);
+  try {
+    const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
     const service = connectionSecretService("tella");
     keychainSet(service, bundleJson({ refreshToken: "rt_old" }));
     let requests = 0;
     setOauthFetch(async () => { requests += 1; return tokenJson({ access_token: "x", expires_in: 3600 }); });
-    const held = await holdLockElsewhere(refreshLockPath("tella"), 900);
-    await assert.rejects(
-      () => connectionHeaders(row),
-      (err: unknown) => err instanceof McpError && err.kind === "unreachable",
-    );
-    assert.equal(requests, 0, "nothing was sent without the lock");
-    await held.done;
-    // The same wait, but the holder stored a good token before this gave up.
-    const racing = memoryKeychain();
-    let reads = 0;
-    setKeychainDriver({
-      get(name) {
-        reads += 1;
-        // The first read is the caller's own; the lock wait then runs out; the read after it sees the other process's bundle.
-        if (reads <= 1) return racing.get(name);
-        racing.set(name, packed(bundleJson({ accessToken: "at_other", refreshToken: "rt_other", expiresAt: Date.now() + 3_600_000 })));
-        return racing.get(name);
-      },
-      set: (name, value) => racing.set(name, value),
-      del: (name) => racing.del(name),
-    });
-    racing.set(service, packed(bundleJson({ refreshToken: "rt_old" })));
-    const second = await holdLockElsewhere(refreshLockPath("tella"), 900);
-    assert.deepEqual(await connectionHeaders(row), { authorization: "Bearer at_other" });
+    const held = await holdLockElsewhere(refreshLockPath("tella"), 2_000);
+    // The other process stores its refreshed bundle, and is slow to let go.
+    setTimeout(() => mem.set(service, packed(bundleJson({ accessToken: "at_other", refreshToken: "rt_other", expiresAt: Date.now() + 3_600_000 }))), 200);
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 10);
+    const started = Date.now();
+    try {
+      assert.deepEqual(await connectionHeaders(row), { authorization: "Bearer at_other" });
+    } finally {
+      clearInterval(timer);
+    }
+    const took = Date.now() - started;
+    assert.ok(took < 1_200, `waited ${took} ms although the stored bundle was good after 200`);
+    assert.ok(ticks >= 10, `the event loop ran ${ticks} ticks while it waited`);
     assert.equal(requests, 0);
-    await second.done;
+    await held.done;
+  } finally {
+    setRefreshLockTimeoutMs(null);
+  }
+});
+
+test("a discovery whose refresh could not get the lock records nothing, so it cannot supersede the ready the lock holder wrote", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  setRefreshLockTimeoutMs(400);
+  try {
+    const row = upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp", authKind: "oauth" })).entry;
+    keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+    setOauthFetch(async () => tokenJson({ access_token: "x", expires_in: 3600 }));
+    mcpServer(() => ({ tools: [{ name: "list_videos", description: "List" }] }));
+    const held = await holdLockElsewhere(refreshLockPath("tella"), 1_500);
+    // The holder's own discovery started first, so its stamp is older than ours.
+    const holderStamp = nextStamp();
+    const discovery = discoverConnection(row);
+    putConnectionDiscovery("tella", {
+      tools: [{ name: "list_videos", description: "List", inputSchema: null, inputSchemaBytes: 2 }],
+      status: { state: "ready", lastError: null, checkedAt: holderStamp, toolCount: 1 },
+    });
+    const outcome = await discovery;
+    assert.equal(connectionStatus("tella")?.state, "ready", "a lock that timed out is not an unreachable server");
+    assert.equal(connectionIndex("tella")?.tools.length, 1);
+    assert.equal(outcome.status.state, "ready");
+    await held.done;
+    // Nothing was recorded, so the next discovery simply tries again.
+    resetRuntimeChecks();
+    const mid = memoryKeychain();
+    setKeychainDriver(mid);
+    keychainSet(connectionSecretService("tella"), bundleJson({ accessToken: "at_good", expiresAt: Date.now() + 3_600_000 }));
+    assert.equal((await discoverConnection(row)).status.state, "ready");
   } finally {
     setRefreshLockTimeoutMs(null);
   }

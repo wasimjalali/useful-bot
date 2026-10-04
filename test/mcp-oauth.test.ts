@@ -464,6 +464,26 @@ test("the resource goes out as the metadata wrote it, less a fragment, and as th
   }
 });
 
+test("a declared resource that is not already canonical is refused, never rewritten", async () => {
+  for (const declared of [
+    "https://API.tella.com/mcp",
+    "https://api.tella.com:443/mcp",
+    "https://api.tella.com/a/../mcp",
+    "https://api.tella.com/a b",
+    "https://api.tella.com/./mcp",
+    "HTTPS://api.tella.com/mcp",
+  ]) {
+    box();
+    tellaWorld({
+      "https://api.tella.com/.well-known/oauth-protected-resource": jsonResponse({
+        resource: declared,
+        authorization_servers: ["https://authkit.tella.tv"],
+      }),
+    });
+    await assert.rejects(() => start(), /oauth_resource_invalid/, declared);
+  }
+});
+
 test("offline_access asks for consent, and the registration carries the scope", async () => {
   box();
   const hits = tellaWorld();

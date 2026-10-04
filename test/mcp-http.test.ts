@@ -538,6 +538,67 @@ test("an input schema that is not an object schema drops the tool; a missing one
   }
 });
 
+// UB-003 review round 3.
+
+test("a schema whose nested structure is broken drops the tool; real-world keywords stay", async () => {
+  const broken: Array<[string, unknown]> = [
+    ["props-string", { type: "object", properties: "id" }],
+    ["props-array", { type: "object", properties: [{ type: "string" }] }],
+    ["prop-not-object", { type: "object", properties: { id: "string" } }],
+    ["prop-null", { type: "object", properties: { id: null } }],
+    ["prop-bad-type", { type: "object", properties: { id: { type: "strng" } } }],
+    ["prop-type-number", { type: "object", properties: { id: { type: 3 } } }],
+    ["prop-type-array-bad", { type: "object", properties: { id: { type: ["string", "nope"] } } }],
+    ["prop-type-array-empty", { type: "object", properties: { id: { type: [] } } }],
+    ["required-string", { type: "object", properties: {}, required: "id" }],
+    ["required-numbers", { type: "object", required: [1, 2] }],
+    ["items-string", { type: "object", properties: { list: { type: "array", items: "string" } } }],
+    ["items-bad-type", { type: "object", properties: { list: { type: "array", items: { type: "text" } } } }],
+    ["items-array-junk", { type: "object", properties: { list: { type: "array", items: [{ type: "string" }, 4] } } }],
+    ["nested-props-broken", { type: "object", properties: { a: { type: "object", properties: { b: { type: "wat" } } } } }],
+    ["nested-required-broken", { type: "object", properties: { a: { type: "object", required: "b" } } }],
+  ];
+  const kept: Array<[string, unknown]> = [
+    ["refs", { type: "object", properties: { a: { $ref: "#/$defs/A" } }, $defs: { A: { type: "string" } } }],
+    ["anyof", { type: "object", properties: { a: { anyOf: [{ type: "string" }, { type: "null" }] }, b: { oneOf: [{ type: "integer" }] } } }],
+    ["enum-format", { type: "object", properties: { a: { type: "string", enum: ["x"], format: "uuid" }, b: { const: 1 } } }],
+    ["type-array", { type: "object", properties: { a: { type: ["string", "null"] }, b: { type: "array", items: { type: "number" } } } }],
+    ["tuple-items", { type: "object", properties: { a: { type: "array", items: [{ type: "string" }, { type: "integer" }] } } }],
+    ["required-ok", { type: "object", properties: { a: { type: "string" } }, required: ["a"], additionalProperties: false }],
+    ["nested", { type: "object", properties: { a: { type: "object", properties: { b: { type: "boolean" } }, required: ["b"] } } }],
+    ["unknown-keywords", { type: "object", properties: { a: { type: "string", "x-vendor": [1, 2], pattern: "^a" } }, "$schema": "http://json-schema.org/draft-07/schema#" }],
+  ];
+  server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(row.id, { tools: [...broken, ...kept].map(([name, inputSchema]) => ({ name, inputSchema })) });
+  });
+  try {
+    const out = await listMcpToolsWithStats("https://api.example.com/mcp");
+    assert.deepEqual(out.tools.map((tool) => tool.name), kept.map(([name]) => name));
+    assert.equal(out.total, broken.length + kept.length);
+    assert.equal(out.dropped, broken.length);
+  } finally {
+    reset();
+  }
+});
+
+test("a schema nested far deeper than any real one is still read, not chased forever", async () => {
+  let deep: Record<string, unknown> = { type: "string" };
+  for (let i = 0; i < 200; i += 1) deep = { type: "object", properties: { next: deep } };
+  server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(row.id, { tools: [{ name: "deep", inputSchema: deep }] });
+  });
+  try {
+    const out = await listMcpToolsWithStats("https://api.example.com/mcp");
+    assert.equal(out.tools.length, 1);
+  } finally {
+    reset();
+  }
+});
+
 test("a response is taken as soon as its own event arrives, without waiting for the stream to end", async () => {
   let cancelled = false;
   server((row) => {

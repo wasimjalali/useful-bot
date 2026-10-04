@@ -1,4 +1,4 @@
-import { acquireDirLock } from "./dir-lock.ts";
+import { acquireDirLockAsync } from "./dir-lock.ts";
 import { connectionsPath, findConnectionById, isAuthHeaderName, type ConnectionEntry } from "./connections-store.ts";
 import { connectionSecretService, keychainGet, keychainSet } from "./keychain.ts";
 import { McpError } from "./mcp-http.ts";
@@ -80,16 +80,59 @@ export function refreshLockPath(id: string): string {
 }
 
 /**
- * How long to wait for it. The wait is synchronous (the lock is a SQLite
- * `BEGIN EXCLUSIVE`), so it is kept short: past it, the caller reads what the
- * other process stored and otherwise reports the server unreachable.
+ * How long to wait for it. The wait is a timer loop, not a blocking call, so
+ * the service keeps answering while another process refreshes; past the
+ * deadline the caller reads what the other process stored and otherwise gives
+ * up with `OAuthRefreshBusyError`.
  */
-const REFRESH_LOCK_TIMEOUT_DEFAULT_MS = 3_000;
+const REFRESH_LOCK_TIMEOUT_DEFAULT_MS = 10_000;
 let refreshLockTimeoutMs = REFRESH_LOCK_TIMEOUT_DEFAULT_MS;
 
 /** Test hook; `null` restores the default. */
 export function setRefreshLockTimeoutMs(ms: number | null): void {
   refreshLockTimeoutMs = ms ?? REFRESH_LOCK_TIMEOUT_DEFAULT_MS;
+}
+
+/**
+ * The refresh lock could not be taken in time, so what the sign-in is now is
+ * not known. It says nothing about the server or the token: a caller must not
+ * record a status for it, and the next attempt simply tries again.
+ */
+export class OAuthRefreshBusyError extends Error {
+  readonly code = "oauth_refresh_busy";
+
+  constructor() {
+    super("oauth_refresh_busy");
+    this.name = "OAuthRefreshBusyError";
+  }
+}
+
+/**
+ * Takes a connection's refresh lock without blocking the event loop. Resolves
+ * to the release function, or to `null` when `giveUp` said the caller no longer
+ * needs the lock; throws `OAuthRefreshBusyError` at the deadline.
+ */
+export async function acquireRefreshLock(id: string, giveUp?: () => boolean): Promise<(() => void) | null> {
+  try {
+    return await acquireDirLockAsync(refreshLockPath(id), {
+      timeoutMs: refreshLockTimeoutMs,
+      errorCode: "connection_refresh_locked",
+      giveUp,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === "connection_refresh_locked") throw new OAuthRefreshBusyError();
+    throw err;
+  }
+}
+
+/** Runs `work` with the connection's refresh lock held. */
+export async function withRefreshLock<T>(id: string, work: () => T | Promise<T>): Promise<T> {
+  const release = await acquireRefreshLock(id);
+  try {
+    return await work();
+  } finally {
+    release!();
+  }
 }
 
 /**
@@ -99,7 +142,8 @@ export function setRefreshLockTimeoutMs(ms: number | null): void {
  * bundle is read once more: if its refresh token is not the one just sent,
  * another process rotated it while this request was out, and that bundle is
  * used (or refreshed once, if it is already running out) instead of ending the
- * sign-in.
+ * sign-in. Before the new bundle is written the stored one is read a last time:
+ * a sign-in completed meanwhile (a new refresh token) is not written over.
  */
 async function refreshStored(id: string, service: string): Promise<OAuthTokenBundle> {
   let current = parseBundle(keychainGet(service));
@@ -122,6 +166,12 @@ async function refreshStored(id: string, service: string): Promise<OAuthTokenBun
     // The owner may have removed the connection while the server was thinking;
     // a credential written now would have no row pointing at it.
     if (!findConnectionById(id)) throw new Error("connection_missing");
+    const stored = parseBundle(keychainGet(service));
+    if (stored && stored.refreshToken !== current.refreshToken) {
+      // Something else replaced the bundle while the request was out (the
+      // owner signed in again): it wins, and this answer is not written.
+      return isExpiring(stored) ? next : stored;
+    }
     keychainSet(service, JSON.stringify(next));
     return next;
   }
@@ -132,16 +182,15 @@ function refreshOnce(id: string): Promise<OAuthTokenBundle> {
   if (running) return running;
   const service = connectionSecretService(id);
   const run = (async () => {
-    let release: () => void;
-    try {
-      release = acquireDirLock(refreshLockPath(id), { timeoutMs: refreshLockTimeoutMs, errorCode: "connection_refresh_locked" });
-    } catch (err) {
-      if (!(err instanceof Error) || err.message !== "connection_refresh_locked") throw err;
-      // Another process is refreshing it. What it stored may already be good.
+    const seen: { good: OAuthTokenBundle | null } = { good: null };
+    // Another process is refreshing it: what it stores may already be good, and
+    // then there is nothing left to wait for.
+    const release = await acquireRefreshLock(id, () => {
       const stored = parseBundle(keychainGet(service));
-      if (stored && !isExpiring(stored)) return stored;
-      throw new McpError("unreachable", "oauth_refresh_locked");
-    }
+      if (stored && !isExpiring(stored)) seen.good = stored;
+      return seen.good !== null;
+    });
+    if (!release) return seen.good!;
     try {
       return await refreshStored(id, service);
     } finally {

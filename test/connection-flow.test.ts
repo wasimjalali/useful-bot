@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createProposal, listThreadEvents, readProposal, updateProposal } from "../shared/agent-store.ts";
 import {
   completeConnectionOAuth,
+  failConnectionOAuth,
   pumpConnections,
   resetConnectionMemo,
   SERVER_LINGER_MS,
@@ -29,6 +30,7 @@ import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import connectionTools from "../agent/tools/connection_tools.ts";
 import { MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
 import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
+import { acquireRefreshLock } from "../shared/connection-auth.ts";
 import { writeShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 
@@ -1128,4 +1130,107 @@ test("the token audience log line carries no control characters and no query or 
   assert.ok(audLines[0].length < 400, "capped");
   assert.ok(audLines[0].endsWith("resource=https://mcp.example.com/mcp"), audLines[0]);
   assert.ok(!audLines[0].includes("SECRETKEY") && !audLines[0].includes("fragment"));
+});
+
+// UB-003 review round 3.
+
+test("a duplicate callback for a state that is being exchanged returns without a second exchange and leaves the card alone", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let exchanges = 0;
+  setOauthFetch(async () => {
+    exchanges += 1;
+    await gate;
+    return tokenReply();
+  });
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  const first = completeConnectionOAuth("code-1", "statevalue123456");
+  const second = await completeConnectionOAuth("code-1", "statevalue123456");
+  assert.deepEqual(second, { proposalId: card.id });
+  assert.equal(cardOf(card.id, storePath).phase, "waiting", "the second callback did not settle it");
+  release();
+  await first;
+  assert.equal(exchanges, 1, "the code is spent once");
+  assert.equal(cardOf(card.id, storePath).phase, "connected");
+  assert.equal(listHandoffs().length, 1);
+});
+
+test("a token exchange that fails after the card was settled does not flip it", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setOauthFetch(async () => {
+    await gate;
+    return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+  });
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  const attempt = completeConnectionOAuth("code-1", "statevalue123456");
+  const settled = assert.rejects(attempt, /./);
+  // Another path connected the card while the exchange was out.
+  updateProposal(card.id, (item) => {
+    if (item.kind === "connectServer") { item.phase = "connected"; item.toolCount = 1; }
+  }, storePath);
+  release();
+  await settled;
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "connected");
+  assert.equal(stored.reason ?? null, null);
+});
+
+test("a reauthorize writes the new sign-in under the connection's refresh lock", async () => {
+  const held = reauthSetup("https://mcp.example.com/");
+  listing(() => rpcJson(2, { tools: [{ name: "list_videos", description: "List" }] }));
+  setOauthFetch(async () => tokenReply());
+  const release = await acquireRefreshLock("tella");
+  const done = completeConnectionOAuth("code-2", "statevalue123456");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(keychainGet(connectionSecretService("tella")), held, "a refresh in flight is not written over");
+  release!();
+  await done;
+  assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_secret_1"));
+});
+
+test("a sign-in the server refused (error= on the callback) drops its pending row and fails a waiting card", () => {
+  setKeychainDriver(memoryKeychain());
+  const { storePath } = paths();
+  let exchanged = false;
+  setOauthFetch(async () => { exchanged = true; return tokenReply(); });
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  failConnectionOAuth("statevalue123456");
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "failed");
+  assert.equal(stored.reason, "auth_failed");
+  assert.equal(stored.status, "pending");
+  assert.equal(findOauthPending("statevalue123456"), null, "the verifier does not stay on disk");
+  assert.equal(listHandoffs().length, 0);
+  assert.equal(exchanged, false);
+  // Delivered again, or for a state nobody holds: nothing to do, nothing thrown.
+  failConnectionOAuth("statevalue123456");
+  failConnectionOAuth("some-other-state-123456");
+  assert.equal(cardOf(card.id, storePath).phase, "failed");
+});
+
+test("a refused sign-in leaves a card that is already connected alone, and a reauthorize has no card to fail", () => {
+  setKeychainDriver(memoryKeychain());
+  const { storePath } = paths();
+  const card = seedCard({ connectionId: "tella", authKind: "oauth", phase: "connected", waitingSince: new Date().toISOString() });
+  oauthPending(card);
+  failConnectionOAuth("statevalue123456");
+  assert.equal(cardOf(card.id, storePath).phase, "connected");
+  assert.equal(findOauthPending("statevalue123456"), null);
+  // A reauthorize's pending row is dropped too; its proposal id names no card.
+  const held = reauthSetup("https://mcp.example.com/");
+  failConnectionOAuth("statevalue123456");
+  assert.equal(findOauthPending("statevalue123456"), null);
+  assert.equal(keychainGet(connectionSecretService("tella")), held, "the credential it holds is untouched");
+  assert.ok(findConnectionById("tella"));
 });

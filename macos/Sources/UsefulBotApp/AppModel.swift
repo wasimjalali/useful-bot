@@ -1694,16 +1694,16 @@ final class AppModel: ObservableObject {
         // has done its job.
         // A failed card is settled too: Try again was applied and the card is
         // failed again, so both buttons must come back.
-        // A waiting or failed card counts as settled only when it differs from
-        // what it was at tap time (another phase, or a newer waitingSince), or
-        // 10 s have passed, so a busy mark can never stick.
+        // A connect card's mark is capped at 10 s in any phase, and a waiting
+        // or failed one is settled sooner when it differs from what it was at
+        // tap time (another phase, or a newer waitingSince), so a busy mark
+        // can never stick (a card left proposed after a refused redirect
+        // included).
         let live = Set(proposals.filter { card in
             guard card.isOpen() else { return false }
-            guard (card.kind == .connectApp || card.kind == .connectServer),
-                  card.phase == .waiting || card.phase == .failed else { return true }
+            guard card.kind == .connectApp || card.kind == .connectServer else { return true }
             guard let tap = proposalTapState[card.id] else { return false }
-            let movedOn = card.phase != tap.phase || card.waitingSince != tap.waitingSince
-            return !movedOn && Date().timeIntervalSince(tap.at) < 10
+            return card.busyMarkHolds(tapPhase: tap.phase, tapWaitingSince: tap.waitingSince, tappedAt: tap.at)
         }.map(\.id))
         let next = busyProposals.intersection(live)
         if next != busyProposals { busyProposals = next }

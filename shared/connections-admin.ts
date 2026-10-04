@@ -1,4 +1,5 @@
-import { parseBundle } from "./connection-auth.ts";
+import { rmSync } from "node:fs";
+import { parseBundle, refreshLockPath, withRefreshLock } from "./connection-auth.ts";
 import { cancelDiscovery, discoverConnection, discoveryRunning, settleAllDiscoveries } from "./connection-tools.ts";
 import { reauthorizeProposalId } from "./connection-flow.ts";
 import {
@@ -150,14 +151,20 @@ export async function deleteConnection(id: string): Promise<void> {
   if (id === EXCALIDRAW_CONNECTION.id) throw new Error("connection_builtin");
   if (!findConnectionById(id)) throw new Error("connection_missing");
   // A discovery still out would write its answer for a connection that is no
-  // longer there. Stopped and waited for, so everything below is one
-  // uninterrupted run of synchronous removals.
+  // longer there. Stopped and waited for first.
   while (discoveryRunning(id)) await cancelDiscovery(id);
+  // Under the refresh lock: a refresh that is out (here or in another
+  // process) would otherwise store its bundle after the secret was deleted.
   // The credential first: if this throws the row is still there to retry
   // against, where a row removed first would leave the secret with no way to
   // find it again. Deleting an item that was never stored is not an error.
-  keychainDel(connectionSecretService(id));
-  removeConnection(id);
+  await withRefreshLock(id, () => {
+    keychainDel(connectionSecretService(id));
+    removeConnection(id);
+  });
+  // The lock's own file is the connection's alone, and has no use now.
+  const lockFile = `${refreshLockPath(id)}.sqlite`;
+  for (const file of [lockFile, `${lockFile}-journal`]) rmSync(file, { force: true });
   removeConnectionIndex(id);
   dropOauthPendingForProposal(reauthorizeProposalId(id));
 }

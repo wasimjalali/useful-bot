@@ -489,11 +489,45 @@ export const MCP_READ_TIMEOUT_MS = 15_000;
 
 const EMPTY_OBJECT_SCHEMA = { type: "object" };
 
+const JSON_SCHEMA_TYPES = new Set(["string", "number", "integer", "boolean", "object", "array", "null"]);
+/** Nesting read for structure; past it the schema is taken as it is. */
+const SCHEMA_CHECK_DEPTH = 16;
+
+/**
+ * Whether the parts of an input schema the app reads (and a model is shown)
+ * are shaped the way JSON Schema says: `type` a type name or a list of them,
+ * `properties` an object of objects, `required` a list of strings, `items` an
+ * object or a list of objects, each checked down through nested properties and
+ * items. A keyword this app does not interpret (`$ref`, `anyOf`, `format`...) is
+ * not looked at: a valid schema that uses one is still a good schema.
+ */
+function schemaStructureIsValid(node: Record<string, unknown>, depth = 0): boolean {
+  if (node.type !== undefined) {
+    const types = Array.isArray(node.type) ? node.type : [node.type];
+    if (types.length === 0 || !types.every((type) => typeof type === "string" && JSON_SCHEMA_TYPES.has(type))) return false;
+  }
+  if (node.required !== undefined && (!Array.isArray(node.required) || !node.required.every((name) => typeof name === "string"))) {
+    return false;
+  }
+  const below = (child: unknown): boolean => {
+    const rec = asRecord(child);
+    return rec !== null && (depth + 1 >= SCHEMA_CHECK_DEPTH || schemaStructureIsValid(rec, depth + 1));
+  };
+  if (node.properties !== undefined) {
+    const props = asRecord(node.properties);
+    if (!props || !Object.values(props).every(below)) return false;
+  }
+  if (node.items !== undefined) {
+    if (Array.isArray(node.items) ? !node.items.every(below) : !below(node.items)) return false;
+  }
+  return true;
+}
+
 export type McpListing = {
   tools: McpToolInfo[];
   /** Entries the server sent, across every page read. */
   total: number;
-  /** Entries dropped as invalid: not an object, no name, a name too long or an input schema that is not an object schema. */
+  /** Entries dropped as invalid: not an object, no name, a name too long or an input schema that is not an object schema or is malformed inside. */
   dropped: number;
 };
 
@@ -525,7 +559,7 @@ export async function listMcpToolsWithStats(
       // sends none at all is taken leniently, as a tool with no arguments
       // declared; one that sends a number or `{"type":"string"}` is broken.
       const schema = row.inputSchema === undefined ? EMPTY_OBJECT_SCHEMA : asRecord(row.inputSchema);
-      if (!schema || (schema.type !== undefined && schema.type !== "object")) {
+      if (!schema || (schema.type !== undefined && schema.type !== "object") || !schemaStructureIsValid(schema)) {
         dropped += 1;
         continue;
       }

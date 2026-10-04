@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import { EXCALIDRAW_CONNECTION, findConnectionById, seedDefaultConnections, upse
 import { connectionSecretService, keychainGet, keychainSet, memoryKeychain, setKeychainDriver } from "../shared/keychain.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
 import { findOauthPending, setOauthFetch, startMcpOAuth } from "../shared/mcp-oauth.ts";
+import { acquireRefreshLock, refreshLockPath } from "../shared/connection-auth.ts";
 
 const CALLBACK = "http://127.0.0.1:4320/api/connections/callback";
 
@@ -354,4 +355,25 @@ test("removing a connection stops its running discovery, leaves nothing it wrote
   assert.ok(findOauthPending(state));
   await deleteConnection("tella");
   assert.equal(findOauthPending(state), null);
+});
+
+// UB-003 review round 3.
+
+test("removing a connection waits for a refresh that holds its lock, then leaves no lock file behind", async () => {
+  paths();
+  upsertConnection(row({ authKind: "oauth", authHeader: null }));
+  storeBundle("https://auth.example.com/token");
+  const release = await acquireRefreshLock("tella");
+  const removal = deleteConnection("tella");
+  let done = false;
+  void removal.then(() => { done = true; });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(done, false, "the removal is waiting for the refresh");
+  assert.ok(findConnectionById("tella"), "nothing was removed under a refresh in flight");
+  assert.ok(keychainGet(connectionSecretService("tella")));
+  release!();
+  await removal;
+  assert.equal(findConnectionById("tella"), null);
+  assert.equal(keychainGet(connectionSecretService("tella")), null);
+  assert.equal(existsSync(`${refreshLockPath("tella")}.sqlite`), false, "the per-connection lock file is gone");
 });

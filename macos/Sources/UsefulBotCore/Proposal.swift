@@ -157,6 +157,24 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         return expiry > now
     }
 
+    /// Whether the busy mark set when the owner tapped this card still holds.
+    /// A connect card's mark is capped at 10 s in any phase, so a card left
+    /// where it was after a refused redirect gets its buttons back; one that
+    /// is waiting or failed is settled sooner when it differs from what it was
+    /// at tap time (another phase, or a newer `waitingSince`). Any other kind
+    /// clears its own mark when its request ends.
+    public func busyMarkHolds(
+        tapPhase: ConnectPhase,
+        tapWaitingSince: String?,
+        tappedAt: Date,
+        now: Date = Date()
+    ) -> Bool {
+        guard kind == .connectApp || kind == .connectServer else { return true }
+        guard now.timeIntervalSince(tappedAt) < 10 else { return false }
+        guard phase == .waiting || phase == .failed else { return true }
+        return phase == tapPhase && waitingSince == tapWaitingSince
+    }
+
     /// The bot a fan-out proposal sends to, or nil when every target was
     /// pruned. A nil means confirm must be disabled, never a guessed recipient.
     public var fanoutTargetId: String? {
