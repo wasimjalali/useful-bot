@@ -140,6 +140,9 @@ final class AppModel: ObservableObject {
     /// Proposals waiting on the owner for the open thread.
     @Published private(set) var proposals: [Proposal] = []
     @Published private(set) var busyProposals: Set<String> = []
+    /// What a connect card looked like when its button was tapped, so busy
+    /// clears only once the card has moved on (or a short cap after the request returned).
+    private var proposalTapState: [String: (phase: Proposal.ConnectPhase, waitingSince: String?, requestFinishedAt: Date?)] = [:]
     @Published private(set) var operatorName = "Desktop owner"
     @Published private(set) var operatorInitials = "DO"
     /// The selected bot's own model chip. Never another bot's: every read and
@@ -283,6 +286,23 @@ final class AppModel: ObservableObject {
     /// The dialog's live search, so a poll started earlier reloads what is on screen.
     @Published var connectorSearch = ""
     private var connectorPoll: Task<Void, Never>?
+    /// Direct MCP and OpenAPI connections, shown above the catalogue.
+    @Published private(set) var directConnections: [DirectConnection] = []
+    @Published private(set) var directConnectionBusy: Set<String> = []
+    @Published var directConnectionsError: String?
+    private var directConnectionPoll: Task<Void, Never>?
+    /// Which poll owns `directConnectionPoll`, so a finished or cancelled task
+    /// never clears a newer one's handle.
+    private var directConnectionPollId = 0
+    /// True from the Connectors dialog's first load until it closes; a load
+    /// still in flight after that starts no poll.
+    private var directConnectionsOpen = false
+    private var directLoadSeq = 0
+    private var directLoadApplied = 0
+    private var quietLoadFailures = 0
+    /// True while the running directConnectionPoll is the sign-in one.
+    private var directConnectionPollIsSignIn = false
+    private static let directLoadFailedCopy = "Couldn't load servers."
     private static let connectorUpstreamError = "Composio did not answer. Try again in a moment."
     private static let connectorKeyRejected = "Composio rejected this key. Remove it and paste a fresh one from platform.composio.dev."
     private static let connectorLoadErrors: Set<String> = [
@@ -1692,9 +1712,23 @@ final class AppModel: ObservableObject {
         // Open cards keep their busy mark, except a connect card the poll now
         // renders in Waiting: its Authorize or Reopen was applied, so the mark
         // has done its job.
-        let live = Set(proposals.filter { $0.isOpen() && !(($0.kind == .connectApp || $0.kind == .connectServer) && $0.phase == .waiting) }.map(\.id))
+        // A failed card is settled too: Try again was applied and the card is
+        // failed again, so both buttons must come back.
+        // A connect card's mark is capped at 10 s in any phase, counted from
+        // when its confirm request returned (a slow request keeps its mark
+        // until it does), and a waiting or failed one is settled sooner when
+        // it differs from what it was at tap time (another phase, or a newer
+        // waitingSince), so a busy mark can never stick (a card left proposed
+        // after a refused redirect included).
+        let live = Set(proposals.filter { card in
+            guard card.isOpen() else { return false }
+            guard card.kind == .connectApp || card.kind == .connectServer else { return true }
+            guard let tap = proposalTapState[card.id] else { return false }
+            return card.busyMarkHolds(tapPhase: tap.phase, tapWaitingSince: tap.waitingSince, requestFinishedAt: tap.requestFinishedAt)
+        }.map(\.id))
         let next = busyProposals.intersection(live)
         if next != busyProposals { busyProposals = next }
+        proposalTapState = proposalTapState.filter { next.contains($0.key) }
     }
 
     func refreshComposer() async {
@@ -4029,11 +4063,11 @@ final class AppModel: ObservableObject {
     private func openHostedSignIn(_ target: String) -> Bool {
         guard let url = URL(string: target), url.scheme?.lowercased() == "https",
               let host = url.host?.lowercased(), host == "composio.dev" || host.hasSuffix(".composio.dev") else {
-            connectorsError = "Composio sent a sign-in link this app will not open."
+            connectorsError = "Composio sent a sign-in link this app won't open."
             return false
         }
         guard NSWorkspace.shared.open(url) else {
-            connectorsError = "The sign-in page could not be opened in the browser."
+            connectorsError = "The sign-in page couldn't be opened in the browser."
             return false
         }
         return true
@@ -4066,17 +4100,189 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func disconnectConnector(_ row: ConnectorToolkit, search: String) async {
-        guard let accountId = row.accountId else { return }
+    /// True when the disconnect call itself went through, whatever the reload after it did.
+    @discardableResult
+    func disconnectConnector(_ row: ConnectorToolkit, search: String) async -> Bool {
+        guard let accountId = row.accountId else { return false }
         connectorBusy = row.slug
         connectorsError = nil
         do {
             try await client.disconnectConnector(accountId: accountId)
-            await loadConnectors(search: search, quiet: true)
         } catch {
             connectorsError = "Could not disconnect \(row.name)."
+            connectorBusy = nil
+            return false
         }
+        // The disconnect went through; loadConnectors reports its own load failure.
+        await loadConnectors(search: search, quiet: true)
         connectorBusy = nil
+        return true
+    }
+
+    /// The tools of one connected app, or nil when they couldn't be loaded.
+    func connectorTools(_ row: ConnectorToolkit) async -> [DirectConnectionTool]? {
+        try? await client.connectorTools(toolkit: row.slug)
+    }
+
+    func loadDirectConnections(quiet: Bool = false, countsTowardCheckingFailure: Bool = false) async {
+        if !quiet { directConnectionsOpen = true }
+        directLoadSeq += 1
+        let seq = directLoadSeq
+        do {
+            let rows = try await client.directConnections()
+            // A newer load already landed: this answer is older, drop it.
+            guard seq > directLoadApplied else { return }
+            directLoadApplied = seq
+            directConnections = rows
+            quietLoadFailures = 0
+            if !quiet || directConnectionsError == Self.directLoadFailedCopy { directConnectionsError = nil }
+            if rows.contains(where: { $0.state.isChecking }) { startCheckingPoll() }
+        } catch is CancellationError {
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            return
+        } catch {
+            if !quiet {
+                directConnectionsError = Self.directLoadFailedCopy
+            } else {
+                if countsTowardCheckingFailure {
+                    quietLoadFailures += 1
+                    if quietLoadFailures >= 3 { failCheckingPoll() }
+                }
+            }
+        }
+    }
+
+    /// Gives up on a poll that can't get an answer: the error and its Retry
+    /// replace an endless Checking.
+    private func failCheckingPoll() {
+        directConnectionsError = Self.directLoadFailedCopy
+        quietLoadFailures = 0
+        guard !directConnectionPollIsSignIn else { return }
+        directConnectionPollId += 1
+        directConnectionPoll?.cancel()
+        directConnectionPoll = nil
+    }
+
+    func refreshDirectConnection(_ row: DirectConnection) async {
+        guard !directConnectionBusy.contains(row.id) else { return }
+        directConnectionBusy.insert(row.id)
+        directConnectionsError = nil
+        do {
+            let updated = try await client.refreshDirectConnection(id: row.id)
+            if let index = directConnections.firstIndex(where: { $0.id == updated.id }) {
+                directConnections[index] = updated
+            }
+        } catch is CancellationError {
+        } catch {
+            directConnectionsError = "Couldn't refresh \(row.name)."
+        }
+        await loadDirectConnections(quiet: true)
+        directConnectionBusy.remove(row.id)
+    }
+
+    /// Opens the server's sign-in in the default browser, then polls the list
+    /// every 2 s for up to 2 minutes so the row updates when it finishes.
+    func reconnectDirectConnection(_ row: DirectConnection) async {
+        guard !directConnectionBusy.contains(row.id) else { return }
+        directConnectionBusy.insert(row.id)
+        directConnectionsError = nil
+        do {
+            let answer = try await client.reauthorizeDirectConnection(id: row.id)
+            // Only a sanity check on what the server sent (https, a public
+            // host, the host it named). The real gate is server-side: the
+            // server pins the sign-in server and refuses a changed one.
+            if Proposal.connectRedirectAllowed(answer.authorizeUrl, kind: .connectServer, expectedHost: answer.redirectHost),
+               let url = URL(string: answer.authorizeUrl) {
+                if NSWorkspace.shared.open(url) {
+                    // Closed while awaiting the server: the browser still
+                    // opened, but don't reopen the dialog or poll for it.
+                    if directConnectionsOpen { startDirectConnectionPoll() }
+                } else {
+                    directConnectionsError = "The sign-in page couldn't be opened in the browser."
+                }
+            } else {
+                directConnectionsError = "The server sent a sign-in link this app won't open."
+            }
+        } catch is CancellationError {
+        } catch {
+            var code: String?
+            if case BackendError.provider(let value) = error { code = value }
+            directConnectionsError = DirectConnection.reconnectFailureCopy(code: code, name: row.name)
+        }
+        await loadDirectConnections(quiet: true)
+        directConnectionBusy.remove(row.id)
+    }
+
+    func removeDirectConnection(_ row: DirectConnection) async {
+        guard row.canRemove, !directConnectionBusy.contains(row.id) else { return }
+        directConnectionBusy.insert(row.id)
+        directConnectionsError = nil
+        do {
+            try await client.removeDirectConnection(id: row.id)
+        } catch is CancellationError {
+        } catch {
+            directConnectionsError = "Couldn't disconnect \(row.name)."
+        }
+        await loadDirectConnections(quiet: true)
+        directConnectionBusy.remove(row.id)
+    }
+
+    private func startDirectConnectionPoll() {
+        stopDirectConnectionPoll()
+        directConnectionsOpen = true
+        directConnectionPollIsSignIn = true
+        let started = Date()
+        directConnectionPollId += 1
+        let id = directConnectionPollId
+        directConnectionPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { return }
+                await self.loadDirectConnections(quiet: true, countsTowardCheckingFailure: true)
+                guard !Task.isCancelled else { return }
+                if Date().timeIntervalSince(started) > 120 {
+                    if self.directConnectionPollId == id { self.directConnectionPoll = nil }
+                    return
+                }
+            }
+        }
+    }
+
+    /// A row still being checked: list again every 2 s, up to 60 s, until none
+    /// is. A sign-in poll already running is left alone. If the cap passes
+    /// with a row still checking, the load error and Retry replace the
+    /// endless Checking.
+    private func startCheckingPoll() {
+        guard directConnectionsOpen, directConnectionPoll == nil else { return }
+        directConnectionPollIsSignIn = false
+        let started = Date()
+        directConnectionPollId += 1
+        let id = directConnectionPollId
+        directConnectionPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { return }
+                await self.loadDirectConnections(quiet: true, countsTowardCheckingFailure: true)
+                guard !Task.isCancelled, self.directConnectionPollId == id else { return }
+                let checking = self.directConnections.contains(where: { $0.state.isChecking })
+                if !checking {
+                    self.directConnectionPoll = nil
+                    return
+                }
+                if Date().timeIntervalSince(started) > 60 {
+                    self.failCheckingPoll()
+                    return
+                }
+            }
+        }
+    }
+
+    func stopDirectConnectionPoll() {
+        directConnectionsOpen = false
+        directConnectionPollId += 1
+        directConnectionPoll?.cancel()
+        directConnectionPoll = nil
     }
 
     func stopConnectorPoll() {
@@ -4947,6 +5153,7 @@ final class AppModel: ObservableObject {
     func decideProposal(_ proposal: Proposal, confirmed: Bool, secret: String? = nil) {
         guard !busyProposals.contains(proposal.id) else { return }
         busyProposals.insert(proposal.id)
+        proposalTapState[proposal.id] = (proposal.phase, proposal.waitingSince, nil)
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
@@ -4967,6 +5174,8 @@ final class AppModel: ObservableObject {
                         proposalId: proposal.id,
                         proposalStatus: "confirmed"
                     )
+                    // The busy mark's 10 s cap runs from here, not from the tap.
+                    self.proposalTapState[proposal.id]?.requestFinishedAt = Date()
                     guard !Task.isCancelled, epoch == self.storeEpoch else {
                         self.busyProposals.remove(proposal.id)
                         return
@@ -4990,19 +5199,18 @@ final class AppModel: ObservableObject {
                             )
                             if allowed, let url = URL(string: raw) {
                                 if !NSWorkspace.shared.open(url) {
-                                    self.stickyThreadError = "The sign-in page could not be opened in the browser. Use Reopen."
+                                    self.stickyThreadError = "The sign-in page couldn't be opened in the browser. Use Reopen."
                                     self.threadError = self.stickyThreadError
                                 }
                             } else if result.redirectUrl != nil && !(raw.isEmpty) {
                                 self.stickyThreadError = proposal.kind == .connectApp
-                                    ? "Composio sent a sign-in link this app will not open."
-                                    : "The server sent a sign-in link this app will not open."
+                                    ? "Composio sent a sign-in link this app won't open."
+                                    : "The server sent a sign-in link this app won't open."
                                 self.threadError = self.stickyThreadError
                             }
                         }
-                        if proposal.phase == .waiting {
-                            self.busyProposals.remove(proposal.id)
-                        }
+                        // Busy stays until the card moves on from the phase it
+                        // had at tap time; pruneBusyProposals clears it.
                         self.startReload()
                         return
                     }
