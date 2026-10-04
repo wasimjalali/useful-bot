@@ -57,6 +57,17 @@ enum SentImageStore {
         }
     }
 
+    /// A held picture with its bytes read back from the kept copy, or nil
+    /// when this Mac no longer has it.
+    static func restored(_ attachment: Attachment, botId: String) -> Attachment? {
+        guard let mediaType = attachment.mediaType else { return attachment }
+        let perBot = url(for: attachment.name, botId: botId)
+        guard let data = try? Data(contentsOf: perBot) else { return nil }
+        var restored = attachment
+        restored.dataUrl = "data:\(mediaType);base64,\(data.base64EncodedString())"
+        return restored
+    }
+
     /// A deleted bot's pictures go with it.
     static func forget(botId: String) {
         let folder = directory.appendingPathComponent(URL(fileURLWithPath: botId).lastPathComponent, isDirectory: true)
