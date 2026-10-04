@@ -92,6 +92,7 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     public let urlHost: String?
     public let authKind: ServerAuthKind
     public let redirectHost: String?
+    public let waitingSince: String?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -130,13 +131,14 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         urlHost = try? c.decodeIfPresent(String.self, forKey: .urlHost)
         authKind = ServerAuthKind(rawValue: (try? c.decodeIfPresent(String.self, forKey: .authKind)) ?? "") ?? .none
         redirectHost = try? c.decodeIfPresent(String.self, forKey: .redirectHost)
+        waitingSince = try? c.decodeIfPresent(String.self, forKey: .waitingSince)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, kind, status, expiresAt, name, petname, title, description
         case sectionId, brief, memberIds, botId, patch, message, targetIds, groupId, sourceBotId
         case slug, logo, purpose, phase, reason, toolCount
-        case connectionId, urlHost, authKind, redirectHost
+        case connectionId, urlHost, authKind, redirectHost, waitingSince
     }
 
     /// The tool-count line of a connected card: a listing that came back empty

@@ -1230,8 +1230,10 @@ public struct DirectConnection: Decodable, Equatable, Identifiable, Sendable {
     /// both end in removing the server and connecting it again.
     public static func reconnectFailureCopy(code: String?, name: String) -> String {
         switch code {
-        case "authorization_server_changed":
+        case "authorization_server_changed", "oauth_issuer_mismatch", "oauth_resource_origin":
             return "The sign-in server changed. Remove this server and connect it again."
+        case "oauth_no_pkce":
+            return "This server's sign-in isn't secure enough to use."
         case "credential_missing":
             return "Remove this server and connect it again."
         default:
