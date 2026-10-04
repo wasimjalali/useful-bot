@@ -153,7 +153,7 @@ export default defineDynamic({
       // has not listed yet: what was saved may be from before a restart, and a
       // resumed bot would otherwise keep calling tools the server has dropped.
       const saved = store?.sessions[sessionId]?.tools ?? [];
-      const held = saved.length > 0
+      const blocked = saved.length > 0
         ? await refreshBeforeMount(
           saved.map((name) => splitMountedName(name)?.connectionId).filter((id): id is string => id !== undefined),
         )
@@ -161,7 +161,7 @@ export default defineDynamic({
       // Read again: the check above may have rewritten it.
       const fresh = saved.length > 0 ? readConnectionToolsStore() : store;
       const picks = selectMountedTools(saved, {
-        connection: (connectionId) => (held.has(connectionId) ? null : findConnectionById(connectionId)),
+        connection: (connectionId) => (blocked.has(connectionId) ? null : findConnectionById(connectionId)),
         indexed: (connectionId, tool) => fresh?.index[connectionId]?.tools.find((item) => item.name === tool),
       });
       for (const { split, entry, indexed } of picks) {
