@@ -587,6 +587,7 @@ export async function refreshBeforeMount(connectionIds: Iterable<string>, storeP
       && !listingIsDue(connectionIndex(id, storePath), connectionStatus(id, storePath), Date.now(), id)
     ) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
     try {
       await Promise.race([
         discoveryRunning(id) ? discoverConnection(entry, { storePath }) : ensureConnectionListing(entry, storePath),
@@ -594,12 +595,17 @@ export async function refreshBeforeMount(connectionIds: Iterable<string>, storeP
           timer = setTimeout(() => reject(new Error("check_timeout")), MCP_READ_TIMEOUT_MS);
         }),
       ]);
+      settled = true;
     } catch (err) {
       discoveryLog(`[useful-bot] connection ${id} could not be checked before mounting: ${errorName(err)}`);
     } finally {
       clearTimeout(timer);
     }
     if (!checkedThisRuntimeFor(id) || !working(connectionStatus(id, storePath)?.state)) blocked.add(id);
+    // A check that ran out of time (a slow refresh in another process, say)
+    // leaves the old ready status in place; a listing that is still due is not
+    // mounted on its word.
+    else if (!settled && listingIsDue(connectionIndex(id, storePath), connectionStatus(id, storePath), Date.now(), id)) blocked.add(id);
   }));
   return blocked;
 }
