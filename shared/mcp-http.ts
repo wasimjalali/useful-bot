@@ -219,6 +219,8 @@ type Session = {
   url: string;
   /** The caller's credentials, plus the session and version once negotiated. */
   headers: Record<string, string>;
+  /** The caller's credentials alone: what a fresh handshake starts from. */
+  base: Record<string, string>;
 };
 
 async function post(
@@ -267,7 +269,66 @@ async function post(
   return res;
 }
 
-async function rpc(
+/** The message carrying this request's id, whether it answers or fails. */
+function answerTo(messages: unknown[], id: number): Record<string, unknown> | null {
+  return messages
+    .map(asRecord)
+    .find((rec): rec is Record<string, unknown> => Boolean(rec && rec.id === id && ("result" in rec || "error" in rec)))
+    ?? null;
+}
+
+/**
+ * Read a response until it holds this request's answer. An event stream is
+ * parsed as it arrives and dropped the moment the answer is in: a server may
+ * keep the stream open, or trail heartbeats, long after it has said what was
+ * asked, and waiting for the end turned a finished call into a timeout.
+ */
+async function readAnswer(
+  res: Response,
+  id: number,
+): Promise<{ answer: Record<string, unknown> | null; seen: number; unparsed: number }> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!res.body || !contentType.toLowerCase().includes("text/event-stream")) {
+    const { messages, unparsed } = rpcMessages(await boundedText(res, MAX_RPC_BODY_BYTES), contentType);
+    return { answer: answerTo(messages, id), seen: messages.length, unparsed };
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let total = 0;
+  let seen = 0;
+  let unparsed = 0;
+  const take = (events: string[]): Record<string, unknown> | null => {
+    for (const event of events) {
+      const parsed = rpcMessages(event, contentType);
+      seen += parsed.messages.length;
+      unparsed += parsed.unparsed;
+      const hit = answerTo(parsed.messages, id);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_RPC_BODY_BYTES) throw new Error("mcp_body_too_large");
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() ?? "";
+      const hit = take(events);
+      if (hit) return { answer: hit, seen, unparsed };
+    }
+    buffer += decoder.decode();
+    return { answer: take([buffer]), seen, unparsed };
+  } finally {
+    try { await reader.cancel(); } catch { /* already done */ }
+  }
+}
+
+async function rpcOnce(
   session: Session,
   method: string,
   params: Record<string, unknown> | undefined,
@@ -276,22 +337,19 @@ async function rpc(
 ): Promise<{ result: unknown; sessionId: string | null }> {
   const res = await post(session.url, { jsonrpc: "2.0", id, method, params }, session.headers, signal);
   const sessionId = res.headers.get("mcp-session-id");
-  let body: string;
+  let read: Awaited<ReturnType<typeof readAnswer>>;
   try {
-    body = await boundedText(res, MAX_RPC_BODY_BYTES);
+    read = await readAnswer(res, id);
   } catch (err) {
     if (err instanceof Error && err.message === "mcp_body_too_large") throw new McpError("protocol", err.message);
     throw new McpError("unreachable", err instanceof Error ? err.message.slice(0, 200) : "mcp_unreachable");
   }
-  const { messages, unparsed } = rpcMessages(body, res.headers.get("content-type") ?? "");
   // The answer is the message carrying this request's id. Anything else in
   // the stream is the server talking to us (a notification, a ping) and is
   // not what was asked.
-  const answer = messages
-    .map(asRecord)
-    .find((rec) => rec && rec.id === id && ("result" in rec || "error" in rec));
+  const { answer } = read;
   if (!answer) {
-    if (messages.length === 0 || unparsed > 0) throw new McpError("parse", "mcp_parse");
+    if (read.seen === 0 || read.unparsed > 0) throw new McpError("parse", "mcp_parse");
     throw new McpError("protocol", "mcp_no_response");
   }
   if (answer.error) {
@@ -299,6 +357,28 @@ async function rpc(
     throw new McpError("protocol", typeof err?.message === "string" ? err.message.slice(0, 200) : "mcp_error");
   }
   return { result: answer.result, sessionId };
+}
+
+/**
+ * One request. A 404 on a request that carried a session id means the server
+ * has forgotten the session; the transport spec has the client start a new one
+ * with a fresh `initialize` (no old id) and send the request again. Once, and
+ * inside the caller's own deadline: a server that keeps forgetting is failing.
+ */
+async function rpc(
+  session: Session,
+  method: string,
+  params: Record<string, unknown> | undefined,
+  id: number,
+  signal?: AbortSignal,
+): Promise<{ result: unknown; sessionId: string | null }> {
+  try {
+    return await rpcOnce(session, method, params, id, signal);
+  } catch (err) {
+    if (!(err instanceof McpError) || err.status !== 404 || !session.headers["mcp-session-id"]) throw err;
+    session.headers = (await openSession(session.url, session.base, signal)).headers;
+    return rpcOnce(session, method, params, id, signal);
+  }
 }
 
 /**
@@ -311,7 +391,7 @@ async function openSession(
   headers: Record<string, string>,
   signal?: AbortSignal,
 ): Promise<Session> {
-  const init = await rpc({ url, headers }, "initialize", {
+  const init = await rpc({ url, headers, base: headers }, "initialize", {
     protocolVersion: MCP_PROTOCOL_VERSION,
     capabilities: {},
     clientInfo: { name: "useful-bot", version: "0.0.0" },
@@ -324,21 +404,17 @@ async function openSession(
   }
   const session: Session = {
     url,
+    base: headers,
     headers: {
       ...headers,
       "mcp-protocol-version": negotiated,
       ...(init.sessionId ? { "mcp-session-id": init.sessionId } : {}),
     },
   };
-  try {
-    const res = await post(url, { jsonrpc: "2.0", method: "notifications/initialized" }, session.headers, signal);
-    try { await res.body?.cancel(); } catch { /* nothing to read */ }
-  } catch (err) {
-    // A server that rejects the notification with a client error has still
-    // answered `initialize`; only a missing credential or a dead server is
-    // worth failing for.
-    if (!(err instanceof McpError) || err.kind === "auth" || err.kind === "unreachable") throw err;
-  }
+  // A server that refuses the transition has not accepted the session, so the
+  // refusal is the answer; a 200, 202 or 204 all pass `post`.
+  const res = await post(url, { jsonrpc: "2.0", method: "notifications/initialized" }, session.headers, signal);
+  try { await res.body?.cancel(); } catch { /* nothing to read */ }
   return session;
 }
 
@@ -378,11 +454,13 @@ function toolResourceUri(meta: unknown): string | null {
  */
 export const MCP_READ_TIMEOUT_MS = 15_000;
 
+const EMPTY_OBJECT_SCHEMA = { type: "object" };
+
 export type McpListing = {
   tools: McpToolInfo[];
   /** Entries the server sent, across every page read. */
   total: number;
-  /** Entries dropped as invalid: not an object, no name, or a name too long. */
+  /** Entries dropped as invalid: not an object, no name, a name too long or an input schema that is not an object schema. */
   dropped: number;
 };
 
@@ -399,8 +477,9 @@ export async function listMcpToolsWithStats(
   for (let page = 0; page < MAX_LIST_PAGES && out.length < MAX_LISTED_TOOLS; page += 1) {
     const listed = await rpc(session, "tools/list", cursor ? { cursor } : {}, 2 + page, signal);
     const rec = asRecord(listed.result);
-    const tools = Array.isArray(rec?.tools) ? rec.tools : [];
-    for (const item of tools) {
+    // Not a listing at all, which is not the same as a listing of nothing.
+    if (!rec || !Array.isArray(rec.tools)) throw new McpError("protocol", "mcp_tools_shape");
+    for (const item of rec.tools) {
       total += 1;
       const row = asRecord(item);
       // Skipped rather than clipped: a clipped name is one the server never
@@ -409,14 +488,23 @@ export async function listMcpToolsWithStats(
         dropped += 1;
         continue;
       }
+      // A schema that is present has to be an object schema. A server that
+      // sends none at all is taken leniently, as a tool with no arguments
+      // declared; one that sends a number or `{"type":"string"}` is broken.
+      const schema = row.inputSchema === undefined ? EMPTY_OBJECT_SCHEMA : asRecord(row.inputSchema);
+      if (!schema || (schema.type !== undefined && schema.type !== "object")) {
+        dropped += 1;
+        continue;
+      }
+      const inputSchema = toolInputSchema(schema);
       out.push({
         name: row.name,
         description: typeof row.description === "string" ? row.description.slice(0, 400) : "",
         visibility: toolVisibility(row._meta),
         appCallable: toolAppCallable(row._meta),
         resourceUri: toolResourceUri(row._meta),
-        inputSchema: toolInputSchema(row.inputSchema),
-        inputSchemaBytes: mountedSchemaBytes(toolInputSchema(row.inputSchema)),
+        inputSchema,
+        inputSchemaBytes: mountedSchemaBytes(inputSchema),
       });
       if (out.length >= MAX_LISTED_TOOLS) break;
     }

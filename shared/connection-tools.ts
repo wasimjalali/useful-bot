@@ -10,13 +10,14 @@ import {
   mountedToolName,
   putConnectionDiscovery,
   putConnectionOperations,
+  putConnectionPending,
   putConnectionStatus,
   type ConnectionState,
   type ConnectionStatus,
   type IndexedTool,
 } from "./connection-tools-store.ts";
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
-import { listMcpToolsWithStats, McpError, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
+import { listMcpToolsWithStats, MCP_READ_TIMEOUT_MS, McpError, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
 import { specWireBytes, type SpecSize } from "./tool-wire-size.ts";
 import { MAX_SESSION_TOOL_BYTES, MAX_SESSION_TOOLS, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
@@ -250,29 +251,111 @@ function logOutcome(entry: ConnectionEntry, status: ConnectionStatus): void {
 export type Discovery = { status: ConnectionStatus; tools: IndexedTool[] };
 
 /**
+ * Every attempt is stamped when it starts, and the stamps only go up, so two
+ * attempts begun in the same millisecond still have an order the store can
+ * judge them by.
+ */
+let lastStamp = 0;
+function stamp(): string {
+  lastStamp = Math.max(Date.now(), lastStamp + 1);
+  return new Date(lastStamp).toISOString();
+}
+
+type Run = { startedAt: string; controller: AbortController; promise: Promise<Discovery> };
+
+/**
+ * The attempt now running for each connection. One process-wide map, so a
+ * search past its TTL, the Connectors list, a Refresh and the connect flow all
+ * share an attempt instead of racing each other to write the answer.
+ */
+const running = new Map<string, Run>();
+
+/** Whether a discovery of this connection is in progress now. */
+export function discoveryRunning(connectionId: string): boolean {
+  return running.has(connectionId);
+}
+
+/** Resolves when every discovery now running has finished. */
+export async function settleAllDiscoveries(): Promise<void> {
+  await Promise.all([...running.values()].map((run) => run.promise));
+}
+
+/**
+ * Stop whatever discovery of this connection is running and wait for it to
+ * end, so removing the connection does not race a write for it.
+ */
+export async function cancelDiscovery(connectionId: string): Promise<void> {
+  const run = running.get(connectionId);
+  if (!run) return;
+  run.controller.abort();
+  await run.promise;
+}
+
+/**
  * Ask a connection what it offers, and write down what came of it: the
  * listing for `find_tools` to search and a status that says why when there is
  * none. The one place a listing is attempted for an MCP server (the connect
  * flow, a search past its TTL and the Connectors page all come through here),
  * and it never throws, so a server that is down cannot take a caller with it.
  *
+ * One attempt per connection at a time. A caller with no credential of its own
+ * joins the one already running. A caller that holds a credential (a sign-in
+ * that just completed, a connect) starts its own, because what is running may
+ * be using the one it replaces; the attempt it supersedes finishes without
+ * writing, and reports what is current.
+ *
  * Only tools the server shows the model are kept, and an allow-list still
  * applies: a tool the owner did not allow is not one a bot may pick up later.
  * `headers` is for a caller that holds the credential already, such as a
  * connect whose row has not been read back.
  */
-export async function discoverConnection(
+export function discoverConnection(
   entry: ConnectionEntry,
   opts: { headers?: Record<string, string>; storePath?: string } = {},
 ): Promise<Discovery> {
-  const checkedAt = new Date().toISOString();
+  const current = running.get(entry.id);
+  if (current && opts.headers === undefined) return current.promise;
+  const startedAt = stamp();
+  const controller = new AbortController();
+  const run: Run = {
+    startedAt,
+    controller,
+    promise: attempt(entry, opts, startedAt, controller.signal).finally(() => {
+      if (running.get(entry.id) === run) running.delete(entry.id);
+    }),
+  };
+  running.set(entry.id, run);
+  return run.promise;
+}
+
+async function attempt(
+  entry: ConnectionEntry,
+  opts: { headers?: Record<string, string>; storePath?: string },
+  startedAt: string,
+  cancel: AbortSignal,
+): Promise<Discovery> {
+  const checkedAt = startedAt;
   const store = opts.storePath;
-  const done = (status: ConnectionStatus, tools: IndexedTool[] | null): Discovery => {
+  try {
+    putConnectionPending(entry.id, startedAt, store);
+  } catch (err) {
+    // Progress only: the outcome is written, and checked, below.
+    discoveryLog(`[useful-bot] connection ${entry.id} discovery could not record its start: ${errorName(err)}`);
+  }
+  /**
+   * Writes the outcome, unless a newer attempt has already written. A write
+   * that fails is a failed discovery: reporting ready for tools nobody can
+   * read back would settle a card as connected with an empty search behind it.
+   */
+  const done = async (status: ConnectionStatus, tools: IndexedTool[] | null): Promise<Discovery> => {
+    let written: boolean;
     try {
-      putConnectionDiscovery(entry.id, { tools, status }, store);
-    } catch {
-      // The index is a cache; a write that failed costs one listing later.
+      written = putConnectionDiscovery(entry.id, { tools, status, unlessNewer: true }, store);
+    } catch (err) {
+      discoveryLog(`[useful-bot] connection ${entry.id} discovery result could not be written: ${errorName(err)}`);
+      return { status: storeFailure(checkedAt), tools: [] };
     }
+    if (!written) return superseded(entry.id, startedAt, store);
     logOutcome(entry, status);
     return { status, tools: tools ?? connectionIndex(entry.id, store)?.tools ?? [] };
   };
@@ -283,7 +366,6 @@ export async function discoverConnection(
     } catch {
       size = null;
     }
-    try { putConnectionOperations(entry.id, size, store); } catch { /* a cache */ }
     const status: ConnectionStatus = size === null
       ? {
         state: "discovery_failed",
@@ -292,13 +374,25 @@ export async function discoverConnection(
         toolCount: null,
       }
       : { state: size.operations > 0 ? "ready" : "zero_tools", lastError: null, checkedAt, toolCount: size.operations };
-    try { putConnectionStatus(entry.id, status, store); } catch { /* a cache */ }
+    try {
+      putConnectionOperations(entry.id, size, store);
+      if (!putConnectionStatus(entry.id, status, store, { unlessNewer: true })) {
+        return superseded(entry.id, startedAt, store);
+      }
+    } catch (err) {
+      discoveryLog(`[useful-bot] connection ${entry.id} discovery result could not be written: ${errorName(err)}`);
+      return { status: storeFailure(checkedAt), tools: [] };
+    }
     logOutcome(entry, status);
     return { status, tools: [] };
   }
   try {
     const headers = opts.headers ?? await connectionHeaders(entry);
-    const listed = await listMcpToolsWithStats(entry.url, headers);
+    const listed = await listMcpToolsWithStats(
+      entry.url,
+      headers,
+      AbortSignal.any([AbortSignal.timeout(MCP_READ_TIMEOUT_MS), cancel]),
+    );
     // Screened before it is kept or returned, not only when the store is next
     // read: a name the upstream would refuse was handed to the model as
     // callable, activated, and then silently never mounted.
@@ -344,6 +438,49 @@ export async function discoverConnection(
   }
 }
 
+function errorName(err: unknown): string {
+  return err instanceof Error ? err.message.slice(0, 120) : "unknown";
+}
+
+function storeFailure(checkedAt: string): ConnectionStatus {
+  return {
+    state: "discovery_failed",
+    lastError: { code: "store_write_failed", message: "The result could not be saved." },
+    checkedAt,
+    toolCount: null,
+  };
+}
+
+/** What an attempt that lost to a newer one reports: the newer one's outcome. */
+async function superseded(connectionId: string, startedAt: string, store: string | undefined): Promise<Discovery> {
+  const newer = running.get(connectionId);
+  if (newer && newer.startedAt !== startedAt) return newer.promise;
+  const status = connectionStatus(connectionId, store);
+  const index = connectionIndex(connectionId, store);
+  return {
+    status: status ?? storeFailure(startedAt),
+    tools: index?.tools ?? [],
+  };
+}
+
+/**
+ * Record that a tool call found the sign-in expired: the status says so, and
+ * the listing is emptied, so the connection stops being offered as working
+ * until the owner signs in again.
+ */
+export function markConnectionExpired(connectionId: string, storePath?: string): void {
+  const failure = classifyDiscoveryError(new OAuthExpiredError());
+  putConnectionDiscovery(connectionId, {
+    tools: [],
+    status: {
+      state: failure.state,
+      lastError: { code: failure.code, message: failure.message },
+      checkedAt: stamp(),
+      toolCount: null,
+    },
+  }, storePath);
+}
+
 /**
  * The listing, refetched when it is missing, too old to trust, or when the
  * last attempt did not work and enough time has passed to try again. The
@@ -355,7 +492,7 @@ export async function ensureConnectionListing(
 ): Promise<Discovery> {
   const current = connectionIndex(entry.id, storePath);
   const status = connectionStatus(entry.id, storePath);
-  if (!listingIsDue(current, status)) {
+  if (!listingIsDue(current, status, Date.now(), entry.id)) {
     return {
       tools: current?.tools ?? [],
       status: status ?? {
@@ -456,17 +593,21 @@ export async function findConnectionTools(
   const unavailable: UnavailableServer[] = [];
   for (const [entry, { tools, status }] of listings) {
     const working = status.state === "ready" || status.state === "zero_tools";
-    // A server that merely went quiet still has the listing from last time.
-    const stale = status.state === "unreachable" && tools.length > 0;
-    if (!working && !stale) {
+    // A server that merely went quiet, or is being checked again, still has
+    // the listing from last time.
+    const cached = (status.state === "unreachable" || status.state === "pending") && tools.length > 0;
+    // The outage is reported even when the cached tools are returned: they
+    // are not a promise that the server answers. A server being checked again
+    // is not an outage, so it is only named when there is nothing to search.
+    if (!working && !(cached && status.state === "pending")) {
       unavailable.push({
         connectionId: entry.id,
         server: oneLineName(entry.name),
         state: status.state,
         hint: unavailableHint(status.state, oneLineName(entry.name)),
       });
-      continue;
     }
+    if (!working && !cached) continue;
     // The listing can be hours old; an allow-list the owner narrowed since
     // applies now, or the tool is found, charged and then never mounted.
     const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;

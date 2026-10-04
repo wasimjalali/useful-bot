@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -11,6 +11,7 @@ import {
   connectionIndex,
   connectionStatus,
   listingIsDue,
+  resetRuntimeChecks,
   LISTING_RETRY_MS,
   INDEX_TTL_MS,
   putConnectionDiscovery,
@@ -25,6 +26,7 @@ import {
 } from "../shared/connection-tools-store.ts";
 import {
   discoverConnection,
+  discoveryRunning,
   eagerConnections,
   ensureConnectionListing,
   ensureMeasured,
@@ -40,10 +42,13 @@ import {
   splitMountedName,
 } from "../shared/connection-tools.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
-import { connectionSecretService, keychainGet, keychainSet, memoryKeychain, setKeychainDriver } from "../shared/keychain.ts";
-import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
+import { connectionSecretService, keychainGet, keychainSet, memoryKeychain, setKeychainDriver, type KeychainDriver } from "../shared/keychain.ts";
+import { removeConnection, upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
+import { ApprovalStore } from "../agent/lib/approvals.ts";
+import { setApprovalStore } from "../agent/lib/write.ts";
+import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { OAuthExpiredError, connectionHeaders } from "../shared/connection-auth.ts";
 import { setOauthFetch } from "../shared/mcp-oauth.ts";
 import { longestOperationName, measureOpenApiSpec, measureOpenApiSpecText, specWireBytes } from "../shared/tool-wire-size.ts";
@@ -945,4 +950,336 @@ test("a server outside the catalogue connects, lists and is searched with no Com
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+// UB-003 review round 1: discovery is one run per connection, honest about its
+// outcome and about being in progress.
+
+const rpcResult = (id: number | undefined, result: unknown) =>
+  new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { headers: { "content-type": "application/json" } });
+
+/** A server whose handshake works and whose tools/list is `answer(authorization)`. */
+function authedServer(answer: (authorization: string) => Response | Promise<Response>): { listings: string[] } {
+  const seen = { listings: [] as string[] };
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    if (body.method === "initialize") return rpcResult(1, { protocolVersion: "2025-06-18" });
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const authorization = String((init?.headers as Record<string, string>).authorization ?? "");
+    seen.listings.push(authorization);
+    return answer(authorization);
+  }) as typeof fetch);
+  return seen;
+}
+
+test("a listing that is not a listing at all is a failed discovery, never zero tools", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry()).entry;
+  for (const result of [null, {}, { tools: "x" }]) {
+    mcpServer(() => result as never);
+    const found = await discoverConnection(row);
+    assert.equal(found.status.state, "discovery_failed", JSON.stringify(result));
+  }
+  mcpServer(() => ({ tools: [] }));
+  assert.equal((await discoverConnection(row)).status.state, "zero_tools");
+});
+
+test("a server whose every input schema is broken is malformed, and one broken schema drops only that tool", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry()).entry;
+  mcpServer(() => ({ tools: [
+    { name: "bad_one", inputSchema: 42 },
+    { name: "bad_two", inputSchema: { type: "string" } },
+  ] }));
+  const bad = await discoverConnection(row);
+  assert.equal(bad.status.state, "malformed");
+  assert.equal(bad.status.dropped, 2);
+  mcpServer(() => ({ tools: [
+    { name: "bad_one", inputSchema: null },
+    { name: "fine_one", inputSchema: { type: "object", properties: { q: { type: "string" } } } },
+    { name: "no_schema" },
+  ] }));
+  const mixed = await discoverConnection(row);
+  assert.equal(mixed.status.state, "ready");
+  assert.equal(mixed.status.dropped, 1);
+  assert.deepEqual(mixed.tools.map((tool) => tool.name), ["fine_one", "no_schema"]);
+});
+
+test("overlapping discoveries of one connection are one request to the server", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry()).entry;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const seen = authedServer(async () => {
+    await gate;
+    return rpcResult(2, { tools: [{ name: "list_things", description: "List" }] });
+  });
+  const first = discoverConnection(row);
+  // Search, the list's background run, a Refresh: same id, no credential of their own.
+  const second = discoverConnection(row);
+  const third = ensureConnectionListing(row);
+  assert.equal(discoveryRunning("example"), true);
+  release();
+  const out = await Promise.all([first, second, third]);
+  assert.equal(seen.listings.length, 1);
+  assert.deepEqual(out.map((item) => item.status.state), ["ready", "ready", "ready"]);
+  assert.equal(discoveryRunning("example"), false);
+});
+
+test("a discovery that started before a newer one never overwrites it", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  setKeychainDriver(memoryKeychain());
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  // The old token is refused, but only after the new sign-in has been listed.
+  authedServer(async (authorization) => {
+    if (authorization === "Bearer old") {
+      await gate;
+      return new Response("no", { status: 401 });
+    }
+    return rpcResult(2, { tools: [{ name: "list_videos", description: "List" }] });
+  });
+  const old = discoverConnection(row, { headers: { authorization: "Bearer old" } });
+  // The sign-in completes with its own token while the old request is still out.
+  const fresh = await discoverConnection(row, { headers: { authorization: "Bearer new" } });
+  assert.equal(fresh.status.state, "ready");
+  release();
+  const settled = await old;
+  assert.equal(settled.status.state, "ready", "the older run reports what is current");
+  assert.equal(connectionStatus("tella")?.state, "ready");
+  assert.deepEqual(connectionIndex("tella")?.tools.map((tool) => tool.name), ["list_videos"]);
+});
+
+test("an unreachable server with cached tools still says so, beside the tools it returns", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp" })).entry;
+  let mode: "ok" | "down" = "ok";
+  mcpServer(() => mode === "down" ? "down" : { tools: [{ name: "list_videos", description: "List the videos" }] });
+  await discoverConnection(row);
+  mode = "down";
+  const down = await discoverConnection(row);
+  assert.equal(down.status.state, "unreachable");
+  const found = await findConnectionTools("tella videos", 5);
+  assert.deepEqual(found.hits.map((hit) => hit.name), ["tella__list_videos"]);
+  assert.deepEqual(found.unavailable.map((item) => [item.connectionId, item.state]), [["tella", "unreachable"]]);
+  // Nothing matching: the outage is not hidden behind "no connected server has that".
+  const none = await findConnectionTools("zebra crossing", 5);
+  assert.equal(none.hits.length, 0);
+  assert.equal(none.unavailable.length, 1);
+});
+
+test("a discovery in progress is recorded as pending and keeps the tools it had", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry()).entry;
+  let hold = false;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  authedServer(async () => {
+    if (hold) await gate;
+    return rpcResult(2, { tools: [{ name: "list_things", description: "List" }, { name: "make_thing", description: "Make" }] });
+  });
+  assert.equal((await discoverConnection(row)).status.state, "ready");
+  hold = true;
+  const running = discoverConnection(row);
+  assert.equal(connectionStatus("example")?.state, "pending");
+  assert.equal(connectionStatus("example")?.toolCount, 2);
+  assert.equal(connectionIndex("example")?.tools.length, 2, "the cached tools stay while it is checked");
+  release();
+  assert.equal((await running).status.state, "ready");
+  assert.equal(connectionStatus("example")?.state, "ready");
+  // A row nobody has ever listed shows pending too, with nothing cached.
+  const other = upsertConnection(entry({ id: "other", url: "https://other.example.com/mcp" })).entry;
+  hold = true;
+  const first = discoverConnection(other);
+  assert.equal(connectionStatus("other")?.state, "pending");
+  assert.equal(connectionStatus("other")?.toolCount, null);
+  await first;
+});
+
+test("a discovery that cannot be written down is a failed one, not a ready one", async () => {
+  paths();
+  const lines: string[] = [];
+  setDiscoveryLogger((line) => lines.push(line));
+  const row = upsertConnection(entry()).entry;
+  // A store whose directory is a file: every write to it throws.
+  const dir = mkdtempSync(join(tmpdir(), "ub-ctools-nowrite-"));
+  writeFileSync(join(dir, "blocker"), "x");
+  const storePath = join(dir, "blocker", "connection-tools.json");
+  mcpServer(() => ({ tools: [{ name: "list_things", description: "List" }] }));
+  const found = await discoverConnection(row, { storePath });
+  assert.equal(found.status.state, "discovery_failed");
+  assert.equal(found.status.lastError?.code, "store_write_failed");
+  assert.equal(found.tools.length, 0);
+  assert.ok(lines.some((line) => /write/.test(line) && /example/.test(line)), lines.join("\n"));
+});
+
+test("the first use after a restart lists again, then the six hours apply", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry()).entry;
+  const server = mcpServer(() => ({ tools: [{ name: "list_things", description: "List" }] }));
+  await ensureConnectionListing(row);
+  assert.equal(server.listings, 1);
+  await ensureConnectionListing(row);
+  assert.equal(server.listings, 1, "fresh in this process");
+  // A new process: the file says the listing is minutes old and ready.
+  resetRuntimeChecks();
+  assert.equal(listingIsDue(connectionIndex("example"), connectionStatus("example")), false, "pure: age alone");
+  assert.equal(listingIsDue(connectionIndex("example"), connectionStatus("example"), Date.now(), "example"), true);
+  await ensureConnectionListing(row);
+  assert.equal(server.listings, 2);
+  await ensureConnectionListing(row);
+  assert.equal(server.listings, 2);
+});
+
+/** A grant and an approval store, so a mounted tool can be executed for real. */
+function grantedSession(sessionId: string): void {
+  const dir = mkdtempSync(join(tmpdir(), "ub-ctools-grant-"));
+  process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+  process.env.UB_APPROVALS_PATH = join(dir, "approvals.json");
+  setApprovalStore(new ApprovalStore(Date.now, join(dir, "approvals.json")));
+  upsertSessionGrant({ sessionId, path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+}
+
+test("a tool call that finds the sign-in expired records it, and the tool stops being offered", async () => {
+  paths();
+  setDiscoveryLogger(() => {});
+  setKeychainDriver(memoryKeychain());
+  grantedSession("s-expired");
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", url: "https://api.tella.com/mcp", authKind: "oauth" })).entry;
+  keychainSet(connectionSecretService("tella"), bundleJson({ expiresAt: Date.now() + 3_600_000 }));
+  mcpServer(() => ({ tools: [{ name: "list_videos", description: "List the videos" }] }));
+  assert.equal((await discoverConnection(row)).status.state, "ready");
+  const resolve = (connectionTools as unknown as {
+    events: { "step.started": (event: unknown, ctx: unknown) => Promise<Record<string, { execute: (input: unknown, ctx: unknown) => Promise<Record<string, unknown>> }> | null> };
+  }).events["step.started"];
+  const ctx = { session: { id: "s-expired" } };
+  const first = await resolve({}, ctx);
+  await first!.find_tools.execute({ query: "tella videos" }, ctx);
+  const second = await resolve({}, ctx);
+  assert.ok(second?.tella__list_videos);
+  // The token runs out with nothing to renew it.
+  keychainSet(connectionSecretService("tella"), bundleJson());
+  const called = await second!.tella__list_videos.execute({}, ctx);
+  assert.equal(called.error, "oauth_expired");
+  assert.equal(connectionStatus("tella")?.state, "expired");
+  assert.equal(connectionIndex("tella")?.tools.length, 0);
+  const third = await resolve({}, ctx);
+  assert.equal(third?.tella__list_videos, undefined);
+});
+
+// UB-003 review round 1: what a failed refresh means, and one refresh at a time.
+
+const tokenJson = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+test("only a refused refresh token expires the sign-in; a dead network, server or address is unreachable", async () => {
+  paths();
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+  const stored = bundleJson({ refreshToken: "rt_old" });
+  keychainSet(connectionSecretService("tella"), stored);
+  mcpServer(() => ({ tools: [{ name: "list_videos" }] }));
+  // A listing from before, which an outage must not wipe.
+  putConnectionDiscovery("tella", {
+    tools: [{ name: "list_videos", description: "", inputSchema: null, inputSchemaBytes: 2 }],
+    status: { state: "ready", lastError: null, checkedAt: new Date().toISOString(), toolCount: 1 },
+  });
+  const cases: Array<[string, () => Response, "expired" | "unreachable" | "auth_failed"]> = [
+    ["400 invalid_grant", () => tokenJson({ error: "invalid_grant" }, 400), "expired"],
+    ["401 invalid_grant", () => tokenJson({ error: "invalid_grant" }, 401), "expired"],
+    ["400 invalid_client", () => tokenJson({ error: "invalid_client" }, 400), "auth_failed"],
+    ["503", () => tokenJson({ error: "temporarily_unavailable" }, 503), "unreachable"],
+    ["429", () => tokenJson({ error: "slow_down" }, 429), "unreachable"],
+    ["network", () => { throw new TypeError("fetch failed"); }, "unreachable"],
+    ["timeout", () => { throw new DOMException("The operation timed out", "TimeoutError"); }, "unreachable"],
+    ["a 5xx body that is not JSON", () => new Response("<html>bad gateway</html>", { status: 502 }), "unreachable"],
+  ];
+  for (const [name, answer, state] of cases) {
+    setOauthFetch(async () => answer());
+    const found = await discoverConnection(row);
+    assert.equal(found.status.state, state, name);
+    assert.equal(keychainGet(connectionSecretService("tella")), stored, `${name}: the credential is left alone`);
+  }
+  assert.equal(connectionIndex("tella")?.tools.length, 0, "the last refusal emptied the listing");
+  // An outage keeps the listing it had; only a definite answer drops it.
+  putConnectionDiscovery("tella", {
+    tools: [{ name: "list_videos", description: "", inputSchema: null, inputSchemaBytes: 2 }],
+    status: { state: "ready", lastError: null, checkedAt: new Date().toISOString(), toolCount: 1 },
+  });
+  setOauthFetch(async () => tokenJson({}, 503));
+  assert.equal((await discoverConnection(row)).status.state, "unreachable");
+  assert.equal(connectionIndex("tella")?.tools.length, 1);
+  // The token host resolving to a private address is the URL guard refusing, not a sign-in refused.
+  setConnectionLookup(async (host) => host === "auth.example.com" ? "10.0.0.4" : "8.8.8.8");
+  setOauthFetch(async () => tokenJson({ access_token: "x" }));
+  const guarded = await discoverConnection(row);
+  assert.equal(guarded.status.state, "unreachable");
+});
+
+test("concurrent callers share one refresh, and the stored refresh token wins over a stale read", async () => {
+  paths();
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+  keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+  let requests = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  setOauthFetch(async () => {
+    requests += 1;
+    await gate;
+    return tokenJson({ access_token: "at_new", refresh_token: "rt_new", expires_in: 3600 });
+  });
+  const both = Promise.all([connectionHeaders(row), connectionHeaders(row), connectionHeaders(row)]);
+  release();
+  assert.deepEqual((await both).map((headers) => headers.authorization), ["Bearer at_new", "Bearer at_new", "Bearer at_new"]);
+  assert.equal(requests, 1, "a rotated refresh token is spent once");
+  // Another process refreshed between this one's read and its refresh: the
+  // stored bundle is used and nothing is sent.
+  const mem = memoryKeychain();
+  const fresh = bundleJson({ accessToken: "at_other", refreshToken: "rt_other", expiresAt: Date.now() + 3_600_000 });
+  setKeychainDriver(mem);
+  keychainSet(connectionSecretService("tella"), bundleJson({ refreshToken: "rt_old" }));
+  const packedFresh = Buffer.from(fresh, "utf8").toString("base64url");
+  let reads = 0;
+  const racing: KeychainDriver = {
+    get(service) {
+      reads += 1;
+      if (reads === 1) return mem.get(service);
+      mem.set(service, packedFresh);
+      return mem.get(service);
+    },
+    set: (service, value) => mem.set(service, value),
+    del: (service) => mem.del(service),
+  };
+  setKeychainDriver(racing);
+  requests = 0;
+  assert.deepEqual(await connectionHeaders(row), { authorization: "Bearer at_other" });
+  assert.equal(requests, 0);
+});
+
+test("a refresh that finishes after the connection was removed stores nothing", async () => {
+  paths();
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  setDiscoveryLogger(() => {});
+  const row = upsertConnection(entry({ id: "tella", name: "Tella", authKind: "oauth" })).entry;
+  const stored = bundleJson({ refreshToken: "rt_old" });
+  keychainSet(connectionSecretService("tella"), stored);
+  setOauthFetch(async () => {
+    removeConnection("tella");
+    mem.del(connectionSecretService("tella"));
+    return tokenJson({ access_token: "at_new", refresh_token: "rt_new", expires_in: 3600 });
+  });
+  await assert.rejects(() => connectionHeaders(row), /connection_missing/);
+  assert.equal(keychainGet(connectionSecretService("tella")), null, "no credential is written back for a removed connection");
 });

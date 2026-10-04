@@ -41,6 +41,8 @@ const KNOWN: Record<string, number> = {
   connection_builtin: 403,
   not_oauth: 400,
   authorization_server_changed: 409,
+  oauth_issuer_mismatch: 409,
+  oauth_resource_origin: 409,
   credential_missing: 409,
 };
 
@@ -98,7 +100,7 @@ export async function DELETE(request: Request) {
   }
   try {
     const { id } = await readId(request);
-    deleteConnection(id);
+    await deleteConnection(id);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return failure(err, "disconnect_failed");

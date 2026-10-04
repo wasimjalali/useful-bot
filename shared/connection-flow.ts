@@ -35,6 +35,7 @@ import { specWireBytes } from "./tool-wire-size.ts";
 import {
   discoverConnection,
   eagerConnections,
+  ensureConnectionListing,
   isEagerConnection,
   mountedToolBytes,
   mountedToolCount,
@@ -251,6 +252,25 @@ function settleProbe(
   }, storePath);
 }
 
+/**
+ * Settle a card against a row that was there before it: the owner already
+ * approved this server, so what the card says is what that row is doing. Its
+ * status when it has a fresh one, a listing when it has none (or is being
+ * listed now), and only a working row connects the card. Marking the card
+ * connected on the row's mere existence told the bot a server that refuses its
+ * credential, or is down, was ready.
+ */
+async function settleAgainstRow(
+  proposalId: string,
+  row: ConnectionEntry,
+  now: number,
+  storePath: string,
+): Promise<void> {
+  const found = await ensureConnectionListing(row);
+  const status = found.status.state === "pending" ? (await discoverConnection(row)).status : found.status;
+  settleProbe(proposalId, row, status, now, storePath);
+}
+
 function markConnected(
   proposalId: string,
   entry: ConnectionEntry,
@@ -314,16 +334,14 @@ export async function startConnectionConfirm(
       // using, and an API key landing on an OAuth row destroys its refresh
       // token with nothing left to re-mint it.
       //
-      // The tool count is left null, which is the same thing the card says
-      // when the count call fails: reading it would mean holding the other
-      // connection's credential, which is the thing this branch exists to
-      // avoid.
+      // What the row offers is read with the row's own credential, by the row's
+      // own id; this card's secret is never involved.
       // Reopen on a waiting card reaches here, and its first Authorize wrote
       // a pending sign-in. Nothing else would ever reap it: the card is
       // connected now, so it can never start a fresh one, and a callback with
       // that state is refused before the completion drops it.
       dropOauthPendingForProposal(proposalId);
-      markConnected(proposalId, existing, null, opts.now ?? Date.now(), storePath);
+      await settleAgainstRow(proposalId, existing, opts.now ?? Date.now(), storePath);
       return {};
     }
     if (proposal.authKind === "oauth") {
@@ -379,7 +397,7 @@ export async function startConnectionConfirm(
       // Another card holds this URL. Nothing of this card's is in the store,
       // so nothing of its own may be written: its secret would land on the
       // winner's Keychain item and replace the credential that row is using.
-      markConnected(proposalId, outcome.entry, null, opts.now ?? Date.now(), storePath);
+      await settleAgainstRow(proposalId, outcome.entry, opts.now ?? Date.now(), storePath);
       return {};
     }
     const stored = outcome.entry;
@@ -418,16 +436,32 @@ export function reauthorizeProposalId(connectionId: string): string {
 async function completeReauthorize(
   code: string,
   state: string,
-  peek: { proposalId: string; connectionId: string },
+  peek: { proposalId: string; connectionId: string; resource?: string },
 ): Promise<{ proposalId: string }> {
   const entry = findConnectionById(peek.connectionId);
   if (!entry || entry.authKind !== "oauth" || reauthorizeProposalId(entry.id) !== peek.proposalId) {
     dropOauthPending(state);
     throw new Error("connection_missing");
   }
+  // The sign-in was asked for a resource; a token for any other origin than
+  // this connection's would be stored over the one it holds. Checked before
+  // the code is spent, and a sign-in that names none is refused too.
+  let sameOrigin = false;
+  try {
+    sameOrigin = new URL(peek.resource as string).origin === new URL(entry.url).origin;
+  } catch {
+    sameOrigin = false;
+  }
+  if (!sameOrigin) {
+    dropOauthPending(state);
+    throw new Error("oauth_resource_origin");
+  }
   const { bundle, pending } = await completeMcpOAuth({ code, state });
   logTokenAudience(pending.connectionId, bundle.accessToken, pending.resource);
   if (pending.proposalId !== peek.proposalId || pending.connectionId !== entry.id) throw new Error("oauth_state");
+  // The owner may have removed the connection while the browser was open; a
+  // credential stored now would have no row pointing at it.
+  if (!findConnectionById(entry.id)) throw new Error("connection_missing");
   keychainSet(connectionSecretService(entry.id), JSON.stringify(bundle));
   await discoverConnection(entry, { headers: { authorization: `Bearer ${bundle.accessToken}` } });
   return { proposalId: peek.proposalId };
@@ -459,7 +493,7 @@ export async function completeConnectionOAuth(
     // it is not being called: the verifier and the client secret would sit on
     // disk for good, because a retry with this state is refused above.
     dropOauthPending(state);
-    markConnected(pendingPeek.proposalId, settled, null, opts.now ?? Date.now(), storePath);
+    await settleAgainstRow(pendingPeek.proposalId, settled, opts.now ?? Date.now(), storePath);
     return { proposalId: pendingPeek.proposalId };
   }
   const provisional: ConnectionEntry = {
@@ -520,7 +554,7 @@ export async function completeConnectionOAuth(
     // write. Storing the bundle would replace the credential that row is
     // using, and leave this access and refresh token with nothing pointing
     // at them.
-    markConnected(pending.proposalId, outcome.entry, null, opts.now ?? Date.now(), storePath);
+    await settleAgainstRow(pending.proposalId, outcome.entry, opts.now ?? Date.now(), storePath);
     return { proposalId: pending.proposalId };
   }
   const stored = outcome.entry;

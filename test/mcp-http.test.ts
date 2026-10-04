@@ -397,3 +397,181 @@ test("a listing reports how many tools it dropped as invalid", async () => {
     reset();
   }
 });
+
+// UB-003 review round 1.
+
+test("a tools/list result that is not an object with a tools array is a failed listing", async () => {
+  for (const result of [null, {}, { tools: "x" }, { tools: { name: "a" } }, "tools", 7]) {
+    server((row) => {
+      if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+      if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return json(row.id, result);
+    });
+    try {
+      await assert.rejects(
+        () => listMcpToolsWithStats("https://api.example.com/mcp"),
+        (err: unknown) => err instanceof McpError && err.kind === "protocol",
+        JSON.stringify(result),
+      );
+    } finally {
+      reset();
+    }
+  }
+  // An honest empty listing is still one.
+  server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(row.id, { tools: [] });
+  });
+  try {
+    assert.deepEqual(await listMcpToolsWithStats("https://api.example.com/mcp"), { tools: [], total: 0, dropped: 0 });
+  } finally {
+    reset();
+  }
+});
+
+test("an input schema that is not an object schema drops the tool; a missing one is an empty object schema", async () => {
+  server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return json(row.id, { tools: [
+      { name: "missing" },
+      { name: "good", inputSchema: { type: "object", properties: { q: { type: "string" } } } },
+      { name: "untyped", inputSchema: { properties: { q: { type: "string" } } } },
+      { name: "number", inputSchema: 42 },
+      { name: "nullish", inputSchema: null },
+      { name: "array", inputSchema: [] },
+      { name: "stringy", inputSchema: { type: "string" } },
+      { name: "listy", inputSchema: { type: ["object", "null"] } },
+    ] });
+  });
+  try {
+    const out = await listMcpToolsWithStats("https://api.example.com/mcp");
+    assert.deepEqual(out.tools.map((tool) => tool.name), ["missing", "good", "untyped"]);
+    assert.equal(out.total, 8);
+    assert.equal(out.dropped, 5);
+    assert.deepEqual(out.tools[0].inputSchema, { type: "object" });
+  } finally {
+    reset();
+  }
+});
+
+test("a response is taken as soon as its own event arrives, without waiting for the stream to end", async () => {
+  let cancelled = false;
+  server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    const note = { jsonrpc: "2.0", method: "notifications/message", params: {} };
+    const answer = { jsonrpc: "2.0", id: row.id, result: ONE_TOOL };
+    const encoder = new TextEncoder();
+    // The answer arrives in two chunks, the second split mid-event, and the
+    // stream is then held open with nothing more to say.
+    const text = `data: ${JSON.stringify(note)}\n\ndata: ${JSON.stringify(answer)}\n\n`;
+    const cut = text.indexOf("tools") + 2;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(text.slice(0, cut)));
+        controller.enqueue(encoder.encode(text.slice(cut)));
+      },
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": "text/event-stream" } });
+  });
+  try {
+    let timer: NodeJS.Timeout | undefined;
+    const tools = await Promise.race([
+      listMcpTools("https://api.example.com/mcp"),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("waited for the stream to end")), 1500); }),
+    ]).finally(() => clearTimeout(timer));
+    assert.deepEqual(tools.map((tool) => tool.name), ["list_videos"]);
+    assert.equal(cancelled, true, "the rest of the stream was dropped");
+  } finally {
+    reset();
+  }
+});
+
+test("a session the server forgot is opened again once, within the same call", async () => {
+  let answered404 = 0;
+  const seen = server((row) => {
+    if (row.method === "initialize") {
+      return json(row.id, { protocolVersion: "2025-06-18" }, { "mcp-session-id": answered404 === 0 ? "old" : "new" });
+    }
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    if (row.headers["mcp-session-id"] === "old") {
+      answered404 += 1;
+      return new Response("session not found", { status: 404 });
+    }
+    return json(row.id, ONE_TOOL);
+  });
+  try {
+    const tools = await listMcpTools("https://api.example.com/mcp", { authorization: "Bearer abc" });
+    assert.deepEqual(tools.map((tool) => tool.name), ["list_videos"]);
+    assert.deepEqual(seen.map((row) => row.method), [
+      "initialize", "notifications/initialized", "tools/list",
+      "initialize", "notifications/initialized", "tools/list",
+    ]);
+    // The second handshake carries the credential and no stale session or version.
+    assert.equal(seen[3].headers["mcp-session-id"], undefined);
+    assert.equal(seen[3].headers["mcp-protocol-version"], undefined);
+    assert.equal(seen[3].headers.authorization, "Bearer abc");
+    assert.equal(seen[5].headers["mcp-session-id"], "new");
+  } finally {
+    reset();
+  }
+  // Only once: a second 404 is the answer.
+  const stubborn = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" }, { "mcp-session-id": "s" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return new Response("gone", { status: 404 });
+  });
+  try {
+    await assert.rejects(() => listMcpTools("https://api.example.com/mcp"), (err: unknown) => err instanceof McpError && err.status === 404);
+    assert.equal(stubborn.filter((row) => row.method === "initialize").length, 2);
+    assert.equal(stubborn.filter((row) => row.method === "tools/list").length, 2);
+  } finally {
+    reset();
+  }
+  // No session, no recovery: a 404 on a server that never issued one is final.
+  const sessionless = server((row) => {
+    if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+    if (row.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return new Response("gone", { status: 404 });
+  });
+  try {
+    await assert.rejects(() => listMcpTools("https://api.example.com/mcp"), (err: unknown) => err instanceof McpError && err.status === 404);
+    assert.equal(sessionless.filter((row) => row.method === "initialize").length, 1);
+  } finally {
+    reset();
+  }
+});
+
+test("a rejected initialized notification is a protocol failure; 200, 202 and 204 are fine", async () => {
+  for (const status of [400, 404, 405, 500]) {
+    const seen = server((row) => {
+      if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+      if (row.method === "notifications/initialized") return new Response("no", { status });
+      return json(row.id, ONE_TOOL);
+    });
+    try {
+      await assert.rejects(
+        () => listMcpTools("https://api.example.com/mcp"),
+        (err: unknown) => err instanceof McpError && err.status === status,
+        String(status),
+      );
+      assert.equal(seen.some((row) => row.method === "tools/list"), false, `nothing after a ${status}`);
+    } finally {
+      reset();
+    }
+  }
+  for (const accepted of [() => new Response("{}", { status: 200 }), () => new Response(null, { status: 202 }), () => new Response(null, { status: 204 })]) {
+    server((row) => {
+      if (row.method === "initialize") return json(row.id, { protocolVersion: "2025-06-18" });
+      if (row.method === "notifications/initialized") return accepted();
+      return json(row.id, ONE_TOOL);
+    });
+    try {
+      assert.equal((await listMcpTools("https://api.example.com/mcp")).length, 1);
+    } finally {
+      reset();
+    }
+  }
+});

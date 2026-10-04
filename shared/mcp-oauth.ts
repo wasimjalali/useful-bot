@@ -10,6 +10,20 @@ import { statePath } from "./stack.ts";
  * caller; they go in Keychain, not here. Pending PKCE state is a 0600 file.
  */
 
+/**
+ * Who the authorization server was when a sign-in was made: its issuer and the
+ * origin of each endpoint the flow used. A sign-in again for the same
+ * connection has to meet the same server, all of it: pinning only the token
+ * host would let a server that moved its sign-in page or its registration
+ * endpoint keep the connection's refresh token and send the owner elsewhere.
+ */
+export type AsPin = {
+  issuer: string;
+  authorizationOrigin: string;
+  tokenOrigin: string;
+  registrationOrigin: string;
+};
+
 export type OAuthPending = {
   state: string;
   verifier: string;
@@ -22,6 +36,7 @@ export type OAuthPending = {
   createdAt: string;
   /** RFC 8707 resource the sign-in was started for; sent again on the exchange. */
   resource?: string;
+  pin?: AsPin;
 };
 
 export type OAuthTokenBundle = {
@@ -33,6 +48,8 @@ export type OAuthTokenBundle = {
   tokenEndpoint: string;
   /** Sent on every refresh. Absent on a bundle stored before it was kept. */
   resource?: string;
+  /** Absent on a bundle stored before the server was pinned. */
+  pin?: AsPin;
 };
 
 type FetchFn = typeof fetch;
@@ -60,6 +77,15 @@ export function oauthPendingPath(root = process.env.UB_OAUTH_PENDING_PATH): stri
   return statePath("connections-oauth.json");
 }
 
+/** A sign-in not finished in this long is abandoned; its verifier and client secret go with it. */
+const PENDING_TTL_MS = 15 * 60 * 1000;
+
+function pendingIsLive(row: OAuthPending): boolean {
+  const created = Date.parse(row.createdAt);
+  return Number.isFinite(created) && Date.now() - created <= PENDING_TTL_MS;
+}
+
+/** Live rows only: an abandoned one is invisible here and dropped by the next write. */
 function readPending(path = oauthPendingPath()): OAuthPending[] {
   if (!existsSync(path)) return [];
   try {
@@ -74,7 +100,9 @@ function readPending(path = oauthPendingPath()): OAuthPending[] {
         && typeof rec.connectionId === "string"
         && typeof rec.tokenEndpoint === "string"
         && typeof rec.clientId === "string"
-        && typeof rec.redirectUri === "string");
+        && typeof rec.redirectUri === "string"
+        && typeof rec.createdAt === "string")
+        && pendingIsLive(item as OAuthPending);
     });
   } catch {
     return [];
@@ -83,7 +111,7 @@ function readPending(path = oauthPendingPath()): OAuthPending[] {
 
 function writePending(rows: OAuthPending[], path = oauthPendingPath()): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(rows)}\n`, { encoding: "utf8", mode: 0o600 });
+  writeFileSync(path, `${JSON.stringify(rows.filter(pendingIsLive))}\n`, { encoding: "utf8", mode: 0o600 });
   chmodSync(path, 0o600);
 }
 
@@ -230,8 +258,34 @@ async function firstDocument(
   throw new Error(failure);
 }
 
+/** What a scope token may be (RFC 6749 section 3.3), and how much of one this side will pass on. */
+const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
+const SCOPE_MAX_CHARS = 1024;
+
+/** The tokens that are scope tokens, as one string cut at the cap; null when none are. */
+function scopeString(tokens: unknown[]): string | null {
+  const kept: string[] = [];
+  let length = 0;
+  for (const token of tokens) {
+    if (typeof token !== "string" || !SCOPE_TOKEN.test(token)) continue;
+    if (length + token.length + (kept.length ? 1 : 0) > SCOPE_MAX_CHARS) break;
+    length += token.length + (kept.length ? 1 : 0);
+    kept.push(token);
+  }
+  return kept.length ? kept.join(" ") : null;
+}
+
+/** The scope a 401 asks for, or null when any part of it is not a scope token or the whole is too long. */
+function challengeScope(raw: string | null): string | null {
+  if (!raw) return null;
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const scope = scopeString(tokens);
+  return scope !== null && scope.split(" ").length === tokens.length ? scope : null;
+}
+
 async function protectedResource(mcpUrl: string): Promise<{
   authorizationServers: string[];
+  issuers: string[];
   resource: string;
   scope: string | null;
 }> {
@@ -251,13 +305,13 @@ async function protectedResource(mcpUrl: string): Promise<{
     "oauth_no_as",
   );
   const servers = (rec.authorization_servers as unknown[]).filter((item): item is string => typeof item === "string");
-  const supported = Array.isArray(rec.scopes_supported)
-    ? rec.scopes_supported.filter((item): item is string => typeof item === "string" && /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(item))
-    : [];
   return {
     authorizationServers: servers.map((item) => assertPublicHttpsUrl(item)),
+    // As the server wrote them: the metadata's `issuer` is compared with these.
+    issuers: servers,
     resource: resourceFor(mcpUrl, rec.resource),
-    scope: challenge.scope ?? (supported.length ? supported.join(" ") : null),
+    scope: challengeScope(challenge.scope)
+      ?? (Array.isArray(rec.scopes_supported) ? scopeString(rec.scopes_supported) : null),
   };
 }
 
@@ -267,7 +321,8 @@ async function protectedResource(mcpUrl: string): Promise<{
  * ahead of it (and OIDC's is also tried appended); with none, the two root
  * documents.
  */
-async function authorizationServer(issuer: string): Promise<{
+async function authorizationServer(issuer: string, declaredIssuer: string): Promise<{
+  issuer: string;
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint: string | null;
@@ -289,13 +344,45 @@ async function authorizationServer(issuer: string): Promise<{
     (doc) => typeof doc.authorization_endpoint === "string" && typeof doc.token_endpoint === "string",
     "oauth_as_incomplete",
   );
-  return {
+  const out = {
     authorizationEndpoint: assertPublicHttpsUrl(rec.authorization_endpoint as string),
     tokenEndpoint: assertPublicHttpsUrl(rec.token_endpoint as string),
     registrationEndpoint: typeof rec.registration_endpoint === "string"
       ? assertPublicHttpsUrl(rec.registration_endpoint)
       : null,
   };
+  // RFC 8414 section 3.3, and the same rule for OIDC discovery: the issuer the
+  // document names is the one it was fetched for. A document that names
+  // another is some other server's metadata served from this address.
+  const named = typeof rec.issuer === "string" ? trimSlash(rec.issuer) : null;
+  if (named === null || named !== trimSlash(declaredIssuer)) throw new Error("oauth_issuer_mismatch");
+  return { issuer: named, ...out };
+}
+
+function trimSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function pinOf(as: { issuer: string; authorizationEndpoint: string; tokenEndpoint: string; registrationEndpoint: string | null }): AsPin | null {
+  return as.registrationEndpoint === null ? null : {
+    issuer: as.issuer,
+    authorizationOrigin: new URL(as.authorizationEndpoint).origin,
+    tokenOrigin: new URL(as.tokenEndpoint).origin,
+    registrationOrigin: new URL(as.registrationEndpoint).origin,
+  };
+}
+
+function isAsPin(value: unknown): value is AsPin {
+  const rec = asRecord(value);
+  if (!rec) return false;
+  if (typeof rec.issuer !== "string" || rec.issuer === "") return false;
+  return ["authorizationOrigin", "tokenOrigin", "registrationOrigin"].every((key) => {
+    try {
+      return typeof rec[key] === "string" && new URL(rec[key] as string).origin === rec[key];
+    } catch {
+      return false;
+    }
+  });
 }
 
 async function registerClient(
@@ -335,25 +422,40 @@ export async function startMcpOAuth(input: {
   connectionId: string;
   redirectUri: string;
   pendingPath?: string;
-  /** A sign-in again for a connection that holds a credential: the token endpoint is then required and pinned. */
+  /**
+   * A sign-in again for a connection that holds a credential: the token
+   * endpoint is then required and its origin pinned, and so is the rest of the
+   * server when the credential kept `expectedPin`. A credential from before the
+   * pin existed is held to its token endpoint and the issuer check alone.
+   */
   reauthorize?: boolean;
   expectedTokenEndpoint?: string;
+  expectedPin?: unknown;
 }): Promise<{ authorizeUrl: string; redirectHost: string; state: string }> {
   const resource = await protectedResource(input.mcpUrl);
-  const as = await authorizationServer(resource.authorizationServers[0]);
+  const as = await authorizationServer(resource.authorizationServers[0], resource.issuers[0]);
+  const pin = pinOf(as);
   if (input.reauthorize === true) {
     let same = false;
     try {
       same = typeof input.expectedTokenEndpoint === "string"
         && input.expectedTokenEndpoint !== ""
         && new URL(as.tokenEndpoint).origin === new URL(input.expectedTokenEndpoint).origin;
+      if (same && input.expectedPin !== undefined) {
+        const expected = input.expectedPin;
+        same = isAsPin(expected) && pin !== null
+          && pin.issuer === expected.issuer
+          && pin.authorizationOrigin === expected.authorizationOrigin
+          && pin.tokenOrigin === expected.tokenOrigin
+          && pin.registrationOrigin === expected.registrationOrigin;
+      }
     } catch {
       same = false;
     }
     // Before a client is registered or anything is opened.
     if (!same) throw new Error("authorization_server_changed");
   }
-  if (!as.registrationEndpoint) throw new Error("oauth_no_dcr");
+  if (!as.registrationEndpoint || !pin) throw new Error("oauth_no_dcr");
   const client = await registerClient(as.registrationEndpoint, input.redirectUri, input.name);
   const { verifier, challenge } = pkce();
   const state = b64url(randomBytes(24));
@@ -377,6 +479,7 @@ export async function startMcpOAuth(input: {
     redirectUri: input.redirectUri,
     createdAt: new Date().toISOString(),
     resource: resource.resource,
+    pin,
   };
   const path = input.pendingPath ?? oauthPendingPath();
   const rows = readPending(path).filter((row) => row.proposalId !== input.proposalId);
@@ -393,12 +496,8 @@ export async function completeMcpOAuth(input: {
   const path = input.pendingPath ?? oauthPendingPath();
   const rows = readPending(path);
   const pending = rows.find((row) => row.state === input.state);
+  // A sign-in older than fifteen minutes is not in `rows` at all.
   if (!pending) throw new Error("oauth_state");
-  const created = Date.parse(pending.createdAt);
-  if (!Number.isFinite(created) || Date.now() - created > 15 * 60 * 1000) {
-    writePending(rows.filter((row) => row.state !== input.state), path);
-    throw new Error("oauth_expired");
-  }
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code: input.code,
@@ -429,8 +528,28 @@ export async function completeMcpOAuth(input: {
       clientSecret: pending.clientSecret,
       tokenEndpoint: pending.tokenEndpoint,
       ...(pending.resource ? { resource: pending.resource } : {}),
+      ...(pending.pin ? { pin: pending.pin } : {}),
     },
   };
+}
+
+/**
+ * The token endpoint answered a refresh with a refusal. Carries what it said
+ * (`status` and the OAuth `error` code) so the caller can tell a refresh token
+ * that is spent (`invalid_grant`) from a server that is merely down. A network
+ * error, a timeout or a refused address is not this: those propagate as they
+ * are.
+ */
+export class OAuthRefreshError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(status: number, code: string | null) {
+    super(`oauth_refresh_${status}`);
+    this.name = "OAuthRefreshError";
+    this.status = status;
+    this.code = code;
+  }
 }
 
 export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTokenBundle> {
@@ -448,7 +567,16 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body,
   });
-  if (!res.ok) throw new Error("oauth_refresh");
+  if (!res.ok) {
+    let code: string | null = null;
+    try {
+      const error = asRecord(await boundedJson(res))?.error;
+      code = typeof error === "string" ? error.slice(0, 80) : null;
+    } catch {
+      // A refusal with no readable body is still a refusal, without a code.
+    }
+    throw new OAuthRefreshError(res.status, code);
+  }
   const rec = asRecord(await boundedJson(res));
   if (!rec || typeof rec.access_token !== "string") throw new Error("oauth_refresh");
   const expiresIn = typeof rec.expires_in === "number" ? rec.expires_in : null;
@@ -460,6 +588,7 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
     clientSecret: bundle.clientSecret,
     tokenEndpoint: bundle.tokenEndpoint,
     ...(bundle.resource ? { resource: bundle.resource } : {}),
+    ...(bundle.pin ? { pin: bundle.pin } : {}),
   };
 }
 

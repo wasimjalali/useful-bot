@@ -1,5 +1,5 @@
 import { parseBundle } from "./connection-auth.ts";
-import { discoverConnection } from "./connection-tools.ts";
+import { cancelDiscovery, discoverConnection, discoveryRunning, settleAllDiscoveries } from "./connection-tools.ts";
 import { reauthorizeProposalId } from "./connection-flow.ts";
 import {
   connectionIndex,
@@ -18,7 +18,7 @@ import {
   type ConnectionKind,
 } from "./connections-store.ts";
 import { connectionSecretService, keychainDel, keychainGet } from "./keychain.ts";
-import { startMcpOAuth } from "./mcp-oauth.ts";
+import { dropOauthPendingForProposal, startMcpOAuth } from "./mcp-oauth.ts";
 
 /**
  * What the Connectors page can do with a direct (MCP or OpenAPI) connection:
@@ -46,6 +46,18 @@ function oneLine(value: string, max: number): string {
   return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, max);
 }
 
+/** The URL as the list shows it: a key or a token in the query, or a fragment, is not the owner's to see again. */
+function displayUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
 export function publicConnection(entry: ConnectionEntry): PublicConnection {
   const status = connectionStatus(entry.id);
   const index = connectionIndex(entry.id);
@@ -55,7 +67,7 @@ export function publicConnection(entry: ConnectionEntry): PublicConnection {
   return {
     id: entry.id,
     name: entry.name,
-    url: entry.url,
+    url: displayUrl(entry.url),
     kind: entry.kind,
     authKind: entry.authKind,
     builtin: entry.id === EXCALIDRAW_CONNECTION.id,
@@ -71,27 +83,24 @@ export function listPublicConnections(): PublicConnection[] {
   return readConnectionsStore().connections.map(publicConnection);
 }
 
-const discovering = new Map<string, Promise<unknown>>();
-
 /**
  * Start discovery in the background for every row whose listing is missing or
- * due, one run per id at a time. Never awaited by the caller: a slow server
- * must not hold the list. The row shows as checking until the run lands.
+ * due, one run per id at a time (`discoverConnection` shares a running one).
+ * Never awaited by the caller: a slow server must not hold the list. The row
+ * shows as checking until the run lands.
  */
 export function startDueDiscoveries(): void {
   for (const entry of readConnectionsStore().connections) {
-    if (discovering.has(entry.id)) continue;
-    if (!listingIsDue(connectionIndex(entry.id), connectionStatus(entry.id))) continue;
-    const run = discoverConnection(entry)
-      .catch((err) => console.error(`[connections] discovery for ${entry.id} failed: ${err instanceof Error ? err.message : "unknown"}`))
-      .finally(() => discovering.delete(entry.id));
-    discovering.set(entry.id, run);
+    if (discoveryRunning(entry.id)) continue;
+    if (!listingIsDue(connectionIndex(entry.id), connectionStatus(entry.id), Date.now(), entry.id)) continue;
+    discoverConnection(entry)
+      .catch((err) => console.error(`[connections] discovery for ${entry.id} failed: ${err instanceof Error ? err.message : "unknown"}`));
   }
 }
 
 /** Resolves when every discovery now running has finished. */
 export async function settleDiscoveries(): Promise<void> {
-  await Promise.all([...discovering.values()]);
+  await settleAllDiscoveries();
 }
 
 export async function refreshConnection(id: string): Promise<PublicConnection> {
@@ -123,6 +132,7 @@ export async function reauthorizeConnection(
   const { authorizeUrl, redirectHost } = await startMcpOAuth({
     reauthorize: true,
     expectedTokenEndpoint: bundle.tokenEndpoint,
+    expectedPin: bundle.pin,
     mcpUrl: entry.url,
     name: entry.name,
     proposalId: reauthorizeProposalId(entry.id),
@@ -132,14 +142,22 @@ export async function reauthorizeConnection(
   return { authorizeUrl, redirectHost };
 }
 
-/** Remove the row, its Keychain item, its listing and its status. */
-export function deleteConnection(id: string): void {
+/**
+ * Remove the row, its Keychain item, its listing, its status and any sign-in
+ * still open for it.
+ */
+export async function deleteConnection(id: string): Promise<void> {
   if (id === EXCALIDRAW_CONNECTION.id) throw new Error("connection_builtin");
   if (!findConnectionById(id)) throw new Error("connection_missing");
+  // A discovery still out would write its answer for a connection that is no
+  // longer there. Stopped and waited for, so everything below is one
+  // uninterrupted run of synchronous removals.
+  while (discoveryRunning(id)) await cancelDiscovery(id);
   // The credential first: if this throws the row is still there to retry
   // against, where a row removed first would leave the secret with no way to
   // find it again. Deleting an item that was never stored is not an error.
   keychainDel(connectionSecretService(id));
   removeConnection(id);
   removeConnectionIndex(id);
+  dropOauthPendingForProposal(reauthorizeProposalId(id));
 }

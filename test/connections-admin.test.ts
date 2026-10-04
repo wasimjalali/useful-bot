@@ -12,6 +12,7 @@ import {
   startDueDiscoveries,
 } from "../shared/connections-admin.ts";
 import { connectionIndex, connectionStatus, putConnectionDiscovery } from "../shared/connection-tools-store.ts";
+import { discoveryRunning } from "../shared/connection-tools.ts";
 import { setDiscoveryLogger } from "../shared/connection-tools.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
 import { EXCALIDRAW_CONNECTION, findConnectionById, seedDefaultConnections, upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
@@ -120,19 +121,19 @@ test("remove drops the row, its Keychain item, its listing and its status", asyn
   server(() => "ok");
   await refreshConnection("tella");
   assert.ok(connectionIndex("tella"));
-  deleteConnection("tella");
+  await deleteConnection("tella");
   assert.equal(findConnectionById("tella"), null);
   assert.equal(keychainGet(connectionSecretService("tella")), null);
   assert.equal(connectionIndex("tella"), null);
   assert.equal(connectionStatus("tella"), null);
   assert.deepEqual(listPublicConnections(), []);
-  assert.throws(() => deleteConnection("tella"), /connection_missing/);
+  await assert.rejects(() => deleteConnection("tella"), /connection_missing/);
 });
 
-test("the built-in Excalidraw connection cannot be removed", () => {
+test("the built-in Excalidraw connection cannot be removed", async () => {
   paths();
   seedDefaultConnections();
-  assert.throws(() => deleteConnection(EXCALIDRAW_CONNECTION.id), /connection_builtin/);
+  await assert.rejects(() => deleteConnection(EXCALIDRAW_CONNECTION.id), /connection_builtin/);
   assert.ok(findConnectionById("excalidraw"));
   assert.equal(listPublicConnections().find((item) => item.id === "excalidraw")?.builtin, true);
 });
@@ -163,6 +164,7 @@ test("reauthorize starts a sign-in for the same connection, and only for an OAut
       scopes_supported: ["openid", "offline_access"],
     }),
     "https://authkit.tella.tv/.well-known/oauth-authorization-server": json({
+      issuer: "https://authkit.tella.tv",
       authorization_endpoint: "https://authkit.tella.tv/oauth2/authorize",
       token_endpoint: "https://authkit.tella.tv/oauth2/token",
       registration_endpoint: "https://authkit.tella.tv/oauth2/register",
@@ -198,6 +200,7 @@ function oauthRoutes(asHost: string) {
       authorization_servers: [`https://${asHost}`],
     }),
     [`https://${asHost}/.well-known/oauth-authorization-server`]: json({
+      issuer: `https://${asHost}`,
       authorization_endpoint: `https://${asHost}/oauth2/authorize`,
       token_endpoint: `https://${asHost}/oauth2/token`,
       registration_endpoint: `https://${asHost}/oauth2/register`,
@@ -275,4 +278,78 @@ test("a reauthorize with an empty or missing expected endpoint fails closed; a f
   await assert.rejects(() => startMcpOAuth({ ...input, reauthorize: true, expectedTokenEndpoint: "not a url" }), /authorization_server_changed/);
   const first = await startMcpOAuth(input);
   assert.equal(new URL(first.authorizeUrl).hostname, "authkit.tella.tv");
+});
+
+// UB-003 review round 1.
+
+test("the list never carries a query string or a fragment of a connection's URL", async () => {
+  paths();
+  upsertConnection(row({ authKind: "none", authHeader: null, url: "https://api.tella.com/mcp?api_key=sk_live_in_the_url&x=1#frag" }));
+  const listed = listPublicConnections();
+  assert.equal(listed[0].url, "https://api.tella.com/mcp");
+  assert.equal(JSON.stringify(listed).includes("sk_live"), false);
+});
+
+test("a reauthorize meets the whole server it signed in with: issuer and each endpoint's origin", async () => {
+  paths();
+  upsertConnection(row({ authKind: "oauth", authHeader: null }));
+  const pin = {
+    issuer: "https://authkit.tella.tv",
+    authorizationOrigin: "https://authkit.tella.tv",
+    tokenOrigin: "https://authkit.tella.tv",
+    registrationOrigin: "https://authkit.tella.tv",
+  };
+  const store = (patch: Record<string, unknown>) => keychainSet(connectionSecretService("tella"), JSON.stringify({
+    accessToken: "at_secret", refreshToken: "rt_secret", expiresAt: null, clientId: "client_0", clientSecret: null,
+    tokenEndpoint: "https://authkit.tella.tv/oauth2/token", ...patch,
+  }));
+  const seen = oauthRoutes("authkit.tella.tv");
+  store({ pin });
+  assert.ok((await reauthorizeConnection("tella", CALLBACK)).authorizeUrl);
+  for (const moved of [{ authorizationOrigin: "https://login.example.net" }, { registrationOrigin: "https://register.example.net" }, { issuer: "https://elsewhere.example.net" }]) {
+    store({ pin: { ...pin, ...moved } });
+    seen.length = 0;
+    await assert.rejects(() => reauthorizeConnection("tella", CALLBACK), /authorization_server_changed/, JSON.stringify(moved));
+    assert.equal(seen.some((url) => url.endsWith("/oauth2/register")), false);
+  }
+  // A pin that is damaged fails closed too.
+  store({ pin: { issuer: "https://authkit.tella.tv" } });
+  await assert.rejects(() => reauthorizeConnection("tella", CALLBACK), /authorization_server_changed/);
+});
+
+test("removing a connection stops its running discovery, leaves nothing it wrote, and forgets its pending sign-in", async () => {
+  paths();
+  upsertConnection(row({ authKind: "none", authHeader: null }));
+  // A server that never answers tools/list and gives up only when it is told to.
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-06-18" } }), { headers: { "content-type": "application/json" } });
+    }
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    return await new Promise<Response>((_resolve, reject) => {
+      if (init?.signal?.aborted) {
+        reject(new Error("aborted"));
+        return;
+      }
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  }) as typeof fetch);
+  startDueDiscoveries();
+  assert.equal(discoveryRunning("tella"), true);
+  await deleteConnection("tella");
+  assert.equal(discoveryRunning("tella"), false);
+  assert.equal(findConnectionById("tella"), null);
+  await settleDiscoveries();
+  assert.equal(connectionStatus("tella"), null, "no status written for a removed connection");
+  assert.equal(connectionIndex("tella"), null);
+  // A sign-in again that was open when the connection was removed.
+  upsertConnection(row({ authKind: "oauth", authHeader: null }));
+  storeBundle("https://authkit.tella.tv/oauth2/token");
+  oauthRoutes("authkit.tella.tv");
+  const out = await reauthorizeConnection("tella", CALLBACK);
+  const state = new URL(out.authorizeUrl).searchParams.get("state") ?? "";
+  assert.ok(findOauthPending(state));
+  await deleteConnection("tella");
+  assert.equal(findOauthPending(state), null);
 });

@@ -9,6 +9,7 @@ import {
 } from "../../shared/connection-tools-store.ts";
 import {
   findConnectionTools,
+  markConnectionExpired,
   onDemandConnections,
   selectMountedTools,
 } from "../../shared/connection-tools.ts";
@@ -259,6 +260,14 @@ export default defineDynamic({
               // A sign-in that ran out is the owner's to renew, and the bot
               // can say so rather than relay an opaque failure.
               if (err instanceof OAuthExpiredError) {
+                // Said where the Connectors page and the next search read it
+                // too, not only to this call: the tool is not offered again
+                // as working until the owner signs in.
+                try {
+                  markConnectionExpired(connectionId);
+                } catch (writeErr) {
+                  console.warn(`[useful-bot] connection ${connectionId} expired sign-in could not be recorded: ${writeErr instanceof Error ? writeErr.message : "unknown"}`);
+                }
                 return {
                   status: "blocked",
                   error: "oauth_expired",

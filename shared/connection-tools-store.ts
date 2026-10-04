@@ -373,6 +373,7 @@ export function putConnectionIndex(
       tools: tools.filter((tool) => isMountableToolName(connectionId, tool.name)).slice(0, 200),
     };
   }, path);
+  checkedThisRuntime.add(connectionId);
 }
 
 /**
@@ -396,17 +397,46 @@ export function putConnectionListingFailed(
 }
 
 /**
+ * Connections whose listing this process has written. A listing read from the
+ * file may be from before a restart (a revoked sign-in, a server that changed
+ * its tools), so the first use of each connection in a new process asks again,
+ * whatever the file's age says. Not persisted, on purpose.
+ */
+const checkedThisRuntime = new Set<string>();
+
+/** Test hook: the next use of every connection is its first in a new process. */
+export function resetRuntimeChecks(): void {
+  checkedThisRuntime.clear();
+}
+
+/**
+ * Whether the stored status was written by an attempt that started after this
+ * one did. Attempts are stamped when they start, so a slow one that finishes
+ * after a newer one must not put its answer over it.
+ */
+function supersededBy(store: ConnectionToolsStore, connectionId: string, startedAt: string): boolean {
+  const newer = Date.parse(store.status[connectionId]?.checkedAt ?? "");
+  const mine = Date.parse(startedAt);
+  return Number.isFinite(newer) && Number.isFinite(mine) && newer > mine;
+}
+
+/**
  * Record what one attempt to list a connection found, with the listing it
  * produced when there is one. `tools: null` keeps the last listing beside the
  * attempt, which is what a server that merely went quiet should leave behind;
  * a server that answered and refused should pass `[]`.
+ *
+ * `unlessNewer` is for an attempt that has been running: it writes nothing,
+ * and returns false, when an attempt that started later has already written
+ * (its `pending` marker included).
  */
 export function putConnectionDiscovery(
   connectionId: string,
-  outcome: { tools: IndexedTool[] | null; status: ConnectionStatus },
+  outcome: { tools: IndexedTool[] | null; status: ConnectionStatus; unlessNewer?: boolean },
   path = connectionToolsPath(),
-): void {
-  updateConnectionToolsStore((store) => {
+): boolean {
+  const written = updateConnectionToolsStore((store) => {
+    if (outcome.unlessNewer && supersededBy(store, connectionId, outcome.status.checkedAt)) return false;
     const broken = outcome.status.state !== "ready" && outcome.status.state !== "zero_tools";
     store.index[connectionId] = {
       fetchedAt: outcome.status.checkedAt,
@@ -416,18 +446,51 @@ export function putConnectionDiscovery(
       ...(broken ? { failed: true } : {}),
     };
     store.status[connectionId] = outcome.status;
+    return true;
+  }, path);
+  if (written) checkedThisRuntime.add(connectionId);
+  return written;
+}
+
+/**
+ * Record that an attempt to list a connection has started. Only the status
+ * moves: the listing it had stays beside it, so a refresh of a working server
+ * does not empty the search while it runs, and the Connectors page can show
+ * the row as checking.
+ */
+export function putConnectionPending(
+  connectionId: string,
+  startedAt: string,
+  path = connectionToolsPath(),
+): void {
+  updateConnectionToolsStore((store) => {
+    if (supersededBy(store, connectionId, startedAt)) return;
+    store.status[connectionId] = {
+      state: "pending",
+      lastError: null,
+      checkedAt: startedAt,
+      toolCount: store.status[connectionId]?.toolCount ?? null,
+    };
   }, path);
 }
 
-/** Record a status with no listing change, for a connection whose tools are eve's. */
+/**
+ * Record a status with no listing change, for a connection whose tools are
+ * eve's. `unlessNewer` as for `putConnectionDiscovery`.
+ */
 export function putConnectionStatus(
   connectionId: string,
   status: ConnectionStatus,
   path = connectionToolsPath(),
-): void {
-  updateConnectionToolsStore((store) => {
+  opts: { unlessNewer?: boolean } = {},
+): boolean {
+  const written = updateConnectionToolsStore((store) => {
+    if (opts.unlessNewer && supersededBy(store, connectionId, status.checkedAt)) return false;
     store.status[connectionId] = status;
+    return true;
   }, path);
+  if (written) checkedThisRuntime.add(connectionId);
+  return written;
 }
 
 export function connectionStatus(
@@ -443,6 +506,7 @@ export function removeConnectionIndex(connectionId: string, path = connectionToo
     delete store.index[connectionId];
     delete store.status[connectionId];
   }, path);
+  checkedThisRuntime.delete(connectionId);
 }
 
 /**
@@ -496,14 +560,17 @@ export function indexIsStale(index: ConnectionIndex | null, now = Date.now()): b
 /**
  * Whether a connection's tools should be listed again. A working listing keeps
  * for the full TTL; one that failed, came back empty or was never judged is
- * tried again after `LISTING_RETRY_MS`.
+ * tried again after `LISTING_RETRY_MS`. With a `connectionId`, a connection
+ * this process has not listed yet is due whatever its age.
  */
 export function listingIsDue(
   index: ConnectionIndex | null,
   status: ConnectionStatus | null,
   now = Date.now(),
+  connectionId?: string,
 ): boolean {
   if (!index) return true;
+  if (connectionId !== undefined && !checkedThisRuntime.has(connectionId)) return true;
   const at = Date.parse(status?.checkedAt ?? index.fetchedAt);
   if (!Number.isFinite(at)) return true;
   // A row from before status was kept is judged by what it holds.

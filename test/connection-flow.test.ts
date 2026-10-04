@@ -13,7 +13,7 @@ import {
   startConnectionConfirm,
 } from "../shared/connection-flow.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
-import { EXCALIDRAW_CONNECTION, findConnectionById, readConnectionsStore, upsertConnection } from "../shared/connections-store.ts";
+import { EXCALIDRAW_CONNECTION, findConnectionById, readConnectionsStore, removeConnection, upsertConnection } from "../shared/connections-store.ts";
 
 function storePathOf(): string {
   return process.env.UB_AGENT_STORE_PATH ?? "";
@@ -22,7 +22,10 @@ import { listHandoffs, queueHandoff } from "../shared/handoffs.ts";
 import { memoryKeychain, setKeychainDriver, connectionSecretService, keychainGet, keychainSet } from "../shared/keychain.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
 import { connectionIndex, connectionStatus, putConnectionOperations } from "../shared/connection-tools-store.ts";
-import { setDiscoveryLogger } from "../shared/connection-tools.ts";
+import { discoverConnection, setDiscoveryLogger } from "../shared/connection-tools.ts";
+import { ApprovalStore } from "../agent/lib/approvals.ts";
+import { setApprovalStore } from "../agent/lib/write.ts";
+import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import connectionTools from "../agent/tools/connection_tools.ts";
 import { MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
 import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
@@ -347,14 +350,17 @@ test("an oauth sign-in that finishes after another card connected settles, it do
   });
   keychainSet(connectionSecretService("example-first"), "tok_live");
 
-  let fetched = false;
-  setMcpFetch(async () => { fetched = true; return new Response("{}"); });
-  setOauthFetch(async () => { fetched = true; return new Response("{}"); });
+  // The live row is listed with its own credential, which is the one fetch
+  // this settles with; the sign-in's code is never exchanged.
+  setDiscoveryLogger(() => {});
+  listing((id) => rpcJson(id, { tools: [{ name: "list_widgets", description: "List" }] }));
+  let exchanged = false;
+  setOauthFetch(async () => { exchanged = true; return new Response("{}"); });
 
   const out = await completeConnectionOAuth("code-1", "statevalue123456", { storePath });
   assert.equal(out.proposalId, proposal.id);
   // The code was never exchanged, so no token was minted to strand.
-  assert.equal(fetched, false);
+  assert.equal(exchanged, false);
   const rows = readConnectionsStore().connections;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].id, "example-first");
@@ -807,14 +813,30 @@ test("an oauth callback whose listing fails leaves the card failed and fires no 
   assert.ok(keychainGet(connectionSecretService("tella"))?.includes("at_secret_1"));
 });
 
-test("a listing that works marks the card connected, and its tools are mounted on the next step", async () => {
+test("a listing that works marks the card connected, and its tools are mounted and run on the next step", async () => {
   setKeychainDriver(memoryKeychain());
   setDiscoveryLogger(() => {});
-  const { storePath } = paths();
-  listing((id) => rpcJson(id, { tools: [
-    { name: "list_videos", description: "List the owner's Tella videos" },
-    { name: "create_video", description: "Create a video" },
-  ] }));
+  const { storePath, dir } = paths();
+  // Answers by method, so a tool call that is not made as one cannot pass for a listing.
+  const methods: string[] = [];
+  const calls: Array<{ name?: string; arguments?: unknown }> = [];
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number; params?: { name?: string; arguments?: unknown } };
+    methods.push(String(body.method));
+    if (body.method === "initialize") return rpcJson(1, { protocolVersion: "2025-06-18" });
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    if (body.method === "tools/list") {
+      return rpcJson(body.id, { tools: [
+        { name: "list_videos", description: "List the owner's Tella videos" },
+        { name: "create_video", description: "Create a video" },
+      ] });
+    }
+    if (body.method === "tools/call") {
+      calls.push({ name: body.params?.name, arguments: body.params?.arguments });
+      return rpcJson(body.id, { content: [{ type: "text", text: `ran ${body.params?.name}` }] });
+    }
+    return new Response(`unexpected ${body.method}`, { status: 400 });
+  }) as typeof fetch);
   setOauthFetch(async () => tokenReply());
   const card = seedCard({ connectionId: "tella", name: "Tella", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
   oauthPending(card);
@@ -829,6 +851,10 @@ test("a listing that works marks the card connected, and its tools are mounted o
     events: { "step.started": (event: unknown, ctx: unknown) => Promise<Record<string, { execute: (input: unknown, ctx: unknown) => Promise<Record<string, unknown>> }> | null> };
   }).events["step.started"];
   const ctx = { session: { id: "s-tella" } };
+  process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+  process.env.UB_APPROVALS_PATH = join(dir, "approvals.json");
+  setApprovalStore(new ApprovalStore(Date.now, join(dir, "approvals.json")));
+  upsertSessionGrant({ sessionId: "s-tella", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
   const first = await resolve({}, ctx);
   assert.ok(first?.find_tools);
   const found = await first!.find_tools.execute({ query: "tella videos" }, ctx);
@@ -837,6 +863,12 @@ test("a listing that works marks the card connected, and its tools are mounted o
   const second = await resolve({}, ctx);
   assert.ok(second?.tella__list_videos, "the tool is callable on the next step");
   assert.ok(second?.tella__create_video);
+  // And it runs: a tools/call reaches the server with the arguments, and its answer comes back.
+  const ran = await second!.tella__list_videos.execute({}, ctx);
+  assert.equal(ran.status, "ok");
+  assert.match(String(ran.result), /ran list_videos/);
+  assert.deepEqual(calls, [{ name: "list_videos", arguments: {} }]);
+  assert.equal(methods.filter((method) => method === "tools/call").length, 1);
 });
 
 test("reauthorize replaces the credential on the same row and relists", async () => {
@@ -867,6 +899,7 @@ test("reauthorize replaces the credential on the same row and relists", async ()
     clientSecret: null,
     redirectUri: CALLBACK,
     createdAt: new Date().toISOString(),
+    resource: "https://mcp.example.com/",
   }]));
   // The new token is the one tools/list accepts.
   const seenAuth: string[] = [];
@@ -885,4 +918,156 @@ test("reauthorize replaces the credential on the same row and relists", async ()
   assert.ok(seenAuth.every((value) => value === "Bearer at_secret_1"));
   assert.equal(connectionStatus("tella")?.state, "ready");
   assert.equal(findOauthPending("statevalue123456"), null);
+});
+
+// UB-003 review round 1: a card settled against a row that exists says what that row says.
+
+function liveRow(authKind: "bearer" | "oauth" = "bearer") {
+  upsertConnection({
+    id: "example",
+    kind: "mcp",
+    name: "Example",
+    url: "https://mcp.example.com/mcp",
+    description: "Connected first",
+    authKind,
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  });
+  keychainSet(connectionSecretService("example"), "tok_live");
+}
+
+test("a second card for a server whose row is not working is failed with the row's state, and connects once the row works", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  liveRow();
+  listing(() => new Response("no", { status: 401 }));
+  const card = seedCard({ connectionId: "example-2", name: "Example Two" });
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  const failed = cardOf(card.id, storePath);
+  assert.equal(failed.phase, "failed");
+  assert.equal(failed.reason, "auth_failed");
+  assert.equal(failed.status, "pending");
+  assert.equal(listHandoffs().length, 0);
+  assert.equal(readConnectionsStore().connections.length, 1);
+  assert.equal(keychainGet(connectionSecretService("example")), "tok_live");
+  // The owner fixes the row (a Refresh); the same card then connects, with the row's tool count.
+  listing((id) => rpcJson(id, { tools: [{ name: "list_widgets", description: "List" }, { name: "make_widget", description: "Make" }] }));
+  assert.equal((await discoverConnection(findConnectionById("example")!)).status.state, "ready");
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  const connected = cardOf(card.id, storePath);
+  assert.equal(connected.phase, "connected");
+  assert.equal(connected.toolCount, 2);
+  assert.equal(listHandoffs().length, 1);
+  assert.match(listHandoffs()[0].message, /connected the server example\./);
+});
+
+test("a row nobody has listed yet is listed for the card that settles on it", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  liveRow();
+  listing(() => { throw new TypeError("fetch failed"); });
+  const card = seedCard({ connectionId: "example-2", name: "Example Two" });
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  assert.equal(cardOf(card.id, storePath).reason, "unreachable");
+  assert.equal(connectionStatus("example")?.state, "unreachable");
+  assert.equal(listHandoffs().length, 0);
+});
+
+test("an oauth sign-in that settles on a row that is not working leaves its card failed, and its pending sign-in gone", async () => {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  const { storePath } = paths();
+  liveRow();
+  listing(() => new Response("down", { status: 503 }));
+  const card = seedCard({ connectionId: "example-late", authKind: "oauth", phase: "waiting", waitingSince: new Date().toISOString() });
+  oauthPending(card, "example-late");
+  let exchanged = false;
+  setOauthFetch(async () => { exchanged = true; return tokenReply(); });
+  await completeConnectionOAuth("code-1", "statevalue123456");
+  assert.equal(exchanged, false, "no code is spent on a row that was already there");
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "failed");
+  assert.equal(stored.reason, "unreachable");
+  assert.equal(findOauthPending("statevalue123456"), null);
+  assert.equal(listHandoffs().length, 0);
+  assert.equal(keychainGet(connectionSecretService("example")), "tok_live");
+});
+
+test("a connect whose listing cannot be written down is not connected", async () => {
+  setKeychainDriver(memoryKeychain());
+  const lines: string[] = [];
+  setDiscoveryLogger((line) => lines.push(line));
+  const { storePath, dir } = paths();
+  // The listing store sits under a file, so every write to it throws.
+  writeFileSync(join(dir, "blocker"), "x");
+  process.env.UB_CONNECTION_TOOLS_PATH = join(dir, "blocker", "connection-tools.json");
+  listing((id) => rpcJson(id, { tools: [{ name: "list_widgets", description: "List" }] }));
+  const card = seedCard();
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  const stored = cardOf(card.id, storePath);
+  assert.equal(stored.phase, "failed");
+  assert.equal(stored.reason, "discovery_failed");
+  assert.equal(stored.status, "pending");
+  assert.equal(listHandoffs().length, 0);
+  assert.ok(lines.some((line) => /could not be written/.test(line)), lines.join("\n"));
+});
+
+/** A reauthorize sign-in waiting on the row `tella`, with the credential it holds now. */
+function reauthSetup(pendingResource: string | undefined) {
+  setKeychainDriver(memoryKeychain());
+  setDiscoveryLogger(() => {});
+  paths();
+  upsertConnection({
+    id: "tella",
+    kind: "mcp",
+    name: "Tella",
+    url: "https://mcp.example.com/mcp",
+    description: "Tella MCP server",
+    authKind: "oauth",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  });
+  const held = JSON.stringify({ accessToken: "held", refreshToken: null, expiresAt: null, clientId: "cid", clientSecret: null, tokenEndpoint: "https://auth.example.com/token" });
+  keychainSet(connectionSecretService("tella"), held);
+  writeFileSync(process.env.UB_OAUTH_PENDING_PATH ?? "", JSON.stringify([{
+    state: "statevalue123456",
+    verifier: "verifier-value-123456",
+    proposalId: "reauth_tella",
+    connectionId: "tella",
+    tokenEndpoint: "https://auth.example.com/token",
+    clientId: "cid",
+    clientSecret: null,
+    redirectUri: CALLBACK,
+    createdAt: new Date().toISOString(),
+    ...(pendingResource ? { resource: pendingResource } : {}),
+  }]));
+  return held;
+}
+
+test("a reauthorize whose sign-in was for another origin is refused before the code is spent", async () => {
+  for (const resource of ["https://evil.example.net/", "https://mcp.example.com:8443/", undefined]) {
+    const held = reauthSetup(resource);
+    let exchanged = false;
+    setOauthFetch(async () => { exchanged = true; return tokenReply(); });
+    await assert.rejects(() => completeConnectionOAuth("code-2", "statevalue123456"), /oauth_resource_origin/, String(resource));
+    assert.equal(exchanged, false);
+    assert.equal(keychainGet(connectionSecretService("tella")), held);
+    assert.equal(findOauthPending("statevalue123456"), null, "the verifier does not stay on disk");
+  }
+});
+
+test("a reauthorize that finishes after the connection was removed stores nothing", async () => {
+  const held = reauthSetup("https://mcp.example.com/");
+  listing(() => new Response("no", { status: 401 }));
+  setOauthFetch(async () => {
+    removeConnection("tella");
+    return tokenReply();
+  });
+  await assert.rejects(() => completeConnectionOAuth("code-2", "statevalue123456"), /connection_missing/);
+  assert.equal(keychainGet(connectionSecretService("tella")), held);
+  assert.equal(connectionStatus("tella"), null);
 });
