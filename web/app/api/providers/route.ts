@@ -15,7 +15,7 @@ import {
   type ProviderStore,
 } from "../../../../shared/providers.ts";
 import {
-  applyProvidersDelete,
+  applyProvidersDeleteCapturing,
   CONNECTION_REMOVED_BOTS_PINNED,
   applyProvidersPut,
   isStringRecord,
@@ -135,12 +135,12 @@ export async function DELETE(request: Request) {
     // Then delete, and only once the connection is gone end the renewable
     // session (best effort, bounded). A failed delete revokes nothing. The
     // saved account registrations stay for the next sign-in.
-    const touchesChatGpt = body.connectionId === "openai:oauth" || body.providerId === "openai";
-    if (touchesChatGpt) cancelPendingChatGptSignIn();
-    const held = touchesChatGpt ? readProviderStore().connections["openai:oauth"]?.credential : undefined;
-    const store = applyProvidersDelete(body);
+    if (body.connectionId === "openai:oauth" || body.providerId === "openai") cancelPendingChatGptSignIn();
+    // The credential that was really removed, captured inside the delete's own
+    // store transaction, is the one revoked.
+    const { store, removedChatGpt: held } = applyProvidersDeleteCapturing(body);
     let notice: "chatgpt_revoke_unconfirmed" | undefined;
-    if (held && held.kind === "oauth" && held.clientId && held.refreshToken && !store.connections["openai:oauth"]) {
+    if (held && held.kind === "oauth" && held.clientId && held.refreshToken) {
       if (!(await revokeChatGptCredential(held))) notice = "chatgpt_revoke_unconfirmed";
     }
     await syncProviderModels(store, { force: true });

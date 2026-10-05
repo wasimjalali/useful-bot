@@ -785,6 +785,8 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     public let accounts: [SavedChatGptAccount]
     /// The sign-in continues with a saved account rather than registering a new one.
     public let reusesSaved: Bool
+    /// The issued client this attempt uses; nil when it registers a new account or from an older server.
+    public let clientId: String?
     public let userCode: String
     public let verificationUrl: String
     public let verificationUrlComplete: String?
@@ -798,6 +800,7 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
         account = try? c.decodeIfPresent(String.self, forKey: .account)
         accounts = (try? c.decode([SavedChatGptAccount].self, forKey: .accounts)) ?? []
         reusesSaved = (try? c.decode(Bool.self, forKey: .reusesSaved)) ?? false
+        clientId = try? c.decodeIfPresent(String.self, forKey: .clientId)
         userCode = (try? c.decode(String.self, forKey: .userCode)) ?? ""
         verificationUrl = (try? c.decode(String.self, forKey: .verificationUrl)) ?? ""
         verificationUrlComplete = try? c.decodeIfPresent(String.self, forKey: .verificationUrlComplete)
@@ -812,7 +815,7 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pollId, flow, account, accounts, reusesSaved, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
+        case pollId, flow, account, accounts, reusesSaved, clientId, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
     }
 }
 

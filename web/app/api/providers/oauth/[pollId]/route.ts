@@ -72,6 +72,7 @@ export async function POST(request: Request, context: { params: Promise<{ pollId
         status: result.status,
         intervalMs: 1000,
         ...(result.error ? { error: result.error } : {}),
+        ...(result.retryClientId ? { retryClientId: result.retryClientId } : {}),
       });
     }
     const result = await pollDeviceFlow(pollId);

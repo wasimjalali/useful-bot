@@ -194,18 +194,22 @@ struct ContinueWithChatGPTButton: View {
 /// "Add another account", or a plain button when there are no others.
 struct UseDifferentAccountControl: View {
     let accounts: [SavedChatGptAccount]
-    /// The account the sign-in continues with now, left out of the list.
-    let current: String?
+    /// The client this attempt uses, left out of the list.
+    let currentClientId: String?
+    /// After a mismatch or unknown-account error the control shows even with no other account.
+    var afterError = false
     var kind: NativeButtonKind = .ghost
     let onPick: (String) -> Void
     let onAddNew: () -> Void
 
     private var others: [SavedChatGptAccount] {
-        accounts.filter { $0.label != current }
+        accounts.filter { $0.clientId != currentClientId }
     }
 
     var body: some View {
-        if others.isEmpty {
+        if others.isEmpty, !afterError {
+            EmptyView()
+        } else if others.isEmpty {
             NativeButton("Use a different account", kind: kind, small: true, action: onAddNew)
                 .accessibilityIdentifier("use-different-account")
         } else {

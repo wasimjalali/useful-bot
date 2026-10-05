@@ -7,7 +7,7 @@ import {
   verify,
   type JsonWebKey,
 } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { readProviderStore, type Credential } from "./providers.ts";
 import { statePath, webPort } from "./stack.ts";
@@ -78,6 +78,8 @@ interface Registration {
 interface Settled {
   status: "complete" | "denied" | "error";
   error?: string;
+  /** The issued client id the failed attempt held, so the app can offer "Try again" with it. */
+  retryClientId?: string;
 }
 
 interface Pending {
@@ -120,6 +122,7 @@ export type SignInOutcome =
 export interface SignInPoll {
   status: "pending" | "complete" | "denied" | "expired" | "error";
   error?: string;
+  retryClientId?: string;
 }
 
 export type SignInAccount = { clientId: string; label: string };
@@ -148,14 +151,27 @@ function parseRegistration(raw: unknown): Registration | null {
 
 function readState(path = chatGptSignInPath()): SignInState {
   const empty: SignInState = { hostId: null, registrations: [], lastClientId: null, retryClientId: null, pending: null, lastDone: null };
-  if (!existsSync(path)) return empty;
+  // Only a file that does not exist is a first run. Anything else unreadable
+  // must fail loud: an empty state would be written over saved registrations.
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return empty;
+    logFailure("chatgpt_state_unreadable", "read");
+    throw new Error("chatgpt_state_unreadable");
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(text);
   } catch {
-    return empty;
+    logFailure("chatgpt_state_unreadable", "parse");
+    throw new Error("chatgpt_state_unreadable");
   }
-  if (!isRecord(raw)) return empty;
+  if (!isRecord(raw)) {
+    logFailure("chatgpt_state_unreadable", "shape");
+    throw new Error("chatgpt_state_unreadable");
+  }
   const out: SignInState = { hostId: str(raw.hostId), registrations: [], lastClientId: str(raw.lastClientId), retryClientId: str(raw.retryClientId), pending: null, lastDone: null };
   // The first release kept one `registration`; it becomes the first entry.
   const listed = Array.isArray(raw.registrations) ? raw.registrations : raw.registration ? [raw.registration] : [];
@@ -172,7 +188,11 @@ function readState(path = chatGptSignInPath()): SignInState {
     && typeof p.createdAt === "number" && typeof p.expiresAt === "number"
   ) {
     const outcome = isRecord(p.outcome) && (p.outcome.status === "complete" || p.outcome.status === "denied" || p.outcome.status === "error")
-      ? { status: p.outcome.status, ...(str(p.outcome.error) ? { error: p.outcome.error as string } : {}) } as Settled
+      ? {
+        status: p.outcome.status,
+        ...(str(p.outcome.error) ? { error: p.outcome.error as string } : {}),
+        ...(str(p.outcome.retryClientId) ? { retryClientId: p.outcome.retryClientId as string } : {}),
+      } as Settled
       : null;
     out.pending = {
       pollId: p.pollId as string,
@@ -290,9 +310,13 @@ function accountList(state: SignInState): SignInAccount[] {
  * Begin a sign-in. A new start replaces any attempt still pending, so the old
  * callback is refused. Which client it uses:
  * - `clientId`: that saved, validated registration (else `chatgpt_account_unknown`);
- * - `newAccount`, or nothing validated yet: the provisional client left by a
- *   failed registration when there is one, else a fresh dynamic registration;
- * - otherwise the saved account of the stored credential.
+ * - `retryClientId`: the issued client a failed attempt reported, a validated
+ *   registration or the provisional one left by a failed registration (else
+ *   `chatgpt_account_unknown`);
+ * - `newAccount`: always a fresh dynamic registration;
+ * - otherwise the saved, validated account of the stored credential, or a
+ *   fresh registration when none is validated yet. A provisional client is
+ *   never reused implicitly.
  * `storedCredential` is the openai:oauth credential the store holds now (read
  * from the store when left out); its ID token becomes id_token_hint only when
  * it belongs to the registration used. `account` is that registration's email,
@@ -300,25 +324,30 @@ function accountList(state: SignInState): SignInAccount[] {
  * issued client rather than registering a new one.
  */
 export function startChatGptSignIn(
-  opts: { storedCredential?: Credential | null; now?: number; newAccount?: boolean; clientId?: string } = {},
+  opts: { storedCredential?: Credential | null; now?: number; newAccount?: boolean; clientId?: string; retryClientId?: string } = {},
 ): {
   pollId: string; authorizeUrl: string; expiresAt: number; intervalMs: number;
-  account: string | null; accounts: SignInAccount[]; reusesSaved: boolean;
+  account: string | null; accounts: SignInAccount[]; reusesSaved: boolean; clientId: string | null;
 } {
   const now = opts.now ?? Date.now();
   const state = readState();
   const hostId = state.hostId ?? `urn:uuid:${randomUUID()}`;
   const held = opts.storedCredential === undefined ? storedChatGptCredential() : opts.storedCredential;
-  let registration: Registration | null;
+  let registration: Registration | null = null;
+  let provisionalClient: string | null = null;
   if (opts.clientId !== undefined) {
     registration = validated(state).find((r) => r.clientId === opts.clientId) ?? null;
     if (!registration) throw new Error("chatgpt_account_unknown");
+  } else if (opts.retryClientId !== undefined) {
+    registration = validated(state).find((r) => r.clientId === opts.retryClientId) ?? null;
+    if (!registration) {
+      if (state.retryClientId !== opts.retryClientId) throw new Error("chatgpt_account_unknown");
+      provisionalClient = opts.retryClientId;
+    }
   } else {
     registration = opts.newAccount ? null : pickRegistration(state, held);
   }
-  // A failed registration's issued client is reused instead of making a duplicate.
-  const retryClientId = !registration ? state.retryClientId : null;
-  const clientId = registration?.clientId ?? retryClientId;
+  const clientId = registration?.clientId ?? provisionalClient;
   const verifier = randomToken();
   const attempt: Pending = {
     pollId: randomBytes(16).toString("hex"),
@@ -361,6 +390,7 @@ export function startChatGptSignIn(
     account: registration?.email ?? null,
     accounts: accountList(state),
     reusesSaved: clientId !== null,
+    clientId,
   };
 }
 
@@ -368,6 +398,19 @@ export function startChatGptSignIn(
 const inFlight = new Set<string>();
 
 const REFUSED: SignInOutcome = { status: "refused", error: "chatgpt_state_mismatch" };
+
+/**
+ * The settled outcome of an attempt, kept in memory as well as in the file: a
+ * failed file write must not turn a finished sign-in into a poll that hangs.
+ * Small, and each entry is removed when its poll reads it.
+ */
+const settledInMemory = new Map<string, Settled>();
+let doneInMemory: { stateHash: string; at: number } | null = null;
+
+function remember(pollId: string, outcome: Settled): void {
+  settledInMemory.set(pollId, outcome);
+  while (settledInMemory.size > 8) settledInMemory.delete(settledInMemory.keys().next().value as string);
+}
 
 function stateHash(state: string): string {
   return createHash("sha256").update(state).digest("hex");
@@ -383,15 +426,16 @@ function stillLive(pollId: string): boolean {
 function settle(pollId: string, outcome: Settled, change?: (state: SignInState) => void): boolean {
   const state = readState();
   if (!state.pending || state.pending.pollId !== pollId || state.pending.outcome) return false;
+  remember(pollId, outcome);
   state.pending = { ...state.pending, outcome };
   change?.(state);
   writeState(state);
   return true;
 }
 
-function failed(pollId: string, error: SignInErrorCode, detail = ""): SignInOutcome {
+function failed(pollId: string, error: SignInErrorCode, detail = "", retryClientId: string | null = null): SignInOutcome {
   logFailure(error, detail);
-  if (!settle(pollId, { status: "error", error })) return REFUSED;
+  if (!settle(pollId, { status: "error", error, ...(retryClientId ? { retryClientId } : {}) })) return REFUSED;
   return { status: "error", error };
 }
 
@@ -425,7 +469,7 @@ export async function completeChatGptSignIn(
   const state = readState();
   const { pending } = state;
   if (!pending || pending.outcome || !params.state || !sameSecret(pending.state, params.state) || inFlight.has(pending.pollId)) {
-    const done = state.lastDone;
+    const done = state.lastDone ?? doneInMemory;
     if (done && params.state && Date.now() - done.at < REPEAT_WINDOW_MS && sameSecret(done.stateHash, stateHash(params.state))) {
       return { status: "repeat" };
     }
@@ -441,6 +485,8 @@ export async function completeChatGptSignIn(
 }
 
 interface AttemptContext {
+  /** The issued client id this attempt holds, once known. */
+  clientId: string | null;
   /** Set once `persist` succeeded: from then on the sign-in is real and settles complete whatever else fails. */
   stored: Credential | null;
   /** Revokes the tokens this attempt received (fire and forget). */
@@ -453,7 +499,7 @@ async function finishAttempt(
   fetchImpl: FetchFn,
   persist: ((credential: Credential) => void) | undefined,
 ): Promise<SignInOutcome> {
-  const ctx: AttemptContext = { stored: null, discard: null };
+  const ctx: AttemptContext = { clientId: pending.clientId, stored: null, discard: null };
   try {
     return await runAttempt(pending, params, fetchImpl, persist, ctx);
   } catch {
@@ -472,10 +518,11 @@ function rescue(pollId: string, state: string, ctx: AttemptContext): SignInOutco
       });
       return { status: "complete", credential: ctx.stored };
     }
-    const out = failed(pollId, "chatgpt_signin_refused", "bookkeeping");
+    const out = failed(pollId, "chatgpt_signin_refused", "bookkeeping", ctx.clientId);
     ctx.discard?.();
     return out;
   } catch {
+    if (!ctx.stored) remember(pollId, { status: "error", error: "chatgpt_signin_refused", ...(ctx.clientId ? { retryClientId: ctx.clientId } : {}) });
     try { cancelPendingChatGptSignIn(); } catch { /* the file cannot be written at all */ }
     if (ctx.stored) return { status: "complete", credential: ctx.stored };
     ctx.discard?.();
@@ -495,13 +542,14 @@ async function runAttempt(
     if (params.error === "access_denied") {
       return settle(pollId, { status: "denied" }) ? { status: "denied" } : REFUSED;
     }
-    return failed(pollId, "chatgpt_signin_refused", /^[\w.-]{1,60}$/.test(params.error) ? `error=${params.error}` : "");
+    return failed(pollId, "chatgpt_signin_refused", /^[\w.-]{1,60}$/.test(params.error) ? `error=${params.error}` : "", pending.clientId);
   }
   // The issued client id: the saved one on reauth, the callback's on a new registration.
   let clientId: string;
   if (pending.clientId === null) {
     if (!params.clientId || params.clientId === DYNAMIC_CLIENT) return failed(pollId, "chatgpt_registration_incomplete");
     clientId = params.clientId;
+    ctx.clientId = clientId;
     // Keep the issued id at once: a later failure must not strand it, the next
     // new-account attempt reuses it instead of registering a duplicate client.
     update((state) => {
@@ -511,10 +559,10 @@ async function runAttempt(
       if (state.registrations.find((r) => r.clientId === clientId)?.subject === null) state.retryClientId = clientId;
     });
   } else {
-    if (params.clientId && params.clientId !== pending.clientId) return failed(pollId, "chatgpt_client_mismatch");
+    if (params.clientId && params.clientId !== pending.clientId) return failed(pollId, "chatgpt_client_mismatch", "", pending.clientId);
     clientId = pending.clientId;
   }
-  if (!params.code) return failed(pollId, "chatgpt_signin_refused", "code=missing");
+  if (!params.code) return failed(pollId, "chatgpt_signin_refused", "code=missing", clientId);
 
   let tokens: Record<string, unknown>;
   try {
@@ -531,12 +579,12 @@ async function runAttempt(
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (res.status !== 200) return failed(pollId, "chatgpt_token_exchange", `status=${res.status} error=${await oauthErrorOf(res)}`);
+    if (res.status !== 200) return failed(pollId, "chatgpt_token_exchange", `status=${res.status} error=${await oauthErrorOf(res)}`, clientId);
     const body = await res.json() as unknown;
-    if (!isRecord(body) || !str(body.access_token)) return failed(pollId, "chatgpt_token_exchange", "status=200 body=incomplete");
+    if (!isRecord(body) || !str(body.access_token)) return failed(pollId, "chatgpt_token_exchange", "status=200 body=incomplete", clientId);
     tokens = body;
   } catch {
-    return failed(pollId, "chatgpt_token_exchange", "network");
+    return failed(pollId, "chatgpt_token_exchange", "network", clientId);
   }
 
   // Tokens that are thrown away are revoked after the outcome is settled,
@@ -556,7 +604,7 @@ async function runAttempt(
   ctx.discard = discard;
   /** Settle the failure first so the page and the poll show the real reason, then revoke. */
   const fail = (error: SignInErrorCode, detail = ""): SignInOutcome => {
-    const out = failed(pollId, error, detail);
+    const out = failed(pollId, error, detail, clientId);
     discard();
     return out;
   };
@@ -612,6 +660,9 @@ async function runAttempt(
   }
   ctx.stored = credential;
   ctx.discard = null; // the tokens are in use now
+  // From here the sign-in is real: memory answers the poll and a reloaded tab even if the file cannot be written.
+  remember(pollId, { status: "complete" });
+  doneInMemory = { stateHash: stateHash(pending.state), at: Date.now() };
   recordIdentity(clientId, identity, false);
   if (!settle(pollId, { status: "complete" }, (next) => {
     next.lastDone = { stateHash: stateHash(pending.state), at: Date.now() };
@@ -621,15 +672,28 @@ async function runAttempt(
 
 /** Poll an attempt. A terminal status is reported once, then the pending row is dropped. */
 export function pollChatGptSignIn(pollId: string): SignInPoll {
+  const answer = (outcome: Settled): SignInPoll => ({
+    status: outcome.status,
+    ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.retryClientId ? { retryClientId: outcome.retryClientId } : {}),
+  });
+  // Memory first: it holds the outcome even when the file could not be written.
+  const remembered = settledInMemory.get(pollId);
+  if (remembered) {
+    settledInMemory.delete(pollId);
+    try {
+      const state = readState();
+      if (state.pending?.pollId === pollId) writeState({ ...state, pending: null });
+    } catch { /* the outcome is answered either way */ }
+    return answer(remembered);
+  }
   const state = readState();
   const pending = state.pending;
   if (!pending || pending.pollId !== pollId) throw new Error("oauth_poll_unknown");
   const drop = () => writeState({ ...state, pending: null });
   if (pending.outcome) {
     drop();
-    return pending.outcome.error
-      ? { status: pending.outcome.status, error: pending.outcome.error }
-      : { status: pending.outcome.status };
+    return answer(pending.outcome);
   }
   if (pending.expiresAt <= Date.now()) {
     drop();
@@ -640,6 +704,7 @@ export function pollChatGptSignIn(pollId: string): SignInPoll {
 
 /** Forget an attempt: a callback that arrives later is refused. */
 export function cancelChatGptSignIn(pollId: string): void {
+  settledInMemory.delete(pollId);
   const state = readState();
   if (!state.pending || state.pending.pollId !== pollId) return;
   writeState({ ...state, pending: null });
@@ -647,8 +712,12 @@ export function cancelChatGptSignIn(pollId: string): void {
 
 /** Forget whatever attempt is pending (Disconnect), so a callback mid-exchange is refused. */
 export function cancelPendingChatGptSignIn(): void {
-  const state = readState();
-  if (state.pending) writeState({ ...state, pending: null });
+  try {
+    const state = readState();
+    if (state.pending) writeState({ ...state, pending: null });
+  } catch {
+    // An unreadable file tracks no attempt we could cancel; Disconnect goes on.
+  }
 }
 
 /** True when the pollId belongs to the ChatGPT attempt, so the poll route can route it. */

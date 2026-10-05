@@ -136,6 +136,14 @@ import Testing
          "userCode":"","verificationUrl":"https://auth.openai.com/x"}
         """.utf8))
         #expect(saved.reusesSaved)
+        #expect(saved.clientId == nil)
+        #expect(older.clientId == nil)
+        let withClient = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
+        {"ok":true,"pollId":"p5","flow":"browser","clientId":"c2","userCode":"","verificationUrl":"https://auth.openai.com/x"}
+        """.utf8))
+        #expect(withClient.clientId == "c2")
+        #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: false, retryClientId: "c9")["retryClientId"] as? String == "c9")
+        #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: false)["retryClientId"] == nil)
         #expect(saved.accounts == [SavedChatGptAccount(clientId: "c1", label: "a@example.com"), SavedChatGptAccount(clientId: "c2", label: "b@example.com")])
         #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: false, clientId: "c2")["clientId"] as? String == "c2")
         #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: false)["clientId"] == nil)

@@ -1848,13 +1848,17 @@ async function chatgptRun(options: {
   held?: Record<string, unknown>;
   stored?: Record<string, unknown>;
   token?: { status: number; body: Record<string, unknown> };
+  /** The connection is gone from the store (disconnected while the call ran). */
+  noStore?: boolean;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-run-"));
   const saved = process.env.UB_PROVIDERS_PATH;
   process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
   const base = { kind: "oauth", accessToken: "tok-12345678", refreshToken: "refresh-0", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_test" };
   const held = { ...base, ...(options.held ?? {}) } as never;
-  writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", { ...base, ...(options.held ?? {}), ...(options.stored ?? {}) } as never));
+  if (!options.noStore) {
+    writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", { ...base, ...(options.held ?? {}), ...(options.stored ?? {}) } as never));
+  }
   const bearers: string[] = [];
   const server = createServer((req, res) => {
     bearers.push(String(req.headers.authorization ?? ""));
@@ -1864,7 +1868,12 @@ async function chatgptRun(options: {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const realFetch = globalThis.fetch;
   let refreshes = 0;
+  const revoked: string[] = [];
   globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === "https://auth.openai.com/api/accounts/oauth/revoke") {
+      revoked.push(new URLSearchParams(String(init?.body)).get("token") ?? "");
+      return new Response("", { status: 200 });
+    }
     if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") {
       refreshes += 1;
       const answer = options.token ?? { status: 200, body: { access_token: "new-access", refresh_token: "refresh-1", expires_in: 3600 } };
@@ -1903,7 +1912,7 @@ async function chatgptRun(options: {
     } catch (err) {
       error = err;
     }
-    return { error: error as RouterError | null, refreshes, bearers, store: readProviderStore().connections["openai:oauth"] };
+    return { error: error as RouterError | null, refreshes, bearers, revoked, store: readProviderStore().connections["openai:oauth"] };
   } finally {
     globalThis.fetch = realFetch;
     server.close();
@@ -2019,6 +2028,77 @@ test("a rotated token whose store write failed is kept in memory and used instea
     assert.ok(healed && healed.kind === "oauth");
     assert.equal(healed.refreshToken, "refresh-1", "the retried write stored the rotated token");
     await Promise.all([first, second].map((out) => out.response.body?.cancel()));
+  } finally {
+    chmodSync(dir, 0o700);
+    console.error = realError;
+    globalThis.fetch = realFetch;
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+});
+
+test("a refresh that lands after the connection was removed revokes its own new refresh token", async () => {
+  const out = await chatgptRun({ upstream: SSE_OK, noStore: true, held: { expiresAt: Date.now() - 60_000 } });
+  assert.equal(out.refreshes, 1);
+  assert.deepEqual(out.revoked, ["refresh-1"]);
+  assert.equal(out.store, undefined, "the connection stays gone");
+  // A different refresh token in a store that still has the connection is not a removal: nothing is revoked.
+  const rotated = await chatgptRun({ upstream: SSE_OK, held: { expiresAt: Date.now() - 60_000 } });
+  assert.deepEqual(rotated.revoked, []);
+});
+
+test("a ChatGPT 503 with another body still reaches the generic path with its body", async () => {
+  const out = await chatgptRun({ upstream: { status: 503, body: JSON.stringify({ error: { type: "server_error", code: "overloaded_now" } }) } });
+  assert.equal(out.error?.code, "upstream_protocol_error");
+  assert.ok(out.error?.upstream?.includes("overloaded_now"), out.error?.upstream);
+});
+
+test("a kept credential written back but already expired is refreshed with the stored guard and the rotated token lands", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-kept-expired-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  const expired = { kind: "oauth", accessToken: "old-access", refreshToken: "refresh-0", expiresAt: Date.now() - 60_000, accountId: null, clientId: "oaiapp_test" } as const;
+  writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", expired));
+  const server = createServer((req, res) => jsonFixture(req, res));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  console.error = () => undefined;
+  const forms: string[] = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") {
+      forms.push(String(init?.body));
+      // The first rotated token is good for one second only, so it is expired by the next call.
+      const body = forms.length === 1
+        ? { access_token: "short-access", refresh_token: "refresh-1", expires_in: 1 }
+        : { access_token: "long-access", refresh_token: "refresh-2", expires_in: 3600 };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const { port } = server.address() as { port: number };
+    const resolved = {
+      connection: { id: "openai:oauth" }, providerId: "openai", mode: { headers: {} }, modelId: "gpt-6.1-sol", model: "gpt-6.1-sol",
+      effort: null, speed: "standard", baseUrl: `http://127.0.0.1:${port}`, protocol: "openai-chat", keyHeader: "bearer",
+      credential: expired, opencodeSession: false, fallback: false,
+    } as unknown as ResolvedUpstream;
+    const call = () => completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+      body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+      sessionId: randomUUID(), callerId: "desktop", signal: new AbortController().signal, resolved,
+    });
+    chmodSync(dir, 0o500);
+    await (await call()).response.body?.cancel();
+    chmodSync(dir, 0o700);
+    await new Promise((resolve) => setTimeout(resolve, 1100)); // the kept credential is now expired
+    await (await call()).response.body?.cancel();
+    assert.equal(forms.length, 2);
+    assert.equal(new URLSearchParams(forms[1]).get("refresh_token"), "refresh-1", "the second refresh spends the kept token");
+    const stored = readProviderStore().connections["openai:oauth"]?.credential;
+    assert.ok(stored && stored.kind === "oauth");
+    assert.equal(stored.refreshToken, "refresh-2", "the rotated token is stored, not skipped by a stale guard");
   } finally {
     chmodSync(dir, 0o700);
     console.error = realError;

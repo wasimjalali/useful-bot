@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createSign, generateKeyPairSync } from "node:crypto";
-import { chmodSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,8 @@ import {
   startChatGptSignIn,
 } from "../shared/chatgpt-signin.ts";
 import { accessTokenFor } from "../shared/provider-oauth.ts";
-import { publicProviders, setOAuthCredential, emptyProviderStore, type Credential } from "../shared/providers.ts";
+import { applyProvidersDeleteCapturing } from "../web/lib/providers-write.ts";
+import { publicProviders, setOAuthCredential, emptyProviderStore, readProviderStore, writeProviderStore, type Credential } from "../shared/providers.ts";
 
 /*
  * Failure list, written before the module (global rule). Every line is a way
@@ -393,12 +394,16 @@ test("5 a 400 invalid_grant is chatgpt_token_exchange and the issued client id i
   assert.deepEqual(stateFile(path).registrations, [PROVISIONAL]);
   assert.equal(stateFile(path).lastClientId, null, "only a validated identity becomes the last client");
   assert.equal(stateFile(path).retryClientId, "oaiapp_alice");
-  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_token_exchange" });
-  // The next start reuses that client id instead of registering a duplicate.
+  // The poll names the issued client so the app can offer "Try again" with it.
+  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_token_exchange", retryClientId: "oaiapp_alice" });
+  // A plain start never reuses a provisional client; only an explicit retry does.
   server.tokenStatus = 200;
-  const retry = signIn(server);
+  assert.equal(signIn(server).q.get("client_id"), "dynamic_agent_client");
+  assert.equal(signIn(server, { newAccount: true }).q.get("client_id"), "dynamic_agent_client");
+  const retry = signIn(server, { retryClientId: "oaiapp_alice" });
   assert.equal(retry.q.get("client_id"), "oaiapp_alice");
   assert.equal(retry.q.get("agent_name_hint"), null);
+  assert.equal(retry.started.clientId, "oaiapp_alice");
   const done = await completeChatGptSignIn({ state: retry.state, code: "c2", error: null, clientId: null }, server.fetch);
   assert.equal(done.status, "complete");
   assert.deepEqual(stateFile(path).registrations, [{ clientId: "oaiapp_alice", subject: "sub-alice", email: "alice@example.com", needsConsent: false }]);
@@ -425,7 +430,7 @@ test("6 a bad ID token is rejected for each broken field and nothing is stored",
     const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
     assert.deepEqual(out, { status: "error", error: "chatgpt_id_token_invalid" }, name);
     assert.deepEqual(stateFile(path).registrations, [PROVISIONAL], name);
-    assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_id_token_invalid" }, name);
+    assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_id_token_invalid", retryClientId: "oaiapp_alice" }, name);
   }
   // An aud array that does contain the client id is fine.
   box();
@@ -640,7 +645,7 @@ test("18 a failing persist settles chatgpt_signin_refused, never complete, and r
     () => { throw new Error("disk full"); },
   );
   assert.deepEqual(out, { status: "error", error: "chatgpt_signin_refused" });
-  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_signin_refused" });
+  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_signin_refused", retryClientId: "oaiapp_alice" });
   assert.equal(server.calls.filter((call) => call.url === REVOKE_URL)[0]?.form?.get("token"), "refresh-persist");
   assert.equal(stateFile(path).lastDone, null);
 });
@@ -739,7 +744,7 @@ test("22 failures log a code and a safe detail, never a body, a description or a
   for (const secret of ["SECRET-DESCRIPTION", "tok-leak", "code-leak", "refresh-leak"]) assert.ok(!joined.includes(secret), secret);
 });
 
-test("23 a default start never picks a provisional client; newAccount retries the provisional one once, then registers fresh", async () => {
+test("23 Add another account always registers fresh; Try again reuses the failed client explicitly", async () => {
   const path = box();
   const server = authServer();
   await register(server); // alice validated as oaiapp_alice
@@ -747,32 +752,52 @@ test("23 a default start never picks a provisional client; newAccount retries th
   server.clientId = "oaiapp_bob";
   server.tokenStatus = 400;
   const failedTry = signIn(server, { newAccount: true });
+  assert.equal(failedTry.started.clientId, null);
   await completeChatGptSignIn({ state: failedTry.state, code: "c", error: null, clientId: "oaiapp_bob" }, server.fetch);
   assert.equal(stateFile(path).retryClientId, "oaiapp_bob");
   assert.equal(stateFile(path).lastClientId, "oaiapp_alice");
-  // The default start still targets the validated account.
+  assert.equal(pollChatGptSignIn(failedTry.started.pollId).retryClientId, "oaiapp_bob");
+  // The default start targets the validated account, never the provisional one.
   assert.equal(signIn(server).q.get("client_id"), "oaiapp_alice");
-  // newAccount reuses the provisional client: issued id, no registration hints.
+  // Add another account is fresh again, with the registration hints.
+  const fresh = signIn(server, { newAccount: true });
+  assert.equal(fresh.q.get("client_id"), "dynamic_agent_client");
+  assert.equal(fresh.q.get("agent_name_hint"), "Useful Bot");
+  assert.equal(fresh.started.reusesSaved, false);
+  // Try again with the issued client: no registration hints.
   server.tokenStatus = 200;
   server.sub = "sub-bob";
-  const retry = signIn(server, { newAccount: true });
+  const retry = signIn(server, { retryClientId: "oaiapp_bob" });
   assert.equal(retry.q.get("client_id"), "oaiapp_bob");
   assert.equal(retry.q.get("agent_name_hint"), null);
   assert.equal(retry.q.get("login_hint"), null);
   assert.equal(retry.started.reusesSaved, true);
+  assert.equal(retry.started.clientId, "oaiapp_bob");
   const done = await completeChatGptSignIn({ state: retry.state, code: "c", error: null, clientId: null }, server.fetch);
   assert.equal(done.status, "complete");
   assert.equal(stateFile(path).retryClientId, null);
   assert.equal(stateFile(path).lastClientId, "oaiapp_bob");
-  // With nothing to retry, newAccount registers fresh.
-  const fresh = signIn(server, { newAccount: true });
-  assert.equal(fresh.q.get("client_id"), "dynamic_agent_client");
-  assert.equal(fresh.started.reusesSaved, false);
-  // A newer provisional client replaces the retry slot.
-  server.tokenStatus = 400;
-  server.clientId = "oaiapp_carol";
-  await completeChatGptSignIn({ state: fresh.state, code: "c", error: null, clientId: "oaiapp_carol" }, server.fetch);
-  assert.equal(stateFile(path).retryClientId, "oaiapp_carol");
+  // An unknown client id is refused.
+  assert.throws(() => startChatGptSignIn({ retryClientId: "oaiapp_nobody", storedCredential: null }), /chatgpt_account_unknown/);
+});
+
+test("23b plan not enabled on an Add another account attempt: Try again sends that client with prompt=consent", async () => {
+  box();
+  const server = authServer();
+  await register(server);
+  server.clientId = "oaiapp_bob";
+  server.sub = "sub-bob";
+  server.email = "bob@example.com";
+  server.scope = "openid email";
+  const a = signIn(server, { newAccount: true });
+  await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_bob" }, server.fetch);
+  const polled = pollChatGptSignIn(a.started.pollId);
+  assert.deepEqual(polled, { status: "error", error: "chatgpt_plan_not_enabled", retryClientId: "oaiapp_bob" });
+  const retry = signIn(server, { retryClientId: polled.retryClientId });
+  assert.equal(retry.q.get("client_id"), "oaiapp_bob");
+  assert.equal(retry.q.get("prompt"), "consent");
+  assert.equal(retry.q.get("login_hint"), "bob@example.com");
+  assert.equal(retry.q.get("agent_name_hint"), null);
 });
 
 test("24 starting with a chosen saved account, the accounts list and distinct labels", async () => {
@@ -835,7 +860,7 @@ test("26 the outcome is settled before the revoke, so a slow revoke cannot hide 
     String(input) === REVOKE_URL ? new Promise<Response>(() => undefined) : server.fetch(input, init);
   const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, hanging);
   assert.deepEqual(out, { status: "error", error: "chatgpt_plan_not_enabled" });
-  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_plan_not_enabled" });
+  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_plan_not_enabled", retryClientId: "oaiapp_alice" });
 });
 
 test("27 a bookkeeping failure after the credential was stored still settles the attempt", async () => {
@@ -850,4 +875,61 @@ test("27 a bookkeeping failure after the credential was stored still settles the
   );
   chmodSync(dir, 0o700);
   assert.equal(out.status, "complete");
+  // The file never got the outcome, but the poll still answers complete from memory, once.
+  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "complete" });
+  assert.throws(() => pollChatGptSignIn(a.started.pollId), /oauth_poll_unknown/);
+  // And a reloaded callback tab shows success.
+  assert.deepEqual(await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch), { status: "repeat" });
+});
+
+test("28 an unreadable or malformed state file is never overwritten", async () => {
+  const server = authServer();
+  for (const make of [
+    (path: string) => writeFileSync(path, "{not json"),
+    (path: string) => mkdirSync(path), // reading a directory fails with EISDIR, not ENOENT
+  ]) {
+    const path = box();
+    make(path);
+    const before = (() => { try { return readFileSync(path, "utf8"); } catch { return "dir"; } })();
+    const lines: string[] = [];
+    const spy = mock.method(console, "error", (...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+    try {
+      assert.throws(() => startChatGptSignIn({ storedCredential: null }), /chatgpt_state_unreadable/);
+      await assert.rejects(() => completeChatGptSignIn({ state: "x", code: "c", error: null, clientId: null }, server.fetch), /chatgpt_state_unreadable/);
+      assert.throws(() => pollChatGptSignIn("anything"), /chatgpt_state_unreadable/);
+    } finally {
+      spy.mock.restore();
+    }
+    assert.ok(lines.some((line) => line.includes("chatgpt_state_unreadable")));
+    const after = (() => { try { return readFileSync(path, "utf8"); } catch { return "dir"; } })();
+    assert.equal(after, before, "the saved registrations were not written over");
+    assert.equal(server.calls.length, 0);
+  }
+  // A file that does not exist is simply a first run.
+  box();
+  assert.doesNotThrow(() => startChatGptSignIn({ storedCredential: null }));
+});
+
+test("29 Disconnect returns the ChatGPT credential that was really removed, from inside the delete", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-delete-"));
+  const savedProviders = process.env.UB_PROVIDERS_PATH;
+  const savedShell = process.env.UB_SHELL_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  process.env.UB_SHELL_PATH = join(dir, "shell.json");
+  try {
+    const held = oauthOf({ kind: "oauth", accessToken: "a", refreshToken: "refresh-held", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_alice" });
+    writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", held));
+    const out = applyProvidersDeleteCapturing({ connectionId: "openai:oauth" });
+    assert.equal(out.removedChatGpt?.kind === "oauth" ? out.removedChatGpt.refreshToken : null, "refresh-held");
+    assert.equal(out.store.connections["openai:oauth"], undefined);
+    assert.equal(readProviderStore().connections["openai:oauth"], undefined);
+    // Nothing there any more: the delete fails and there is nothing to revoke.
+    assert.throws(() => applyProvidersDeleteCapturing({ connectionId: "openai:oauth" }), /connection_unknown/);
+    // Another connection's delete never reports a ChatGPT credential.
+    writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", held));
+    assert.equal(applyProvidersDeleteCapturing({ providerId: "deepseek" }).removedChatGpt, null);
+  } finally {
+    if (savedProviders === undefined) delete process.env.UB_PROVIDERS_PATH; else process.env.UB_PROVIDERS_PATH = savedProviders;
+    if (savedShell === undefined) delete process.env.UB_SHELL_PATH; else process.env.UB_SHELL_PATH = savedShell;
+  }
 });

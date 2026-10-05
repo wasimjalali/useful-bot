@@ -96,9 +96,11 @@ export async function GET(request: Request) {
     if (outcome.status === "error") {
       return html(FAILED, FAILURES[outcome.error] ?? CLOSE);
     }
-    // A different account replaced the stored one: end the old session too.
-    if (replaced && replaced.kind === "oauth" && replaced.subject && outcome.credential.kind === "oauth" && replaced.subject !== outcome.credential.subject
-      && replaced.clientId && replaced.refreshToken) {
+    // Another issued client replaced the stored sign-in (another account or
+    // workspace): end the old session too. The same client signing in again
+    // keeps its registration and is not revoked.
+    if (replaced && replaced.kind === "oauth" && outcome.credential.kind === "oauth" && replaced.clientId
+      && replaced.clientId !== outcome.credential.clientId && replaced.refreshToken) {
       if (!(await revokeChatGptCredential(replaced))) console.error("[useful-bot] chatgpt sign-in: revoke_unconfirmed");
     }
     try {

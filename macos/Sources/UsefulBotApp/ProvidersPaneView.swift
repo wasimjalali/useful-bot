@@ -735,7 +735,7 @@ private struct OAuthSheetView: View {
                         if pending.flow == "browser" {
                             if model.oauthOffersNewAccount {
                                 UseDifferentAccountControl(
-                                    accounts: pending.accounts, current: pending.account, kind: .secondary,
+                                    accounts: pending.accounts, currentClientId: pending.clientId, afterError: true, kind: .secondary,
                                     onPick: { id in Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, clientId: id) } },
                                     onAddNew: { Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) } }
                                 )
@@ -779,7 +779,7 @@ private struct OAuthSheetView: View {
                         }
                         Spacer(minLength: 0)
                         UseDifferentAccountControl(
-                            accounts: pending.accounts, current: pending.account,
+                            accounts: pending.accounts, currentClientId: pending.clientId,
                             onPick: { id in Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, clientId: id) } },
                             onAddNew: { Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) } }
                         )

@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   if (rateLimited(`providers-oauth:${gate.session.callerId}`, 60)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
-  let body: { providerId?: unknown; newAccount?: unknown; clientId?: unknown };
+  let body: { providerId?: unknown; newAccount?: unknown; clientId?: unknown; retryClientId?: unknown };
   try {
     body = await readJson(request) as typeof body;
   } catch (err) {
@@ -33,6 +33,7 @@ export async function POST(request: Request) {
       const started = startChatGptSignIn({
         newAccount: body.newAccount === true,
         ...(typeof body.clientId === "string" ? { clientId: body.clientId } : {}),
+        ...(typeof body.retryClientId === "string" ? { retryClientId: body.retryClientId } : {}),
       });
       return NextResponse.json({
         ok: true,
@@ -46,6 +47,7 @@ export async function POST(request: Request) {
         account: started.account,
         accounts: started.accounts,
         reusesSaved: started.reusesSaved,
+        clientId: started.clientId,
       });
     }
     const pending = await startDeviceFlow(providerId);

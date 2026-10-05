@@ -16,6 +16,7 @@ import {
   updateProviderStore,
   type Credential,
 } from "../../../shared/providers.ts";
+import { revokeChatGptCredential } from "../../../shared/chatgpt-signin.ts";
 import { accessTokenFor, refreshCredential } from "../../../shared/provider-oauth.ts";
 import { postChatCompletions } from "./openai-chat.ts";
 import { postMessages } from "./anthropic-messages.ts";
@@ -154,12 +155,22 @@ const unstored = new Map<string, { spent: string | null; credential: Credential 
 async function storeRefreshed(connectionId: string, providerId: string, guard: string | null, next: Credential): Promise<boolean> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
+      let gone = false;
       updateProviderStore((store) => {
         const current = store.connections[connectionId]?.credential;
-        if (!current || current.kind !== "oauth") return store;
+        if (!current || current.kind !== "oauth") {
+          gone = true;
+          return store;
+        }
         if (current.refreshToken !== guard) return store;
         return setOAuthCredential(store, providerId, next);
       });
+      // Disconnected while the refresh ran: the new session has no owner, end it.
+      if (gone && providerId === "openai") {
+        revokeChatGptCredential(next).then((confirmed) => {
+          if (!confirmed) console.error("[useful-bot] chatgpt refresh: revoke_unconfirmed");
+        }, () => console.error("[useful-bot] chatgpt refresh: revoke_unconfirmed"));
+      }
       return true;
     } catch (error) {
       if (attempt < 3) {
@@ -215,8 +226,11 @@ async function renewedCredential(connectionId: string, providerId: string, held:
   }
   const running = refreshing.get(connectionId);
   if (running) return running;
-  const base = keptBase ?? (stored && stored.kind === "oauth" ? stored : held);
-  const guard = stored && stored.kind === "oauth" ? stored.refreshToken : base.kind === "oauth" ? base.refreshToken : null;
+  // The guard is the refresh token the store holds right now: after a kept
+  // credential was written back that is its rotated token, not the spent one.
+  const now = readProviderStore().connections[connectionId]?.credential;
+  const base = keptBase ?? (now && now.kind === "oauth" ? now : held);
+  const guard = now && now.kind === "oauth" ? now.refreshToken : base.kind === "oauth" ? base.refreshToken : null;
   const run = (async () => {
     let next: Credential;
     try {
@@ -501,7 +515,7 @@ export async function completeUpstream(input: {
   if (response.status === 503 && chatGptRoute) {
     // Plan sharing could not check usage or the user: temporary, not the
     // model failing, so no circuit count and no auth note.
-    const named = await chatGptErrorCode(response);
+    const named = await chatGptErrorCode(response.clone());
     if (named === "subscription_sharing_usage_unavailable" || named === "subscription_sharing_user_unavailable") {
       throw refreshUnavailable();
     }

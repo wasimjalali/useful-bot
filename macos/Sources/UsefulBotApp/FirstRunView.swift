@@ -1046,7 +1046,7 @@ private struct SignInPage: View {
                         .truncationMode(.middle)
                 }
                 UseDifferentAccountControl(
-                    accounts: pending.accounts, current: pending.account,
+                    accounts: pending.accounts, currentClientId: pending.clientId,
                     onPick: { restart(clientId: $0) },
                     onAddNew: { restart(newAccount: true) }
                 )
@@ -1106,7 +1106,7 @@ private struct SignInPage: View {
                 Spacer(minLength: 0)
                 if model.oauthOffersNewAccount, isBrowserFlow {
                     UseDifferentAccountControl(
-                        accounts: pending?.accounts ?? [], current: pending?.account, kind: .secondary,
+                        accounts: pending?.accounts ?? [], currentClientId: pending?.clientId, afterError: true, kind: .secondary,
                         onPick: { restart(clientId: $0) },
                         onAddNew: { restart(newAccount: true) }
                     )
