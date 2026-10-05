@@ -1,0 +1,13 @@
+member\tmodel\tsettings\tstart\tend\texit\tbytes
+sonnet\tclaude-sonnet-5-5\teffort=high\t2026-10-05T18:52:31Z\t2026-10-05T18:52:35Z\t1\t
+muse-spark\topencode/muse-spark-1.3-contributor-free\tvariant=max\t2026-10-05T18:52:31Z\t2026-10-05T18:53:26Z\t0\t7449
+deepseek-flash\topencode-go/deepseek-v4.1-flash\tvariant=default\t2026-10-05T18:52:31Z\t2026-10-05T18:53:28Z\t0\t8799
+deepseek-pro\topencode-go/deepseek-v4-pro\tvariant=default\t2026-10-05T18:52:31Z\t2026-10-05T18:53:37Z\t0\t8594
+sol\tgpt-6.1-sol\treasoning=high\t2026-10-05T18:52:31Z\t2026-10-05T18:54:55Z\t0\t9935
+qwen\topencode-go/qwen3.8-max\tvariant=default\t2026-10-05T18:52:31Z\t2026-10-05T18:55:42Z\t0\t8625
+glm-flash\topencode-go/glm-5.3-flash\tvariant=default\t2026-10-05T18:52:31Z\t2026-10-05T18:56:28Z\t0\t10997
+astra\tgpt-6-astra\treasoning=high\t2026-10-05T18:54:55Z\t2026-10-05T18:56:43Z\t0\t9227
+mimo\topencode-go/mimo-v2.6-pro\tvariant=default\t2026-10-05T18:52:31Z\t2026-10-05T18:57:19Z\t0\t8520
+kimi\topencode-go/kimi-k3\tvariant=default\t2026-10-05T18:52:31Z\t2026-10-05T18:57:41Z\t0\t9915
+grok\tgrok-4.7\treasoning=xhigh\t2026-10-05T18:52:31Z\t2026-10-05T19:02:58Z\t0\t8516
+sonnet	claude-sonnet-5-5	effort=high (rerun, prompt on stdin)	2026-10-05T19:03:20Z	2026-10-05T19:04:44Z	0	9148
