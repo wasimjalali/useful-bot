@@ -1024,3 +1024,65 @@ test("33 Disconnect really cancels: a write failure propagates and a callback fo
     spy.mock.restore();
   }
 });
+
+test("34 an expired retry attempt on an issued client still names it for Try again", () => {
+  const path = box();
+  const file = {
+    hostId: "urn:uuid:22222222-2222-2222-2222-222222222222",
+    registrations: [{ clientId: "oaiapp_prov", subject: null, email: null, needsConsent: false }],
+    lastClientId: null,
+    retryClientId: "oaiapp_prov",
+    pending: null,
+    lastDone: null,
+  };
+  writeFileSync(path, JSON.stringify(file));
+  const started = startChatGptSignIn({ retryClientId: "oaiapp_prov", storedCredential: null });
+  const written = stateFile(path);
+  writeFileSync(path, JSON.stringify({ ...written, pending: { ...written.pending!, expiresAt: Date.now() - 1000 } }));
+  assert.deepEqual(pollChatGptSignIn(started.pollId), { status: "expired", retryClientId: "oaiapp_prov" });
+  // A fresh registration that expires has no client to name.
+  const fresh = startChatGptSignIn({ newAccount: true, storedCredential: null });
+  const again = stateFile(path);
+  writeFileSync(path, JSON.stringify({ ...again, pending: { ...again.pending!, expiresAt: Date.now() - 1000 } }));
+  assert.deepEqual(pollChatGptSignIn(fresh.pollId), { status: "expired" });
+});
+
+test("35 a polled memory-only outcome leaves a tombstone: the reloaded callback never exchanges again", async () => {
+  const path = box();
+  const server = authServer();
+  server.tokenStatus = 400;
+  const dir = join(path, "..");
+  const a = signIn(server);
+  const lockingFetch: typeof fetch = async (input, init) => {
+    const res = await server.fetch(input, init);
+    if (String(input) === TOKEN_URL) chmodSync(dir, 0o500); // the outcome cannot be written
+    return res;
+  };
+  const params = { state: a.state, code: "c", error: null, clientId: "oaiapp_alice" };
+  await completeChatGptSignIn(params, lockingFetch);
+  // The poll reports the error while storage is still failing, so the unsettled row stays on disk.
+  assert.equal(pollChatGptSignIn(a.started.pollId).error, "chatgpt_token_exchange");
+  chmodSync(dir, 0o700); // storage recovers
+  assert.equal(stateFile(path).pending?.outcome, null, "the disk row is still unsettled");
+  server.tokenStatus = 200;
+  assert.deepEqual(await completeChatGptSignIn(params, server.fetch), { status: "refused", error: "chatgpt_state_mismatch" });
+  assert.equal(server.calls.filter((call) => call.url === TOKEN_URL).length, 1);
+});
+
+test("36 recovery state is shared by every copy of the module", async () => {
+  const path = box();
+  const server = authServer();
+  server.scope = "openid email";
+  const copy = await import(new URL("../shared/chatgpt-signin.ts?copy=36", import.meta.url).href) as typeof import("../shared/chatgpt-signin.ts");
+  assert.notEqual(copy.completeChatGptSignIn, completeChatGptSignIn, "a distinct module instance");
+  const a = signIn(server);
+  await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
+  writeFileSync(path, "{corrupt"); // only memory can answer now
+  const spy = mock.method(console, "error", () => undefined);
+  try {
+    assert.equal(copy.isChatGptPollId(a.started.pollId), true);
+    assert.equal(copy.pollChatGptSignIn(a.started.pollId).error, "chatgpt_plan_not_enabled");
+  } finally {
+    spy.mock.restore();
+  }
+});

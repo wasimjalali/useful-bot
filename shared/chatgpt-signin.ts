@@ -395,9 +395,6 @@ export function startChatGptSignIn(
   };
 }
 
-/** Attempts whose code exchange is running, so a replayed callback cannot start a second one. */
-const inFlight = new Set<string>();
-
 const REFUSED: SignInOutcome = { status: "refused", error: "chatgpt_state_mismatch" };
 
 /**
@@ -405,12 +402,39 @@ const REFUSED: SignInOutcome = { status: "refused", error: "chatgpt_state_mismat
  * failed file write must not turn a finished sign-in into a poll that hangs.
  * Small, and each entry is removed when its poll reads it.
  */
-const settledInMemory = new Map<string, Settled>();
-let doneInMemory: { stateHash: string; at: number } | null = null;
-/** Attempts cancelled here: a callback for one stays refused even if a later file write succeeds. */
-const cancelledPolls = new Set<string>();
-/** Validated identities whose file write failed after the credential was stored; written first on the next start, poll or complete. */
-const deferredIdentities: Array<{ clientId: string; identity: { sub: string; email: string | null }; needsConsent: boolean }> = [];
+interface SharedState {
+  settled: Map<string, Settled>;
+  /** sha256 of the state of each remembered attempt, for tombstones. */
+  hashes: Map<string, string>;
+  done: { stateHash: string; at: number } | null;
+  /** Attempts cancelled here: a callback for one stays refused even if a later file write succeeds. */
+  cancelled: Set<string>;
+  /** Validated identities whose file write failed after the credential was stored; written first on the next start, poll or complete. */
+  deferred: Array<{ clientId: string; identity: { sub: string; email: string | null }; needsConsent: boolean }>;
+  /** State hashes of attempts whose outcome was polled from memory while the disk row stayed unsettled. */
+  tombstones: Set<string>;
+  inFlight: Set<string>;
+  jwks: { fetchedAt: number; keys: JsonWebKey[] } | null;
+}
+// On globalThis, like web/lib/sync-models.ts: the dev server gives each API
+// route its own copy of this module, and recovery only works if the callback
+// route, the poll route and the start route share one set of memory.
+const SHARED_KEY = Symbol.for("useful-bot.chatgpt-signin.state");
+const shared: SharedState = ((globalThis as Record<symbol, unknown>)[SHARED_KEY] ??= {
+  settled: new Map(),
+  hashes: new Map(),
+  done: null,
+  cancelled: new Set(),
+  deferred: [],
+  tombstones: new Set(),
+  inFlight: new Set(),
+  jwks: null,
+}) as SharedState;
+const settledInMemory = shared.settled;
+const cancelledPolls = shared.cancelled;
+const deferredIdentities = shared.deferred;
+/** Attempts whose code exchange is running, so a replayed callback cannot start a second one. */
+const inFlight = shared.inFlight;
 
 function flushDeferredIdentities(): void {
   while (deferredIdentities.length > 0) {
@@ -429,8 +453,10 @@ function rememberCancelled(pollId: string): void {
   while (cancelledPolls.size > 16) cancelledPolls.delete(cancelledPolls.values().next().value as string);
 }
 
-function remember(pollId: string, outcome: Settled): void {
+function remember(pollId: string, outcome: Settled, attemptState?: string): void {
   settledInMemory.set(pollId, outcome);
+  if (attemptState) shared.hashes.set(pollId, stateHash(attemptState));
+  while (shared.hashes.size > 16) shared.hashes.delete(shared.hashes.keys().next().value as string);
   while (settledInMemory.size > 8) settledInMemory.delete(settledInMemory.keys().next().value as string);
 }
 
@@ -448,7 +474,7 @@ function stillLive(pollId: string): boolean {
 function settle(pollId: string, outcome: Settled, change?: (state: SignInState) => void): boolean {
   const state = readState();
   if (!state.pending || state.pending.pollId !== pollId || state.pending.outcome) return false;
-  remember(pollId, outcome);
+  remember(pollId, outcome, state.pending.state);
   state.pending = { ...state.pending, outcome };
   change?.(state);
   writeState(state);
@@ -494,12 +520,13 @@ export async function completeChatGptSignIn(
   // A completion from the last ten minutes (file or memory) is a reloaded tab,
   // whatever the disk row says: it never exchanges again.
   if (params.state) {
-    for (const done of [state.lastDone, doneInMemory]) {
+    for (const done of [state.lastDone, shared.done]) {
       if (done && Date.now() - done.at < REPEAT_WINDOW_MS && sameSecret(done.stateHash, stateHash(params.state))) {
         return { status: "repeat" };
       }
     }
   }
+  if (params.state && shared.tombstones.has(stateHash(params.state))) return REFUSED;
   if (
     !pending || pending.outcome || !params.state || !sameSecret(pending.state, params.state) || inFlight.has(pending.pollId)
     || settledInMemory.has(pending.pollId) || cancelledPolls.has(pending.pollId)
@@ -564,7 +591,7 @@ function rescue(pollId: string, state: string, ctx: AttemptContext): SignInOutco
     // After the cancel, which forgets remembered outcomes: memory is what answers the poll now.
     remember(pollId, ctx.stored
       ? { status: "complete" }
-      : { status: "error", error: "chatgpt_signin_refused", ...(ctx.clientId ? { retryClientId: ctx.clientId } : {}) });
+      : { status: "error", error: "chatgpt_signin_refused", ...(ctx.clientId ? { retryClientId: ctx.clientId } : {}) }, state);
     if (ctx.stored) return { status: "complete", credential: ctx.stored };
     ctx.discard?.();
     return { status: "error", error: "chatgpt_signin_refused" };
@@ -702,8 +729,8 @@ async function runAttempt(
   ctx.stored = credential;
   ctx.discard = null; // the tokens are in use now
   // From here the sign-in is real: memory answers the poll and a reloaded tab even if the file cannot be written.
-  remember(pollId, { status: "complete" });
-  doneInMemory = { stateHash: stateHash(pending.state), at: Date.now() };
+  remember(pollId, { status: "complete" }, pending.state);
+  shared.done = { stateHash: stateHash(pending.state), at: Date.now() };
   try {
     recordIdentity(clientId, identity, false);
   } catch {
@@ -729,10 +756,19 @@ export function pollChatGptSignIn(pollId: string): SignInPoll {
   const remembered = settledInMemory.get(pollId);
   if (remembered) {
     settledInMemory.delete(pollId);
+    const hash = shared.hashes.get(pollId);
+    shared.hashes.delete(pollId);
+    let rowGone = false;
     try {
       const state = readState();
       if (state.pending?.pollId === pollId) writeState({ ...state, pending: null });
+      rowGone = true;
     } catch { /* the outcome is answered either way */ }
+    // The disk row may still be unsettled: a tombstone keeps a later callback for it from exchanging again.
+    if (!rowGone && hash) {
+      shared.tombstones.add(hash);
+      while (shared.tombstones.size > 16) shared.tombstones.delete(shared.tombstones.values().next().value as string);
+    }
     return answer(remembered);
   }
   const state = readState();
@@ -745,7 +781,8 @@ export function pollChatGptSignIn(pollId: string): SignInPoll {
   }
   if (pending.expiresAt <= Date.now()) {
     drop();
-    return { status: "expired" };
+    // An attempt on an issued client names it, so Try again can reuse it.
+    return { status: "expired", ...(pending.clientId ? { retryClientId: pending.clientId } : {}) };
   }
   return { status: "pending" };
 }
@@ -792,7 +829,6 @@ export function isChatGptPollId(pollId: string): boolean {
   }
 }
 
-let jwksCache: { fetchedAt: number; keys: JsonWebKey[] } | null = null;
 
 async function fetchJwks(fetchImpl: FetchFn): Promise<JsonWebKey[]> {
   const res = await fetchImpl(JWKS_URL, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -800,14 +836,14 @@ async function fetchJwks(fetchImpl: FetchFn): Promise<JsonWebKey[]> {
   const body = await res.json() as unknown;
   if (!isRecord(body) || !Array.isArray(body.keys)) throw new Error("jwks_unavailable");
   const keys = body.keys.filter(isRecord) as JsonWebKey[];
-  jwksCache = { fetchedAt: Date.now(), keys };
+  shared.jwks = { fetchedAt: Date.now(), keys };
   return keys;
 }
 
 /** The signing key for `kid`: from the one-hour cache, refetched once when the kid is unknown. */
 async function signingKey(kid: string, fetchImpl: FetchFn) {
   const find = (keys: JsonWebKey[]) => keys.find((key) => (key as { kid?: string }).kid === kid && key.kty === "RSA");
-  const cached = jwksCache && Date.now() - jwksCache.fetchedAt < JWKS_TTL_MS ? jwksCache.keys : null;
+  const cached = shared.jwks && Date.now() - shared.jwks.fetchedAt < JWKS_TTL_MS ? shared.jwks.keys : null;
   let jwk = cached ? find(cached) : undefined;
   if (!jwk) jwk = find(await fetchJwks(fetchImpl));
   if (!jwk) throw new Error("kid_unknown");
