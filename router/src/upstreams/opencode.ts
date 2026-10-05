@@ -139,20 +139,28 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Store a refreshed credential only while the stored one still carries the
- * refresh token that was spent; a connection removed meanwhile stays gone.
- * The rotated token exists nowhere else, so a failed write is tried again.
+ * Rotated credentials the store would not take, per connection, keyed by the
+ * refresh token the store still holds (the spent one). Memory only: the rotated
+ * refresh token exists nowhere else, and spending the spent one again would
+ * burn the session.
  */
-async function storeRefreshed(connectionId: string, providerId: string, spent: Credential, next: Credential): Promise<void> {
+const unstored = new Map<string, { spent: string | null; credential: Credential }>();
+
+/**
+ * Store a refreshed credential only while the stored one still carries the
+ * `guard` refresh token; a connection removed meanwhile stays gone. A failed
+ * write is tried 3 times; when all fail the credential is kept in `unstored`.
+ */
+async function storeRefreshed(connectionId: string, providerId: string, guard: string | null, next: Credential): Promise<boolean> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       updateProviderStore((store) => {
         const current = store.connections[connectionId]?.credential;
         if (!current || current.kind !== "oauth") return store;
-        if (spent.kind === "oauth" && current.refreshToken !== spent.refreshToken) return store;
+        if (current.refreshToken !== guard) return store;
         return setOAuthCredential(store, providerId, next);
       });
-      return;
+      return true;
     } catch (error) {
       if (attempt < 3) {
         await sleep(200);
@@ -162,15 +170,17 @@ async function storeRefreshed(connectionId: string, providerId: string, spent: C
       console.error(`[useful-bot] refreshed credential for ${connectionId} was not stored: ${code}`);
     }
   }
+  unstored.set(connectionId, { spent: guard, credential: next });
+  return false;
 }
 
 /** A refresh token the auth server refused for good: clear it (docs: clear unusable tokens), under the same guard. */
-function clearUnusable(connectionId: string, providerId: string, spent: Credential): void {
+function clearUnusable(connectionId: string, providerId: string, guard: string | null): void {
   try {
     updateProviderStore((store) => {
       const current = store.connections[connectionId]?.credential;
       if (!current || current.kind !== "oauth") return store;
-      if (spent.kind === "oauth" && current.refreshToken !== spent.refreshToken) return store;
+      if (current.refreshToken !== guard) return store;
       return setOAuthCredential(store, providerId, { ...current, refreshToken: null, expiresAt: 0 });
     });
   } catch { /* best effort: the next call fails the same way */ }
@@ -179,10 +189,12 @@ function clearUnusable(connectionId: string, providerId: string, spent: Credenti
 /**
  * A fresh credential for a connection whose token is expired or was refused.
  * Re-reads the store first: another call (or process) may have refreshed it
- * already, and then its token is used as is. Otherwise one refresh runs for
+ * already, and then its token is used as is; so is a rotated token the store
+ * would not take earlier (its write is retried). Otherwise one refresh runs for
  * the connection. A refresh the auth server refuses for good clears the
- * ChatGPT sign-in's tokens and fails as an auth failure; a transient failure
- * is a retryable 503 and records nothing against the connection.
+ * ChatGPT sign-in's tokens and fails as an auth failure; a rejected client
+ * fails the same way but keeps the tokens; a transient failure is a retryable
+ * 503 and records nothing against the connection.
  */
 async function renewedCredential(connectionId: string, providerId: string, held: Credential): Promise<Credential> {
   const stored = readProviderStore().connections[connectionId]?.credential;
@@ -190,20 +202,38 @@ async function renewedCredential(connectionId: string, providerId: string, held:
     && !accessTokenFor(providerId, stored).expired) {
     return stored;
   }
+  const kept = unstored.get(connectionId);
+  let keptBase: Credential | null = null;
+  if (kept) {
+    if (stored && stored.kind === "oauth" && stored.refreshToken === kept.spent) {
+      if (await storeRefreshed(connectionId, providerId, kept.spent, kept.credential)) unstored.delete(connectionId);
+      if (!accessTokenFor(providerId, kept.credential).expired) return kept.credential;
+      keptBase = kept.credential;
+    } else {
+      unstored.delete(connectionId);
+    }
+  }
   const running = refreshing.get(connectionId);
   if (running) return running;
-  const base = stored && stored.kind === "oauth" ? stored : held;
+  const base = keptBase ?? (stored && stored.kind === "oauth" ? stored : held);
+  const guard = stored && stored.kind === "oauth" ? stored.refreshToken : base.kind === "oauth" ? base.refreshToken : null;
   const run = (async () => {
     let next: Credential;
     try {
       next = await refreshCredential(providerId, base);
     } catch (error) {
-      if (error instanceof Error && error.message === "oauth_refresh_transient") throw refreshUnavailable();
-      if (providerId === "openai") clearUnusable(connectionId, providerId, base);
+      const code = error instanceof Error ? error.message : "";
+      if (code === "oauth_refresh_transient") throw refreshUnavailable();
+      if (code === "oauth_refresh_client") {
+        console.error("[useful-bot] chatgpt refresh: oauth_refresh_client");
+        noteConnectionError(connectionId, "upstream_auth_failed");
+        throw authFailed();
+      }
+      if (providerId === "openai") clearUnusable(connectionId, providerId, guard);
       noteConnectionError(connectionId, "upstream_auth_failed");
       throw authFailed();
     }
-    await storeRefreshed(connectionId, providerId, base, next);
+    await storeRefreshed(connectionId, providerId, guard, next);
     return next;
   })().finally(() => refreshing.delete(connectionId));
   refreshing.set(connectionId, run);
@@ -452,23 +482,29 @@ export async function completeUpstream(input: {
       message: "upstream redirect rejected",
     });
   }
-  if (response.status === 403 && resolved.providerId === "openai" && resolved.protocol === "openai-responses") {
-    // The ChatGPT route names the refusal in the body (error.code, or a
-    // top-level detail on an admission refusal). Plan sharing refused for this
-    // account is not an auth failure; a bare 403 still is.
-    const named = await chatGptForbiddenCode(response);
-    if (named === "subscription_sharing_user_not_eligible" || (named && /^(subscription_sharing_|chatpass_)\w*$/.test(named))) {
-      const code = named === "subscription_sharing_user_not_eligible" ? "upstream_chatgpt_not_eligible" : "upstream_chatgpt_not_permitted";
-      throw new UpstreamRefusalError({
-        status: 403,
-        type: "permission_error",
-        code,
-        message: code,
-        retryable: false,
-      });
+  const chatGptRoute = resolved.providerId === "openai" && resolved.protocol === "openai-responses";
+  if (response.status === 403 && chatGptRoute) {
+    // Every 403 on this route is a policy refusal (account not eligible, region,
+    // plan sharing off), never an expired sign-in: that is a 401. The body only
+    // tells which kind it is.
+    const code = await chatGptErrorCode(response) === "subscription_sharing_user_not_eligible"
+      ? "upstream_chatgpt_not_eligible"
+      : "upstream_chatgpt_not_permitted";
+    throw new UpstreamRefusalError({
+      status: 403,
+      type: "permission_error",
+      code,
+      message: code,
+      retryable: false,
+    });
+  }
+  if (response.status === 503 && chatGptRoute) {
+    // Plan sharing could not check usage or the user: temporary, not the
+    // model failing, so no circuit count and no auth note.
+    const named = await chatGptErrorCode(response);
+    if (named === "subscription_sharing_usage_unavailable" || named === "subscription_sharing_user_unavailable") {
+      throw refreshUnavailable();
     }
-    noteConnectionError(resolved.connection.id, "upstream_auth_failed");
-    throw authFailed();
   }
   if (response.status === 401 || response.status === 403) {
     noteConnectionError(resolved.connection.id, "upstream_auth_failed");
@@ -511,7 +547,7 @@ export async function completeUpstream(input: {
 const REFUSAL_BODY_BYTES = 4096;
 
 /** `error.code` of a JSON error body, else a top-level `detail` string; null when neither is there. */
-async function chatGptForbiddenCode(response: Response): Promise<string | null> {
+async function chatGptErrorCode(response: Response): Promise<string | null> {
   try {
     const parsed = JSON.parse(await readPrefix(response, REFUSAL_BODY_BYTES)) as unknown;
     if (!parsed || typeof parsed !== "object") return null;

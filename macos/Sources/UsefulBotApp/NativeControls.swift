@@ -190,6 +190,53 @@ struct ContinueWithChatGPTButton: View {
     }
 }
 
+/// "Use a different account": a menu of the other saved ChatGPT accounts plus
+/// "Add another account", or a plain button when there are no others.
+struct UseDifferentAccountControl: View {
+    let accounts: [SavedChatGptAccount]
+    /// The account the sign-in continues with now, left out of the list.
+    let current: String?
+    var kind: NativeButtonKind = .ghost
+    let onPick: (String) -> Void
+    let onAddNew: () -> Void
+
+    private var others: [SavedChatGptAccount] {
+        accounts.filter { $0.label != current }
+    }
+
+    var body: some View {
+        if others.isEmpty {
+            NativeButton("Use a different account", kind: kind, small: true, action: onAddNew)
+                .accessibilityIdentifier("use-different-account")
+        } else {
+            Menu {
+                ForEach(others, id: \.clientId) { account in
+                    Button(account.label) { onPick(account.clientId) }
+                }
+                Divider()
+                Button("Add another account", action: onAddNew)
+            } label: {
+                HStack(spacing: 4) {
+                    Text("Use a different account")
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .font(Theme.font(DesignTokens.FontSize.button, .semibold))
+                .foregroundStyle(Theme.C.ink)
+                .padding(.horizontal, 12)
+                .frame(minHeight: DesignTokens.Control.buttonSmallMinHeight)
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .pointerOnHover()
+            .accessibilityIdentifier("use-different-account")
+        }
+    }
+}
+
 /// `.icon-btn`: 10pt radius, muted ink, accent-soft hover, 32pt default.
 struct NativeIconButton: View {
     let systemImage: String

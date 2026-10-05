@@ -148,6 +148,32 @@ test("responses request maps chat fields, tools and images", () => {
   assert.equal((plain.input as Array<Record<string, unknown>>)[2].namespace, undefined);
 });
 
+test("a ChatGPT 503 plan-sharing code mid-stream becomes the retryable upstream_unavailable", async () => {
+  for (const code of ["subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable"]) {
+    const stub: typeof fetch = async () => new Response(sse([
+      { event: "response.failed", data: { type: "response.failed", response: { error: { code, message: "try later" } } } },
+    ]), { headers: { "content-type": "text/event-stream" } });
+    const { error } = await readTranslated(await postResponses({
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-6.1-sol",
+      chatgpt: true,
+      body: { ...CHAT_BODY },
+      headers: {},
+      signal: AbortSignal.timeout(5000),
+      fetchImpl: stub,
+    }));
+    assert.deepEqual(error, { message: "upstream_unavailable", code: "upstream_unavailable" }, code);
+  }
+});
+
+test("chatgpt route: no tool_choice without tools", () => {
+  const empty = buildResponsesBody({ ...CHAT_BODY, tools: [] }, { model: "gpt-6.1-sol", chatgpt: true });
+  assert.equal("tools" in empty, false);
+  assert.equal("tool_choice" in empty, false);
+  const full = buildResponsesBody({ ...CHAT_BODY }, { model: "gpt-6.1-sol", chatgpt: true });
+  assert.deepEqual(full.tool_choice, { type: "function", name: "get_weather" });
+});
+
 test("chatgpt route: an empty tools list sets no tools and no empty namespace", () => {
   const out = buildResponsesBody({ ...CHAT_BODY, tools: [], tool_choice: undefined }, { model: "gpt-6.1-sol", chatgpt: true });
   assert.equal("tools" in out, false);

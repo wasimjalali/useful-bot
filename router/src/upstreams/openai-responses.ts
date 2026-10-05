@@ -187,7 +187,10 @@ export function buildResponsesBody(
       out.tools = [{ type: "namespace", name: CHATGPT_TOOL_NAMESPACE, description: "Useful Bot tools.", tools }];
     }
   }
-  if (chatBody.tool_choice !== undefined) out.tool_choice = toResponsesToolChoice(chatBody.tool_choice);
+  // The ChatGPT route takes no tool_choice without tools.
+  if (chatBody.tool_choice !== undefined && (!opts.chatgpt || out.tools !== undefined)) {
+    out.tool_choice = toResponsesToolChoice(chatBody.tool_choice);
+  }
   if (!opts.chatgpt && typeof chatBody.max_tokens === "number") out.max_output_tokens = chatBody.max_tokens;
   if (typeof chatBody.reasoning_effort === "string") out.reasoning = { effort: chatBody.reasoning_effort };
   if (!opts.chatgpt && typeof chatBody.service_tier === "string") out.service_tier = chatBody.service_tier;
@@ -389,6 +392,10 @@ function applyResponsesEvent(state: ResponsesStreamState, event: Record<string, 
     if (used) {
       error.code = used;
       error.message = usedLimitMessage(used, (inner ? resetOf(inner) : undefined) ?? zaiResetOf(code, said));
+    } else if (code === "subscription_sharing_usage_unavailable" || code === "subscription_sharing_user_unavailable") {
+      // Temporary on the plan-sharing side: the retryable code, same as one refused up front.
+      error.code = "upstream_unavailable";
+      error.message = "upstream_unavailable";
     }
     state.enqueue(`data: ${JSON.stringify({ error })}\n\n`);
     return "error";

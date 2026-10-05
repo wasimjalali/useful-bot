@@ -763,6 +763,17 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
     enum RoleKeys: String, CodingKey { case `default`, reviewer, image }
 }
 
+/// One saved ChatGPT account the sign-in can continue with.
+public struct SavedChatGptAccount: Codable, Equatable, Sendable {
+    public let clientId: String
+    public let label: String
+
+    public init(clientId: String, label: String) {
+        self.clientId = clientId
+        self.label = label
+    }
+}
+
 /// `POST /api/providers/oauth` answer: what the device sheet shows.
 public struct DeviceFlowStart: Codable, Equatable, Sendable {
     public let pollId: String
@@ -770,6 +781,10 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     public let flow: String
     /// The saved ChatGPT account this sign-in continues with; nil when it registers a new one or from an older server.
     public let account: String?
+    /// Every saved ChatGPT account; empty from an older server.
+    public let accounts: [SavedChatGptAccount]
+    /// The sign-in continues with a saved account rather than registering a new one.
+    public let reusesSaved: Bool
     public let userCode: String
     public let verificationUrl: String
     public let verificationUrlComplete: String?
@@ -781,6 +796,8 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
         pollId = try c.decode(String.self, forKey: .pollId)
         flow = (try? c.decode(String.self, forKey: .flow)) ?? "device"
         account = try? c.decodeIfPresent(String.self, forKey: .account)
+        accounts = (try? c.decode([SavedChatGptAccount].self, forKey: .accounts)) ?? []
+        reusesSaved = (try? c.decode(Bool.self, forKey: .reusesSaved)) ?? false
         userCode = (try? c.decode(String.self, forKey: .userCode)) ?? ""
         verificationUrl = (try? c.decode(String.self, forKey: .verificationUrl)) ?? ""
         verificationUrlComplete = try? c.decodeIfPresent(String.self, forKey: .verificationUrlComplete)
@@ -795,7 +812,7 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pollId, flow, account, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
+        case pollId, flow, account, accounts, reusesSaved, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
     }
 }
 

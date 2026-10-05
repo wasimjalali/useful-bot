@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createSign, generateKeyPairSync } from "node:crypto";
+import { chmodSync } from "node:fs";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,6 +179,7 @@ function stateFile(path: string): {
   hostId: string;
   registrations: Array<Record<string, unknown>>;
   lastClientId: string | null;
+  retryClientId: string | null;
   pending: Record<string, unknown> | null;
   lastDone: { stateHash: string; at: number } | null;
 } {
@@ -389,7 +391,8 @@ test("5 a 400 invalid_grant is chatgpt_token_exchange and the issued client id i
   const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
   assert.deepEqual(out, { status: "error", error: "chatgpt_token_exchange" });
   assert.deepEqual(stateFile(path).registrations, [PROVISIONAL]);
-  assert.equal(stateFile(path).lastClientId, "oaiapp_alice");
+  assert.equal(stateFile(path).lastClientId, null, "only a validated identity becomes the last client");
+  assert.equal(stateFile(path).retryClientId, "oaiapp_alice");
   assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_token_exchange" });
   // The next start reuses that client id instead of registering a duplicate.
   server.tokenStatus = 200;
@@ -491,13 +494,16 @@ test("8 another subject on reauth is an account mismatch, keeps every registrati
   const again = signIn(server, { storedCredential: aliceCredential });
   assert.equal(again.q.get("client_id"), "oaiapp_alice");
   assert.equal(again.started.account, "alice@example.com");
-  // A fresh registration for a subject that already has an entry replaces that entry.
+  // The same account in another workspace is another issued client: both survive (docs: keep registrations separate).
   server.sub = "sub-alice";
   server.clientId = "oaiapp_alice2";
   const dup = signIn(server, { newAccount: true });
   const dupDone = await completeChatGptSignIn({ state: dup.state, code: "c", error: null, clientId: "oaiapp_alice2" }, server.fetch);
   assert.equal(dupDone.status, "complete");
-  assert.deepEqual(stateFile(path).registrations.map((r) => [r.clientId, r.subject]), [["oaiapp_bob", "sub-bob"], ["oaiapp_alice2", "sub-alice"]]);
+  assert.deepEqual(stateFile(path).registrations.map((r) => [r.clientId, r.subject]), [
+    ["oaiapp_alice", "sub-alice"], ["oaiapp_bob", "sub-bob"], ["oaiapp_alice2", "sub-alice"],
+  ]);
+  assert.equal(stateFile(path).lastClientId, "oaiapp_alice2");
 });
 
 test("9 an expired attempt reports expired and a late callback is refused", async () => {
@@ -690,10 +696,13 @@ test("21 refresh: terminal OAuth errors and transient failures are told apart", 
   });
   const answer = (status: number, error?: string): typeof fetch => async () =>
     new Response(error ? JSON.stringify({ error }) : "{}", { status, headers: { "content-type": "application/json" } });
-  for (const code of ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused", "invalid_client"]) {
+  for (const code of ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"]) {
     await assert.rejects(() => refreshChatGptCredential(credential, answer(400, code)), /oauth_refresh_terminal/, code);
   }
   await assert.rejects(() => refreshChatGptCredential(credential, answer(401, "invalid_grant")), /oauth_refresh_terminal/);
+  // A client the server does not accept is a configuration fault, not an unusable token.
+  await assert.rejects(() => refreshChatGptCredential(credential, answer(401, "invalid_client")), /oauth_refresh_client/);
+  await assert.rejects(() => refreshChatGptCredential(credential, answer(400, "invalid_client")), /oauth_refresh_client/);
   await assert.rejects(() => refreshChatGptCredential(credential, answer(400, "invalid_request")), /oauth_refresh_transient/);
   await assert.rejects(() => refreshChatGptCredential(credential, answer(500, "invalid_grant")), /oauth_refresh_transient/);
   await assert.rejects(() => refreshChatGptCredential(credential, answer(503)), /oauth_refresh_transient/);
@@ -728,4 +737,117 @@ test("22 failures log a code and a safe detail, never a body, a description or a
   assert.ok(joined.includes("chatgpt_token_exchange") && joined.includes("400") && joined.includes("invalid_grant"));
   assert.ok(joined.includes("jwt_iss"));
   for (const secret of ["SECRET-DESCRIPTION", "tok-leak", "code-leak", "refresh-leak"]) assert.ok(!joined.includes(secret), secret);
+});
+
+test("23 a default start never picks a provisional client; newAccount retries the provisional one once, then registers fresh", async () => {
+  const path = box();
+  const server = authServer();
+  await register(server); // alice validated as oaiapp_alice
+  // A new-account attempt that fails after the client id was issued.
+  server.clientId = "oaiapp_bob";
+  server.tokenStatus = 400;
+  const failedTry = signIn(server, { newAccount: true });
+  await completeChatGptSignIn({ state: failedTry.state, code: "c", error: null, clientId: "oaiapp_bob" }, server.fetch);
+  assert.equal(stateFile(path).retryClientId, "oaiapp_bob");
+  assert.equal(stateFile(path).lastClientId, "oaiapp_alice");
+  // The default start still targets the validated account.
+  assert.equal(signIn(server).q.get("client_id"), "oaiapp_alice");
+  // newAccount reuses the provisional client: issued id, no registration hints.
+  server.tokenStatus = 200;
+  server.sub = "sub-bob";
+  const retry = signIn(server, { newAccount: true });
+  assert.equal(retry.q.get("client_id"), "oaiapp_bob");
+  assert.equal(retry.q.get("agent_name_hint"), null);
+  assert.equal(retry.q.get("login_hint"), null);
+  assert.equal(retry.started.reusesSaved, true);
+  const done = await completeChatGptSignIn({ state: retry.state, code: "c", error: null, clientId: null }, server.fetch);
+  assert.equal(done.status, "complete");
+  assert.equal(stateFile(path).retryClientId, null);
+  assert.equal(stateFile(path).lastClientId, "oaiapp_bob");
+  // With nothing to retry, newAccount registers fresh.
+  const fresh = signIn(server, { newAccount: true });
+  assert.equal(fresh.q.get("client_id"), "dynamic_agent_client");
+  assert.equal(fresh.started.reusesSaved, false);
+  // A newer provisional client replaces the retry slot.
+  server.tokenStatus = 400;
+  server.clientId = "oaiapp_carol";
+  await completeChatGptSignIn({ state: fresh.state, code: "c", error: null, clientId: "oaiapp_carol" }, server.fetch);
+  assert.equal(stateFile(path).retryClientId, "oaiapp_carol");
+});
+
+test("24 starting with a chosen saved account, the accounts list and distinct labels", async () => {
+  const path = box();
+  const server = authServer();
+  await register(server);
+  server.clientId = "oaiapp_bob";
+  server.sub = "sub-bob";
+  server.email = null;
+  const b = signIn(server, { newAccount: true });
+  await completeChatGptSignIn({ state: b.state, code: "c", error: null, clientId: "oaiapp_bob" }, server.fetch);
+  server.clientId = "oaiapp_cara";
+  server.sub = "sub-cara";
+  server.email = "alice@example.com"; // same email as the first account, another workspace
+  const c = signIn(server, { newAccount: true });
+  await completeChatGptSignIn({ state: c.state, code: "c", error: null, clientId: "oaiapp_cara" }, server.fetch);
+  const chosen = signIn(server, { clientId: "oaiapp_alice", storedCredential: null });
+  assert.equal(chosen.q.get("client_id"), "oaiapp_alice");
+  assert.equal(chosen.started.account, "alice@example.com");
+  assert.equal(chosen.started.reusesSaved, true);
+  assert.deepEqual(chosen.started.accounts, [
+    { clientId: "oaiapp_alice", label: "alice@example.com (lice)" },
+    { clientId: "oaiapp_bob", label: "ChatGPT account _bob" },
+    { clientId: "oaiapp_cara", label: "alice@example.com (cara)" },
+  ]);
+  // Unknown and provisional ids are refused.
+  assert.throws(() => startChatGptSignIn({ clientId: "oaiapp_nobody", storedCredential: null }), /chatgpt_account_unknown/);
+  const file = stateFile(path);
+  writeFileSync(path, JSON.stringify({ ...file, registrations: [...file.registrations, { clientId: "oaiapp_prov", subject: null, email: null, needsConsent: false }] }));
+  assert.throws(() => startChatGptSignIn({ clientId: "oaiapp_prov", storedCredential: null }), /chatgpt_account_unknown/);
+  // A provisional entry is not offered as an account.
+  assert.ok(!startChatGptSignIn({ storedCredential: null }).accounts.some((a) => a.clientId === "oaiapp_prov"));
+});
+
+test("25 an attempt cancelled during the exchange changes nothing and only revokes its tokens", async () => {
+  const path = box();
+  const server = authServer();
+  server.scope = "openid email"; // the missing-scope path would set needsConsent
+  server.refreshToken = "refresh-cancelled";
+  const a = signIn(server);
+  const cancelling: typeof fetch = async (input, init) => {
+    const res = await server.fetch(input, init);
+    if (String(input) === TOKEN_URL) cancelChatGptSignIn(a.started.pollId);
+    return res;
+  };
+  const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, cancelling);
+  assert.deepEqual(out, { status: "refused", error: "chatgpt_state_mismatch" });
+  const file = stateFile(path);
+  assert.equal(file.lastClientId, null);
+  assert.ok(file.registrations.every((r) => r.needsConsent === false && r.subject === null));
+  assert.equal(server.calls.filter((call) => call.url === REVOKE_URL)[0]?.form?.get("token"), "refresh-cancelled");
+});
+
+test("26 the outcome is settled before the revoke, so a slow revoke cannot hide the real reason", async () => {
+  box();
+  const server = authServer();
+  server.scope = "openid email";
+  const a = signIn(server);
+  const hanging: typeof fetch = (input, init) =>
+    String(input) === REVOKE_URL ? new Promise<Response>(() => undefined) : server.fetch(input, init);
+  const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, hanging);
+  assert.deepEqual(out, { status: "error", error: "chatgpt_plan_not_enabled" });
+  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_plan_not_enabled" });
+});
+
+test("27 a bookkeeping failure after the credential was stored still settles the attempt", async () => {
+  const path = box();
+  const server = authServer();
+  const a = signIn(server);
+  const dir = join(path, "..");
+  const out = await completeChatGptSignIn(
+    { state: a.state, code: "c", error: null, clientId: "oaiapp_alice" },
+    server.fetch,
+    () => { chmodSync(dir, 0o500); }, // the stored credential is safe; the sign-in file can no longer be written
+  );
+  chmodSync(dir, 0o700);
+  assert.equal(out.status, "complete");
 });

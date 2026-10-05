@@ -732,11 +732,18 @@ private struct OAuthSheetView: View {
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     if model.oauthDone {
-                        if model.oauthOffersNewAccount {
-                            NativeButton("Use a different account", kind: .secondary) {
-                                Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) }
+                        if pending.flow == "browser" {
+                            if model.oauthOffersNewAccount {
+                                UseDifferentAccountControl(
+                                    accounts: pending.accounts, current: pending.account, kind: .secondary,
+                                    onPick: { id in Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, clientId: id) } },
+                                    onAddNew: { Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) } }
+                                )
+                            } else {
+                                NativeButton("Try again", kind: .secondary) {
+                                    Task { await model.retryOAuth(providerId: pending.providerId, label: pending.label) }
+                                }
                             }
-                            .accessibilityIdentifier("use-different-account")
                         }
                         NativeButton("Close", kind: .secondary) {
                             Task { await model.cancelOAuth() }
@@ -761,18 +768,21 @@ private struct OAuthSheetView: View {
                         }
                     }
                 }
-                if pending.flow == "browser", !model.oauthDone, let account = pending.account {
+                if pending.flow == "browser", !model.oauthDone, pending.account != nil || pending.reusesSaved {
                     HStack(spacing: 8) {
-                        Text("Continues as \(account).")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Theme.C.inkMuted)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 0)
-                        NativeButton("Use a different account", kind: .ghost, small: true) {
-                            Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) }
+                        if let account = pending.account {
+                            Text("Continues as \(account).")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
-                        .accessibilityIdentifier("use-different-account")
+                        Spacer(minLength: 0)
+                        UseDifferentAccountControl(
+                            accounts: pending.accounts, current: pending.account,
+                            onPick: { id in Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, clientId: id) } },
+                            onAddNew: { Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) } }
+                        )
                     }
                 }
                 if !model.oauthDone {

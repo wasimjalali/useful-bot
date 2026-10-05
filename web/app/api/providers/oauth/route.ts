@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   if (rateLimited(`providers-oauth:${gate.session.callerId}`, 60)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
-  let body: { providerId?: unknown; newAccount?: unknown };
+  let body: { providerId?: unknown; newAccount?: unknown; clientId?: unknown };
   try {
     body = await readJson(request) as typeof body;
   } catch (err) {
@@ -30,7 +30,10 @@ export async function POST(request: Request) {
     if (mode.signIn === "chatgpt") {
       // Browser flow: the app opens the authorize URL, the loopback callback
       // route finishes the sign-in and the poll reports it.
-      const started = startChatGptSignIn({ newAccount: body.newAccount === true });
+      const started = startChatGptSignIn({
+        newAccount: body.newAccount === true,
+        ...(typeof body.clientId === "string" ? { clientId: body.clientId } : {}),
+      });
       return NextResponse.json({
         ok: true,
         pollId: started.pollId,
@@ -41,6 +44,8 @@ export async function POST(request: Request) {
         expiresAt: started.expiresAt,
         intervalMs: started.intervalMs,
         account: started.account,
+        accounts: started.accounts,
+        reusesSaved: started.reusesSaved,
       });
     }
     const pending = await startDeviceFlow(providerId);

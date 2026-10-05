@@ -128,6 +128,17 @@ import Testing
          "verificationUrlComplete":null,"expiresAt":900000,"intervalMs":2000}
         """.utf8))
         #expect(older.account == nil)
+        #expect(older.accounts.isEmpty)
+        #expect(!older.reusesSaved)
+        let saved = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
+        {"ok":true,"pollId":"p4","flow":"browser","account":"a@example.com","reusesSaved":true,
+         "accounts":[{"clientId":"c1","label":"a@example.com"},{"clientId":"c2","label":"b@example.com"}],
+         "userCode":"","verificationUrl":"https://auth.openai.com/x"}
+        """.utf8))
+        #expect(saved.reusesSaved)
+        #expect(saved.accounts == [SavedChatGptAccount(clientId: "c1", label: "a@example.com"), SavedChatGptAccount(clientId: "c2", label: "b@example.com")])
+        #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: false, clientId: "c2")["clientId"] as? String == "c2")
+        #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: false)["clientId"] == nil)
         #expect(browser.account == nil)
         let continued = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
         {"ok":true,"pollId":"p3","flow":"browser","account":"me@example.com","userCode":"","verificationUrl":"https://auth.openai.com/x"}

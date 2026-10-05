@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRouter } from "../src/index.ts";
@@ -1930,10 +1930,103 @@ test("a ChatGPT 403 names why: not eligible, other plan-sharing codes, and a bar
     assert.equal(other.error?.retryable, false);
     assert.equal(other.store?.lastError, null);
   }
+  // Every other 403 on this route is a policy refusal, never "sign-in expired".
   const bare = await chatgptRun({ upstream: { status: 403, body: JSON.stringify({ detail: "Region not permitted" }) } });
-  assert.equal(bare.error?.code, "upstream_auth_failed");
+  assert.equal(bare.error?.code, "upstream_chatgpt_not_permitted");
+  assert.equal(bare.store?.lastError, null);
   const notJson = await chatgptRun({ upstream: { status: 403, body: "<html>no</html>" } });
-  assert.equal(notJson.error?.code, "upstream_auth_failed");
+  assert.equal(notJson.error?.code, "upstream_chatgpt_not_permitted");
+  assert.equal(notJson.store?.lastError, null);
+  // A 401 is still the auth path.
+  const unauthorized = await chatgptRun({ upstream: { status: 401, body: "{}" }, token: { status: 400, body: { error: "invalid_grant" } } });
+  assert.equal(unauthorized.error?.code, "upstream_auth_failed");
+});
+
+test("a ChatGPT 503 plan-sharing code is the retryable upstream_unavailable and records nothing", async () => {
+  for (const code of ["subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable"]) {
+    const out = await chatgptRun({ upstream: { status: 503, body: JSON.stringify({ error: { code } }) } });
+    assert.equal(out.error?.code, "upstream_unavailable", code);
+    assert.equal(out.error?.status, 503);
+    assert.equal(out.error?.retryable, true);
+    assert.equal(out.store?.lastError, null);
+  }
+});
+
+test("a rejected client (invalid_client) on refresh is an auth failure that keeps the tokens", async () => {
+  const out = await chatgptRun({
+    held: { expiresAt: Date.now() - 60_000 },
+    token: { status: 401, body: { error: "invalid_client" } },
+  });
+  assert.equal(out.error?.code, "upstream_auth_failed");
+  assert.equal(out.refreshes, 1);
+  const cred = out.store?.credential;
+  assert.ok(cred && cred.kind === "oauth");
+  assert.equal(cred.refreshToken, "refresh-0");
+  assert.ok((cred.expiresAt ?? 0) < Date.now(), "left as it was, still expired");
+  assert.equal(out.store?.lastError?.code, "upstream_auth_failed");
+});
+
+test("a rotated token whose store write failed is kept in memory and used instead of spending the spent token again", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-unstored-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  const expired = { kind: "oauth", accessToken: "old-access", refreshToken: "refresh-0", expiresAt: Date.now() - 60_000, accountId: null, clientId: "oaiapp_test" } as const;
+  writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", expired));
+  const bearers: string[] = [];
+  const server = createServer((req, res) => {
+    bearers.push(String(req.headers.authorization ?? ""));
+    jsonFixture(req, res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const realFetch = globalThis.fetch;
+  const realError = console.error;
+  console.error = () => undefined;
+  let refreshes = 0;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") {
+      refreshes += 1;
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-1", expires_in: 3600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const { port } = server.address() as { port: number };
+    const resolved = {
+      connection: { id: "openai:oauth" }, providerId: "openai", mode: { headers: {} }, modelId: "gpt-6.1-sol", model: "gpt-6.1-sol",
+      effort: null, speed: "standard", baseUrl: `http://127.0.0.1:${port}`, protocol: "openai-chat", keyHeader: "bearer",
+      credential: expired, opencodeSession: false, fallback: false,
+    } as unknown as ResolvedUpstream;
+    const call = () => completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+      body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+      sessionId: randomUUID(), callerId: "desktop", signal: new AbortController().signal, resolved,
+    });
+    chmodSync(dir, 0o500); // every store write fails
+    const first = await call();
+    assert.equal(first.response.status, 200);
+    assert.equal(refreshes, 1);
+    const stuck = readProviderStore().connections["openai:oauth"]?.credential;
+    assert.ok(stuck && stuck.kind === "oauth" && stuck.refreshToken === "refresh-0", "the store still holds the spent token");
+    chmodSync(dir, 0o700); // the disk comes back
+    const second = await call();
+    assert.equal(second.response.status, 200);
+    assert.equal(refreshes, 1, "the spent token was not used again");
+    assert.deepEqual(bearers, ["Bearer new-access", "Bearer new-access"]);
+    const healed = readProviderStore().connections["openai:oauth"]?.credential;
+    assert.ok(healed && healed.kind === "oauth");
+    assert.equal(healed.refreshToken, "refresh-1", "the retried write stored the rotated token");
+    await Promise.all([first, second].map((out) => out.response.body?.cancel()));
+  } finally {
+    chmodSync(dir, 0o700);
+    console.error = realError;
+    globalThis.fetch = realFetch;
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
 });
 
 test("a ChatGPT 429 usage limit answers upstream_chatgpt_usage_limit", async () => {

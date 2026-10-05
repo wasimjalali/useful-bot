@@ -1011,13 +1011,17 @@ private struct SignInPage: View {
         }
     }
 
-    private func restart(newAccount: Bool = false) {
+    private func restart(newAccount: Bool = false, clientId: String? = nil) {
         if previewing {
             previewExpired = false
             start()
             return
         }
-        Task { await model.startOAuth(providerId: entry.providerId, label: entry.label, newAccount: newAccount) }
+        if newAccount || clientId != nil {
+            Task { await model.startOAuth(providerId: entry.providerId, label: entry.label, newAccount: newAccount, clientId: clientId) }
+        } else {
+            Task { await model.retryOAuth(providerId: entry.providerId, label: entry.label) }
+        }
     }
 
     /// The spinner morphs into a check, then Continue fades in.
@@ -1033,14 +1037,19 @@ private struct SignInPage: View {
             ContinueWithChatGPTButton(enabled: link != nil && !signedIn && ended == nil) {
                 if !previewing, let link, let url = URL(string: link) { NSWorkspace.shared.open(url) }
             }
-            if let account = pending?.account, !signedIn, ended == nil {
-                Text("Continues as \(account).")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                NativeButton("Use a different account", kind: .ghost, small: true) { restart(newAccount: true) }
-                    .accessibilityIdentifier("use-different-account")
+            if let pending, !signedIn, ended == nil, pending.account != nil || pending.reusesSaved {
+                if let account = pending.account {
+                    Text("Continues as \(account).")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                UseDifferentAccountControl(
+                    accounts: pending.accounts, current: pending.account,
+                    onPick: { restart(clientId: $0) },
+                    onAddNew: { restart(newAccount: true) }
+                )
             }
         }
         .padding(22)
@@ -1096,8 +1105,11 @@ private struct SignInPage: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 if model.oauthOffersNewAccount, isBrowserFlow {
-                    NativeButton("Use a different account", kind: .secondary, small: true) { restart(newAccount: true) }
-                        .accessibilityIdentifier("use-different-account")
+                    UseDifferentAccountControl(
+                        accounts: pending?.accounts ?? [], current: pending?.account, kind: .secondary,
+                        onPick: { restart(clientId: $0) },
+                        onAddNew: { restart(newAccount: true) }
+                    )
                 } else {
                     NativeButton(isBrowserFlow ? "Try again" : "Get a new code", kind: .secondary, small: true) { restart() }
                         .accessibilityIdentifier("first-run-new-code")
