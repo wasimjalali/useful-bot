@@ -14,7 +14,7 @@ import { RouterError } from "../src/errors.ts";
 import { completeUpstream, upstreamConfigError, type ResolvedUpstream } from "../src/upstreams/opencode.ts";
 import { readPrefix } from "../src/read-capped.ts";
 import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
-import { emptyProviderStore, readProviderStore, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
+import { emptyProviderStore, readProviderStore, setOAuthCredential, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
@@ -1666,7 +1666,7 @@ async function oauthRefreshFailure(expiresAt: number | null, status: number) {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address() as { port: number };
-    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt, accountId: null } as const;
+    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt, accountId: null, clientId: "oaiapp_test" } as const;
     const resolved = {
       connection: { id: "openai:oauth" },
       providerId: "openai",
@@ -1714,6 +1714,133 @@ test("an expired credential whose refresh fails sends nothing and reports no dis
   assert.deepEqual(out, { reached: 0, dispatches: 0, refused: 0 });
 });
 
+test("a ChatGPT sign-in without a client id (the old Codex route) is refused with no network call", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-legacy-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  let reached = 0;
+  const server = createServer((_req, res) => {
+    reached += 1;
+    res.writeHead(200).end("{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const resolved = {
+      connection: { id: "openai:oauth" },
+      providerId: "openai",
+      mode: { headers: {} },
+      modelId: "gpt-6.1-sol",
+      model: "gpt-6.1-sol",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: "openai-chat",
+      keyHeader: "bearer",
+      credential: { kind: "oauth", accessToken: "codex-token", refreshToken: "codex-refresh", expiresAt: Date.now() + 3_600_000, accountId: "acct_codex" },
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    await assert.rejects(
+      completeUpstream({
+        entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+        body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+        sessionId: randomUUID(),
+        callerId: "desktop",
+        signal: new AbortController().signal,
+        resolved,
+      }),
+      (err: unknown) => err instanceof RouterError && err.code === "upstream_auth_failed",
+    );
+    assert.equal(reached, 0);
+  } finally {
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+});
+
+test("two parallel calls with an expired ChatGPT token share one refresh, and a stale holder reuses the stored token", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-refresh-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  const expired = {
+    kind: "oauth",
+    accessToken: "old-access",
+    refreshToken: "refresh-0",
+    expiresAt: Date.now() - 60_000,
+    accountId: null,
+    clientId: "oaiapp_test",
+  } as const;
+  writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", expired));
+  const bearers: string[] = [];
+  const server = createServer((req, res) => {
+    bearers.push(String(req.headers.authorization ?? ""));
+    jsonFixture(req, res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const realFetch = globalThis.fetch;
+  const refreshForms: string[] = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") {
+      refreshForms.push(String(init?.body));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-1", expires_in: 3600, scope: "openid" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const { port } = server.address() as { port: number };
+    const resolved = {
+      connection: { id: "openai:oauth" },
+      providerId: "openai",
+      mode: { headers: {} },
+      modelId: "gpt-6.1-sol",
+      model: "gpt-6.1-sol",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: "openai-chat",
+      keyHeader: "bearer",
+      credential: expired,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    const call = () => completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+      body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+      sessionId: randomUUID(),
+      callerId: "desktop",
+      signal: new AbortController().signal,
+      resolved,
+    });
+    const [one, two] = await Promise.all([call(), call()]);
+    assert.equal(one.response.status, 200);
+    assert.equal(two.response.status, 200);
+    assert.equal(refreshForms.length, 1, "one refresh request for two parallel calls");
+    assert.equal(new URLSearchParams(refreshForms[0]).get("refresh_token"), "refresh-0");
+    assert.deepEqual(bearers, ["Bearer new-access", "Bearer new-access"]);
+    const stored = readProviderStore().connections["openai:oauth"]?.credential;
+    assert.ok(stored && stored.kind === "oauth");
+    assert.equal(stored.accessToken, "new-access");
+    assert.equal(stored.refreshToken, "refresh-1");
+    // A later call still holding the old credential reads the stored one instead of spending a spent token.
+    const third = await call();
+    assert.equal(third.response.status, 200);
+    assert.equal(refreshForms.length, 1);
+    assert.equal(bearers.at(-1), "Bearer new-access");
+    await Promise.all([one, two, third].map((out) => out.response.body?.cancel()));
+  } finally {
+    globalThis.fetch = realFetch;
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+});
+
 // A request the adapter cannot build (never sent) is not a dispatch, and a model
 // with no catalog window sizes its output cap from the agent's unknown window.
 async function runCompleteUpstream(options: {
@@ -1746,7 +1873,7 @@ async function runCompleteUpstream(options: {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address() as { port: number };
-    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt: null, accountId: null } as const;
+    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt: null, accountId: null, clientId: "oaiapp_test" } as const;
     const resolved = {
       connection: { id: "custom:no-catalog" },
       providerId: "openai",

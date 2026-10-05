@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
 import { providerMode } from "../../../../../shared/provider-catalog.ts";
+import { startChatGptSignIn } from "../../../../../shared/chatgpt-signin.ts";
 import { startDeviceFlow } from "../../../../../shared/provider-oauth.ts";
 
 export const runtime = "nodejs";
@@ -24,12 +25,28 @@ export async function POST(request: Request) {
   }
   try {
     const providerId = typeof body.providerId === "string" ? body.providerId : "";
-    // Only providers with a device flow entry accept this route.
-    providerMode(providerId, "oauth");
+    // Only providers with a sign-in entry accept this route.
+    const mode = providerMode(providerId, "oauth");
+    if (mode.signIn === "chatgpt") {
+      // Browser flow: the app opens the authorize URL, the loopback callback
+      // route finishes the sign-in and the poll reports it.
+      const started = startChatGptSignIn();
+      return NextResponse.json({
+        ok: true,
+        pollId: started.pollId,
+        flow: "browser",
+        userCode: "",
+        verificationUrl: started.authorizeUrl,
+        verificationUrlComplete: null,
+        expiresAt: started.expiresAt,
+        intervalMs: started.intervalMs,
+      });
+    }
     const pending = await startDeviceFlow(providerId);
     return NextResponse.json({
       ok: true,
       pollId: pending.pollId,
+      flow: "device",
       userCode: pending.userCode,
       verificationUrl: pending.verificationUrl,
       verificationUrlComplete: pending.verificationUrlComplete,

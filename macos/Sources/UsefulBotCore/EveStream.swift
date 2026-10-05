@@ -297,6 +297,12 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         if haystack.contains("model_unavailable") {
             return "The provider doesn't offer this model right now. Pick another model."
         }
+        if haystack.contains("upstream_chatgpt_usage_limit") {
+            return "You've reached the ChatGPT plan limit for Useful Bot. Manage usage at chatgpt.com/settings/usage, or pick another model."
+        }
+        if haystack.contains("upstream_chatgpt_not_eligible") {
+            return "This ChatGPT account can't use its plan in Useful Bot. Pick another model."
+        }
         if haystack.contains("upstream_auth_failed") || haystack.contains("upstream_credential_missing") {
             return "Sign-in to the model provider expired. Reconnect it in Settings."
         }

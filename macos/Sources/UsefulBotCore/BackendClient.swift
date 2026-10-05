@@ -972,7 +972,7 @@ public actor BackendClient {
     /// Poll one device flow. On `complete` the route also returns the full GET
     /// payload, decoded here when present. Every poll answer carries the next
     /// `intervalMs` the server wants between polls.
-    public func pollOAuth(pollId: String) async throws -> (status: String, intervalMs: Int?, payload: ProvidersPayload?) {
+    public func pollOAuth(pollId: String) async throws -> (status: String, intervalMs: Int?, error: String?, payload: ProvidersPayload?) {
         let (data, response) = try await perform { client, token in
             var request = URLRequest(url: client.base.appendingPathComponent("api/providers/oauth/\(Self.pathComponent(pollId))"))
             request.httpMethod = "POST"
@@ -980,14 +980,14 @@ public actor BackendClient {
             return request
         }
         try Self.expectOK(data, response)
-        struct Poll: Decodable { let status: String?; let intervalMs: Int? }
+        struct Poll: Decodable { let status: String?; let intervalMs: Int?; let error: String? }
         guard let poll = try? JSONDecoder().decode(Poll.self, from: data),
               let status = poll.status, !status.isEmpty else {
             throw BackendError.decoding
         }
         let payload = try? JSONDecoder().decode(ProvidersPayload.self, from: data)
         let hasPayload = payload.map { !$0.catalog.isEmpty || !$0.connections.isEmpty } ?? false
-        return (status, poll.intervalMs, hasPayload ? payload : nil)
+        return (status, poll.intervalMs, poll.error, hasPayload ? payload : nil)
     }
 
     public func cancelOAuth(pollId: String) async throws {

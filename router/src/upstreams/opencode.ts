@@ -10,6 +10,7 @@ import { UNKNOWN_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
   readProviderStore,
   recordConnectionError,
+  isLegacyChatGptCredential,
   resolveUpstream,
   setOAuthCredential,
   updateProviderStore,
@@ -19,7 +20,7 @@ import { accessTokenFor, refreshCredential } from "../../../shared/provider-oaut
 import { postChatCompletions } from "./openai-chat.ts";
 import { postMessages } from "./anthropic-messages.ts";
 import { postResponses } from "./openai-responses.ts";
-import { upstreamLimitError } from "../retry-after.ts";
+import { upstreamLimitError, usedLimitCode } from "../retry-after.ts";
 import { readPrefix } from "../read-capped.ts";
 
 /**
@@ -105,7 +106,7 @@ export function authFailed(): RouterError {
   });
 }
 
-/** The token and the auth-derived headers (ChatGPT-Account-Id) for one call. */
+/** The token and the auth-derived headers for one call. */
 export function tokenFor(providerId: string, credential: Credential): { token: string; headers: Record<string, string> } {
   if (credential.kind === "key") return { token: credential.key, headers: {} };
   if (credential.kind === "oauth") {
@@ -115,8 +116,41 @@ export function tokenFor(providerId: string, credential: Credential): { token: s
   return { token: "", headers: {} };
 }
 
-function persistOAuthCredential(providerId: string, credential: Credential): void {
-  updateProviderStore((store) => setOAuthCredential(store, providerId, credential));
+/**
+ * Refreshes in flight, one per connection. Refresh tokens rotate, so two
+ * parallel refreshes with the same token would burn the session: the second
+ * caller joins the first's promise instead.
+ */
+const refreshing = new Map<string, Promise<Credential>>();
+
+/**
+ * A fresh credential for a connection whose token is expired or was refused.
+ * Re-reads the store first: another call (or process) may have refreshed it
+ * already, and then its token is used as is. Otherwise one refresh runs for
+ * the connection and is persisted only if the stored credential still carries
+ * the refresh token that was spent; a connection removed meanwhile stays gone.
+ */
+async function renewedCredential(connectionId: string, providerId: string, held: Credential): Promise<Credential> {
+  const stored = readProviderStore().connections[connectionId]?.credential;
+  if (stored && stored.kind === "oauth" && held.kind === "oauth" && stored.accessToken !== held.accessToken
+    && !accessTokenFor(providerId, stored).expired) {
+    return stored;
+  }
+  const running = refreshing.get(connectionId);
+  if (running) return running;
+  const base = stored && stored.kind === "oauth" ? stored : held;
+  const run = (async () => {
+    const next = await refreshCredential(providerId, base);
+    updateProviderStore((store) => {
+      const current = store.connections[connectionId]?.credential;
+      if (!current || current.kind !== "oauth") return store;
+      if (base.kind === "oauth" && current.refreshToken !== base.refreshToken) return store;
+      return setOAuthCredential(store, providerId, next);
+    });
+    return next;
+  })().finally(() => refreshing.delete(connectionId));
+  refreshing.set(connectionId, run);
+  return run;
 }
 
 /**
@@ -214,10 +248,14 @@ export async function completeUpstream(input: {
   const fetchImpl = timedFetch(timing, () => input.onDispatch?.());
   let credential = resolved.credential;
   if (credential.kind === "oauth") {
+    // A ChatGPT sign-in from the old Codex route is not sent anywhere.
+    if (isLegacyChatGptCredential(resolved.providerId, "oauth", credential)) {
+      noteConnectionError(resolved.connection.id, "upstream_auth_failed");
+      throw authFailed();
+    }
     if (accessTokenFor(resolved.providerId, credential).expired) {
       try {
-        credential = await refreshCredential(resolved.providerId, credential);
-        persistOAuthCredential(resolved.providerId, credential);
+        credential = await renewedCredential(resolved.connection.id, resolved.providerId, credential);
       } catch {
         noteConnectionError(resolved.connection.id, "upstream_auth_failed");
         throw authFailed();
@@ -330,8 +368,7 @@ export async function completeUpstream(input: {
       await response.body?.cancel();
     } catch { /* the retry carries on regardless */ }
     try {
-      credential = await refreshCredential(resolved.providerId, credential);
-      persistOAuthCredential(resolved.providerId, credential);
+      credential = await renewedCredential(resolved.connection.id, resolved.providerId, credential);
     } catch {
       noteConnectionError(resolved.connection.id, "upstream_auth_failed");
       throw authFailed();
@@ -367,6 +404,23 @@ export async function completeUpstream(input: {
       code: "upstream_protocol_error",
       message: "upstream redirect rejected",
     });
+  }
+  if (response.status === 403 && resolved.providerId === "openai" && resolved.protocol === "openai-responses") {
+    // The ChatGPT route says why in the body: the account, workspace or policy
+    // may not use plan sharing. Anything else on a 403 stays an auth failure.
+    const refusal = await upstreamRefusal(response);
+    const named = usedLimitCode("", refusal.kind.split(/[\s/]/).pop() ?? "");
+    if (named === "upstream_chatgpt_not_eligible") {
+      throw new UpstreamRefusalError({
+        status: 403,
+        type: "permission_error",
+        code: named,
+        message: named,
+        retryable: false,
+      });
+    }
+    noteConnectionError(resolved.connection.id, "upstream_auth_failed");
+    throw authFailed();
   }
   if (response.status === 401 || response.status === 403) {
     noteConnectionError(resolved.connection.id, "upstream_auth_failed");

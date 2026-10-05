@@ -143,6 +143,53 @@ extension NativeButton where Label == AnyView {
     }
 }
 
+/// OpenAI's "Continue with ChatGPT" button: the OpenAI mark and the label on
+/// black in light appearance, on white in dark. Sized like a primary
+/// `NativeButton`.
+struct ContinueWithChatGPTButton: View {
+    var enabled = true
+    var action: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hovering = false
+    @FocusState private var focused: Bool
+
+    private var ink: Color { colorScheme == .dark ? .black : .white }
+    private var fill: Color { colorScheme == .dark ? .white : .black }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let image = ProviderMarkImage.load("openai") {
+                    Image(nsImage: image)
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 16, height: 16)
+                }
+                Text("Continue with ChatGPT")
+            }
+            .font(Theme.font(DesignTokens.FontSize.button, .semibold))
+            .foregroundStyle(enabled ? ink : Theme.C.inkMuted)
+            .padding(.horizontal, 14)
+            .frame(minHeight: DesignTokens.Control.buttonMinHeight)
+            .background(enabled ? fill.opacity(hovering ? 0.85 : 1) : Theme.C.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .focusRing(focused)
+        .onHover { hovering = $0 }
+        .pointerOnHover()
+        .accessibilityLabel("Continue with ChatGPT")
+        .accessibilityIdentifier("continue-with-chatgpt")
+    }
+}
+
 /// `.icon-btn`: 10pt radius, muted ink, accent-soft hover, 32pt default.
 struct NativeIconButton: View {
     let systemImage: String

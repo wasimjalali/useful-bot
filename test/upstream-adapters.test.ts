@@ -95,7 +95,7 @@ test("responses request maps chat fields, tools and images", () => {
   assert.equal(out.stream, true);
   assert.equal(out.store, false);
   assert.deepEqual(out.include, ["reasoning.encrypted_content"]);
-  // The ChatGPT backend refuses max_output_tokens and wants the system
+  // The ChatGPT route refuses max_output_tokens and wants the system
   // prompt as instructions, not as a system row.
   assert.equal(out.max_output_tokens, undefined);
   assert.equal(out.instructions, "You are helpful.");
@@ -107,6 +107,7 @@ test("responses request maps chat fields, tools and images", () => {
   assert.deepEqual(input[1], {
     type: "function_call",
     call_id: "call_1",
+    namespace: "useful_bot",
     name: "get_weather",
     arguments: "{\"location\":\"Berlin\"}",
   });
@@ -119,11 +120,17 @@ test("responses request maps chat fields, tools and images", () => {
     ],
   });
   const tools = out.tools as Array<Record<string, unknown>>;
+  assert.equal(tools.length, 1);
   assert.deepEqual(tools[0], {
-    type: "function",
-    name: "get_weather",
-    description: "Get the weather",
-    parameters: { type: "object", properties: { location: { type: "string" } } },
+    type: "namespace",
+    name: "useful_bot",
+    description: "Useful Bot tools.",
+    tools: [{
+      type: "function",
+      name: "get_weather",
+      description: "Get the weather",
+      parameters: { type: "object", properties: { location: { type: "string" } } },
+    }],
   });
   const plain = buildResponsesBody({ ...CHAT_BODY }, { model: "gpt-5.4-mini", chatgpt: false });
   assert.equal(plain.include, undefined);
@@ -131,6 +138,49 @@ test("responses request maps chat fields, tools and images", () => {
   assert.equal(plain.instructions, undefined);
   assert.equal(plain.max_output_tokens, 512);
   assert.deepEqual((plain.input as Array<Record<string, unknown>>)[0], { role: "system", content: "You are helpful." });
+  // Outside the ChatGPT route tools stay flat and replayed calls carry no namespace.
+  assert.deepEqual((plain.tools as Array<Record<string, unknown>>)[0], {
+    type: "function",
+    name: "get_weather",
+    description: "Get the weather",
+    parameters: { type: "object", properties: { location: { type: "string" } } },
+  });
+  assert.equal((plain.input as Array<Record<string, unknown>>)[2].namespace, undefined);
+});
+
+test("chatgpt route: many tools share one namespace, service_tier is dropped, a named tool_choice stays a function", () => {
+  const body = {
+    ...CHAT_BODY,
+    service_tier: "priority",
+    tools: [
+      ...CHAT_BODY.tools,
+      { type: "function", function: { name: "read_file", parameters: { type: "object", properties: {} } } },
+    ],
+    messages: [
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "c1", type: "function", function: { name: "get_weather", arguments: "{}" } },
+          { id: "c2", type: "function", function: { name: "read_file", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "c1", content: "a" },
+      { role: "tool", tool_call_id: "c2", content: "b" },
+    ],
+  };
+  const chatgpt = buildResponsesBody(body, { model: "gpt-6.1-sol", chatgpt: true });
+  const tools = chatgpt.tools as Array<{ type: string; name: string; tools: Array<{ name: string }> }>;
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].type, "namespace");
+  assert.deepEqual(tools[0].tools.map((tool) => tool.name), ["get_weather", "read_file"]);
+  const calls = (chatgpt.input as Array<Record<string, unknown>>).filter((item) => item.type === "function_call");
+  assert.deepEqual(calls.map((call) => [call.name, call.namespace]), [["get_weather", "useful_bot"], ["read_file", "useful_bot"]]);
+  assert.equal("service_tier" in chatgpt, false);
+  assert.deepEqual(chatgpt.tool_choice, { type: "function", name: "get_weather" });
+  // The plain Responses API still forwards service_tier.
+  assert.equal(buildResponsesBody(body, { model: "gpt-6.1-sol", chatgpt: false }).service_tier, "priority");
 });
 
 test("chatgpt request shape: instructions always present, streaming forced, system rows lifted", () => {

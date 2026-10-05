@@ -621,6 +621,8 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
     public var status: String
     public let lastError: String?
     public let accountId: String?
+    /// The signed-in account shown next to the kind (the ChatGPT email); nil from an older server.
+    public let accountLabel: String?
     public var fields: [String: String]
     public var models: [ConnectionModelOption]
     /// The catalogue's everyday model for this connection; nil from an older server.
@@ -642,6 +644,7 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
         status = (try? c.decode(String.self, forKey: .status)) ?? "ok"
         lastError = try? c.decodeIfPresent(String.self, forKey: .lastError)
         accountId = try? c.decodeIfPresent(String.self, forKey: .accountId)
+        accountLabel = try? c.decodeIfPresent(String.self, forKey: .accountLabel)
         fields = (try? c.decode([String: String].self, forKey: .fields)) ?? [:]
         models = (try? c.decode([ConnectionModelOption].self, forKey: .models)) ?? []
         defaultModelId = try? c.decodeIfPresent(String.self, forKey: .defaultModelId)
@@ -649,7 +652,7 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, providerId, mode, label, kindLabel, monogram, icon, connected, last4
-        case source, active, status, lastError, accountId, fields, models, defaultModelId
+        case source, active, status, lastError, accountId, accountLabel, fields, models, defaultModelId
     }
 }
 
@@ -731,9 +734,12 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
     public var composer: ComposerState?
     public var legacyProviders: [ProviderPublic]
     public var legacyActiveProviderId: String?
+    /// A note beside a successful write, such as `chatgpt_revoke_unconfirmed` on a disconnect.
+    public var notice: String?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        notice = try? c.decodeIfPresent(String.self, forKey: .notice)
         catalog = (try? c.decode([CatalogPublic].self, forKey: .catalog)) ?? []
         connections = (try? c.decode([ConnectionPublic].self, forKey: .connections)) ?? []
         if let roles = try? c.nestedContainer(keyedBy: RoleKeys.self, forKey: .roles) {
@@ -751,7 +757,7 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case catalog, connections, roles, composer, providers, activeProviderId
+        case catalog, connections, roles, composer, providers, activeProviderId, notice
     }
 
     enum RoleKeys: String, CodingKey { case `default`, reviewer, image }
@@ -760,6 +766,8 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
 /// `POST /api/providers/oauth` answer: what the device sheet shows.
 public struct DeviceFlowStart: Codable, Equatable, Sendable {
     public let pollId: String
+    /// "browser" opens an authorization URL; "device" shows a code. An older server omits it: device.
+    public let flow: String
     public let userCode: String
     public let verificationUrl: String
     public let verificationUrlComplete: String?
@@ -769,6 +777,7 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         pollId = try c.decode(String.self, forKey: .pollId)
+        flow = (try? c.decode(String.self, forKey: .flow)) ?? "device"
         userCode = (try? c.decode(String.self, forKey: .userCode)) ?? ""
         verificationUrl = (try? c.decode(String.self, forKey: .verificationUrl)) ?? ""
         verificationUrlComplete = try? c.decodeIfPresent(String.self, forKey: .verificationUrlComplete)
@@ -783,7 +792,7 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pollId, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
+        case pollId, flow, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
     }
 }
 

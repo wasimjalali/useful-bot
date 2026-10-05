@@ -117,6 +117,36 @@ import Testing
         #expect(flow.intervalMs == 2000)
     }
 
+    @Test func theDeviceFlowStartDefaultsToDeviceAndReadsTheBrowserFlow() throws {
+        let older = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
+        {"ok":true,"pollId":"p1","userCode":"ABCD-1234","verificationUrl":"https://example.com/device"}
+        """.utf8))
+        #expect(older.flow == "device")
+        let browser = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
+        {"ok":true,"pollId":"p2","flow":"browser","userCode":"",
+         "verificationUrl":"https://auth.openai.com/api/accounts/authorize?x=1",
+         "verificationUrlComplete":null,"expiresAt":900000,"intervalMs":2000}
+        """.utf8))
+        #expect(browser.flow == "browser")
+        #expect(browser.userCode.isEmpty)
+        #expect(browser.verificationUrl.hasPrefix("https://auth.openai.com/"))
+    }
+
+    @Test func readsTheAccountLabelAndTheNoticeWhenPresent() throws {
+        let older = try decode("""
+        {"catalog":[],"connections":[{"id":"openai:oauth","status":"ok"}]}
+        """)
+        #expect(older.connections.first?.accountLabel == nil)
+        #expect(older.notice == nil)
+        let newer = try decode("""
+        {"catalog":[],"notice":"chatgpt_revoke_unconfirmed",
+         "connections":[{"id":"openai:oauth","status":"expired","accountLabel":"me@example.com"}]}
+        """)
+        #expect(newer.connections.first?.accountLabel == "me@example.com")
+        #expect(newer.connections.first?.status == "expired")
+        #expect(newer.notice == "chatgpt_revoke_unconfirmed")
+    }
+
     @Test func aRemovedConnectionWithPinnedBotsKeepsTheServerMessage() {
         let body = Data("""
         {"ok":false,"error":"connection_removed_bots_pinned","message":"The connection could not be removed because some bots that name it could not be reset. Try again."}

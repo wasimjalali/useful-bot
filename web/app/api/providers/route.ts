@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { keyRejectedFor, syncProviderModels } from "../../../lib/sync-models";
+import { revokeChatGptCredential } from "../../../../shared/chatgpt-signin.ts";
 import { connectionId, parseConnectionId } from "../../../../shared/provider-catalog.ts";
 import { readShell } from "../../../../shared/shell-io.ts";
 import type { ShellBot } from "../../../../shared/shell-store.ts";
@@ -129,9 +130,18 @@ export async function DELETE(request: Request) {
     return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
   }
   try {
+    // Signing out of ChatGPT ends the renewable session first, best effort and
+    // bounded. The saved account registration stays for the next sign-in.
+    let notice: "chatgpt_revoke_unconfirmed" | undefined;
+    if (body.connectionId === "openai:oauth") {
+      const held = readProviderStore().connections["openai:oauth"]?.credential;
+      if (held && held.kind === "oauth" && held.clientId && held.refreshToken) {
+        if (!(await revokeChatGptCredential(held))) notice = "chatgpt_revoke_unconfirmed";
+      }
+    }
     const store = applyProvidersDelete(body);
     await syncProviderModels(store, { force: true });
-    return NextResponse.json(payload(store));
+    return NextResponse.json({ ...payload(store), ...(notice ? { notice } : {}) });
   } catch (err) {
     if (err instanceof Error && err.message === CONNECTION_REMOVED_BOTS_PINNED) {
       return NextResponse.json(
