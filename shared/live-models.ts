@@ -206,10 +206,11 @@ function idsFromRows(rows: unknown[]): string[] {
     if (typeof row === "string" && row.trim()) ids.push(row.trim());
     if (!row || typeof row !== "object") continue;
     const rec = row as { id?: unknown; slug?: unknown; visibility?: unknown };
-    // The ChatGPT list marks what a picker shows with visibility "list"
-    // (docs: token-sharing-open-source/models-and-inference); a row with no
-    // visibility is an ordinary OpenAI shaped one.
-    if (rec.visibility !== undefined && rec.visibility !== "list") continue;
+    // The ChatGPT list is slug shaped and marks what a picker shows with
+    // visibility "list" (docs: token-sharing-open-source/models-and-inference).
+    // Any other list keeps the old rule: only "hide" is left out.
+    const slugShaped = typeof rec.slug === "string" && typeof rec.id !== "string";
+    if (slugShaped ? rec.visibility !== "list" : rec.visibility === "hide") continue;
     const id = typeof rec.id === "string" ? rec.id : rec.slug;
     if (typeof id === "string" && id.trim()) ids.push(id.trim());
   }

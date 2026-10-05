@@ -65,15 +65,8 @@ export async function POST(request: Request, context: { params: Promise<{ pollId
       // The loopback callback route already wrote the credential; this only
       // reports how the attempt ended.
       const result = pollChatGptSignIn(pollId);
-      if (result.status === "complete") {
-        const store = readProviderStore();
-        const held = store.connections["openai:oauth"]?.credential;
-        // Settled but never stored (the callback's write failed): not a sign-in.
-        if (!held || held.kind !== "oauth" || !held.clientId) {
-          return NextResponse.json({ ok: true, status: "error", intervalMs: 1000, error: "chatgpt_signin_refused" });
-        }
-        return NextResponse.json({ ...payload(store), status: "complete" });
-      }
+      // An attempt settles complete only after the callback stored the credential.
+      if (result.status === "complete") return NextResponse.json({ ...payload(readProviderStore()), status: "complete" });
       return NextResponse.json({
         ok: true,
         status: result.status,

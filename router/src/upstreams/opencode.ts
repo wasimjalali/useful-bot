@@ -20,7 +20,7 @@ import { accessTokenFor, refreshCredential } from "../../../shared/provider-oaut
 import { postChatCompletions } from "./openai-chat.ts";
 import { postMessages } from "./anthropic-messages.ts";
 import { postResponses } from "./openai-responses.ts";
-import { upstreamLimitError, usedLimitCode } from "../retry-after.ts";
+import { upstreamLimitError } from "../retry-after.ts";
 import { readPrefix } from "../read-capped.ts";
 
 /**
@@ -123,12 +123,66 @@ export function tokenFor(providerId: string, credential: Credential): { token: s
  */
 const refreshing = new Map<string, Promise<Credential>>();
 
+/** The auth server could not be reached or answered 5xx: nothing is wrong with the sign-in, try again. */
+function refreshUnavailable(): RouterError {
+  return new UpstreamRefusalError({
+    status: 503,
+    type: "upstream_error",
+    code: "upstream_unavailable",
+    message: "upstream_unavailable",
+    retryable: true,
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Store a refreshed credential only while the stored one still carries the
+ * refresh token that was spent; a connection removed meanwhile stays gone.
+ * The rotated token exists nowhere else, so a failed write is tried again.
+ */
+async function storeRefreshed(connectionId: string, providerId: string, spent: Credential, next: Credential): Promise<void> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      updateProviderStore((store) => {
+        const current = store.connections[connectionId]?.credential;
+        if (!current || current.kind !== "oauth") return store;
+        if (spent.kind === "oauth" && current.refreshToken !== spent.refreshToken) return store;
+        return setOAuthCredential(store, providerId, next);
+      });
+      return;
+    } catch (error) {
+      if (attempt < 3) {
+        await sleep(200);
+        continue;
+      }
+      const code = error instanceof Error && /^[\w.-]{1,60}$/.test(error.message) ? error.message : "store_write_failed";
+      console.error(`[useful-bot] refreshed credential for ${connectionId} was not stored: ${code}`);
+    }
+  }
+}
+
+/** A refresh token the auth server refused for good: clear it (docs: clear unusable tokens), under the same guard. */
+function clearUnusable(connectionId: string, providerId: string, spent: Credential): void {
+  try {
+    updateProviderStore((store) => {
+      const current = store.connections[connectionId]?.credential;
+      if (!current || current.kind !== "oauth") return store;
+      if (spent.kind === "oauth" && current.refreshToken !== spent.refreshToken) return store;
+      return setOAuthCredential(store, providerId, { ...current, refreshToken: null, expiresAt: 0 });
+    });
+  } catch { /* best effort: the next call fails the same way */ }
+}
+
 /**
  * A fresh credential for a connection whose token is expired or was refused.
  * Re-reads the store first: another call (or process) may have refreshed it
  * already, and then its token is used as is. Otherwise one refresh runs for
- * the connection and is persisted only if the stored credential still carries
- * the refresh token that was spent; a connection removed meanwhile stays gone.
+ * the connection. A refresh the auth server refuses for good clears the
+ * ChatGPT sign-in's tokens and fails as an auth failure; a transient failure
+ * is a retryable 503 and records nothing against the connection.
  */
 async function renewedCredential(connectionId: string, providerId: string, held: Credential): Promise<Credential> {
   const stored = readProviderStore().connections[connectionId]?.credential;
@@ -140,13 +194,16 @@ async function renewedCredential(connectionId: string, providerId: string, held:
   if (running) return running;
   const base = stored && stored.kind === "oauth" ? stored : held;
   const run = (async () => {
-    const next = await refreshCredential(providerId, base);
-    updateProviderStore((store) => {
-      const current = store.connections[connectionId]?.credential;
-      if (!current || current.kind !== "oauth") return store;
-      if (base.kind === "oauth" && current.refreshToken !== base.refreshToken) return store;
-      return setOAuthCredential(store, providerId, next);
-    });
+    let next: Credential;
+    try {
+      next = await refreshCredential(providerId, base);
+    } catch (error) {
+      if (error instanceof Error && error.message === "oauth_refresh_transient") throw refreshUnavailable();
+      if (providerId === "openai") clearUnusable(connectionId, providerId, base);
+      noteConnectionError(connectionId, "upstream_auth_failed");
+      throw authFailed();
+    }
+    await storeRefreshed(connectionId, providerId, base, next);
     return next;
   })().finally(() => refreshing.delete(connectionId));
   refreshing.set(connectionId, run);
@@ -254,12 +311,7 @@ export async function completeUpstream(input: {
       throw authFailed();
     }
     if (accessTokenFor(resolved.providerId, credential).expired) {
-      try {
-        credential = await renewedCredential(resolved.connection.id, resolved.providerId, credential);
-      } catch {
-        noteConnectionError(resolved.connection.id, "upstream_auth_failed");
-        throw authFailed();
-      }
+      credential = await renewedCredential(resolved.connection.id, resolved.providerId, credential);
     }
   }
   const payload = input.body as Record<string, unknown>;
@@ -367,12 +419,7 @@ export async function completeUpstream(input: {
     try {
       await response.body?.cancel();
     } catch { /* the retry carries on regardless */ }
-    try {
-      credential = await renewedCredential(resolved.connection.id, resolved.providerId, credential);
-    } catch {
-      noteConnectionError(resolved.connection.id, "upstream_auth_failed");
-      throw authFailed();
-    }
+    credential = await renewedCredential(resolved.connection.id, resolved.providerId, credential);
     response = await dispatch();
   }
   // A server that rejects stream_options (400, or 422 from strict schema
@@ -406,16 +453,17 @@ export async function completeUpstream(input: {
     });
   }
   if (response.status === 403 && resolved.providerId === "openai" && resolved.protocol === "openai-responses") {
-    // The ChatGPT route says why in the body: the account, workspace or policy
-    // may not use plan sharing. Anything else on a 403 stays an auth failure.
-    const refusal = await upstreamRefusal(response);
-    const named = usedLimitCode("", refusal.kind.split(/[\s/]/).pop() ?? "");
-    if (named === "upstream_chatgpt_not_eligible") {
+    // The ChatGPT route names the refusal in the body (error.code, or a
+    // top-level detail on an admission refusal). Plan sharing refused for this
+    // account is not an auth failure; a bare 403 still is.
+    const named = await chatGptForbiddenCode(response);
+    if (named === "subscription_sharing_user_not_eligible" || (named && /^(subscription_sharing_|chatpass_)\w*$/.test(named))) {
+      const code = named === "subscription_sharing_user_not_eligible" ? "upstream_chatgpt_not_eligible" : "upstream_chatgpt_not_permitted";
       throw new UpstreamRefusalError({
         status: 403,
         type: "permission_error",
-        code: named,
-        message: named,
+        code,
+        message: code,
         retryable: false,
       });
     }
@@ -461,6 +509,20 @@ export async function completeUpstream(input: {
 }
 
 const REFUSAL_BODY_BYTES = 4096;
+
+/** `error.code` of a JSON error body, else a top-level `detail` string; null when neither is there. */
+async function chatGptForbiddenCode(response: Response): Promise<string | null> {
+  try {
+    const parsed = JSON.parse(await readPrefix(response, REFUSAL_BODY_BYTES)) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const body = parsed as { error?: unknown; detail?: unknown };
+    const inner = body.error && typeof body.error === "object" ? (body.error as { code?: unknown }).code : undefined;
+    if (typeof inner === "string") return inner;
+    return typeof body.detail === "string" ? body.detail : null;
+  } catch {
+    return null;
+  }
+}
 const REFUSAL_MESSAGE_CHARS = 200;
 
 /** One line of printable text, capped. */

@@ -181,9 +181,11 @@ export function buildResponsesBody(
   }
   if (chatBody.tools !== undefined) {
     const tools = toResponsesTools(chatBody.tools);
-    out.tools = opts.chatgpt
-      ? [{ type: "namespace", name: CHATGPT_TOOL_NAMESPACE, description: "Useful Bot tools.", tools }]
-      : tools;
+    // The ChatGPT route takes no empty namespace: with no tools, none is set.
+    if (!opts.chatgpt) out.tools = tools;
+    else if (tools.length > 0) {
+      out.tools = [{ type: "namespace", name: CHATGPT_TOOL_NAMESPACE, description: "Useful Bot tools.", tools }];
+    }
   }
   if (chatBody.tool_choice !== undefined) out.tool_choice = toResponsesToolChoice(chatBody.tool_choice);
   if (!opts.chatgpt && typeof chatBody.max_tokens === "number") out.max_output_tokens = chatBody.max_tokens;

@@ -148,6 +148,12 @@ test("responses request maps chat fields, tools and images", () => {
   assert.equal((plain.input as Array<Record<string, unknown>>)[2].namespace, undefined);
 });
 
+test("chatgpt route: an empty tools list sets no tools and no empty namespace", () => {
+  const out = buildResponsesBody({ ...CHAT_BODY, tools: [], tool_choice: undefined }, { model: "gpt-6.1-sol", chatgpt: true });
+  assert.equal("tools" in out, false);
+  assert.equal(JSON.stringify(out).includes("namespace\":\"useful_bot\",\"description"), false);
+});
+
 test("chatgpt route: many tools share one namespace, service_tier is dropped, a named tool_choice stays a function", () => {
   const body = {
     ...CHAT_BODY,

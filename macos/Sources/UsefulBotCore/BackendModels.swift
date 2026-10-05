@@ -768,6 +768,8 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     public let pollId: String
     /// "browser" opens an authorization URL; "device" shows a code. An older server omits it: device.
     public let flow: String
+    /// The saved ChatGPT account this sign-in continues with; nil when it registers a new one or from an older server.
+    public let account: String?
     public let userCode: String
     public let verificationUrl: String
     public let verificationUrlComplete: String?
@@ -778,6 +780,7 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         pollId = try c.decode(String.self, forKey: .pollId)
         flow = (try? c.decode(String.self, forKey: .flow)) ?? "device"
+        account = try? c.decodeIfPresent(String.self, forKey: .account)
         userCode = (try? c.decode(String.self, forKey: .userCode)) ?? ""
         verificationUrl = (try? c.decode(String.self, forKey: .verificationUrl)) ?? ""
         verificationUrlComplete = try? c.decodeIfPresent(String.self, forKey: .verificationUrlComplete)
@@ -792,7 +795,7 @@ public struct DeviceFlowStart: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case pollId, flow, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
+        case pollId, flow, account, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
     }
 }
 

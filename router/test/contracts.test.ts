@@ -1841,6 +1841,148 @@ test("two parallel calls with an expired ChatGPT token share one refresh, and a 
   }
 });
 
+// Sign in with ChatGPT through completeUpstream: a local server stands in for
+// api.openai.com/v1, and a stubbed global fetch for the auth server.
+async function chatgptRun(options: {
+  upstream?: { status: number; body: string };
+  held?: Record<string, unknown>;
+  stored?: Record<string, unknown>;
+  token?: { status: number; body: Record<string, unknown> };
+}) {
+  const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-run-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  const base = { kind: "oauth", accessToken: "tok-12345678", refreshToken: "refresh-0", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_test" };
+  const held = { ...base, ...(options.held ?? {}) } as never;
+  writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", { ...base, ...(options.held ?? {}), ...(options.stored ?? {}) } as never));
+  const bearers: string[] = [];
+  const server = createServer((req, res) => {
+    bearers.push(String(req.headers.authorization ?? ""));
+    res.writeHead(options.upstream?.status ?? 200, { "content-type": "application/json" });
+    res.end(options.upstream?.body ?? "{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const realFetch = globalThis.fetch;
+  let refreshes = 0;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") {
+      refreshes += 1;
+      const answer = options.token ?? { status: 200, body: { access_token: "new-access", refresh_token: "refresh-1", expires_in: 3600 } };
+      return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "content-type": "application/json" } });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const { port } = server.address() as { port: number };
+    const resolved = {
+      connection: { id: "openai:oauth" },
+      providerId: "openai",
+      mode: { headers: {} },
+      modelId: "gpt-6.1-sol",
+      model: "gpt-6.1-sol",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: "openai-responses",
+      keyHeader: "bearer",
+      credential: held,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    let error: unknown = null;
+    try {
+      const out = await completeUpstream({
+        entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+        body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+        sessionId: randomUUID(),
+        callerId: "desktop",
+        signal: new AbortController().signal,
+        resolved,
+      });
+      await out.response.body?.cancel();
+    } catch (err) {
+      error = err;
+    }
+    return { error: error as RouterError | null, refreshes, bearers, store: readProviderStore().connections["openai:oauth"] };
+  } finally {
+    globalThis.fetch = realFetch;
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+}
+
+const SSE_OK = { status: 200, body: "data: [DONE]\n\n" };
+
+test("a ChatGPT 403 names why: not eligible, other plan-sharing codes, and a bare admission 403", async () => {
+  const eligible = await chatgptRun({ upstream: { status: 403, body: JSON.stringify({ error: { code: "subscription_sharing_user_not_eligible" } }) } });
+  assert.equal(eligible.error?.code, "upstream_chatgpt_not_eligible");
+  assert.equal(eligible.error?.status, 403);
+  assert.equal(eligible.error?.retryable, false);
+  assert.equal(eligible.store?.lastError, null, "not an auth failure on the connection");
+  for (const body of [
+    { error: { code: "subscription_sharing_route_not_supported" } },
+    { error: { code: "chatpass_v2_scope_not_authorized" } },
+    { detail: "subscription_sharing_unsupported_capability" },
+  ]) {
+    const other = await chatgptRun({ upstream: { status: 403, body: JSON.stringify(body) } });
+    assert.equal(other.error?.code, "upstream_chatgpt_not_permitted", JSON.stringify(body));
+    assert.equal(other.error?.retryable, false);
+    assert.equal(other.store?.lastError, null);
+  }
+  const bare = await chatgptRun({ upstream: { status: 403, body: JSON.stringify({ detail: "Region not permitted" }) } });
+  assert.equal(bare.error?.code, "upstream_auth_failed");
+  const notJson = await chatgptRun({ upstream: { status: 403, body: "<html>no</html>" } });
+  assert.equal(notJson.error?.code, "upstream_auth_failed");
+});
+
+test("a ChatGPT 429 usage limit answers upstream_chatgpt_usage_limit", async () => {
+  const out = await chatgptRun({ upstream: { status: 429, body: JSON.stringify({ error: { code: "subscription_sharing_usage_limit_exceeded", message: "used up" } }) } });
+  assert.equal(out.error?.code, "upstream_chatgpt_usage_limit");
+  assert.equal(out.error?.status, 402);
+  assert.equal(out.error?.retryable, false);
+});
+
+test("a token another process already rotated is used without a refresh request", async () => {
+  const out = await chatgptRun({
+    upstream: SSE_OK,
+    held: { accessToken: "stale-access", expiresAt: Date.now() - 60_000 },
+    stored: { accessToken: "rotated-access", refreshToken: "refresh-rotated", expiresAt: Date.now() + 3_600_000 },
+  });
+  assert.equal(out.refreshes, 0);
+  assert.deepEqual(out.bearers, ["Bearer rotated-access"]);
+});
+
+test("a refresh the auth server refuses for good clears the sign-in and is an auth failure", async () => {
+  const out = await chatgptRun({
+    held: { expiresAt: Date.now() - 60_000 },
+    token: { status: 400, body: { error: "invalid_grant", error_description: "revoked" } },
+  });
+  assert.equal(out.error?.code, "upstream_auth_failed");
+  assert.equal(out.refreshes, 1);
+  assert.equal(out.bearers.length, 0);
+  const cred = out.store?.credential;
+  assert.ok(cred && cred.kind === "oauth");
+  assert.equal(cred.refreshToken, null);
+  assert.equal(cred.expiresAt, 0);
+  assert.equal(out.store?.lastError?.code, "upstream_auth_failed");
+});
+
+test("a transient refresh failure is a retryable 503 and records nothing against the connection", async () => {
+  const out = await chatgptRun({
+    held: { expiresAt: Date.now() - 60_000 },
+    token: { status: 500, body: { error: "server_error" } },
+  });
+  assert.equal(out.error?.code, "upstream_unavailable");
+  assert.equal(out.error?.status, 503);
+  assert.equal(out.error?.retryable, true);
+  assert.equal(out.bearers.length, 0);
+  assert.equal(out.store?.lastError, null);
+  const cred = out.store?.credential;
+  assert.ok(cred && cred.kind === "oauth");
+  assert.equal(cred.refreshToken, "refresh-0", "the refresh token is kept for the next try");
+});
+
 // A request the adapter cannot build (never sent) is not a dispatch, and a model
 // with no catalog window sizes its output cap from the agent's unknown window.
 async function runCompleteUpstream(options: {

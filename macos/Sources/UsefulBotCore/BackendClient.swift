@@ -950,13 +950,13 @@ public actor BackendClient {
 
     /// Start a device flow for one OAuth provider. Answers with what the
     /// device sheet shows.
-    public func startOAuth(providerId: String) async throws -> DeviceFlowStart {
+    public func startOAuth(providerId: String, newAccount: Bool = false) async throws -> DeviceFlowStart {
         let (data, response) = try await perform { client, token in
             var request = URLRequest(url: client.base.appendingPathComponent("api/providers/oauth"))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try JSONSerialization.data(withJSONObject: ["providerId": providerId])
+            request.httpBody = try JSONSerialization.data(withJSONObject: Self.startOAuthBody(providerId: providerId, newAccount: newAccount))
             return request
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -967,6 +967,13 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         return decoded
+    }
+
+    /// The start body: `newAccount` is only sent when true.
+    static func startOAuthBody(providerId: String, newAccount: Bool) -> [String: Any] {
+        var body: [String: Any] = ["providerId": providerId]
+        if newAccount { body["newAccount"] = true }
+        return body
     }
 
     /// Poll one device flow. On `complete` the route also returns the full GET

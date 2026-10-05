@@ -971,7 +971,7 @@ private struct SignInPage: View {
                         .accessibilityAddTraits(.isHeader)
                 }
                 Text(isBrowserFlow
-                     ? "Your browser opens ChatGPT. Sign in and approve Useful Bot there. Useful Bot never sees your password."
+                     ? "Continue with ChatGPT to sign in and approve Useful Bot in your browser. Useful Bot never sees your password."
                      : "Your browser opens \(host). Sign in there and enter this code. Useful Bot never sees your password.")
                     .font(.system(size: 14))
                     .lineSpacing(3)
@@ -1011,13 +1011,13 @@ private struct SignInPage: View {
         }
     }
 
-    private func restart() {
+    private func restart(newAccount: Bool = false) {
         if previewing {
             previewExpired = false
             start()
             return
         }
-        Task { await model.startOAuth(providerId: entry.providerId, label: entry.label) }
+        Task { await model.startOAuth(providerId: entry.providerId, label: entry.label, newAccount: newAccount) }
     }
 
     /// The spinner morphs into a check, then Continue fades in.
@@ -1032,6 +1032,15 @@ private struct SignInPage: View {
         VStack(spacing: 14) {
             ContinueWithChatGPTButton(enabled: link != nil && !signedIn && ended == nil) {
                 if !previewing, let link, let url = URL(string: link) { NSWorkspace.shared.open(url) }
+            }
+            if let account = pending?.account, !signedIn, ended == nil {
+                Text("Continues as \(account).")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                NativeButton("Use a different account", kind: .ghost, small: true) { restart(newAccount: true) }
+                    .accessibilityIdentifier("use-different-account")
             }
         }
         .padding(22)
@@ -1086,8 +1095,13 @@ private struct SignInPage: View {
                     .foregroundStyle(Theme.C.danger)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                NativeButton(isBrowserFlow ? "Try again" : "Get a new code", kind: .secondary, small: true, action: restart)
-                    .accessibilityIdentifier("first-run-new-code")
+                if model.oauthOffersNewAccount, isBrowserFlow {
+                    NativeButton("Use a different account", kind: .secondary, small: true) { restart(newAccount: true) }
+                        .accessibilityIdentifier("use-different-account")
+                } else {
+                    NativeButton(isBrowserFlow ? "Try again" : "Get a new code", kind: .secondary, small: true) { restart() }
+                        .accessibilityIdentifier("first-run-new-code")
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -1099,7 +1113,7 @@ private struct SignInPage: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.danger)
                 Spacer(minLength: 0)
-                NativeButton("Try again", kind: .secondary, small: true, action: restart)
+                NativeButton("Try again", kind: .secondary, small: true) { restart() }
             }
         } else {
             VStack(alignment: .leading, spacing: 16) {

@@ -1,7 +1,7 @@
-import { completeChatGptSignIn } from "../../../../shared/chatgpt-signin.ts";
+import { completeChatGptSignIn, revokeChatGptCredential } from "../../../../shared/chatgpt-signin.ts";
 import { connectionId } from "../../../../shared/provider-catalog.ts";
 import { requestIsLoopback } from "../../../../shared/origin.ts";
-import { setActiveConnection, setOAuthCredential, updateProviderStore } from "../../../../shared/providers.ts";
+import { setActiveConnection, setOAuthCredential, updateProviderStore, type Credential, type ProviderStore } from "../../../../shared/providers.ts";
 import { errorCode } from "../../../lib/api-guard";
 import { activeUsable } from "../../../lib/providers-write";
 import { syncProviderModels } from "../../../lib/sync-models";
@@ -49,7 +49,7 @@ const CLOSE = "You can close this tab and try again in Useful Bot.";
 /** One plain sentence per error code. The code is all that is read from the sign-in server's answer. */
 const FAILURES: Record<string, string> = {
   chatgpt_plan_not_enabled: "ChatGPT plan use isn't allowed for Useful Bot yet. Allow it in the sign-in screen, then try again in Useful Bot.",
-  chatgpt_account_mismatch: "That is a different ChatGPT account from the one saved here. Try again in Useful Bot to sign in with the new one.",
+  chatgpt_account_mismatch: "That is a different ChatGPT account from the saved one. Sign in with the saved account, or add this one as another account in Useful Bot.",
 };
 
 /**
@@ -64,12 +64,26 @@ export async function GET(request: Request) {
   }
   const query = new URL(request.url).searchParams;
   try {
+    // The credential is stored inside the attempt (before it settles complete),
+    // so the poll can never report a sign-in that is not in the store.
+    let replaced: Credential | undefined;
+    let store: ProviderStore | undefined;
     const outcome = await completeChatGptSignIn({
       state: query.get("state"),
       code: query.get("code"),
       error: query.get("error"),
       clientId: query.get("client_id"),
+    }, fetch, (credential) => {
+      store = updateProviderStore((current) => {
+        replaced = current.connections["openai:oauth"]?.credential;
+        let next = setOAuthCredential(current, "openai", credential);
+        if (!activeUsable(next)) next = setActiveConnection(next, connectionId("openai", "oauth"));
+        return next;
+      });
     });
+    if (outcome.status === "repeat") {
+      return html("You're signed in to ChatGPT", "You can close this tab and return to Useful Bot.");
+    }
     if (outcome.status === "refused") {
       return html(FAILED, "This sign-in link is not the current one. You can close this tab and try again in Useful Bot.", 400);
     }
@@ -82,13 +96,13 @@ export async function GET(request: Request) {
     if (outcome.status === "error") {
       return html(FAILED, FAILURES[outcome.error] ?? CLOSE);
     }
-    const store = updateProviderStore((current) => {
-      let next = setOAuthCredential(current, "openai", outcome.credential);
-      if (!activeUsable(next)) next = setActiveConnection(next, connectionId("openai", "oauth"));
-      return next;
-    });
+    // A different account replaced the stored one: end the old session too.
+    if (replaced && replaced.kind === "oauth" && replaced.subject && outcome.credential.kind === "oauth" && replaced.subject !== outcome.credential.subject
+      && replaced.clientId && replaced.refreshToken) {
+      if (!(await revokeChatGptCredential(replaced))) console.error("[useful-bot] chatgpt sign-in: revoke_unconfirmed");
+    }
     try {
-      await syncProviderModels(store, { force: true, alsoAwait: connectionId("openai", "oauth") });
+      if (store) await syncProviderModels(store, { force: true, alsoAwait: connectionId("openai", "oauth") });
     } catch (err) {
       // The sign-in is stored; the model list fills in on the next refresh.
       console.error(`[useful-bot] ChatGPT model list did not load: ${errorCode(err, "unknown")}`);

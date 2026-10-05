@@ -57,6 +57,8 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
       key = conn.credential.key;
     } else if (conn.credential.kind === "oauth") {
       const auth = accessTokenFor(conn.providerId, conn.credential);
+      // An expired ChatGPT token would only fail; the cached list stays until a chat call refreshes it.
+      if (conn.providerId === "openai" && auth.expired) return;
       key = auth.token;
       headers = { ...headers, ...auth.headers };
     }

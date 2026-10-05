@@ -17,7 +17,7 @@ export async function POST(request: Request) {
   if (rateLimited(`providers-oauth:${gate.session.callerId}`, 60)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
-  let body: { providerId?: unknown };
+  let body: { providerId?: unknown; newAccount?: unknown };
   try {
     body = await readJson(request) as typeof body;
   } catch (err) {
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     if (mode.signIn === "chatgpt") {
       // Browser flow: the app opens the authorize URL, the loopback callback
       // route finishes the sign-in and the poll reports it.
-      const started = startChatGptSignIn();
+      const started = startChatGptSignIn({ newAccount: body.newAccount === true });
       return NextResponse.json({
         ok: true,
         pollId: started.pollId,
@@ -40,6 +40,7 @@ export async function POST(request: Request) {
         verificationUrlComplete: null,
         expiresAt: started.expiresAt,
         intervalMs: started.intervalMs,
+        account: started.account,
       });
     }
     const pending = await startDeviceFlow(providerId);

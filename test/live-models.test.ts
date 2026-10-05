@@ -181,6 +181,11 @@ test("model listing sends the catalogue key header and extra headers", async () 
   assert.equal(calls[2]?.headers["x-api-key"], "sk-ant-12345678");
 });
 
+test("only slug-shaped rows need visibility list; id rows drop just hide", () => {
+  assert.deepEqual(parseModelList({ models: [{ slug: "a" }, { slug: "b", visibility: "list" }, { slug: "c", visibility: "hide" }] }), ["b"]);
+  assert.deepEqual(parseModelList({ data: [{ id: "x", visibility: "private" }, { id: "y", visibility: "hide" }, { id: "z" }] }), ["x", "z"]);
+});
+
 test("the ChatGPT list is read by slug and keeps only the rows with visibility list", async () => {
   // Shape of the ChatGPT model list (docs: token-sharing-open-source/models-and-inference).
   const body = {

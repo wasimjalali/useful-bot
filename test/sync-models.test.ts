@@ -75,6 +75,36 @@ test("a ChatGPT sign-in from the old Codex route is skipped: no list call with i
   }
 });
 
+test("a ChatGPT sign-in whose access token is expired makes no list call", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-sync-expired-")), "models-cache.json");
+  process.env.UB_MODELS_CACHE_PATH = path;
+  const realFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    urls.push(String(input));
+    return new Response("{}");
+  }) as typeof fetch;
+  try {
+    const store = {
+      activeConnectionId: "openai:oauth",
+      connections: {
+        "openai:oauth": {
+          id: "openai:oauth",
+          providerId: "openai",
+          mode: "oauth",
+          fields: {},
+          credential: { kind: "oauth", accessToken: "token-12345678", refreshToken: "r", expiresAt: Date.now() - 1000, accountId: null, clientId: "oaiapp_test" },
+        },
+      },
+    } as unknown as ProviderStore;
+    await syncProviderModels(store, { force: true, alsoAwait: "openai:oauth" });
+    assert.equal(urls.some((url) => url.startsWith("https://api.openai.com/")), false);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.UB_MODELS_CACHE_PATH;
+  }
+});
+
 test("a refresh with a new key lands after one still running with the old key", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-sync-race-")), "models-cache.json");
   process.env.UB_MODELS_CACHE_PATH = path;

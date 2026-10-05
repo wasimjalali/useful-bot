@@ -127,6 +127,14 @@ import Testing
          "verificationUrl":"https://auth.openai.com/api/accounts/authorize?x=1",
          "verificationUrlComplete":null,"expiresAt":900000,"intervalMs":2000}
         """.utf8))
+        #expect(older.account == nil)
+        #expect(browser.account == nil)
+        let continued = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
+        {"ok":true,"pollId":"p3","flow":"browser","account":"me@example.com","userCode":"","verificationUrl":"https://auth.openai.com/x"}
+        """.utf8))
+        #expect(continued.account == "me@example.com")
+        #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: false)["newAccount"] == nil)
+        #expect(BackendClient.startOAuthBody(providerId: "openai", newAccount: true)["newAccount"] as? Bool == true)
         #expect(browser.flow == "browser")
         #expect(browser.userCode.isEmpty)
         #expect(browser.verificationUrl.hasPrefix("https://auth.openai.com/"))

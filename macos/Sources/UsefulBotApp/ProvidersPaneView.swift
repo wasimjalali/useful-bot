@@ -710,7 +710,7 @@ private struct OAuthSheetView: View {
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Theme.C.ink)
                 if pending.flow == "browser" {
-                    Text("Sign in and approve Useful Bot in your browser.")
+                    Text("Continue with ChatGPT to sign in and approve Useful Bot in your browser.")
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.C.inkMuted)
                 } else {
@@ -732,6 +732,12 @@ private struct OAuthSheetView: View {
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
                     if model.oauthDone {
+                        if model.oauthOffersNewAccount {
+                            NativeButton("Use a different account", kind: .secondary) {
+                                Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) }
+                            }
+                            .accessibilityIdentifier("use-different-account")
+                        }
                         NativeButton("Close", kind: .secondary) {
                             Task { await model.cancelOAuth() }
                         }
@@ -753,6 +759,20 @@ private struct OAuthSheetView: View {
                                 }
                             }
                         }
+                    }
+                }
+                if pending.flow == "browser", !model.oauthDone, let account = pending.account {
+                    HStack(spacing: 8) {
+                        Text("Continues as \(account).")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                        NativeButton("Use a different account", kind: .ghost, small: true) {
+                            Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, newAccount: true) }
+                        }
+                        .accessibilityIdentifier("use-different-account")
                     }
                 }
                 if !model.oauthDone {

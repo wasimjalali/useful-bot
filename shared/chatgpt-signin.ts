@@ -44,6 +44,18 @@ export const SIGNIN_POLL_INTERVAL_MS = 1000;
 const CLOCK_SKEW_MS = 60_000;
 const JWKS_TTL_MS = 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const REPEAT_WINDOW_MS = 10 * 60 * 1000;
+
+/** OAuth errors that mean the refresh token is unusable (docs: errors-and-recovery, Refresh errors). */
+const TERMINAL_REFRESH_ERRORS = new Set([
+  "invalid_grant",
+  "invalid_refresh_token",
+  "token_expired",
+  "refresh_token_expired",
+  "refresh_token_invalidated",
+  "refresh_token_reused",
+  "invalid_client",
+]);
 
 type FetchFn = typeof fetch;
 
@@ -58,7 +70,8 @@ export type SignInErrorCode =
 
 interface Registration {
   clientId: string;
-  subject: string;
+  /** The validated ID token subject; null while the client id is provisional (issued, no token validated yet). */
+  subject: string | null;
   email: string | null;
   needsConsent: boolean;
 }
@@ -84,8 +97,12 @@ interface Pending {
 
 interface SignInState {
   hostId: string | null;
-  registration: Registration | null;
+  /** One entry per issued client id, kept across Disconnect (docs: keep the account/client mapping). */
+  registrations: Registration[];
+  lastClientId: string | null;
   pending: Pending | null;
+  /** The last completed attempt, so a reloaded callback tab can show success without exchanging again. */
+  lastDone: { stateHash: string; at: number } | null;
 }
 
 export type SignInOutcome =
@@ -93,6 +110,8 @@ export type SignInOutcome =
   | { status: "denied" }
   | { status: "expired" }
   | { status: "error"; error: SignInErrorCode }
+  /** A reload of a callback that completed within the last ten minutes: show success, exchange nothing. */
+  | { status: "repeat" }
   /** The callback was not for the live attempt: nothing was touched. */
   | { status: "refused"; error: "chatgpt_state_mismatch" };
 
@@ -113,8 +132,18 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
+function parseRegistration(raw: unknown): Registration | null {
+  if (!isRecord(raw) || !str(raw.clientId)) return null;
+  return {
+    clientId: raw.clientId as string,
+    subject: str(raw.subject),
+    email: str(raw.email),
+    needsConsent: raw.needsConsent === true,
+  };
+}
+
 function readState(path = chatGptSignInPath()): SignInState {
-  const empty: SignInState = { hostId: null, registration: null, pending: null };
+  const empty: SignInState = { hostId: null, registrations: [], lastClientId: null, pending: null, lastDone: null };
   if (!existsSync(path)) return empty;
   let raw: unknown;
   try {
@@ -123,15 +152,15 @@ function readState(path = chatGptSignInPath()): SignInState {
     return empty;
   }
   if (!isRecord(raw)) return empty;
-  const out: SignInState = { hostId: str(raw.hostId), registration: null, pending: null };
-  const reg = raw.registration;
-  if (isRecord(reg) && str(reg.clientId) && str(reg.subject)) {
-    out.registration = {
-      clientId: reg.clientId as string,
-      subject: reg.subject as string,
-      email: str(reg.email),
-      needsConsent: reg.needsConsent === true,
-    };
+  const out: SignInState = { hostId: str(raw.hostId), registrations: [], lastClientId: str(raw.lastClientId), pending: null, lastDone: null };
+  // The first release kept one `registration`; it becomes the first entry.
+  const listed = Array.isArray(raw.registrations) ? raw.registrations : raw.registration ? [raw.registration] : [];
+  for (const item of listed) {
+    const reg = parseRegistration(item);
+    if (reg && !out.registrations.some((r) => r.clientId === reg.clientId)) out.registrations.push(reg);
+  }
+  if (isRecord(raw.lastDone) && str(raw.lastDone.stateHash) && typeof raw.lastDone.at === "number") {
+    out.lastDone = { stateHash: raw.lastDone.stateHash as string, at: raw.lastDone.at };
   }
   const p = raw.pending;
   if (
@@ -172,6 +201,36 @@ function writeState(state: SignInState, path = chatGptSignInPath()): void {
   }
 }
 
+/** Read, change and write the state in one step. */
+function update(change: (state: SignInState) => void): SignInState {
+  const state = readState();
+  change(state);
+  writeState(state);
+  return state;
+}
+
+/** One line per failure: the code and a detail that is never a body, a description or a token. */
+function logFailure(code: string, detail = ""): void {
+  console.error(`[useful-bot] chatgpt sign-in: ${code}${detail ? ` ${detail}` : ""}`);
+}
+
+/** Our own internal reasons only; anything else (a fetch error's text) is not relayed. */
+function reasonOf(err: unknown): string {
+  const message = err instanceof Error ? err.message : "";
+  return /^(jwt_\w+|kid_unknown|jwks_unavailable|id_token_missing)$/.test(message) ? message : "unknown";
+}
+
+/** The OAuth `error` enum of a failed token answer, or "none". Never error_description. */
+async function oauthErrorOf(res: Response): Promise<string> {
+  try {
+    const body = await res.json() as unknown;
+    const code = isRecord(body) ? body.error : null;
+    return typeof code === "string" && /^[\w.-]{1,60}$/.test(code) ? code : "none";
+  } catch {
+    return "none";
+  }
+}
+
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
 }
@@ -192,18 +251,35 @@ function storedChatGptCredential(): Credential | null {
 }
 
 /**
+ * The registration a returning sign-in uses: the one whose client id the
+ * stored credential carries, else the last one used.
+ */
+function pickRegistration(state: SignInState, held: Credential | null): Registration | null {
+  if (state.registrations.length === 0) return null;
+  const byCredential = held && held.kind === "oauth" && held.clientId
+    ? state.registrations.find((r) => r.clientId === held.clientId)
+    : undefined;
+  return byCredential
+    ?? state.registrations.find((r) => r.clientId === state.lastClientId)
+    ?? state.registrations[state.registrations.length - 1]!;
+}
+
+/**
  * Begin a sign-in. A new start replaces any attempt still pending, so the old
- * callback is refused. `storedCredential` is the openai:oauth credential the
- * store holds now (read from the store when left out); its ID token becomes
- * id_token_hint only when it belongs to the saved client id.
+ * callback is refused. `newAccount` (or no registration yet) registers a new
+ * client; otherwise the saved client of the stored credential is reused.
+ * `storedCredential` is the openai:oauth credential the store holds now (read
+ * from the store when left out); its ID token becomes id_token_hint only when
+ * it belongs to the registration used. `account` is that registration's email.
  */
 export function startChatGptSignIn(
-  opts: { storedCredential?: Credential | null; now?: number } = {},
-): { pollId: string; authorizeUrl: string; expiresAt: number; intervalMs: number } {
+  opts: { storedCredential?: Credential | null; now?: number; newAccount?: boolean } = {},
+): { pollId: string; authorizeUrl: string; expiresAt: number; intervalMs: number; account: string | null } {
   const now = opts.now ?? Date.now();
   const state = readState();
   const hostId = state.hostId ?? `urn:uuid:${randomUUID()}`;
-  const registration = state.registration;
+  const held = opts.storedCredential === undefined ? storedChatGptCredential() : opts.storedCredential;
+  const registration = opts.newAccount ? null : pickRegistration(state, held);
   const verifier = randomToken();
   const attempt: Pending = {
     pollId: randomBytes(16).toString("hex"),
@@ -225,7 +301,6 @@ export function startChatGptSignIn(
   params.set("ext_agent_host_id", hostId);
   if (registration) {
     if (registration.email) params.set("login_hint", registration.email);
-    const held = opts.storedCredential === undefined ? storedChatGptCredential() : opts.storedCredential;
     if (held && held.kind === "oauth" && held.idToken && held.clientId === registration.clientId) {
       params.set("id_token_hint", held.idToken);
     }
@@ -238,12 +313,13 @@ export function startChatGptSignIn(
   params.set("nonce", attempt.nonce);
   params.set("code_challenge_method", "S256");
   params.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
-  writeState({ hostId, registration, pending: attempt });
+  writeState({ ...state, hostId, pending: attempt });
   return {
     pollId: attempt.pollId,
     authorizeUrl: `${AUTHORIZE_URL}?${params.toString()}`,
     expiresAt: attempt.expiresAt,
     intervalMs: SIGNIN_POLL_INTERVAL_MS,
+    account: registration?.email ?? null,
   };
 }
 
@@ -252,42 +328,69 @@ const inFlight = new Set<string>();
 
 const REFUSED: SignInOutcome = { status: "refused", error: "chatgpt_state_mismatch" };
 
-/**
- * Settle the attempt `pollId`, unless it was replaced or cancelled while the
- * exchange ran (then the result is dropped and the callback is refused).
- */
-function settle(pollId: string, outcome: Settled, registration?: Registration | null): boolean {
+function stateHash(state: string): string {
+  return createHash("sha256").update(state).digest("hex");
+}
+
+/** True while `pollId` is still the live, unsettled attempt. */
+function stillLive(pollId: string): boolean {
+  const { pending } = readState();
+  return Boolean(pending && pending.pollId === pollId && !pending.outcome);
+}
+
+/** Settle the attempt `pollId`, unless it was replaced or cancelled meanwhile. */
+function settle(pollId: string, outcome: Settled, change?: (state: SignInState) => void): boolean {
   const state = readState();
   if (!state.pending || state.pending.pollId !== pollId || state.pending.outcome) return false;
-  writeState({
-    hostId: state.hostId,
-    registration: registration === undefined ? state.registration : registration,
-    pending: { ...state.pending, outcome },
-  });
+  state.pending = { ...state.pending, outcome };
+  change?.(state);
+  writeState(state);
   return true;
 }
 
-function failed(pollId: string, error: SignInErrorCode, registration?: Registration | null): SignInOutcome {
-  if (!settle(pollId, { status: "error", error }, registration)) return REFUSED;
+function failed(pollId: string, error: SignInErrorCode, detail = ""): SignInOutcome {
+  logFailure(error, detail);
+  if (!settle(pollId, { status: "error", error })) return REFUSED;
   return { status: "error", error };
 }
 
+/** Set `subject`/`email`/`needsConsent` on the entry for `clientId`, and drop any other entry for the same subject. */
+function recordIdentity(clientId: string, identity: { sub: string; email: string | null }, needsConsent: boolean): void {
+  update((state) => {
+    const entry = state.registrations.find((r) => r.clientId === clientId);
+    if (!entry) state.registrations.push({ clientId, subject: identity.sub, email: identity.email, needsConsent });
+    else Object.assign(entry, { subject: identity.sub, email: identity.email, needsConsent });
+    // One entry per account: the newest client id for a subject wins.
+    state.registrations = state.registrations.filter((r) => r.clientId === clientId || r.subject !== identity.sub);
+    state.lastClientId = clientId;
+  });
+}
+
 /**
- * The browser callback. The order matters: a callback that is not for the live
- * attempt is refused before anything else and leaves the attempt untouched.
+ * The browser callback. A callback that is not for the live attempt is refused
+ * before anything else and leaves the attempt untouched; one that repeats a
+ * completion from the last ten minutes (a reloaded tab) answers `repeat`.
+ * `persist` stores the new credential; the attempt settles complete only after
+ * it returned, and a throw settles `chatgpt_signin_refused` instead.
  */
 export async function completeChatGptSignIn(
   params: { state: string | null; code: string | null; error: string | null; clientId: string | null },
   fetchImpl: FetchFn = fetch,
+  persist?: (credential: Credential) => void,
 ): Promise<SignInOutcome> {
-  const { pending, registration } = readState();
+  const state = readState();
+  const { pending } = state;
   if (!pending || pending.outcome || !params.state || !sameSecret(pending.state, params.state) || inFlight.has(pending.pollId)) {
+    const done = state.lastDone;
+    if (done && params.state && Date.now() - done.at < REPEAT_WINDOW_MS && sameSecret(done.stateHash, stateHash(params.state))) {
+      return { status: "repeat" };
+    }
     return REFUSED;
   }
   if (pending.expiresAt <= Date.now()) return { status: "expired" };
   inFlight.add(pending.pollId);
   try {
-    return await finishAttempt(pending, registration, params, fetchImpl);
+    return await finishAttempt(pending, params, fetchImpl, persist);
   } finally {
     inFlight.delete(pending.pollId);
   }
@@ -295,27 +398,35 @@ export async function completeChatGptSignIn(
 
 async function finishAttempt(
   pending: Pending,
-  registration: Registration | null,
   params: { code: string | null; error: string | null; clientId: string | null },
   fetchImpl: FetchFn,
+  persist: ((credential: Credential) => void) | undefined,
 ): Promise<SignInOutcome> {
   const { pollId } = pending;
   if (params.error) {
     if (params.error === "access_denied") {
       return settle(pollId, { status: "denied" }) ? { status: "denied" } : REFUSED;
     }
-    return failed(pollId, "chatgpt_signin_refused");
+    return failed(pollId, "chatgpt_signin_refused", /^[\w.-]{1,60}$/.test(params.error) ? `error=${params.error}` : "");
   }
   // The issued client id: the saved one on reauth, the callback's on a new registration.
   let clientId: string;
   if (pending.clientId === null) {
     if (!params.clientId || params.clientId === DYNAMIC_CLIENT) return failed(pollId, "chatgpt_registration_incomplete");
     clientId = params.clientId;
+    // Keep the issued id at once: a later failure must not strand it, the next
+    // attempt reuses it instead of registering a duplicate client.
+    update((state) => {
+      if (!state.registrations.some((r) => r.clientId === clientId)) {
+        state.registrations.push({ clientId, subject: null, email: null, needsConsent: false });
+      }
+      state.lastClientId = clientId;
+    });
   } else {
     if (params.clientId && params.clientId !== pending.clientId) return failed(pollId, "chatgpt_client_mismatch");
     clientId = pending.clientId;
   }
-  if (!params.code) return failed(pollId, "chatgpt_signin_refused");
+  if (!params.code) return failed(pollId, "chatgpt_signin_refused", "code=missing");
 
   let tokens: Record<string, unknown>;
   try {
@@ -332,52 +443,83 @@ async function finishAttempt(
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    const body = res.status === 200 ? await res.json() as unknown : null;
-    if (!isRecord(body) || !str(body.access_token)) return failed(pollId, "chatgpt_token_exchange");
+    if (res.status !== 200) return failed(pollId, "chatgpt_token_exchange", `status=${res.status} error=${await oauthErrorOf(res)}`);
+    const body = await res.json() as unknown;
+    if (!isRecord(body) || !str(body.access_token)) return failed(pollId, "chatgpt_token_exchange", "status=200 body=incomplete");
     tokens = body;
   } catch {
-    return failed(pollId, "chatgpt_token_exchange");
+    return failed(pollId, "chatgpt_token_exchange", "network");
   }
+
+  // Tokens that are thrown away are revoked, best effort (docs: sign out).
+  const discard = async (): Promise<void> => {
+    const confirmed = await revokeChatGptCredential({
+      kind: "oauth",
+      accessToken: tokens.access_token as string,
+      refreshToken: str(tokens.refresh_token),
+      expiresAt: null,
+      accountId: null,
+      clientId,
+    }, fetchImpl).catch(() => false);
+    if (!confirmed) logFailure("revoke_unconfirmed");
+  };
 
   let identity: { sub: string; email: string | null };
   try {
     const idToken = str(tokens.id_token);
     if (!idToken) throw new Error("id_token_missing");
     identity = await validateIdToken(idToken, { clientId, nonce: pending.nonce }, fetchImpl);
-  } catch {
-    return failed(pollId, "chatgpt_id_token_invalid");
+  } catch (err) {
+    await discard();
+    return failed(pollId, "chatgpt_id_token_invalid", reasonOf(err));
   }
 
-  // A returning account must be the same account. Clearing the registration
-  // makes the next attempt register fresh instead of looping on the old one.
-  if (registration && registration.subject !== identity.sub) {
-    return failed(pollId, "chatgpt_account_mismatch", null);
+  // A returning account must be the same account. Every registration stays as
+  // it is; the user switches accounts with a new registration on purpose.
+  const known = readState().registrations.find((r) => r.clientId === clientId);
+  if (known?.subject && known.subject !== identity.sub) {
+    await discard();
+    return failed(pollId, "chatgpt_account_mismatch");
   }
 
   const scopes = typeof tokens.scope === "string" ? tokens.scope.split(/\s+/).filter(Boolean) : [];
-  const granted = scopes.includes(DIRECT_SCOPE);
-  const saved: Registration = { clientId, subject: identity.sub, email: identity.email, needsConsent: !granted };
-  if (!granted) return failed(pollId, "chatgpt_plan_not_enabled", saved);
+  if (!scopes.includes(DIRECT_SCOPE)) {
+    recordIdentity(clientId, identity, true);
+    await discard();
+    return failed(pollId, "chatgpt_plan_not_enabled");
+  }
 
-  if (!settle(pollId, { status: "complete" }, saved)) return REFUSED;
   const expiresIn = typeof tokens.expires_in === "number" && Number.isFinite(tokens.expires_in) && tokens.expires_in > 0
     ? tokens.expires_in
     : null;
-  return {
-    status: "complete",
-    credential: {
-      kind: "oauth",
-      accessToken: tokens.access_token as string,
-      refreshToken: str(tokens.refresh_token),
-      expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
-      accountId: null,
-      clientId,
-      idToken: str(tokens.id_token),
-      scopes,
-      subject: identity.sub,
-      email: identity.email,
-    },
+  const credential: Credential = {
+    kind: "oauth",
+    accessToken: tokens.access_token as string,
+    refreshToken: str(tokens.refresh_token),
+    expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : null,
+    accountId: null,
+    clientId,
+    idToken: str(tokens.id_token),
+    scopes,
+    subject: identity.sub,
+    email: identity.email,
   };
+  // Cancelled or replaced while the exchange ran: the result is dropped.
+  if (!stillLive(pollId)) {
+    await discard();
+    return REFUSED;
+  }
+  try {
+    persist?.(credential);
+  } catch (err) {
+    await discard();
+    return failed(pollId, "chatgpt_signin_refused", `persist=${err instanceof Error && /^[\w.-]{1,60}$/.test(err.message) ? err.message : "failed"}`);
+  }
+  recordIdentity(clientId, identity, false);
+  if (!settle(pollId, { status: "complete" }, (next) => {
+    next.lastDone = { stateHash: stateHash(pending.state), at: Date.now() };
+  })) return REFUSED;
+  return { status: "complete", credential };
 }
 
 /** Poll an attempt. A terminal status is reported once, then the pending row is dropped. */
@@ -385,7 +527,7 @@ export function pollChatGptSignIn(pollId: string): SignInPoll {
   const state = readState();
   const pending = state.pending;
   if (!pending || pending.pollId !== pollId) throw new Error("oauth_poll_unknown");
-  const drop = () => writeState({ hostId: state.hostId, registration: state.registration, pending: null });
+  const drop = () => writeState({ ...state, pending: null });
   if (pending.outcome) {
     drop();
     return pending.outcome.error
@@ -403,7 +545,13 @@ export function pollChatGptSignIn(pollId: string): SignInPoll {
 export function cancelChatGptSignIn(pollId: string): void {
   const state = readState();
   if (!state.pending || state.pending.pollId !== pollId) return;
-  writeState({ hostId: state.hostId, registration: state.registration, pending: null });
+  writeState({ ...state, pending: null });
+}
+
+/** Forget whatever attempt is pending (Disconnect), so a callback mid-exchange is refused. */
+export function cancelPendingChatGptSignIn(): void {
+  const state = readState();
+  if (state.pending) writeState({ ...state, pending: null });
 }
 
 /** True when the pollId belongs to the ChatGPT attempt, so the poll route can route it. */
@@ -475,10 +623,11 @@ async function validateIdToken(
  * two parallel refreshes spend the same refresh token.
  */
 export async function refreshChatGptCredential(credential: Credential, fetchImpl: FetchFn = fetch): Promise<Credential> {
-  if (credential.kind !== "oauth" || !credential.clientId || !credential.refreshToken) throw new Error("oauth_refresh");
-  let raw: unknown;
+  // Nothing to refresh with: the sign-in is unusable.
+  if (credential.kind !== "oauth" || !credential.clientId || !credential.refreshToken) throw new Error("oauth_refresh_terminal");
+  let res: Response;
   try {
-    const res = await fetchImpl(TOKEN_URL, {
+    res = await fetchImpl(TOKEN_URL, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded", "user-agent": "useful-bot/1.0" },
       body: new URLSearchParams({
@@ -489,12 +638,29 @@ export async function refreshChatGptCredential(credential: Credential, fetchImpl
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (res.status !== 200) throw new Error("oauth_refresh");
+  } catch {
+    logFailure("oauth_refresh", "network");
+    throw new Error("oauth_refresh_transient");
+  }
+  if (res.status !== 200) {
+    const code = await oauthErrorOf(res);
+    logFailure("oauth_refresh", `status=${res.status} error=${code}`);
+    // Only an unusable-token answer ends the sign-in; a server hiccup does not.
+    throw new Error((res.status === 400 || res.status === 401) && TERMINAL_REFRESH_ERRORS.has(code)
+      ? "oauth_refresh_terminal"
+      : "oauth_refresh_transient");
+  }
+  let raw: unknown;
+  try {
     raw = await res.json();
   } catch {
-    throw new Error("oauth_refresh");
+    logFailure("oauth_refresh", "status=200 body=unreadable");
+    throw new Error("oauth_refresh_transient");
   }
-  if (!isRecord(raw) || !str(raw.access_token)) throw new Error("oauth_refresh");
+  if (!isRecord(raw) || !str(raw.access_token)) {
+    logFailure("oauth_refresh", "status=200 body=incomplete");
+    throw new Error("oauth_refresh_transient");
+  }
   const expiresIn = typeof raw.expires_in === "number" && Number.isFinite(raw.expires_in) && raw.expires_in > 0 ? raw.expires_in : null;
   return {
     ...credential,

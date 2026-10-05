@@ -14,6 +14,8 @@ struct OAuthPending: Equatable {
     let label: String
     /// "browser" opens the authorization URL; "device" shows a code.
     let flow: String
+    /// The saved ChatGPT account this sign-in continues with, if any.
+    let account: String?
     let userCode: String
     let verificationUrl: String
     let verificationUrlComplete: String?
@@ -3756,7 +3758,7 @@ final class AppModel: ObservableObject {
     /// away and cancelled on the server, so nothing polls in the background.
     private var oauthGeneration = 0
 
-    func startOAuth(providerId: String, label: String) async {
+    func startOAuth(providerId: String, label: String, newAccount: Bool = false) async {
         oauthPoll?.cancel()
         oauthGeneration &+= 1
         let generation = oauthGeneration
@@ -3766,7 +3768,7 @@ final class AppModel: ObservableObject {
         oauthErrorStreak = 0
         providersError = nil
         do {
-            let flow = try await client.startOAuth(providerId: providerId)
+            let flow = try await client.startOAuth(providerId: providerId, newAccount: newAccount)
             guard generation == oauthGeneration else {
                 try? await client.cancelOAuth(pollId: flow.pollId)
                 if providerBusy == "\(providerId):oauth" { providerBusy = nil }
@@ -3777,6 +3779,7 @@ final class AppModel: ObservableObject {
                 providerId: providerId,
                 label: label,
                 flow: flow.flow,
+                account: flow.account,
                 userCode: flow.userCode,
                 verificationUrl: flow.verificationUrl,
                 verificationUrlComplete: flow.verificationUrlComplete,
@@ -3889,12 +3892,17 @@ final class AppModel: ObservableObject {
     }
 
     /// The ChatGPT sign-in poll error codes in plain words. The copy is the app's.
+    static let chatgptMismatchCopy = "That's a different ChatGPT account. Use a different account to connect it."
+
+    /// The sign-in ended on an account mismatch, so "Use a different account" is the way forward.
+    var oauthOffersNewAccount: Bool { oauthDone && oauthError == Self.chatgptMismatchCopy }
+
     static func chatgptSignInCopy(_ code: String?) -> String {
         switch code {
         case "chatgpt_plan_not_enabled":
             return "ChatGPT plan use wasn't allowed. Try again and allow it, or connect another provider."
         case "chatgpt_account_mismatch":
-            return "That's a different ChatGPT account than the one connected before. Try again to connect it."
+            return chatgptMismatchCopy
         case "denied":
             return "Sign-in was cancelled in the browser."
         default:

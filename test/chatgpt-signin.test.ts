@@ -3,7 +3,7 @@ import { createHash, createSign, generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import {
   cancelChatGptSignIn,
   completeChatGptSignIn,
@@ -27,8 +27,8 @@ import { publicProviders, setOAuthCredential, emptyProviderStore, type Credentia
  *     or unknown kid: chatgpt_id_token_invalid, nothing stored
  *  7  chatgpt.tokens.use.direct not granted: chatgpt_plan_not_enabled, needsConsent
  *     saved, next authorize URL carries prompt=consent and the saved client_id
- *  8  another subject on reauth: chatgpt_account_mismatch, registration cleared,
- *     next start registers fresh
+ *  8  another subject on reauth: chatgpt_account_mismatch, every registration kept,
+ *     the user switches with newAccount (a second registration, the first stays)
  *  9  expired attempt: expired, a late callback is refused
  * 10  cancel, then callback: refused
  * 11  second start supersedes the first, the first callback is refused
@@ -174,7 +174,13 @@ function signIn(server: Server, opts: Parameters<typeof startChatGptSignIn>[0] =
   return { started, q, state: q.get("state") ?? "" };
 }
 
-function stateFile(path: string): { hostId: string; registration: Record<string, unknown> | null; pending: Record<string, unknown> | null } {
+function stateFile(path: string): {
+  hostId: string;
+  registrations: Array<Record<string, unknown>>;
+  lastClientId: string | null;
+  pending: Record<string, unknown> | null;
+  lastDone: { stateHash: string; at: number } | null;
+} {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
@@ -190,6 +196,7 @@ test("end to end: register, poll, sign in again, refresh and revoke", async () =
   // 13 first registration: every parameter, encoded, no returning-user hints.
   const first = signIn(server);
   assert.equal(first.started.intervalMs, 1000);
+  assert.equal(first.started.account, null);
   assert.ok(first.started.expiresAt > Date.now() + 9 * 60_000 && first.started.expiresAt <= Date.now() + 10 * 60_000);
   const { url, q } = parse(first.started.authorizeUrl);
   assert.equal(`${url.origin}${url.pathname}`, "https://auth.openai.com/api/accounts/authorize");
@@ -216,11 +223,18 @@ test("end to end: register, poll, sign in again, refresh and revoke", async () =
   assert.deepEqual(pollChatGptSignIn(first.started.pollId), { status: "pending" });
 
   // Callback: new registration carries the issued client_id.
+  const persisted: Credential[] = [];
   const done = await completeChatGptSignIn(
     { state: first.state, code: "code-1", error: null, clientId: "oaiapp_alice" },
     server.fetch,
+    (stored) => {
+      // The credential is stored while the attempt is still unsettled.
+      assert.equal(stateFile(path).pending?.outcome, null);
+      persisted.push(stored);
+    },
   );
   assert.equal(done.status, "complete");
+  assert.equal(persisted.length, 1);
   const credential = oauthOf(done.status === "complete" ? done.credential : undefined);
   assert.equal(credential.accessToken, "access-1");
   assert.equal(credential.refreshToken, "refresh-1");
@@ -247,12 +261,13 @@ test("end to end: register, poll, sign in again, refresh and revoke", async () =
   assert.throws(() => pollChatGptSignIn(first.started.pollId), /oauth_poll_unknown/);
 
   // The registration survives; the connection is ok in the providers payload.
-  assert.deepEqual(stateFile(path).registration, {
+  assert.deepEqual(stateFile(path).registrations, [{
     clientId: "oaiapp_alice",
     subject: "sub-alice",
     email: "alice@example.com",
     needsConsent: false,
-  });
+  }]);
+  assert.equal(stateFile(path).lastClientId, "oaiapp_alice");
   const store = setOAuthCredential(emptyProviderStore(), "openai", credential);
   const row = publicProviders(store).connections.find((c) => c.id === "openai:oauth")!;
   assert.equal(row.status, "ok");
@@ -260,6 +275,7 @@ test("end to end: register, poll, sign in again, refresh and revoke", async () =
 
   // 13 returning sign-in: saved client id, login hint, no agent name, same host id.
   const again = signIn(server);
+  assert.equal(again.started.account, "alice@example.com");
   assert.equal(again.q.get("client_id"), "oaiapp_alice");
   assert.equal(again.q.get("login_hint"), "alice@example.com");
   assert.equal(again.q.get("agent_name_hint"), null);
@@ -337,7 +353,7 @@ test("3 a new registration without client_id is incomplete and never saves dynam
   const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: null }, server.fetch);
   assert.deepEqual(out, { status: "error", error: "chatgpt_registration_incomplete" });
   assert.equal(server.calls.length, 0);
-  assert.equal(stateFile(path).registration, null);
+  assert.deepEqual(stateFile(path).registrations, []);
   assert.ok(!readFileSync(path, "utf8").includes('"clientId":"dynamic_agent_client"'));
 });
 
@@ -363,15 +379,26 @@ test("4 reauth with a different client_id is a client mismatch", async () => {
   assert.equal(ok.status, "complete");
 });
 
-test("5 a 400 invalid_grant from the token endpoint is chatgpt_token_exchange", async () => {
+const PROVISIONAL = { clientId: "oaiapp_alice", subject: null, email: null, needsConsent: false };
+
+test("5 a 400 invalid_grant is chatgpt_token_exchange and the issued client id is kept provisionally", async () => {
   const path = box();
   const server = authServer();
   server.tokenStatus = 400;
   const a = signIn(server);
   const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
   assert.deepEqual(out, { status: "error", error: "chatgpt_token_exchange" });
-  assert.equal(stateFile(path).registration, null);
+  assert.deepEqual(stateFile(path).registrations, [PROVISIONAL]);
+  assert.equal(stateFile(path).lastClientId, "oaiapp_alice");
   assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_token_exchange" });
+  // The next start reuses that client id instead of registering a duplicate.
+  server.tokenStatus = 200;
+  const retry = signIn(server);
+  assert.equal(retry.q.get("client_id"), "oaiapp_alice");
+  assert.equal(retry.q.get("agent_name_hint"), null);
+  const done = await completeChatGptSignIn({ state: retry.state, code: "c2", error: null, clientId: null }, server.fetch);
+  assert.equal(done.status, "complete");
+  assert.deepEqual(stateFile(path).registrations, [{ clientId: "oaiapp_alice", subject: "sub-alice", email: "alice@example.com", needsConsent: false }]);
 });
 
 test("6 a bad ID token is rejected for each broken field and nothing is stored", async () => {
@@ -394,7 +421,7 @@ test("6 a bad ID token is rejected for each broken field and nothing is stored",
     const a = signIn(server);
     const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
     assert.deepEqual(out, { status: "error", error: "chatgpt_id_token_invalid" }, name);
-    assert.equal(stateFile(path).registration, null, name);
+    assert.deepEqual(stateFile(path).registrations, [PROVISIONAL], name);
     assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_id_token_invalid" }, name);
   }
   // An aud array that does contain the client id is fine.
@@ -413,12 +440,12 @@ test("7 a missing chatgpt.tokens.use.direct scope stores no credential and asks 
   const a = signIn(server);
   const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
   assert.deepEqual(out, { status: "error", error: "chatgpt_plan_not_enabled" });
-  assert.deepEqual(stateFile(path).registration, {
+  assert.deepEqual(stateFile(path).registrations, [{
     clientId: "oaiapp_alice",
     subject: "sub-alice",
     email: "alice@example.com",
     needsConsent: true,
-  });
+  }]);
   const next = signIn(server);
   assert.equal(next.q.get("prompt"), "consent");
   assert.equal(next.q.get("client_id"), "oaiapp_alice");
@@ -426,23 +453,51 @@ test("7 a missing chatgpt.tokens.use.direct scope stores no credential and asks 
   server.scope = ALL_SCOPES;
   const done = await completeChatGptSignIn({ state: next.state, code: "c", error: null, clientId: null }, server.fetch);
   assert.equal(done.status, "complete");
-  assert.equal(stateFile(path).registration?.needsConsent, false);
+  assert.equal(stateFile(path).registrations[0]?.needsConsent, false);
   assert.equal(signIn(server).q.get("prompt"), null);
 });
 
-test("8 another subject on reauth is an account mismatch, clears the registration and registers fresh", async () => {
+test("8 another subject on reauth is an account mismatch, keeps every registration and revokes the new tokens; newAccount registers a second one", async () => {
   const path = box();
   const server = authServer();
   await register(server);
   server.sub = "sub-bob";
+  server.refreshToken = "refresh-bob";
   const a = signIn(server);
   const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: null }, server.fetch);
   assert.deepEqual(out, { status: "error", error: "chatgpt_account_mismatch" });
-  assert.equal(stateFile(path).registration, null);
-  const fresh = signIn(server);
+  assert.equal(stateFile(path).registrations.length, 1);
+  assert.equal(stateFile(path).registrations[0]?.subject, "sub-alice");
+  const revoked = server.calls.filter((call) => call.url === REVOKE_URL);
+  assert.equal(revoked.length, 1);
+  assert.equal(revoked[0]!.form!.get("token"), "refresh-bob");
+  // Without newAccount the next start still targets the saved account.
+  assert.equal(signIn(server).q.get("client_id"), "oaiapp_alice");
+  // newAccount: dynamic registration, no hints, the old entry stays.
+  server.clientId = "oaiapp_bob";
+  const fresh = signIn(server, { newAccount: true });
+  assert.equal(fresh.started.account, null);
   assert.equal(fresh.q.get("client_id"), "dynamic_agent_client");
   assert.equal(fresh.q.get("agent_name_hint"), "Useful Bot");
   assert.equal(fresh.q.get("login_hint"), null);
+  assert.equal(fresh.q.get("id_token_hint"), null);
+  const done = await completeChatGptSignIn({ state: fresh.state, code: "c", error: null, clientId: "oaiapp_bob" }, server.fetch);
+  assert.equal(done.status, "complete");
+  assert.deepEqual(stateFile(path).registrations.map((r) => [r.clientId, r.subject]), [["oaiapp_alice", "sub-alice"], ["oaiapp_bob", "sub-bob"]]);
+  assert.equal(stateFile(path).lastClientId, "oaiapp_bob");
+  // The stored credential decides which registration a start uses.
+  const bobCredential = oauthOf(done.status === "complete" ? done.credential : undefined);
+  const aliceCredential = { ...bobCredential, clientId: "oaiapp_alice" };
+  const again = signIn(server, { storedCredential: aliceCredential });
+  assert.equal(again.q.get("client_id"), "oaiapp_alice");
+  assert.equal(again.started.account, "alice@example.com");
+  // A fresh registration for a subject that already has an entry replaces that entry.
+  server.sub = "sub-alice";
+  server.clientId = "oaiapp_alice2";
+  const dup = signIn(server, { newAccount: true });
+  const dupDone = await completeChatGptSignIn({ state: dup.state, code: "c", error: null, clientId: "oaiapp_alice2" }, server.fetch);
+  assert.equal(dupDone.status, "complete");
+  assert.deepEqual(stateFile(path).registrations.map((r) => [r.clientId, r.subject]), [["oaiapp_bob", "sub-bob"], ["oaiapp_alice2", "sub-alice"]]);
 });
 
 test("9 an expired attempt reports expired and a late callback is refused", async () => {
@@ -496,8 +551,9 @@ test("12 a replayed callback after completion is refused, also while the first i
     completeChatGptSignIn(params, server.fetch),
   ]);
   assert.deepEqual([one.status, two.status].sort(), ["complete", "refused"]);
+  // A replay of a completed attempt (a reloaded tab) is not a second sign-in.
   const replay = await completeChatGptSignIn(params, server.fetch);
-  assert.deepEqual(replay, { status: "refused", error: "chatgpt_state_mismatch" });
+  assert.deepEqual(replay, { status: "repeat" });
   assert.equal(server.calls.filter((call) => call.url === TOKEN_URL).length, 1);
 });
 
@@ -550,4 +606,126 @@ test("16 a Codex-era credential without clientId reports expired and gives no us
   // A current one is fine.
   const current: Credential = { ...legacy, clientId: "oaiapp_alice", email: "alice@example.com", accountId: null };
   assert.equal(accessTokenFor("openai", current).expired, false);
+});
+
+test("17 an old single registration is migrated on read", () => {
+  const path = box();
+  writeFileSync(path, JSON.stringify({
+    hostId: "urn:uuid:11111111-1111-1111-1111-111111111111",
+    registration: { clientId: "oaiapp_old", subject: "sub-old", email: "old@example.com", needsConsent: false },
+    pending: null,
+  }));
+  const started = startChatGptSignIn({ storedCredential: null });
+  const { q } = parse(started.authorizeUrl);
+  assert.equal(started.account, "old@example.com");
+  assert.equal(q.get("client_id"), "oaiapp_old");
+  assert.equal(q.get("ext_agent_host_id"), "urn:uuid:11111111-1111-1111-1111-111111111111");
+  assert.deepEqual(stateFile(path).registrations.map((r) => r.clientId), ["oaiapp_old"]);
+});
+
+test("18 a failing persist settles chatgpt_signin_refused, never complete, and revokes the new tokens", async () => {
+  const path = box();
+  const server = authServer();
+  server.refreshToken = "refresh-persist";
+  const a = signIn(server);
+  const out = await completeChatGptSignIn(
+    { state: a.state, code: "c", error: null, clientId: "oaiapp_alice" },
+    server.fetch,
+    () => { throw new Error("disk full"); },
+  );
+  assert.deepEqual(out, { status: "error", error: "chatgpt_signin_refused" });
+  assert.deepEqual(pollChatGptSignIn(a.started.pollId), { status: "error", error: "chatgpt_signin_refused" });
+  assert.equal(server.calls.filter((call) => call.url === REVOKE_URL)[0]?.form?.get("token"), "refresh-persist");
+  assert.equal(stateFile(path).lastDone, null);
+});
+
+test("19 plan not enabled, and an attempt superseded after its exchange, both revoke the tokens they throw away", async () => {
+  box();
+  const server = authServer();
+  server.scope = "openid email";
+  server.refreshToken = "refresh-noplan";
+  const a = signIn(server);
+  const noPlan = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
+  assert.deepEqual(noPlan, { status: "error", error: "chatgpt_plan_not_enabled" });
+  assert.equal(server.calls.filter((call) => call.url === REVOKE_URL).at(-1)?.form?.get("token"), "refresh-noplan");
+
+  server.scope = ALL_SCOPES;
+  server.refreshToken = "refresh-superseded";
+  const b = signIn(server);
+  let supersededBy = "";
+  const racing: typeof fetch = async (input, init) => {
+    if (String(input) === TOKEN_URL && !supersededBy) {
+      supersededBy = startChatGptSignIn({ storedCredential: null }).pollId;
+    }
+    return server.fetch(input, init);
+  };
+  const lost = await completeChatGptSignIn({ state: b.state, code: "c", error: null, clientId: null }, racing);
+  assert.deepEqual(lost, { status: "refused", error: "chatgpt_state_mismatch" });
+  assert.equal(server.calls.filter((call) => call.url === REVOKE_URL).at(-1)?.form?.get("token"), "refresh-superseded");
+});
+
+test("20 a reloaded callback after completion shows success, within ten minutes, and never exchanges again", async () => {
+  const path = box();
+  const server = authServer();
+  const a = signIn(server);
+  const params = { state: a.state, code: "c", error: null, clientId: "oaiapp_alice" };
+  assert.equal((await completeChatGptSignIn(params, server.fetch)).status, "complete");
+  pollChatGptSignIn(a.started.pollId);
+  const exchanges = () => server.calls.filter((call) => call.url === TOKEN_URL).length;
+  assert.equal(exchanges(), 1);
+  const again = await completeChatGptSignIn(params, server.fetch);
+  assert.deepEqual(again, { status: "repeat" });
+  assert.equal(exchanges(), 1);
+  // A different state is still refused.
+  assert.deepEqual(await completeChatGptSignIn({ ...params, state: "other" }, server.fetch), { status: "refused", error: "chatgpt_state_mismatch" });
+  // After ten minutes the reload is refused.
+  const file = stateFile(path);
+  writeFileSync(path, JSON.stringify({ ...file, lastDone: { ...file.lastDone!, at: Date.now() - 11 * 60_000 } }));
+  assert.deepEqual(await completeChatGptSignIn(params, server.fetch), { status: "refused", error: "chatgpt_state_mismatch" });
+});
+
+test("21 refresh: terminal OAuth errors and transient failures are told apart", async () => {
+  const credential = oauthOf({
+    kind: "oauth", accessToken: "a", refreshToken: "r", expiresAt: 0, accountId: null, clientId: "oaiapp_alice",
+  });
+  const answer = (status: number, error?: string): typeof fetch => async () =>
+    new Response(error ? JSON.stringify({ error }) : "{}", { status, headers: { "content-type": "application/json" } });
+  for (const code of ["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused", "invalid_client"]) {
+    await assert.rejects(() => refreshChatGptCredential(credential, answer(400, code)), /oauth_refresh_terminal/, code);
+  }
+  await assert.rejects(() => refreshChatGptCredential(credential, answer(401, "invalid_grant")), /oauth_refresh_terminal/);
+  await assert.rejects(() => refreshChatGptCredential(credential, answer(400, "invalid_request")), /oauth_refresh_transient/);
+  await assert.rejects(() => refreshChatGptCredential(credential, answer(500, "invalid_grant")), /oauth_refresh_transient/);
+  await assert.rejects(() => refreshChatGptCredential(credential, answer(503)), /oauth_refresh_transient/);
+  await assert.rejects(() => refreshChatGptCredential(credential, async () => { throw new Error("offline"); }), /oauth_refresh_transient/);
+  // A credential with nothing to refresh with is terminal.
+  await assert.rejects(() => refreshChatGptCredential({ ...credential, refreshToken: null }, answer(200)), /oauth_refresh_terminal/);
+});
+
+test("22 failures log a code and a safe detail, never a body, a description or a token", async () => {
+  box();
+  const lines: string[] = [];
+  const spy = mock.method(console, "error", (...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+  try {
+    const leaky: typeof fetch = async () => new Response(
+      JSON.stringify({ error: "invalid_grant", error_description: "SECRET-DESCRIPTION access_token=tok-leak" }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    );
+    const a = startChatGptSignIn({ storedCredential: null });
+    const state = parse(a.authorizeUrl).q.get("state");
+    await completeChatGptSignIn({ state, code: "code-leak", error: null, clientId: "oaiapp_alice" }, leaky);
+    const server = authServer();
+    server.idTokenOverrides = { iss: "https://evil.example" };
+    const b = signIn(server);
+    await completeChatGptSignIn({ state: b.state, code: "code-leak", error: null, clientId: "oaiapp_alice" }, server.fetch);
+    await refreshChatGptCredential(oauthOf({ kind: "oauth", accessToken: "a", refreshToken: "refresh-leak", expiresAt: 0, accountId: null, clientId: "oaiapp_alice" }), leaky).catch(() => undefined);
+  } finally {
+    spy.mock.restore();
+  }
+  const joined = lines.join("\n");
+  assert.ok(lines.length >= 3);
+  for (const line of lines) assert.ok(line.startsWith("[useful-bot] chatgpt sign-in:"), line);
+  assert.ok(joined.includes("chatgpt_token_exchange") && joined.includes("400") && joined.includes("invalid_grant"));
+  assert.ok(joined.includes("jwt_iss"));
+  for (const secret of ["SECRET-DESCRIPTION", "tok-leak", "code-leak", "refresh-leak"]) assert.ok(!joined.includes(secret), secret);
 });
