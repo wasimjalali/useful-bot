@@ -7,6 +7,8 @@ import { join } from "node:path";
 import test, { mock } from "node:test";
 import {
   cancelChatGptSignIn,
+  cancelPendingChatGptSignIn,
+  isChatGptPollId,
   completeChatGptSignIn,
   pollChatGptSignIn,
   refreshChatGptCredential,
@@ -676,7 +678,7 @@ test("19 plan not enabled, and an attempt superseded after its exchange, both re
 });
 
 test("20 a reloaded callback after completion shows success, within ten minutes, and never exchanges again", async () => {
-  const path = box();
+  box();
   const server = authServer();
   const a = signIn(server);
   const params = { state: a.state, code: "c", error: null, clientId: "oaiapp_alice" };
@@ -690,9 +692,13 @@ test("20 a reloaded callback after completion shows success, within ten minutes,
   // A different state is still refused.
   assert.deepEqual(await completeChatGptSignIn({ ...params, state: "other" }, server.fetch), { status: "refused", error: "chatgpt_state_mismatch" });
   // After ten minutes the reload is refused.
-  const file = stateFile(path);
-  writeFileSync(path, JSON.stringify({ ...file, lastDone: { ...file.lastDone!, at: Date.now() - 11 * 60_000 } }));
-  assert.deepEqual(await completeChatGptSignIn(params, server.fetch), { status: "refused", error: "chatgpt_state_mismatch" });
+  const real = Date.now();
+  const clock = mock.method(Date, "now", () => real + 11 * 60_000);
+  try {
+    assert.deepEqual(await completeChatGptSignIn(params, server.fetch), { status: "refused", error: "chatgpt_state_mismatch" });
+  } finally {
+    clock.mock.restore();
+  }
 });
 
 test("21 refresh: terminal OAuth errors and transient failures are told apart", async () => {
@@ -931,5 +937,90 @@ test("29 Disconnect returns the ChatGPT credential that was really removed, from
   } finally {
     if (savedProviders === undefined) delete process.env.UB_PROVIDERS_PATH; else process.env.UB_PROVIDERS_PATH = savedProviders;
     if (savedShell === undefined) delete process.env.UB_SHELL_PATH; else process.env.UB_SHELL_PATH = savedShell;
+  }
+});
+
+test("30 a remembered outcome answers isChatGptPollId and the poll before the file; a corrupt file never breaks other polls", async () => {
+  const path = box();
+  const server = authServer();
+  server.scope = "openid email";
+  const a = signIn(server);
+  await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
+  writeFileSync(path, "{corrupt");
+  const lines: string[] = [];
+  const spy = mock.method(console, "error", (...args: unknown[]) => { lines.push(args.map(String).join(" ")); });
+  try {
+    assert.equal(isChatGptPollId(a.started.pollId), true);
+    assert.equal(isChatGptPollId("some-copilot-device-poll-id"), false, "a corrupt ChatGPT file never throws for another poll");
+    assert.equal(pollChatGptSignIn(a.started.pollId).error, "chatgpt_plan_not_enabled");
+  } finally {
+    spy.mock.restore();
+  }
+});
+
+test("31 a callback for an attempt with a remembered outcome never exchanges again, even when the file row is unsettled", async () => {
+  const path = box();
+  const server = authServer();
+  server.tokenStatus = 400;
+  const dir = join(path, "..");
+  const a = signIn(server);
+  const lockingFetch: typeof fetch = async (input, init) => {
+    const res = await server.fetch(input, init);
+    if (String(input) === TOKEN_URL) chmodSync(dir, 0o500); // the outcome cannot be written to the file
+    return res;
+  };
+  const params = { state: a.state, code: "c", error: null, clientId: "oaiapp_alice" };
+  const first = await completeChatGptSignIn(params, lockingFetch);
+  chmodSync(dir, 0o700);
+  assert.deepEqual(first, { status: "error", error: "chatgpt_token_exchange" });
+  assert.equal(stateFile(path).pending?.outcome, null, "the file row is still unsettled");
+  const exchanges = () => server.calls.filter((call) => call.url === TOKEN_URL).length;
+  assert.equal(exchanges(), 1);
+  server.tokenStatus = 200;
+  assert.deepEqual(await completeChatGptSignIn(params, server.fetch), { status: "refused", error: "chatgpt_state_mismatch" });
+  assert.equal(exchanges(), 1);
+  assert.equal(pollChatGptSignIn(a.started.pollId).error, "chatgpt_token_exchange");
+});
+
+test("32 an identity write that failed after the credential was stored is retried on the next start", async () => {
+  const path = box();
+  const server = authServer();
+  const dir = join(path, "..");
+  const a = signIn(server);
+  const out = await completeChatGptSignIn(
+    { state: a.state, code: "c", error: null, clientId: "oaiapp_alice" },
+    server.fetch,
+    () => { chmodSync(dir, 0o500); },
+  );
+  chmodSync(dir, 0o700);
+  assert.equal(out.status, "complete");
+  assert.deepEqual(stateFile(path).registrations.map((r) => r.subject), [null], "only the provisional entry reached the file");
+  const next = startChatGptSignIn({ storedCredential: null });
+  assert.equal(parse(next.authorizeUrl).q.get("client_id"), "oaiapp_alice", "the validated registration was written first");
+  assert.equal(next.account, "alice@example.com");
+  assert.deepEqual(stateFile(path).registrations.map((r) => [r.clientId, r.subject]), [["oaiapp_alice", "sub-alice"]]);
+});
+
+test("33 Disconnect really cancels: a write failure propagates and a callback for the cancelled attempt stays refused", async () => {
+  const path = box();
+  const server = authServer();
+  const dir = join(path, "..");
+  const a = signIn(server);
+  chmodSync(dir, 0o500);
+  try {
+    assert.throws(() => cancelPendingChatGptSignIn());
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  const out = await completeChatGptSignIn({ state: a.state, code: "c", error: null, clientId: "oaiapp_alice" }, server.fetch);
+  assert.deepEqual(out, { status: "refused", error: "chatgpt_state_mismatch" });
+  assert.equal(server.calls.length, 0);
+  // An unreadable file is the one thing it swallows.
+  writeFileSync(path, "{corrupt");
+  const spy = mock.method(console, "error", () => undefined);
+  try {
+    assert.doesNotThrow(() => cancelPendingChatGptSignIn());
+  } finally {
+    spy.mock.restore();
   }
 });

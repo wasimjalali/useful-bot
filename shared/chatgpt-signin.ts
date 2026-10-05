@@ -330,6 +330,7 @@ export function startChatGptSignIn(
   account: string | null; accounts: SignInAccount[]; reusesSaved: boolean; clientId: string | null;
 } {
   const now = opts.now ?? Date.now();
+  flushDeferredIdentities();
   const state = readState();
   const hostId = state.hostId ?? `urn:uuid:${randomUUID()}`;
   const held = opts.storedCredential === undefined ? storedChatGptCredential() : opts.storedCredential;
@@ -406,6 +407,27 @@ const REFUSED: SignInOutcome = { status: "refused", error: "chatgpt_state_mismat
  */
 const settledInMemory = new Map<string, Settled>();
 let doneInMemory: { stateHash: string; at: number } | null = null;
+/** Attempts cancelled here: a callback for one stays refused even if a later file write succeeds. */
+const cancelledPolls = new Set<string>();
+/** Validated identities whose file write failed after the credential was stored; written first on the next start, poll or complete. */
+const deferredIdentities: Array<{ clientId: string; identity: { sub: string; email: string | null }; needsConsent: boolean }> = [];
+
+function flushDeferredIdentities(): void {
+  while (deferredIdentities.length > 0) {
+    const next = deferredIdentities[0]!;
+    try {
+      recordIdentity(next.clientId, next.identity, next.needsConsent);
+    } catch {
+      return; // still unwritable; it stays queued
+    }
+    deferredIdentities.shift();
+  }
+}
+
+function rememberCancelled(pollId: string): void {
+  cancelledPolls.add(pollId);
+  while (cancelledPolls.size > 16) cancelledPolls.delete(cancelledPolls.values().next().value as string);
+}
 
 function remember(pollId: string, outcome: Settled): void {
   settledInMemory.set(pollId, outcome);
@@ -419,7 +441,7 @@ function stateHash(state: string): string {
 /** True while `pollId` is still the live, unsettled attempt. */
 function stillLive(pollId: string): boolean {
   const { pending } = readState();
-  return Boolean(pending && pending.pollId === pollId && !pending.outcome);
+  return Boolean(pending && pending.pollId === pollId && !pending.outcome && !cancelledPolls.has(pollId));
 }
 
 /** Settle the attempt `pollId`, unless it was replaced or cancelled meanwhile. */
@@ -466,13 +488,22 @@ export async function completeChatGptSignIn(
   fetchImpl: FetchFn = fetch,
   persist?: (credential: Credential) => void,
 ): Promise<SignInOutcome> {
+  flushDeferredIdentities();
   const state = readState();
   const { pending } = state;
-  if (!pending || pending.outcome || !params.state || !sameSecret(pending.state, params.state) || inFlight.has(pending.pollId)) {
-    const done = state.lastDone ?? doneInMemory;
-    if (done && params.state && Date.now() - done.at < REPEAT_WINDOW_MS && sameSecret(done.stateHash, stateHash(params.state))) {
-      return { status: "repeat" };
+  // A completion from the last ten minutes (file or memory) is a reloaded tab,
+  // whatever the disk row says: it never exchanges again.
+  if (params.state) {
+    for (const done of [state.lastDone, doneInMemory]) {
+      if (done && Date.now() - done.at < REPEAT_WINDOW_MS && sameSecret(done.stateHash, stateHash(params.state))) {
+        return { status: "repeat" };
+      }
     }
+  }
+  if (
+    !pending || pending.outcome || !params.state || !sameSecret(pending.state, params.state) || inFlight.has(pending.pollId)
+    || settledInMemory.has(pending.pollId) || cancelledPolls.has(pending.pollId)
+  ) {
     return REFUSED;
   }
   if (pending.expiresAt <= Date.now()) return { status: "expired" };
@@ -511,6 +542,13 @@ async function finishAttempt(
 }
 
 function rescue(pollId: string, state: string, ctx: AttemptContext): SignInOutcome {
+  // The real outcome was already settled in memory and only the file write failed: keep it.
+  const known = settledInMemory.get(pollId);
+  if (known && !ctx.stored) {
+    ctx.discard?.();
+    if (known.status === "denied") return { status: "denied" };
+    if (known.status === "error" && known.error) return { status: "error", error: known.error as SignInErrorCode };
+  }
   try {
     if (ctx.stored) {
       settle(pollId, { status: "complete" }, (next) => {
@@ -522,8 +560,11 @@ function rescue(pollId: string, state: string, ctx: AttemptContext): SignInOutco
     ctx.discard?.();
     return out;
   } catch {
-    if (!ctx.stored) remember(pollId, { status: "error", error: "chatgpt_signin_refused", ...(ctx.clientId ? { retryClientId: ctx.clientId } : {}) });
     try { cancelPendingChatGptSignIn(); } catch { /* the file cannot be written at all */ }
+    // After the cancel, which forgets remembered outcomes: memory is what answers the poll now.
+    remember(pollId, ctx.stored
+      ? { status: "complete" }
+      : { status: "error", error: "chatgpt_signin_refused", ...(ctx.clientId ? { retryClientId: ctx.clientId } : {}) });
     if (ctx.stored) return { status: "complete", credential: ctx.stored };
     ctx.discard?.();
     return { status: "error", error: "chatgpt_signin_refused" };
@@ -663,7 +704,13 @@ async function runAttempt(
   // From here the sign-in is real: memory answers the poll and a reloaded tab even if the file cannot be written.
   remember(pollId, { status: "complete" });
   doneInMemory = { stateHash: stateHash(pending.state), at: Date.now() };
-  recordIdentity(clientId, identity, false);
+  try {
+    recordIdentity(clientId, identity, false);
+  } catch {
+    // The credential is stored; the identity is written first on the next start, poll or callback.
+    deferredIdentities.push({ clientId, identity, needsConsent: false });
+    logFailure("identity_write_deferred");
+  }
   if (!settle(pollId, { status: "complete" }, (next) => {
     next.lastDone = { stateHash: stateHash(pending.state), at: Date.now() };
   })) return REFUSED;
@@ -678,6 +725,7 @@ export function pollChatGptSignIn(pollId: string): SignInPoll {
     ...(outcome.retryClientId ? { retryClientId: outcome.retryClientId } : {}),
   });
   // Memory first: it holds the outcome even when the file could not be written.
+  flushDeferredIdentities();
   const remembered = settledInMemory.get(pollId);
   if (remembered) {
     settledInMemory.delete(pollId);
@@ -705,6 +753,7 @@ export function pollChatGptSignIn(pollId: string): SignInPoll {
 /** Forget an attempt: a callback that arrives later is refused. */
 export function cancelChatGptSignIn(pollId: string): void {
   settledInMemory.delete(pollId);
+  rememberCancelled(pollId);
   const state = readState();
   if (!state.pending || state.pending.pollId !== pollId) return;
   writeState({ ...state, pending: null });
@@ -712,17 +761,35 @@ export function cancelChatGptSignIn(pollId: string): void {
 
 /** Forget whatever attempt is pending (Disconnect), so a callback mid-exchange is refused. */
 export function cancelPendingChatGptSignIn(): void {
+  let state: SignInState;
   try {
-    const state = readState();
-    if (state.pending) writeState({ ...state, pending: null });
-  } catch {
+    state = readState();
+  } catch (err) {
     // An unreadable file tracks no attempt we could cancel; Disconnect goes on.
+    if (err instanceof Error && err.message === "chatgpt_state_unreadable") return;
+    throw err;
   }
+  if (!state.pending) return;
+  // Remembered first: the attempt stays cancelled even if the write below fails
+  // or a later one succeeds. A write failure still propagates, so Disconnect
+  // reports it instead of deleting with an attempt that may be live.
+  rememberCancelled(state.pending.pollId);
+  settledInMemory.delete(state.pending.pollId);
+  writeState({ ...state, pending: null });
 }
 
-/** True when the pollId belongs to the ChatGPT attempt, so the poll route can route it. */
+/**
+ * True when the pollId belongs to a ChatGPT attempt, so the poll route can
+ * route it. A remembered outcome counts first; an unreadable file is "no", so a
+ * corrupt ChatGPT file never breaks another provider's device-flow polls.
+ */
 export function isChatGptPollId(pollId: string): boolean {
-  return readState().pending?.pollId === pollId;
+  if (settledInMemory.has(pollId)) return true;
+  try {
+    return readState().pending?.pollId === pollId;
+  } catch {
+    return false;
+  }
 }
 
 let jwksCache: { fetchedAt: number; keys: JsonWebKey[] } | null = null;

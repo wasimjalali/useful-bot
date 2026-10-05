@@ -207,7 +207,9 @@ struct UseDifferentAccountControl: View {
     }
 
     var body: some View {
-        if others.isEmpty, !afterError {
+        // A fresh registration has nothing to switch from. An attempt on a
+        // saved client always keeps a way out to another account.
+        if others.isEmpty, !afterError, currentClientId == nil {
             EmptyView()
         } else if others.isEmpty {
             NativeButton("Use a different account", kind: kind, small: true, action: onAddNew)

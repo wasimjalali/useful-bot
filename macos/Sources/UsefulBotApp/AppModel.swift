@@ -3774,7 +3774,8 @@ final class AppModel: ObservableObject {
 
     func startOAuth(providerId: String, label: String, newAccount: Bool = false, clientId: String? = nil, retryClientId: String? = nil) async {
         oauthLastAttempt = (newAccount, clientId)
-        oauthRetryClientId = nil
+        // A retry that itself expires keeps the client it was retrying.
+        oauthRetryClientId = retryClientId
         oauthPoll?.cancel()
         oauthGeneration &+= 1
         let generation = oauthGeneration

@@ -162,10 +162,15 @@ async function storeRefreshed(connectionId: string, providerId: string, guard: s
           gone = true;
           return store;
         }
+        // Another registration took the slot meanwhile: the new session has no owner either.
+        if (next.kind === "oauth" && next.clientId && current.clientId !== next.clientId) {
+          gone = true;
+          return store;
+        }
         if (current.refreshToken !== guard) return store;
         return setOAuthCredential(store, providerId, next);
       });
-      // Disconnected while the refresh ran: the new session has no owner, end it.
+      // Disconnected (or switched to another registration) while the refresh ran: the new session has no owner, end it.
       if (gone && providerId === "openai") {
         revokeChatGptCredential(next).then((confirmed) => {
           if (!confirmed) console.error("[useful-bot] chatgpt refresh: revoke_unconfirmed");

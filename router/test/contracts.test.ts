@@ -1850,6 +1850,8 @@ async function chatgptRun(options: {
   token?: { status: number; body: Record<string, unknown> };
   /** The connection is gone from the store (disconnected while the call ran). */
   noStore?: boolean;
+  /** Runs while the refresh request is in flight, before the auth server answers. */
+  onToken?: () => void;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-run-"));
   const saved = process.env.UB_PROVIDERS_PATH;
@@ -1876,6 +1878,7 @@ async function chatgptRun(options: {
     }
     if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") {
       refreshes += 1;
+      options.onToken?.();
       const answer = options.token ?? { status: 200, body: { access_token: "new-access", refresh_token: "refresh-1", expires_in: 3600 } };
       return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "content-type": "application/json" } });
     }
@@ -2045,6 +2048,27 @@ test("a refresh that lands after the connection was removed revokes its own new 
   assert.equal(out.store, undefined, "the connection stays gone");
   // A different refresh token in a store that still has the connection is not a removal: nothing is revoked.
   const rotated = await chatgptRun({ upstream: SSE_OK, held: { expiresAt: Date.now() - 60_000 } });
+  assert.deepEqual(rotated.revoked, []);
+});
+
+test("a refresh whose slot was taken by another registration meanwhile revokes its new token; plain rotation elsewhere does not", async () => {
+  const other = { kind: "oauth", accessToken: "other-access", refreshToken: "refresh-other", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_other" } as const;
+  const switched = await chatgptRun({
+    upstream: SSE_OK,
+    held: { expiresAt: Date.now() - 60_000 },
+    onToken: () => writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", other)),
+  });
+  assert.deepEqual(switched.revoked, ["refresh-1"]);
+  const kept = switched.store?.credential;
+  assert.ok(kept && kept.kind === "oauth");
+  assert.equal(kept.refreshToken, "refresh-other", "the other registration's sign-in is untouched");
+  const rotated = await chatgptRun({
+    upstream: SSE_OK,
+    held: { expiresAt: Date.now() - 60_000 },
+    onToken: () => writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", {
+      kind: "oauth", accessToken: "x", refreshToken: "refresh-elsewhere", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_test",
+    })),
+  });
   assert.deepEqual(rotated.revoked, []);
 });
 
