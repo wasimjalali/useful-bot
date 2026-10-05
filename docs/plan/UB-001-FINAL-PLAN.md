@@ -113,12 +113,12 @@ Every line the viewer hears or reads, with its source. Anything not here is not 
 | Runs on your ChatGPT Plus or Pro plan through OpenAI's official sign-in | S02 | PR #187 (1.1.2); developers.openai.com/siwc/token-sharing-open-source; the ChatGPT row hint "ChatGPT Plus or Pro" |
 | API keys, and local models that need no account (LM Studio, Ollama) | S03 | shared/provider-catalog.ts API and local routes; research §1 item 1 |
 | LM Studio runs Qwen3.8-27B | S03 caption | LM Studio announcement and model page (lmstudio.ai/models/qwen3.8), Apache 2.0, released 2026-08-14 |
-| The Generalist proposes bots; you add them with a card | S04, S05 | agent/instructions.md:39; agent/tools/propose_bot.ts; ProposalCardView.swift:51 |
+| The Generalist proposes bots; you add them with a card | S04, S05 | agent/instructions.md:40; agent/tools/propose_bot.ts; ProposalCardView.swift:51 |
 | Each bot has its own job, instructions and memory | S06 | fact sheet D1, D2; SettingsPaneView.swift |
 | A bot can send its work to a teammate | S07 | agent/tools/send_to_bot.ts; fact sheet D6 |
 | On Auto, everyday work in the attached folder runs without a card | S08 | agent/instructions.md:37; agent/lib/workspace.ts:87-91 |
 | On Auto, it asks before it deletes anything | S08 | agent/instructions.md:37 (deletes ask inside a folder; any change asks with no folder); agent/tools/bash.ts:127-147 |
-| A card approves one exact action | S08 | agent/instructions.md:41; agent/lib/write.ts:76-118 (hash-bound) |
+| A card approves one exact action | S08 | agent/instructions.md:42; agent/lib/write.ts:76-118 (hash-bound) |
 | Read only, Auto, Full access | S08 | agent/instructions.md:33-38; ComposerView.swift:915-917 |
 | Chats and files are stored on your computer; your model provider sees what you send | S09 | fact sheet H; research §1 item 2 caveat |
 | Free and open source, AGPL-3.0 | S10 | LICENSE; README.md:290-296; owner decision 2026-10-05 |
@@ -131,7 +131,7 @@ Never said or shown: computer use, a browser agent, "always on", "first", "only"
 
 ## 9. Demo setup (all synthetic)
 
-- **Profile:** a fresh Useful Bot Dev state via the owner-approved swap (the real dev state moves to `~/UB001-dev-backup/` and back after filming).
+- **Profile:** a fresh Useful Bot Dev state via the swap the owner chose on 2026-10-05 "for screenshots and footage" (the real dev state moves to `~/UB001-dev-backup/` and back after filming).
 - **Model:** the owner's personal ChatGPT Plus or Pro plan via the official sign-in (his org workspace blocks third-party apps). No email or account name in frame.
 - **Cedar Studio folder:** 12 short client notes (duplicate requests, two open blockers, one unconfirmed delivery date), `weekly-update.html` (last week's update) and `drafts/weekly-update-draft.html`. Written for the film. Placed at `/Users/Shared/Cedar Studio` if the app accepts it as a grantable folder (so no username shows in paths), otherwise a home folder outside Documents and Desktop, with any path that shows the username kept out of frame. Both bots work only inside this attached folder, so nothing else on the computer is in their root.
 - **Identity:** the release build shows "Useful Bot" where the dev build shows "Useful Bot Dev". The rail label is covered in post with the exact release label, drawn from the same tokens and checked against a release screenshot. The account badge uses a demo display name if the app has one; otherwise the same overlay treatment. Both are listed as recreated.
@@ -160,7 +160,7 @@ Built by Claude Opus 5.5 (owner's ask), on branch `feat/ub001-launch-video`.
 3. **Brand check:** read OpenAI's current brand guidelines for naming ChatGPT and "Sign in with ChatGPT" in marketing before S02 is locked.
 4. **Demo setup and rehearsal:** swap the dev state aside, create Cedar Studio, sign in, then rehearse M1 to M3 at least five times. Confirm each time: two proposal cards appear (not a question), the Analyst sends to the Writer, the Writer's update runs without a card, the delete raises a card with a readable `rm` line, and no step row shows anything outside the folder. Fix the messages, not the footage, if a run drifts.
 5. **Recording:** `winrec` at 60 fps per scene, several takes, including a cold start. Never the daily app, never the real pointer.
-6. **Voice:** generate per scene (key read at runtime from the Useful Voice Keychain item, owner-approved, never logged), check every take with speech-to-text against the script, re-measure the rate. Estimated cost under $1.
+6. **Voice:** generate per scene (key read at runtime from the Useful Voice Keychain item, which the owner told us to use for Deepgram on 2026-10-05; never logged), check every take with speech-to-text against the script, re-measure the rate. Estimated cost under $1.
 7. **Edit:** assemble in Remotion; captions from the STT timings; sound per section 6.
 8. **Fidelity check:** each scene's key frames side by side with a real screenshot of the same screen; fix any drift.
 9. **Frame review:** export every frame of every transition and every scene change as a PNG sequence and review them all in batches (framesheet only for overviews, since it tiles 24 frames and can skip fades).
