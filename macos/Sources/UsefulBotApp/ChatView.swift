@@ -1103,7 +1103,7 @@ struct ChatView: View {
                     .foregroundStyle(Theme.C.inkMuted)
                     .multilineTextAlignment(.center)
                 NativeButton("Connect a provider", kind: .primary) {
-                    if let connectModel { connectModel.reopen() } else { model.openAppSettings(.providers) }
+                    if model.noModelRetiredSentence == nil, let connectModel { connectModel.reopen() } else { model.openAppSettings(.providers) }
                 }
                 .padding(.top, 6)
                 .accessibilityIdentifier("no-model-connect")
@@ -1202,7 +1202,7 @@ struct ChatView: View {
                         .foregroundStyle(Theme.C.ink)
                     Spacer(minLength: 0)
                     NativeButton("Connect", kind: .primary, small: true) {
-                        if let connectModel { connectModel.reopen() } else { model.openAppSettings(.providers) }
+                        if model.noModelRetiredSentence == nil, let connectModel { connectModel.reopen() } else { model.openAppSettings(.providers) }
                     }
                     .accessibilityIdentifier("no-model-connect")
                 }

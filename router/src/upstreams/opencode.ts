@@ -390,6 +390,9 @@ export async function completeUpstream(input: {
   const model = resolved.model;
   const option = modelOption(resolved.connection.id, model, catalogFor(resolved.connection.id));
   const sees = modelSeesImages(option);
+  // Whether the vendor's own list names this model, read now: the cache can
+  // change before a refusal comes back (see dropUnlistedModel).
+  const listedAtDispatch = catalogFor(resolved.connection.id).some((row) => row.id === model && !row.unlisted);
   // eve compacts at 75% of the model's window (agent/lib/model-window.ts reads
   // the same catalog), so the output cap keeps to the last tenth: a prompt at
   // the threshold plus a full answer still fits a small model's window.
@@ -457,7 +460,7 @@ export async function completeUpstream(input: {
         headers,
         signal: input.signal,
         onRefusal: resolved.providerId === "openai"
-          ? ({ code, param }) => (refusalAboutModel(code, param) && dropUnlistedModel(resolved.connection.id, model, credential)
+          ? ({ code, param }) => (refusalAboutModel(code, param) && dropUnlistedModel(resolved.connection.id, model, credential, listedAtDispatch)
             ? CHATGPT_MODEL_NOT_IN_PLAN
             : null)
           : undefined,
@@ -526,7 +529,7 @@ export async function completeUpstream(input: {
     // plan sharing off), never an expired sign-in: that is a 401. The body only
     // tells which kind it is.
     const refused = await chatGptError(response);
-    if (refused.code === "subscription_sharing_user_not_eligible" && dropUnlistedModel(resolved.connection.id, model, credential)) {
+    if (refused.code === "subscription_sharing_user_not_eligible" && dropUnlistedModel(resolved.connection.id, model, credential, listedAtDispatch)) {
       throw new UpstreamRefusalError({
         status: 403,
         type: "permission_error",
@@ -550,7 +553,7 @@ export async function completeUpstream(input: {
     // The documented model refusal. Any other 400 (a tool or input type the
     // plan route lacks, a bad request) keeps the generic path below.
     const refused = await chatGptError(response.clone());
-    if (refused.code === "subscription_sharing_unsupported_capability" && refusalAboutModel(refused.code, refused.param) && dropUnlistedModel(resolved.connection.id, model, credential)) {
+    if (refused.code === "subscription_sharing_unsupported_capability" && refusalAboutModel(refused.code, refused.param) && dropUnlistedModel(resolved.connection.id, model, credential, listedAtDispatch)) {
       throw new UpstreamRefusalError({
         status: 400,
         type: "invalid_request_error",
@@ -649,15 +652,17 @@ export function refusalAboutModel(code: string | null, param: string | null): bo
  * connection or a credential with no account id is never touched. The drop is
  * keyed by the held credential, so an account switch while the call ran still
  * records it for the account that was refused and leaves the one now stored
- * alone. It is skipped when no ChatGPT sign-in is stored any more, and when
+ * alone. Whether the vendor listed the model is the answer at dispatch
+ * (listedAtDispatch), not the cache at refusal time: another account's refresh
+ * can rewrite the cache while the call runs. It is skipped when no ChatGPT sign-in is stored any more, and when
  * the held account signed out (signedOutAccounts) even if another account has
  * signed in since.
  * The store is written under its lock.
  */
-function dropUnlistedModel(connectionId: string, model: string, held: Credential): boolean {
+function dropUnlistedModel(connectionId: string, model: string, held: Credential, listedAtDispatch: boolean): boolean {
   if (connectionId !== "openai:oauth") return false;
   if (!providerMode("openai", "oauth").unlistedModels?.some((extra) => extra.id === model)) return false;
-  if (catalogFor(connectionId).some((row) => row.id === model && !row.unlisted)) return false;
+  if (listedAtDispatch) return false;
   const account = accountKey(held);
   if (!account) return false;
   try {

@@ -46,7 +46,7 @@ struct ProvidersPaneView: View {
             section("Task models") {
                 VStack(alignment: .leading, spacing: 24) {
                     settingsGroup {
-                        let showsImage = !(model.imageRole?.models.isEmpty ?? true)
+                        let showsImage = !(model.imageRole?.models.isEmpty ?? true) || model.imageRole?.unavailable != nil
                         roleRow(
                             role: "default",
                             title: "Default model",
@@ -55,7 +55,8 @@ struct ProvidersPaneView: View {
                             last: !showsImage
                         )
                         // The row appears only while a connected provider
-                        // actually serves image generation.
+                        // actually serves image generation, or a saved image
+                        // choice was turned off (it shows the reason).
                         if showsImage {
                             roleRow(
                                 role: "image",
@@ -429,7 +430,7 @@ struct ProvidersPaneView: View {
 
     private func chipMonogram(detail: RolePublic) -> String {
         if let id = detail.connectionId,
-           let connection = model.providerConnections.first(where: { $0.id == id }) {
+           let connection = model.providerRows.first(where: { $0.id == id }) {
             return connection.monogram
         }
         return "?"

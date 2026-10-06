@@ -1902,6 +1902,8 @@ async function chatgptRun(options: {
   noStore?: boolean;
   /** Runs while the refresh request is in flight, before the auth server answers. */
   onToken?: () => void;
+  /** Runs while the upstream request is in flight, before the plan route answers. */
+  onUpstream?: () => void;
   /** The model the turn runs on; default gpt-6.1-sol, which the static fallback list does not name. */
   model?: string;
   /** Ask for a streamed answer and return its text. */
@@ -1931,6 +1933,7 @@ async function chatgptRun(options: {
   const bearers: string[] = [];
   const server = createServer((req, res) => {
     bearers.push(String(req.headers.authorization ?? ""));
+    options.onUpstream?.();
     res.writeHead(options.upstream?.status ?? 200, { "content-type": "application/json" });
     res.end(options.upstream?.body ?? "{}");
   });
@@ -2111,6 +2114,34 @@ test("UB-016: a refusal is recorded for the account that sent the request, not t
   });
   assert.equal(signedOut.error?.code, "upstream_chatgpt_model_not_in_plan");
   assert.deepEqual(signedOut.dropped, {});
+});
+
+const cacheRows = (rows: Array<{ id: string; unlisted?: boolean }>) => writeModelsCache({
+  schemaVersion: 3,
+  providers: { "openai:oauth": { fetchedAt: Date.now(), models: rows.map((row) => ({ ...hydrateModel("openai:oauth", row.id), ...(row.unlisted ? { unlisted: true } : {}) })) } },
+});
+
+// The unlisted/listed call is made when the request is dispatched, not when the refusal comes back.
+test("UB-016: a model unlisted at dispatch is dropped even if another account's refresh lists it before the refusal", async () => {
+  const out = await chatgptRun({
+    held: ACCOUNT_A,
+    cached: UNLISTED_ROW,
+    upstream: { status: 400, body: unsupported("model") },
+    onUpstream: () => cacheRows([{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }]),
+  });
+  assert.equal(out.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.deepEqual(out.dropped, { "client-a": ["gpt-6.1-sol"] });
+});
+
+test("UB-016: a model listed at dispatch is not dropped even if the cache loses the row before the refusal", async () => {
+  const out = await chatgptRun({
+    held: ACCOUNT_A,
+    cached: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }],
+    upstream: { status: 400, body: unsupported("model") },
+    onUpstream: () => cacheRows(UNLISTED_ROW),
+  });
+  assert.notEqual(out.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.deepEqual(out.dropped, {});
 });
 
 // A sent gpt-6.1-sol, A signed out (its entry was cleared), B signed in, then A's request came back

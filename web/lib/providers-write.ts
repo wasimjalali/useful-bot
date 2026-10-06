@@ -2,6 +2,7 @@ import { isEffortId, isSpeedId } from "../../shared/models.ts";
 import {
   connectionId,
   providerDef,
+  providerMode,
   retiredRouteMessage,
 } from "../../shared/provider-catalog.ts";
 import { botSelection } from "../../shared/session-selection.ts";
@@ -21,6 +22,7 @@ import {
   type ProviderId,
   type ProviderStore,
 } from "../../shared/providers.ts";
+import { errorCode } from "./api-guard.ts";
 import { ensureBotSelections } from "./agent-exec.ts";
 
 /**
@@ -70,6 +72,27 @@ export function oauthStartRetired(providerId: string): string | null {
     return retiredRouteMessage(connectionId(providerId, "oauth"));
   } catch {
     return null;
+  }
+}
+
+/**
+ * What POST /api/providers/oauth answers for a provider before it starts a
+ * sign-in: 409 with the sentence on a retired route, 400 on an unknown
+ * provider or one with no sign-in entry, 200 when the flow may start.
+ */
+export type OAuthStartVerdict =
+  | { status: 200 }
+  | { status: 409; error: "provider_route_retired"; message: string }
+  | { status: 400; error: string };
+
+export function oauthStartVerdict(providerId: string): OAuthStartVerdict {
+  const retired = oauthStartRetired(providerId);
+  if (retired) return { status: 409, error: "provider_route_retired", message: retired };
+  try {
+    if (providerMode(providerId, "oauth").signIn === "chatgpt") return { status: 200 };
+    return { status: 400, error: "provider_oauth" };
+  } catch (err) {
+    return { status: 400, error: errorCode(err) };
   }
 }
 

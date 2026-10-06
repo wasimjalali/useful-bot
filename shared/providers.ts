@@ -639,7 +639,15 @@ export function setProviderKey(
   };
 }
 
-/** Drop a connection. Clears roles pointing at it and moves active to another connected connection or null. */
+/**
+ * Drop a connection. Clears roles pointing at it and moves active to another
+ * connected connection or null. Retired-default rule: a retired active
+ * connection that is not the one dropped stays the default, so default turns
+ * keep answering its retired sentence instead of moving to another provider
+ * or the env key unannounced. Only dropping the retired connection itself
+ * repoints the default (to the first connected one, else none). Signing out
+ * also forgets the account's refused models and remembers it as signed out.
+ */
 export function clearConnection(store: ProviderStore, id: string): ProviderStore {
   if (!store.connections[id]) throw new Error("connection_unknown");
   const connections = { ...store.connections };
@@ -1145,7 +1153,25 @@ export function publicProviders(
     ? store.roles.image
     : null;
   let image: RolePublic;
-  if (imageSel) {
+  // A saved image role on a retired route is refused on every call
+  // (resolveUpstream), so the pane names it as unavailable, like the reviewer.
+  const imageRetired = store.roles.image ? retiredRouteMessage(store.roles.image.connectionId) : null;
+  if (store.roles.image && imageRetired) {
+    const saved = store.roles.image;
+    const conn = listed.find((row) => row.id === saved.connectionId) ?? null;
+    image = {
+      connectionId: saved.connectionId,
+      connectionLabel: conn ? connectionLabel(conn) : saved.connectionId,
+      connectionIcon: conn ? providerDef(conn.providerId).icon : "",
+      modelId: saved.modelId,
+      modelLabel: humanizeModelId(saved.modelId),
+      effort: null,
+      effortLabel: null,
+      efforts: [],
+      models: imagePickerModels,
+      unavailable: imageRetired,
+    };
+  } else if (imageSel) {
     const conn = listed.find((row) => row.id === imageSel.connectionId) ?? null;
     const picked = imagePickerModels.find((row) => row.connectionId === imageSel.connectionId && row.id === imageSel.modelId) ?? null;
     image = {
