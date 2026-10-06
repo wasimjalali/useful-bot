@@ -104,6 +104,20 @@ import Testing
         #expect(connection.fields.isEmpty)
     }
 
+    @Test func retiredConnectionsDecodeApartFromLiveOnes() throws {
+        let sentence = "Z.ai only allows the GLM Coding Plan in its supported coding tools, so Useful Bot can't use it. Connect a Z.ai API key instead."
+        let payload = try decode("""
+        {"connections":[{"id":"opencode-go:plan","status":"ok"}],
+         "retired":[{"id":"zai:plan","providerId":"zai","mode":"plan","status":"retired","lastError":"\(sentence)"}]}
+        """)
+        #expect(payload.connections.map(\.id) == ["opencode-go:plan"])
+        let retired = try #require(payload.retired.first)
+        #expect(retired.status == "retired")
+        #expect(retired.lastError == sentence)
+        // A server from before the retirement sends none.
+        #expect(try decode(#"{"connections":[]}"#).retired.isEmpty)
+    }
+
     @Test func decodesTheDeviceFlowStart() throws {
         let flow = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
         {"ok":true,"pollId":"p1","userCode":"ABCD-1234",

@@ -1591,6 +1591,13 @@ public actor BackendClient {
            Self.refusalCode(in: data) == "model_selection_unavailable" {
             throw BackendError.modelSelectionUnavailable
         }
+        // The bot's connection is on a route its vendor doesn't allow in Useful
+        // Bot (turned off). The proxy says why in the route's own sentence.
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           Self.refusalCode(in: data) == "provider_route_retired",
+           let message = Self.refusalMessage(in: data) {
+            throw BackendError.providerNotice(code: "provider_route_retired", message: message)
+        }
         // The proxy refuses a picture for a model that cannot look at it
         // before the turn exists, so the draft and its files come back.
         if let http = response as? HTTPURLResponse, http.statusCode == 400,
@@ -1631,6 +1638,14 @@ public actor BackendClient {
             throw BackendError.sessionEnded
         }
         try Self.expectOK(data, response)
+    }
+
+    /// The sentence of a refusal body: a top-level `message`, or `error: { message }`.
+    static func refusalMessage(in data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let message = object["message"] as? String, !message.isEmpty { return message }
+        if let error = object["error"] as? [String: Any], let message = error["message"] as? String, !message.isEmpty { return message }
+        return nil
     }
 
     /// The code of a refusal body, whichever shape carries it: a top-level

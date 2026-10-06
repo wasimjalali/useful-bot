@@ -190,21 +190,22 @@ test("reviewer role overrides the active connection, else it follows it", () => 
 });
 
 test("oauth credentials, errors and local connections", () => {
-  let store = setOAuthCredential(emptyProviderStore(), "github-copilot", {
+  let store = setOAuthCredential(emptyProviderStore(), "openai", {
     kind: "oauth",
-    accessToken: "ghu-test-token-12345678",
+    accessToken: "chatgpt-test-token-12345678",
     refreshToken: null,
     expiresAt: null,
     accountId: "1234",
+    clientId: "oaiapp_1",
   });
-  assert.ok(store.connections["github-copilot:oauth"]);
-  store = setActiveConnection(store, "github-copilot:oauth");
+  assert.ok(store.connections["openai:oauth"]);
+  store = setActiveConnection(store, "openai:oauth");
   const resolved = resolveUpstream(store, "workhorse", {});
-  assert.equal(resolved.key, "ghu-test-token-12345678");
-  assert.equal(resolved.protocol, "openai-chat");
-  const errored = recordConnectionError(store, "github-copilot:oauth", "upstream_auth_failed");
+  assert.equal(resolved.key, "chatgpt-test-token-12345678");
+  assert.equal(resolved.protocol, "openai-responses");
+  const errored = recordConnectionError(store, "openai:oauth", "upstream_auth_failed");
   const pub = publicProviders(errored, {});
-  assert.equal(pub.connections.find((item) => item.id === "github-copilot:oauth")?.status, "error");
+  assert.equal(pub.connections.find((item) => item.id === "openai:oauth")?.status, "error");
   // Local mode connects with no key.
   const local = setProviderKey(emptyProviderStore(), "ollama", "local", null, { baseUrl: "http://localhost:11434/v1" });
   assert.equal(local.connections["ollama:local"]?.credential.kind, "none");
@@ -218,7 +219,7 @@ test("publicProviders groups the catalogue and mirrors the composer in roles", (
   const store = keyed("openai:api", "sk-test-abcdef1234");
   const pub = publicProviders(setActiveConnection(store, "openai:api"), {});
   const kinds = pub.catalog.map((item) => item.mode);
-  assert.deepEqual(kinds.slice(0, 2), ["oauth", "oauth"]);
+  assert.deepEqual(kinds.slice(0, 2), ["oauth", "plan"]);
   assert.ok(kinds.indexOf("plan") < kinds.indexOf("api"));
   assert.ok(kinds.indexOf("api") < kinds.indexOf("local"));
   assert.equal(pub.catalog.length, pub.catalog.filter((item) => item.providerId).length);
@@ -324,7 +325,7 @@ test("applyReasoning maps through the catalogue", () => {
   assert.equal(openrouter.service_tier, "priority");
   const thinking = applyReasoning("anthropic", "high", "standard", { model: "x" });
   assert.deepEqual(thinking.thinking, { type: "enabled", budget_tokens: 16384 });
-  const none = applyReasoning("github-copilot", "high", "standard", { model: "gpt-4.1" });
+  const none = applyReasoning("minimax", "high", "standard", { model: "gpt-4.1" });
   assert.equal("reasoning_effort" in none, false);
   assert.equal("reasoning" in none, false);
   assert.equal("thinking" in none, false);
@@ -440,11 +441,11 @@ test("a local server's collected URL is the base URL the router calls", () => {
 });
 
 test("legacy rows keep one row per vendor, the active one", () => {
-  let store = setProviderKey(emptyProviderStore(), "zai", "plan", "plan-key-abcdef1234");
-  store = setProviderKey(store, "zai", "api", "api-key-abcdef5678");
-  store = setActiveConnection(store, "zai:api", {} as NodeJS.ProcessEnv);
+  let store = setProviderKey(emptyProviderStore(), "minimax", "plan", "plan-key-abcdef1234");
+  store = setProviderKey(store, "minimax", "api", "api-key-abcdef5678");
+  store = setActiveConnection(store, "minimax:api", {} as NodeJS.ProcessEnv);
   const rows = legacyProviders(store, {} as NodeJS.ProcessEnv).filter((row) => row.connected);
-  assert.deepEqual(rows.map((row) => [row.id, row.kind, row.last4]), [["zai", "api", "5678"]]);
+  assert.deepEqual(rows.map((row) => [row.id, row.kind, row.last4]), [["minimax", "api", "5678"]]);
 });
 
 test("legacy rows list every keyable vendor so the old web pane can still connect", () => {

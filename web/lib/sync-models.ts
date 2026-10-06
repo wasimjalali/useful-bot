@@ -46,7 +46,8 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
   let headers: Record<string, string>;
   if (conn) {
     mode = providerMode(conn.providerId, conn.mode);
-    if (!mode.listsModels) return;
+    // A retired route is never called, not even to list models (UB-015).
+    if (mode.retired || !mode.listsModels) return;
     if (conn.credential.kind === "none" && conn.mode !== "local") return;
     // A sign-in from the old Codex route is not sent anywhere.
     if (isLegacyChatGptCredential(conn.providerId, conn.mode, conn.credential)) return;
@@ -114,7 +115,7 @@ export async function keyRejectedFor(
 ): Promise<boolean> {
   if (mode === "local" || mode === "oauth") return false;
   const def = providerMode(providerId, mode);
-  if (!def.listsModels) return false;
+  if (def.retired || !def.listsModels) return false;
   let baseUrl = substituteFields(def.baseUrl, fields);
   if (providerId === "opencode-go" && process.env.UB_OPENCODE_GO_BASE) baseUrl = process.env.UB_OPENCODE_GO_BASE;
   return keyRejected(baseUrl, key, fetch, def.keyHeader, { ...(def.headers ?? {}) }, def.modelsQuery ?? {});

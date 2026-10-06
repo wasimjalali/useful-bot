@@ -3,7 +3,6 @@ import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
 import { providerMode } from "../../../../../shared/provider-catalog.ts";
 import { startChatGptSignIn } from "../../../../../shared/chatgpt-signin.ts";
-import { startDeviceFlow } from "../../../../../shared/provider-oauth.ts";
 
 export const runtime = "nodejs";
 
@@ -50,17 +49,7 @@ export async function POST(request: Request) {
         clientId: started.clientId,
       });
     }
-    const pending = await startDeviceFlow(providerId);
-    return NextResponse.json({
-      ok: true,
-      pollId: pending.pollId,
-      flow: "device",
-      userCode: pending.userCode,
-      verificationUrl: pending.verificationUrl,
-      verificationUrlComplete: pending.verificationUrlComplete,
-      expiresAt: pending.expiresAt,
-      intervalMs: pending.intervalMs,
-    });
+    throw new Error("provider_oauth");
   } catch (err) {
     return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
   }

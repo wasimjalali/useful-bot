@@ -291,8 +291,22 @@ public struct TurnFailure: Codable, Equatable, Sendable {
     public static let chatgptUsageHost = "chatgpt.com/settings/usage"
     public static let chatgptUsageURL = "https://" + chatgptUsageHost
 
+    /// The router refuses a turn on a turned-off route with
+    /// `provider_route_retired: <the route's sentence>`; this reads the sentence back out of the failure text.
+    static func retiredRouteSentence(_ text: String) -> String? {
+        guard let range = text.range(of: "provider_route_retired:") else { return nil }
+        let rest = text[range.upperBound...].drop { $0 == " " }
+        let sentence = rest.prefix { $0 != "\"" && $0 != "\n" && $0 != "\\" }
+        let trimmed = sentence.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     public var reason: String? {
         let haystack = "\(code) \(detail)".lowercased()
+        if haystack.contains("provider_route_retired") {
+            return Self.retiredRouteSentence(detail) ?? Self.retiredRouteSentence(code)
+                ?? "Useful Bot can't use this provider connection any more. Pick another model."
+        }
         // The bot's own pick is gone (its connection was removed or
         // disconnected). Nothing was substituted, so the owner chooses.
         if haystack.contains("model_selection_unavailable") {

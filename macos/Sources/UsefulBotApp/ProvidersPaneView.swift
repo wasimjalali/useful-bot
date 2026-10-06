@@ -35,10 +35,10 @@ struct ProvidersPaneView: View {
                         .foregroundStyle(Theme.C.inkMuted)
                 } else if !model.providerCatalog.isEmpty {
                     settingsGroup {
-                        ForEach(model.providerConnections) { connection in
+                        ForEach(model.providerRows) { connection in
                             connectionRow(connection)
                         }
-                        connectRow(last: true, hasRows: !model.providerConnections.isEmpty)
+                        connectRow(last: true, hasRows: !model.providerRows.isEmpty)
                     }
                 }
             }
@@ -96,10 +96,14 @@ struct ProvidersPaneView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
-                Text(connection.accountLabel.map { "\(connection.kindLabel) · \($0)" } ?? connection.kindLabel)
+                // A turned-off route says why, in the server's own words.
+                Text(connection.status == "retired"
+                     ? (connection.lastError ?? "Turned off")
+                     : (connection.accountLabel.map { "\(connection.kindLabel) · \($0)" } ?? connection.kindLabel))
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkMuted)
-                    .lineLimit(1)
+                    .lineLimit(connection.status == "retired" ? 4 : 1)
+                    .fixedSize(horizontal: false, vertical: connection.status == "retired")
                     .truncationMode(.middle)
             }
             Spacer(minLength: 0)
@@ -128,7 +132,7 @@ struct ProvidersPaneView: View {
 
     private func statusDot(_ status: String) -> some View {
         let color: Color = status == "ok" ? Theme.C.success : (status == "expired" ? Theme.C.warning : Theme.C.danger)
-        let label = status == "ok" ? "Connected" : (status == "expired" ? "Expired" : "Error")
+        let label = status == "ok" ? "Connected" : (status == "expired" ? "Expired" : (status == "retired" ? "Turned off" : "Error"))
         return Circle()
             .fill(color)
             .frame(width: 8, height: 8)
@@ -250,7 +254,7 @@ struct ProvidersPaneView: View {
 
     private var menuConnection: ConnectionPublic? {
         guard openCard?.kind == .menu, let id = openCard?.key else { return nil }
-        return model.providerConnections.first { $0.id == id }
+        return model.providerRows.first { $0.id == id }
     }
 
     private var menuEntry: CatalogPublic? {

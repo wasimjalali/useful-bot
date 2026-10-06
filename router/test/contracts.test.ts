@@ -16,7 +16,7 @@ import { readPrefix } from "../src/read-capped.ts";
 import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
 import { writeModelsCache } from "../../shared/live-models.ts";
 import { hydrateModel } from "../../shared/models.ts";
-import { emptyProviderStore, readProviderStore, setOAuthCredential, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
+import { emptyProviderStore, ProviderRouteRetiredError, readProviderStore, resolveUpstream, setOAuthCredential, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
@@ -1609,16 +1609,25 @@ test("an oauth 401 then refresh then retry reports the refused attempt on its ow
     jsonFixture(req, res);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-1", expires_in: 3600, scope: "openid" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
   try {
     const { port } = server.address() as { port: number };
-    // Copilot's direct-token mode: the refresh needs no network and returns the credential.
-    const credential = { kind: "oauth", accessToken: "gh-token-12345678", refreshToken: null, expiresAt: null, accountId: null } as const;
+    const credential = { kind: "oauth", accessToken: "gh-token-12345678", refreshToken: "refresh-0", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_test" } as const;
     const resolved = {
-      connection: { id: "github-copilot:oauth" },
-      providerId: "github-copilot",
+      connection: { id: "openai:oauth" },
+      providerId: "openai",
       mode: { headers: {} },
-      modelId: "gpt-5.4-mini",
-      model: "gpt-5.4-mini",
+      modelId: "gpt-6.1-sol",
+      model: "gpt-6.1-sol",
       effort: null,
       speed: "standard",
       baseUrl: `http://127.0.0.1:${port}`,
@@ -1646,10 +1655,49 @@ test("an oauth 401 then refresh then retry reports the refused attempt on its ow
     assert.ok(out.timing.startedAt >= attempts[0].endedAt, "the retry's timing starts after the refused one ended");
     await out.response.body?.cancel();
   } finally {
+    globalThis.fetch = realFetch;
     server.close();
     if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
     else process.env.UB_PROVIDERS_PATH = saved;
   }
+});
+
+// Kimi Code's terms: keep the tool's genuine identity, never tamper with the
+// User-Agent (UB-015). The chat call to the plan route carries our own.
+test("a Kimi Code plan call sends Useful Bot's own user-agent and nothing imitated", async () => {
+  const agents: string[] = [];
+  const server = createServer((req, res) => {
+    agents.push(String(req.headers["user-agent"] ?? ""));
+    jsonFixture(req, res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const store = setProviderKey(emptyProviderStore(), "moonshot", "plan", "kimi-key-12345678");
+    const real = resolveUpstream(store, "workhorse", {}, { connectionId: "moonshot:plan", modelId: "kimi-for-coding", effort: null, speed: "standard" });
+    assert.equal(real.baseUrl, "https://api.kimi.com/coding/v1");
+    const out = await completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+      body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+      sessionId: randomUUID(),
+      callerId: "desktop",
+      signal: new AbortController().signal,
+      resolved: { ...real, baseUrl: `http://127.0.0.1:${port}` } as unknown as ResolvedUpstream,
+    });
+    assert.equal(out.response.status, 200);
+    assert.deepEqual(agents, ["useful-bot/1.0"]);
+    await out.response.body?.cancel();
+  } finally {
+    server.close();
+  }
+});
+
+test("a retired route is refused with its own code and sentence, 4xx so no circuit counts it", () => {
+  const sentence = "GitHub doesn't support this Copilot sign-in in Useful Bot, so it's been turned off. Pick another provider.";
+  const error = upstreamConfigError(new ProviderRouteRetiredError(sentence));
+  assert.equal(error.code, "provider_route_retired");
+  assert.equal(error.status, 422);
+  assert.ok(String(error.message).includes(sentence));
 });
 
 // Each real upstream request is one usage line: the router counts onDispatch

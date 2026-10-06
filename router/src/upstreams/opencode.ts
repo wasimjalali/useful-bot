@@ -54,6 +54,17 @@ export function upstreamConfigError(error: unknown): RouterError {
       message: "model_selection_unavailable",
     });
   }
+  // The route was turned off by its vendor's terms (UB-015). The message is the
+  // sentence the owner reads, so it travels with the code. 4xx like the pick
+  // refusal above: nothing to retry, nothing for a circuit to count.
+  if (thrownCode === "provider_route_retired") {
+    return new RouterError({
+      status: 422,
+      type: "invalid_request_error",
+      code: "provider_route_retired",
+      message: `provider_route_retired: ${raw}`,
+    });
+  }
   const known = raw === "upstream_credential_missing"
     || raw === "provider_unknown"
     || raw === "provider_incompatible"

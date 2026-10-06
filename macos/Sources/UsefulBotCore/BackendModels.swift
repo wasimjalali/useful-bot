@@ -728,6 +728,8 @@ public struct RolePublic: Codable, Equatable, Sendable {
 public struct ProvidersPayload: Decodable, Equatable, Sendable {
     public var catalog: [CatalogPublic]
     public var connections: [ConnectionPublic]
+    /// Connections on a route the vendor doesn't allow Useful Bot on (status `retired`, `lastError` is the message). Shown and removable, never used; empty from an older server.
+    public var retired: [ConnectionPublic]
     public var defaultRole: RolePublic?
     public var reviewerRole: RolePublic?
     public var imageRole: RolePublic?
@@ -742,6 +744,7 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
         notice = try? c.decodeIfPresent(String.self, forKey: .notice)
         catalog = (try? c.decode([CatalogPublic].self, forKey: .catalog)) ?? []
         connections = (try? c.decode([ConnectionPublic].self, forKey: .connections)) ?? []
+        retired = (try? c.decode([ConnectionPublic].self, forKey: .retired)) ?? []
         if let roles = try? c.nestedContainer(keyedBy: RoleKeys.self, forKey: .roles) {
             defaultRole = try? roles.decodeIfPresent(RolePublic.self, forKey: .default)
             reviewerRole = try? roles.decodeIfPresent(RolePublic.self, forKey: .reviewer)
@@ -757,7 +760,7 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case catalog, connections, roles, composer, providers, activeProviderId, notice
+        case catalog, connections, retired, roles, composer, providers, activeProviderId, notice
     }
 
     enum RoleKeys: String, CodingKey { case `default`, reviewer, image }

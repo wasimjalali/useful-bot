@@ -6,6 +6,7 @@ import {
   providerDef,
   providerMode,
   PROVIDER_CATALOG as CATALOG_DEFS,
+  retiredRouteMessage,
   type AuthMode,
   type KeyHeader,
   type Protocol,
@@ -114,8 +115,6 @@ export type Credential =
     refreshToken: string | null;
     expiresAt: number | null;
     accountId: string | null;
-    /** github-copilot: exchanged inference token */
-    exchanged?: { token: string; expiresAt: number };
     /** openai (Sign in with ChatGPT): the issued client id, validated subject, email, granted scopes and retained ID token. A ChatGPT credential without clientId is a legacy Codex sign-in. */
     clientId?: string | null;
     idToken?: string | null;
@@ -188,7 +187,8 @@ export interface ConnectionPublic {
   last4: string | null;
   source: "settings" | "env" | null;
   active: boolean;
-  status: "ok" | "expired" | "error";
+  /** `retired`: the route was turned off (provider-catalog `retired`); `lastError` carries its message. */
+  status: "ok" | "expired" | "error" | "retired";
   lastError: string | null;
   accountId: string | null;
   /** The signed-in account's email for a ChatGPT sign-in, else null. */
@@ -290,9 +290,6 @@ function parseCredential(raw: unknown): Credential | null {
       expiresAt: typeof raw.expiresAt === "number" ? raw.expiresAt : null,
       accountId: typeof raw.accountId === "string" && raw.accountId ? raw.accountId : null,
     };
-    if (isRecord(raw.exchanged) && typeof raw.exchanged.token === "string" && typeof raw.exchanged.expiresAt === "number") {
-      cred.exchanged = { token: raw.exchanged.token, expiresAt: raw.exchanged.expiresAt };
-    }
     if (typeof raw.clientId === "string" && raw.clientId) cred.clientId = raw.clientId;
     if (typeof raw.idToken === "string" && raw.idToken) cred.idToken = raw.idToken;
     if (Array.isArray(raw.scopes)) cred.scopes = raw.scopes.filter((scope): scope is string => typeof scope === "string");
@@ -414,13 +411,19 @@ export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = proces
     ? active
     : null;
   next.selectedModel = typeof rec.selectedModel === "string" && rec.selectedModel ? rec.selectedModel : null;
+  // A retired route (UB-015) can't be the chat connection: move to another
+  // connected one the way clearConnection does, and forget its model.
+  if (next.activeConnectionId && isRetired({ id: next.activeConnectionId })) {
+    next.activeConnectionId = Object.values(next.connections).find((conn) => isConnected(conn))?.id ?? null;
+    next.selectedModel = null;
+  }
   next.effort = isEffortId(rec.effort) ? rec.effort : null;
   next.speed = isSpeedId(rec.speed) ? rec.speed : "standard";
   if (isRecord(rec.roles)) {
     const reviewer = parseRoleSelection(rec.roles.reviewer);
-    if (reviewer && next.connections[reviewer.connectionId]) next.roles.reviewer = reviewer;
+    if (reviewer && next.connections[reviewer.connectionId] && !isRetired({ id: reviewer.connectionId })) next.roles.reviewer = reviewer;
     const image = parseRoleSelection(rec.roles.image);
-    if (image && next.connections[image.connectionId]) next.roles.image = image;
+    if (image && next.connections[image.connectionId] && !isRetired({ id: image.connectionId })) next.roles.image = image;
   }
   if (isRecord(rec.unavailableModels)) {
     const dropped: Record<string, string[]> = {};
@@ -584,6 +587,7 @@ export function setProviderKey(
     key = keyOrUndefined;
   }
   const row = providerMode(providerId, mode);
+  if (row.retired) throw new ProviderRouteRetiredError(row.retired.message);
   if (mode === "oauth") throw new Error("provider_oauth");
   const cleanFields = checkFields(row, fields ?? {});
   if (!(typeof key === "string" && key.trim())) key = secretField(row, fields ?? {});
@@ -690,7 +694,8 @@ export function setActiveProvider(store: ProviderStore, id: ProviderId): Provide
 /** Store an OAuth credential as the provider's oauth connection. */
 export function setOAuthCredential(store: ProviderStore, providerId: string, credential: Credential, now = new Date()): ProviderStore {
   if (credential.kind !== "oauth") throw new Error("provider_oauth");
-  providerMode(providerId, "oauth");
+  const row = providerMode(providerId, "oauth");
+  if (row.retired) throw new ProviderRouteRetiredError(row.retired.message);
   const id = connectionId(providerId, "oauth");
   const prev = store.connections[id];
   return {
@@ -738,8 +743,14 @@ export function recordConnectionError(store: ProviderStore, id: string, code: st
   };
 }
 
+/** The route this connection uses was turned off by the catalogue (UB-015). It is kept to be shown and removed, never used. */
+function isRetired(conn: Pick<Connection, "id"> | undefined): boolean {
+  return conn !== undefined && retiredRouteMessage(conn.id) !== null;
+}
+
 function isConnected(conn: Connection | undefined): boolean {
   if (!conn) return false;
+  if (isRetired(conn)) return false;
   if (conn.credential.kind !== "none") return true;
   // Local servers need no key. A custom row with a pasted key connects too.
   try {
@@ -752,10 +763,7 @@ function isConnected(conn: Connection | undefined): boolean {
 function isExpired(conn: Connection): boolean {
   if (conn.credential.kind !== "oauth") return false;
   const direct = conn.credential.expiresAt;
-  if (typeof direct === "number" && direct <= Date.now()) return true;
-  const swapped = conn.credential.exchanged;
-  if (swapped && swapped.expiresAt <= Date.now() && (!direct || direct <= Date.now())) return true;
-  return false;
+  return typeof direct === "number" && direct <= Date.now();
 }
 
 /** Implicit env connection for OpenCode Go when nothing is stored. */
@@ -906,7 +914,7 @@ const MODE_ORDER: AuthMode[] = ["oauth", "plan", "api", "local"];
 export function publicProviders(
   store: ProviderStore,
   env: NodeJS.ProcessEnv = process.env,
-): { catalog: CatalogPublic[]; connections: ConnectionPublic[]; roles: { default: RolePublic; reviewer: RolePublic; image: RolePublic } } {
+): { catalog: CatalogPublic[]; connections: ConnectionPublic[]; retired: ConnectionPublic[]; roles: { default: RolePublic; reviewer: RolePublic; image: RolePublic } } {
   const implicit = !store.connections["opencode-go:plan"] ? envConnection(env) : null;
   const listed = [...Object.values(store.connections)];
   if (implicit) listed.push(implicit);
@@ -925,7 +933,7 @@ export function publicProviders(
   for (const order of MODE_ORDER) {
     for (const def of CATALOG_DEFS) {
       const row = def.modes.find((entry) => entry.mode === order);
-      if (!row) continue;
+      if (!row || row.retired) continue;
       catalog.push({
         providerId: def.id,
         mode: order,
@@ -941,6 +949,16 @@ export function publicProviders(
       });
     }
   }
+
+  const retired: ConnectionPublic[] = listed
+    .filter((conn) => isRetired(conn))
+    .map((conn) => ({
+      ...publicConnection(store, conn, null),
+      active: false,
+      status: "retired" as const,
+      lastError: retiredRouteMessage(conn.id),
+      models: [],
+    }));
 
   const connections = listed
     .filter((conn) => connectedIds.has(conn.id))
@@ -1087,7 +1105,7 @@ export function publicProviders(
     };
   }
 
-  return { catalog, connections, roles: { default: defaultRole, reviewer, image } };
+  return { catalog, connections, retired, roles: { default: defaultRole, reviewer, image } };
 }
 
 /**
@@ -1121,7 +1139,7 @@ export function legacyProviders(store: ProviderStore, env: NodeJS.ProcessEnv = p
   // collect them. A vendor with a connected row shows that row.
   const rows: ProviderPublic[] = [];
   for (const def of CATALOG_DEFS) {
-    const legacyModes = def.modes.filter((mode) => mode.mode !== "oauth" && !(mode.fields && mode.fields.length > 0));
+    const legacyModes = def.modes.filter((mode) => mode.mode !== "oauth" && !mode.retired && !(mode.fields && mode.fields.length > 0));
     if (legacyModes.length === 0) continue;
     const connected = pub.connections
       .filter((conn) => conn.providerId === def.id && conn.mode !== "oauth")
@@ -1250,6 +1268,26 @@ export class ModelSelectionUnavailableError extends Error {
   }
 }
 
+/**
+ * The pick names a route the vendor doesn't allow Useful Bot on any more
+ * (provider-catalog `retired`). `message` is the sentence the owner reads. The
+ * router answers it as `provider_route_retired`; nothing else is substituted.
+ */
+export class ProviderRouteRetiredError extends Error {
+  readonly code = "provider_route_retired";
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+function unavailableError(
+  verdict: { available: false; reason: ModelSelectionUnavailableError["reason"] } | { available: false; reason: "route_retired"; message: string },
+): Error {
+  return verdict.reason === "route_retired"
+    ? new ProviderRouteRetiredError(verdict.message)
+    : new ModelSelectionUnavailableError(verdict.reason);
+}
+
 /** The connection a selection names, including the implicit env-key Go plan row. */
 function selectionConnection(store: ProviderStore, id: string, env: NodeJS.ProcessEnv): Connection | undefined {
   return store.connections[id] ?? (id === "opencode-go:plan" ? envConnection(env) ?? undefined : undefined);
@@ -1281,7 +1319,9 @@ export function selectionAvailability(
   store: ProviderStore,
   selection: ModelSelection,
   env: NodeJS.ProcessEnv = process.env,
-): { available: true } | { available: false; reason: ModelSelectionUnavailableError["reason"] } {
+): { available: true } | { available: false; reason: ModelSelectionUnavailableError["reason"] } | { available: false; reason: "route_retired"; message: string } {
+  const retired = retiredRouteMessage(selection.connectionId);
+  if (retired) return { available: false, reason: "route_retired", message: retired };
   const conn = selectionConnection(store, selection.connectionId, env);
   if (!conn) return { available: false, reason: "connection_missing" };
   if (!isConnected(conn)) return { available: false, reason: "provider_disconnected" };
@@ -1381,13 +1421,13 @@ export function applyBotPick(
     if (!modelId) throw new ModelSelectionUnavailableError("model_missing");
     selection = { ...base, connectionId: connId, modelId };
     const verdict = selectionAvailability(store, selection, env);
-    if (!verdict.available) throw new ModelSelectionUnavailableError(verdict.reason);
+    if (!verdict.available) throw unavailableError(verdict);
   }
   if (patch.modelId !== undefined || patch.effort !== undefined || patch.speed !== undefined) {
     // The RESULTING selection, so an effort-only or speed-only pick on a bot
     // whose model or connection is gone is refused too, with nothing written.
     const verdict = selectionAvailability(store, selection, env);
-    if (!verdict.available) throw new ModelSelectionUnavailableError(verdict.reason);
+    if (!verdict.available) throw unavailableError(verdict);
     const conn = selectionConnection(store, selection.connectionId, env);
     if (!conn || !isConnected(conn)) throw new ModelSelectionUnavailableError(conn ? "provider_disconnected" : "connection_missing");
     const name = conn.providerId === "custom" && conn.fields.name ? conn.fields.name : providerDef(conn.providerId).name;
@@ -1424,7 +1464,7 @@ function credentialKey(credential: Credential): string {
   if (credential.kind === "key") return credential.key;
   // Slice 3 refreshes and rotates these. Until then the router sends the best
   // token it has, the same way the old code sent its single key.
-  if (credential.kind === "oauth") return credential.exchanged?.token ?? credential.accessToken;
+  if (credential.kind === "oauth") return credential.accessToken;
   return "";
 }
 
@@ -1497,7 +1537,7 @@ export function resolveUpstream(
   }
   if (selection && alias === "workhorse") {
     const verdict = selectionAvailability(store, selection, env);
-    if (!verdict.available) throw new ModelSelectionUnavailableError(verdict.reason);
+    if (!verdict.available) throw unavailableError(verdict);
     const chosen = selectionConnection(store, selection.connectionId, env) as Connection;
     const mode = providerMode(chosen.providerId, chosen.mode);
     const name = chosen.providerId === "custom" && chosen.fields.name
@@ -1524,6 +1564,10 @@ export function resolveUpstream(
       key: credentialKey(chosen.credential),
     };
   }
+  // The chat connection is a retired route: say so, never fall through to
+  // the env key or another connection.
+  const activeRetired = store.activeConnectionId ? retiredRouteMessage(store.activeConnectionId) : null;
+  if (activeRetired) throw new ProviderRouteRetiredError(activeRetired);
   const live = activeConnection(store, env);
   const reviewerSel = alias === "reviewer" && store.roles.reviewer
     ? store.roles.reviewer

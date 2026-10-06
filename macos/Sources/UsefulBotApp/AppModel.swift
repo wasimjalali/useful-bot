@@ -254,6 +254,9 @@ final class AppModel: ObservableObject {
     /// Known to have no provider connected: chat has no model to talk to.
     var noModelConnected: Bool { providersLoaded && providerConnections.isEmpty }
     @Published private(set) var providerConnections: [ConnectionPublic] = []
+    /// Connections turned off because the vendor doesn't allow Useful Bot on that route. Listed in Providers so they can be removed.
+    @Published private(set) var providerRetired: [ConnectionPublic] = []
+    var providerRows: [ConnectionPublic] { providerConnections + providerRetired }
     @Published private(set) var defaultRole: RolePublic?
     @Published private(set) var reviewerRole: RolePublic?
     @Published private(set) var imageRole: RolePublic?
@@ -3669,6 +3672,7 @@ final class AppModel: ObservableObject {
         providersGeneration &+= 1
         providerCatalog = payload.catalog
         providerConnections = payload.connections
+        providerRetired = payload.retired
         providersLoaded = true
         defaultRole = payload.defaultRole
         reviewerRole = payload.reviewerRole

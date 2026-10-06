@@ -2,6 +2,7 @@ import { isEffortId, isSpeedId } from "../../shared/models.ts";
 import {
   connectionId,
   providerDef,
+  retiredRouteMessage,
 } from "../../shared/provider-catalog.ts";
 import { botSelection } from "../../shared/session-selection.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
@@ -48,7 +49,7 @@ function legacyConnectionId(providerId: string): string {
 /** Connected means a credential, or a local server that needs none. */
 function connectionUsable(store: ProviderStore, id: string): boolean {
   const conn = store.connections[id];
-  if (!conn) return false;
+  if (!conn || retiredRouteMessage(id)) return false;
   return conn.credential.kind !== "none" || conn.mode === "local";
 }
 
