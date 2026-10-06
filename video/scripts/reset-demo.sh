@@ -6,10 +6,12 @@
 # Usage: reset-demo.sh <label>
 set -euo pipefail
 label=$1
+[[ $label =~ '^[A-Za-z0-9][A-Za-z0-9._-]*$' && $label != *..* ]] || { echo "bad label: $label"; exit 1; }
 here=${0:A:h}
 state="$HOME/.useful-bot-dev-app"
 dest="$HOME/UB001-dev-backup/demo-$label"
 pristine="$here/../demo-data-cedar-studio"
+[ -d "$HOME/UB001-dev-backup" ] || { echo "missing ~/UB001-dev-backup"; exit 1; }
 [ -e "$dest" ] && { echo "exists: $dest"; exit 1; }
 osascript -e 'tell application id "ai.useful.bot.dev" to quit' || true
 sleep 4

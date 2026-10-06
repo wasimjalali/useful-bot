@@ -4,6 +4,7 @@
 set -uo pipefail
 here=${0:A:h}
 name=$1; secs=$2; setup=$3; action=$4
+[ -O /tmp/ubw ] || { echo "/tmp/ubw missing or not ours"; exit 1; }
 read pid wid < /tmp/ubw
 cd ~/Desktop/useful-bot
 $HOME/.local/bin/cua-driver call bring_to_front "{\"pid\":$pid,\"window_id\":$wid}" >/dev/null 2>&1

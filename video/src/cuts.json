@@ -1043,7 +1043,7 @@
     {
      "spec": {
       "src": "short-s03-local-d.mp4",
-      "from": 11.3,
+      "from": 11.28,
       "crop": {
        "x": 1450,
        "y": 1112,
@@ -1076,7 +1076,7 @@
     {
      "spec": {
       "src": "short-s06-pane-b.mp4",
-      "from": 2.2,
+      "from": 2.15,
       "covers": [
        {
         "kind": "lights",
@@ -1125,7 +1125,7 @@
     {
      "spec": {
       "src": "short-s06-pane-b.mp4",
-      "from": 5.0,
+      "from": 4.95,
       "covers": [
        {
         "kind": "lights",
@@ -1193,7 +1193,7 @@
     {
      "spec": {
       "src": "short-s09-finder.mp4",
-      "from": 1.0,
+      "from": 0.5,
       "crop": {
        "x": 506,
        "y": 0,

@@ -73,7 +73,8 @@ def main() -> None:
             gap = cuts.get(fmt, {}).get(sc["id"], {}).get("voiceGap")
             for ch in caps[clip]:
                 shift = gap["gap"] if gap and ch["start"] >= gap["at"] else 0
-                a = sc["start"] + sc.get("voiceAt", 0) + ch["start"] + shift
+                # 50 ms lead, the same as the burned-in caption (Caption.tsx).
+                a = sc["start"] + sc.get("voiceAt", 0) + ch["start"] + shift - 0.05
                 cues.append([a, sc["start"] + sc.get("voiceAt", 0) + ch["end"] + shift + 0.25, ch["text"]])
         # A cue's tail never runs into the next one.
         for cur, nxt in zip(cues, cues[1:]):
