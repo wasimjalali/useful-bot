@@ -86,6 +86,11 @@ export async function POST(request: Request) {
   // teardown that failed before a key was revoked would otherwise wait for one
   // to come back before it healed.
   const swept = sweepOrphanStateIfDue();
+  // Housekeeping like the sweep, so it also runs while no agent credential is set.
+  if (!legacyDeviceFlowDropped) {
+    legacyDeviceFlowDropped = true;
+    dropLegacyDeviceFlowFile();
+  }
   if (!agentsEnabled()) {
     return NextResponse.json({ ok: false, error: "agent_credential_missing", swept: swept.length }, { status: 503 });
   }
@@ -103,10 +108,6 @@ export async function POST(request: Request) {
   void pumpConnects().catch(() => undefined);
   void pumpConnections().catch(() => undefined);
   try { seedDefaultConnections(); } catch { /* a locked file retries next tick */ }
-  if (!legacyDeviceFlowDropped) {
-    legacyDeviceFlowDropped = true;
-    dropLegacyDeviceFlowFile();
-  }
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),

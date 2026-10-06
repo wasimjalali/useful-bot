@@ -127,7 +127,7 @@ private func composerJSON(model: String, label: String, available: Bool = true) 
     }
 
     @Test func aSendOnATurnedOffRouteSurfacesThatRoutesOwnSentence() async throws {
-        let sentence = "Alibaba only allows the Qwen Coding Plan in interactive coding tools, so Useful Bot can't use it. Connect a Qwen (DashScope) API key instead."
+        let sentence = "Alibaba only allows the Qwen Coding Plan in interactive coding tools, so Useful Bot can't use it. Connect a Qwen (DashScope) API key instead, then disconnect this one."
         SwitchStub.handler = { [self] request, _ in
             if request.url?.path == "/api/auth/session" {
                 return respond(200, #"{"ok":true,"csrfToken":"t"}"#, to: request.url!)

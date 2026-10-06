@@ -161,7 +161,17 @@ export interface ProviderStore {
    * account shows that account's own list. Signing out drops the entry.
    */
   unavailableModels?: Record<string, string[]>;
+  /**
+   * Accounts (same key as unavailableModels) that signed out and have not
+   * signed in since, newest last, at most SIGNED_OUT_KEPT. A refusal that
+   * arrives late for one of them is not recorded: that would bring back the
+   * entry sign-out cleared. A plain switch to another account leaves the old
+   * one off this list, so its late refusal still counts for it.
+   */
+  signedOutAccounts?: string[];
 }
+
+const SIGNED_OUT_KEPT = 20;
 
 /** @deprecated Slice 2 renders ConnectionPublic now. Kept so the old settings dialog compiles. */
 export interface ProviderPublic {
@@ -225,6 +235,8 @@ export interface RolePublic {
   effortLabel: string | null;
   efforts: Array<{ id: EffortId; label: string }>;
   models: Array<{ connectionId: string; connectionLabel: string; icon: string; id: string; label: string }>;
+  /** Why the saved choice can't run (a retired route's sentence); absent when it can. */
+  unavailable?: string;
 }
 
 export function providersPath(root = process.env.UB_PROVIDERS_PATH): string {
@@ -434,6 +446,10 @@ export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = proces
     }
     if (Object.keys(dropped).length > 0) next.unavailableModels = dropped;
   }
+  if (Array.isArray(rec.signedOutAccounts)) {
+    const kept = [...new Set(rec.signedOutAccounts.filter((key): key is string => typeof key === "string" && key.length > 0))];
+    if (kept.length > 0) next.signedOutAccounts = kept.slice(-SIGNED_OUT_KEPT);
+  }
   return next;
 }
 
@@ -460,6 +476,7 @@ export function writeProviderStore(store: ProviderStore, path = providersPath())
     speed: store.speed,
     roles: store.roles,
     ...(store.unavailableModels && Object.keys(store.unavailableModels).length > 0 ? { unavailableModels: store.unavailableModels } : {}),
+    ...(store.signedOutAccounts && store.signedOutAccounts.length > 0 ? { signedOutAccounts: store.signedOutAccounts } : {}),
   };
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -631,7 +648,10 @@ export function clearConnection(store: ProviderStore, id: string): ProviderStore
   if (roles.reviewer?.connectionId === id) delete roles.reviewer;
   if (roles.image?.connectionId === id) delete roles.image;
   let activeConnectionId = store.activeConnectionId === id ? null : store.activeConnectionId;
-  if (activeConnectionId && !isConnected(connections[activeConnectionId])) activeConnectionId = null;
+  // A retired chat connection stays until it is itself removed: moving it here
+  // would run default turns on another provider or the env key, unannounced.
+  const keepsRetired = activeConnectionId !== null && isRetired(connections[activeConnectionId]);
+  if (activeConnectionId && !keepsRetired && !isConnected(connections[activeConnectionId])) activeConnectionId = null;
   if (!activeConnectionId) {
     activeConnectionId = Object.values(connections).find((conn) => isConnected(conn))?.id ?? null;
   }
@@ -645,6 +665,9 @@ export function clearConnection(store: ProviderStore, id: string): ProviderStore
   const next: ProviderStore = { ...store, connections, roles, activeConnectionId };
   if (unavailableModels) next.unavailableModels = unavailableModels;
   else delete next.unavailableModels;
+  if (account) {
+    next.signedOutAccounts = [...(store.signedOutAccounts ?? []).filter((key) => key !== account), account].slice(-SIGNED_OUT_KEPT);
+  }
   return next;
 }
 
@@ -701,7 +724,7 @@ export function setOAuthCredential(store: ProviderStore, providerId: string, cre
   if (row.retired) throw new ProviderRouteRetiredError(row.retired.message);
   const id = connectionId(providerId, "oauth");
   const prev = store.connections[id];
-  return {
+  const next: ProviderStore = {
     ...store,
     connections: {
       ...store.connections,
@@ -716,6 +739,14 @@ export function setOAuthCredential(store: ProviderStore, providerId: string, cre
       },
     },
   };
+  // Signing in again makes the account a saved one again.
+  const account = accountKey(credential);
+  if (account && store.signedOutAccounts?.includes(account)) {
+    const rest = store.signedOutAccounts.filter((key) => key !== account);
+    if (rest.length > 0) next.signedOutAccounts = rest;
+    else delete next.signedOutAccounts;
+  }
+  return next;
 }
 
 export function setRole(store: ProviderStore, role: "reviewer" | "image", selection: RoleSelection | null, env: NodeJS.ProcessEnv = process.env): ProviderStore {
@@ -1031,7 +1062,26 @@ export function publicProviders(
     ? store.roles.reviewer
     : null;
   let reviewer: RolePublic;
-  if (reviewerSel) {
+  // A saved reviewer on a retired route is refused on every call
+  // (resolveUpstream), so the pane names it as unavailable instead of
+  // showing it as following the default.
+  const reviewerRetired = store.roles.reviewer ? retiredRouteMessage(store.roles.reviewer.connectionId) : null;
+  if (store.roles.reviewer && reviewerRetired) {
+    const saved = store.roles.reviewer;
+    const conn = listed.find((row) => row.id === saved.connectionId) ?? null;
+    reviewer = {
+      connectionId: saved.connectionId,
+      connectionLabel: conn ? connectionLabel(conn) : saved.connectionId,
+      connectionIcon: conn ? providerDef(conn.providerId).icon : "",
+      modelId: saved.modelId,
+      modelLabel: humanizeModelId(saved.modelId),
+      effort: null,
+      effortLabel: null,
+      efforts: [],
+      models: pickerModels,
+      unavailable: reviewerRetired,
+    };
+  } else if (reviewerSel) {
     const conn = listed.find((row) => row.id === reviewerSel.connectionId) ?? null;
     const label = conn ? connectionLabel(conn) : reviewerSel.connectionId;
     const rows = conn ? modelRows(store, conn.id) : [];

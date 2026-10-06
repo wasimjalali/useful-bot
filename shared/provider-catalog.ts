@@ -209,7 +209,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         keyUrl: "https://z.ai/manage-apikey/apikey-list",
         hint: "GLM Coding Plan key from the Z.ai console.",
         retired: {
-          message: "Z.ai only allows the GLM Coding Plan in its supported coding tools, so Useful Bot can't use it. Connect a Z.ai API key instead.",
+          message: "Z.ai only allows the GLM Coding Plan in its supported coding tools, so Useful Bot can't use it. Connect a Z.ai API key instead, then disconnect this one.",
         },
         // UNVERIFIED: exact plan model ids are not confirmed against the
         // models.dev zai-coding-plan entry here. The live list overrides these.
@@ -294,7 +294,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         keyUrl: "https://modelstudio.console.alibabacloud.com/?tab=model#/api-key",
         hint: "Coding Plan key from Alibaba ModelStudio.",
         retired: {
-          message: "Alibaba only allows the Qwen Coding Plan in interactive coding tools, so Useful Bot can't use it. Connect a Qwen (DashScope) API key instead.",
+          message: "Alibaba only allows the Qwen Coding Plan in interactive coding tools, so Useful Bot can't use it. Connect a Qwen (DashScope) API key instead, then disconnect this one.",
         },
         // UNVERIFIED: exact plan model ids are not confirmed against the
         // models.dev alibaba-coding-plan entry here.

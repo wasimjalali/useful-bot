@@ -3726,6 +3726,8 @@ final class AppModel: ObservableObject {
         providersError = nil
         do {
             applyProviders(try await client.setActiveConnection(connectionId))
+        } catch BackendError.providerNotice(_, let message) {
+            providersError = message
         } catch {
             providersError = "Could not switch provider."
         }
@@ -3758,6 +3760,8 @@ final class AppModel: ObservableObject {
         providersError = nil
         do {
             applyProviders(try await client.setRole(role, connectionId: connectionId, modelId: modelId, effort: effort))
+        } catch BackendError.providerNotice(_, let message) {
+            providersError = message
         } catch {
             providersError = "That model did not save."
         }
@@ -3769,6 +3773,8 @@ final class AppModel: ObservableObject {
         providersError = nil
         do {
             applyProviders(try await client.setDefaultModel(connectionId: connectionId, modelId: modelId, effort: effort))
+        } catch BackendError.providerNotice(_, let message) {
+            providersError = message
         } catch {
             providersError = "That model did not save."
         }
@@ -3822,7 +3828,12 @@ final class AppModel: ObservableObject {
                 if (error as? BackendError)?.providerCode == "chatgpt_account_unknown" {
                     oauthLastAttempt = (false, nil)
                 }
-                providersError = Self.connectCopy((error as? BackendError)?.providerCode)
+                if case BackendError.providerNotice(_, let message) = error {
+                    // A turned-off route comes with its own sentence.
+                    providersError = message
+                } else {
+                    providersError = Self.connectCopy((error as? BackendError)?.providerCode)
+                }
             }
         }
         if generation == oauthGeneration { providerBusy = nil }

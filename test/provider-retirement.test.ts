@@ -28,6 +28,7 @@ import { withBotSelection } from "../shared/shell-store.ts";
 import { modelSelectionRefusal } from "../web/lib/agent-exec.ts";
 import { applyProvidersDelete, applyProvidersPut, oauthStartRetired } from "../web/lib/providers-write.ts";
 import { dropLegacyDeviceFlowFile } from "../shared/provider-oauth.ts";
+import { statePath } from "../shared/stack.ts";
 
 // Ways UB-015 can fail, written before the code:
 // 1. a retired route still shows in the Connect list or a picker;
@@ -293,4 +294,89 @@ test("Command Code uses the documented provider base URL and says the Go plan ha
   assert.equal(mode.baseUrl, "https://api.commandcode.ai/provider/v1");
   assert.equal(mode.listsModels, true, "docs: GET /provider/v1/models");
   assert.equal(mode.hint, "Command Code key (every plan except Go).");
+});
+
+// Round 2, item 1: removing ANOTHER connection used to repoint a retired chat
+// connection to the first connected one (a paid openai:api key, or the env Go key).
+test("removing an unrelated connection keeps a retired chat connection, so turns still answer the sentence", async () => {
+  await withWorld(async ({ providers }) => {
+    const file = raw();
+    (file.connections as Record<string, unknown>)["openai:api"] = stored("openai:api", "openai", "api", { kind: "key", key: "sk-paid-key-12345678" });
+    writeFileSync(providers, JSON.stringify(file));
+    process.env.UB_OPENCODE_GO_KEY = "env-go-key-12345678";
+    const env = { UB_OPENCODE_GO_KEY: "env-go-key-12345678" };
+    const after = applyProvidersDelete({ connectionId: "alibaba:plan" });
+    assert.equal(after.activeConnectionId, "zai:plan", "the retired default stays until it is itself removed");
+    const store = readProviderStore();
+    assert.equal(store.activeConnectionId, "zai:plan");
+    assert.throws(() => resolveUpstream(store, "workhorse", env), (error: unknown) => (
+      error instanceof ProviderRouteRetiredError && error.message === retiredRouteMessage("zai:plan")
+    ));
+    const refusal = modelSelectionRefusal(readShell().bots[0], store);
+    assert.ok(refusal);
+    assert.equal(refusal.status, 409);
+    // Removing the retired one itself repoints, as before.
+    assert.equal(clearConnection(store, "zai:plan").activeConnectionId, GO);
+  });
+});
+
+// Round 2, item 3: the Providers pane must say what the router will do.
+test("a saved reviewer role on a retired route is reported unavailable with its sentence, and resolveUpstream agrees", () => {
+  const store = parseProviderStore(raw(GO), {});
+  const env = { UB_OPENCODE_GO_KEY: "env-go-key-12345678" };
+  const reviewer = publicProviders(store, env).roles.reviewer;
+  assert.equal(reviewer.connectionId, "zai:plan");
+  assert.equal(reviewer.modelId, "glm-5.3");
+  assert.equal(reviewer.unavailable, retiredRouteMessage("zai:plan"));
+  assert.throws(() => resolveUpstream(store, "reviewer", env), (error: unknown) => (
+    error instanceof ProviderRouteRetiredError && error.message === reviewer.unavailable
+  ));
+  // A live reviewer role, and the follow-the-default case, carry no message.
+  const live = parseProviderStore({ ...raw(GO), roles: {} }, {});
+  assert.equal(publicProviders(live, env).roles.reviewer.unavailable ?? null, null);
+  assert.equal(resolveUpstream(live, "reviewer", env).providerId, "opencode-go");
+});
+
+// Round 2, item 4: bots pinned to the route and the reviewer role stay refused until the old connection goes.
+test("the Z.ai and Alibaba retired sentences also say to disconnect the old connection", () => {
+  for (const id of ["zai:plan", "alibaba:plan"]) {
+    const text = retiredRouteMessage(id) ?? "";
+    assert.match(text, /then disconnect this one\.$/, id);
+    assert.equal(text.includes("—"), false);
+  }
+});
+
+// Round 2, item 5.
+test("the sign-in start route answers 409 provider_route_retired before it looks at the provider's sign-in kind", () => {
+  const source = readFileSync(new URL("../web/app/api/providers/oauth/route.ts", import.meta.url), "utf8");
+  const retiredAt = source.indexOf("oauthStartRetired(providerId)");
+  const modeAt = source.indexOf('providerMode(providerId, "oauth")');
+  assert.ok(retiredAt > 0 && modeAt > retiredAt, "the retired check comes first");
+  assert.match(source, /error: "provider_route_retired", message: retired \}, \{ status: 409 \}/);
+});
+
+test("the old pending device-flow file is removed from its default state location", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-device-flow-default-"));
+  const saved = process.env.UB_STATE_ROOT;
+  process.env.UB_STATE_ROOT = dir;
+  try {
+    const file = statePath("provider-oauth.json");
+    assert.equal(file, join(dir, "provider-oauth.json"));
+    writeFileSync(file, "{}");
+    dropLegacyDeviceFlowFile();
+    assert.equal(existsSync(file), false);
+    dropLegacyDeviceFlowFile();
+  } finally {
+    if (saved === undefined) delete process.env.UB_STATE_ROOT;
+    else process.env.UB_STATE_ROOT = saved;
+  }
+});
+
+// Round 2, item 6: the cleanup is housekeeping, so a missing agent credential must not skip it.
+test("the tick runs the legacy device-flow cleanup before the agent-credential gate", () => {
+  const source = readFileSync(new URL("../web/app/api/agent/tick/route.ts", import.meta.url), "utf8");
+  const post = source.slice(source.indexOf("export async function POST"));
+  const dropAt = post.indexOf("dropLegacyDeviceFlowFile()");
+  const gateAt = post.indexOf("agent_credential_missing");
+  assert.ok(dropAt > 0 && gateAt > 0 && dropAt < gateAt);
 });

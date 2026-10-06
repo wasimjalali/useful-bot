@@ -712,6 +712,8 @@ public struct RolePublic: Codable, Equatable, Sendable {
     public var effortLabel: String?
     public var efforts: [RoleEffortOption]
     public var models: [RoleModelOption]
+    /// Why the saved choice can't run (a turned-off route's sentence); nil when it can.
+    public var unavailable: String?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -724,11 +726,12 @@ public struct RolePublic: Codable, Equatable, Sendable {
         effortLabel = try? c.decodeIfPresent(String.self, forKey: .effortLabel)
         efforts = (try? c.decode([RoleEffortOption].self, forKey: .efforts)) ?? []
         models = (try? c.decode([RoleModelOption].self, forKey: .models)) ?? []
+        unavailable = try? c.decodeIfPresent(String.self, forKey: .unavailable)
     }
 
     enum CodingKeys: String, CodingKey {
         case connectionId, connectionLabel, connectionIcon, modelId, modelLabel
-        case effort, effortLabel, efforts, models
+        case effort, effortLabel, efforts, models, unavailable
     }
 }
 

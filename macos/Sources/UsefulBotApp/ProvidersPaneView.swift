@@ -355,7 +355,8 @@ struct ProvidersPaneView: View {
                 Text(title)
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.C.ink)
-                Text(sub)
+                // A turned-off route's own sentence replaces the usual line.
+                Text(detail?.unavailable ?? sub)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkMuted)
             }
@@ -400,7 +401,8 @@ struct ProvidersPaneView: View {
                 ProviderMark(icon: detail.connectionIcon, monogram: chipMonogram(detail: detail), size: 22)
                 Text(detail.modelLabel.isEmpty ? "Model" : detail.modelLabel)
                     .font(.system(size: 13))
-                    .foregroundStyle(Theme.C.ink)
+                    .strikethrough(detail.unavailable != nil)
+                    .foregroundStyle(detail.unavailable != nil ? Theme.C.inkMuted : Theme.C.ink)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .regular))

@@ -938,12 +938,14 @@ public actor BackendClient {
     }
 
     /// A failed `/api/providers` write as the error the app shows. A removed
-    /// connection that left pinned bots behind carries the server's message,
-    /// not a bare code, because the code alone reads as "nothing happened".
+    /// connection that left pinned bots behind, and a write on a route the
+    /// vendor turned off, carry the server's message, not a bare code, because
+    /// the code alone reads as "nothing happened".
     static func providersFailure(status: Int, data: Data) -> BackendError {
         let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-        if decoded?.error == "connection_removed_bots_pinned", let message = decoded?.message, !message.isEmpty {
-            return .providerNotice(code: "connection_removed_bots_pinned", message: message)
+        if let code = decoded?.error, code == "connection_removed_bots_pinned" || code == "provider_route_retired",
+           let message = decoded?.message, !message.isEmpty {
+            return .providerNotice(code: code, message: message)
         }
         return failure(status: status, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
     }
@@ -960,8 +962,7 @@ public actor BackendClient {
             return request
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
+            throw Self.providersFailure(status: http.statusCode, data: data)
         }
         guard let decoded = try? JSONDecoder().decode(DeviceFlowStart.self, from: data) else {
             throw BackendError.decoding

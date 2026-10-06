@@ -649,7 +649,9 @@ export function refusalAboutModel(code: string | null, param: string | null): bo
  * connection or a credential with no account id is never touched. The drop is
  * keyed by the held credential, so an account switch while the call ran still
  * records it for the account that was refused and leaves the one now stored
- * alone. It is skipped when no ChatGPT sign-in is stored any more (signed out).
+ * alone. It is skipped when no ChatGPT sign-in is stored any more, and when
+ * the held account signed out (signedOutAccounts) even if another account has
+ * signed in since.
  * The store is written under its lock.
  */
 function dropUnlistedModel(connectionId: string, model: string, held: Credential): boolean {
@@ -660,6 +662,9 @@ function dropUnlistedModel(connectionId: string, model: string, held: Credential
   if (!account) return false;
   try {
     updateProviderStore((store) => {
+      // An account that signed out (and has not signed in since) is not saved:
+      // its sign-out cleared this list, so a late refusal must not restore it.
+      if (store.signedOutAccounts?.includes(account)) return store;
       const current = store.connections[connectionId]?.credential;
       if (!current || current.kind !== "oauth") return store;
       return recordUnavailableModelFor(store, account, model);

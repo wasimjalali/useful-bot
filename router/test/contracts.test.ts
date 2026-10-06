@@ -16,7 +16,7 @@ import { readPrefix } from "../src/read-capped.ts";
 import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
 import { writeModelsCache } from "../../shared/live-models.ts";
 import { hydrateModel } from "../../shared/models.ts";
-import { emptyProviderStore, ProviderRouteRetiredError, readProviderStore, resolveUpstream, setOAuthCredential, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
+import { clearConnection, emptyProviderStore, ProviderRouteRetiredError, readProviderStore, resolveUpstream, setOAuthCredential, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
@@ -2111,6 +2111,35 @@ test("UB-016: a refusal is recorded for the account that sent the request, not t
   });
   assert.equal(signedOut.error?.code, "upstream_chatgpt_model_not_in_plan");
   assert.deepEqual(signedOut.dropped, {});
+});
+
+// A sent gpt-6.1-sol, A signed out (its entry was cleared), B signed in, then A's request came back
+// refused. Recording it would bring back an entry for an account nobody has any more.
+test("UB-016: a late refusal for an account that signed out is not recorded, even with another account signed in", async () => {
+  const base = { kind: "oauth", accessToken: "tok-12345678", refreshToken: "refresh-0", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_test" };
+  const signOutThenSignIn = (store: ReturnType<typeof emptyProviderStore>) => {
+    const a = setOAuthCredential(emptyProviderStore(), "openai", { ...base, ...ACCOUNT_A } as never);
+    const out = clearConnection(a, "openai:oauth");
+    return setOAuthCredential(out, "openai", store.connections["openai:oauth"]!.credential);
+  };
+  const late = await chatgptRun({
+    held: ACCOUNT_A,
+    stored: ACCOUNT_B,
+    cached: UNLISTED_ROW,
+    upstream: { status: 400, body: unsupported("model") },
+    storeEdit: signOutThenSignIn,
+  });
+  assert.equal(late.error?.code, "upstream_chatgpt_model_not_in_plan", "the owner is still told the plan message");
+  assert.deepEqual(late.dropped, {}, "A signed out, so nothing is recorded for A or for B");
+  // A signed back in before the late answer: it is a saved account again.
+  const back = await chatgptRun({
+    held: ACCOUNT_A,
+    stored: ACCOUNT_A,
+    cached: UNLISTED_ROW,
+    upstream: { status: 400, body: unsupported("model") },
+    storeEdit: (store) => setOAuthCredential(clearConnection(store, "openai:oauth"), "openai", store.connections["openai:oauth"]!.credential),
+  });
+  assert.deepEqual(back.dropped, { "client-a": ["gpt-6.1-sol"] });
 });
 
 test("UB-016: a refusal that arrives mid-stream is handled the same way", async () => {
