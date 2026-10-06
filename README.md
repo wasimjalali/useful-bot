@@ -1,7 +1,6 @@
 # Useful Bot
 
-Useful Bot is the free, open-source alternative to Grok Bot.
-Runs locally with no limits, on the subscription you already pay for.
+Useful Bot is the free, open-source alternative to Grok Bot. Your own team of AI bots on your computer, on the AI plan you already pay for.
 
 Give each bot one job: writing, research, your inbox or your files. They run on the model you already
 pay for, work in the apps you connect and ask before they touch anything you haven't allowed.
