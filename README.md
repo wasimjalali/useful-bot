@@ -212,9 +212,9 @@ locally; delete the file to force a refresh.
 
 The agent reaches apps through four tools. `connector_search` finds tool slugs
 for a use case in the connected apps. `connector_execute` runs one. A read runs
-at once; a write shows an approval card in auto and runs without one in full
-access; a destructive action (delete, remove, archive, revoke) always shows a
-card; read only refuses writes. The card carries the app, the tool and every
+at once; a write or a destructive action (delete, remove, archive, revoke)
+shows an approval card in auto and runs without one in full access; read only
+refuses writes. The card carries the app, the tool and every
 argument, hashed like a shell line, so what is approved is exactly what runs.
 
 A bot can also ask for an app it doesn't have yet. `connector_catalog` searches
