@@ -702,10 +702,13 @@ struct KeySheetView: View {
 private struct OAuthSheetView: View {
     @EnvironmentObject private var model: AppModel
     let onClose: () -> Void
+    /// The flow clears the moment sign-in finishes, while the sheet is still
+    /// fading out: it keeps showing the last flow instead of an empty card.
+    @State private var lastShown: OAuthPending?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let pending = model.oauth {
+            if let pending = model.oauth ?? lastShown {
                 Text(pending.label)
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Theme.C.ink)
@@ -801,6 +804,10 @@ private struct OAuthSheetView: View {
         .frame(width: 384)
         .background(Theme.C.surface)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
+        .onAppear { if let pending = model.oauth { lastShown = pending } }
+        .onChange(of: model.oauth) { _, next in
+            if let next { lastShown = next }
+        }
     }
 }
 

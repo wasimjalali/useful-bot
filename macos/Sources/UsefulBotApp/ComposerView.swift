@@ -1123,20 +1123,30 @@ private struct ComposerModeMenu: View {
                 Rectangle()
                     .fill(Theme.C.border)
                     .frame(height: 1)
-                HStack(spacing: 8) {
-                    ProviderMark(icon: "openai", monogram: "C", size: 14)
-                    Text("Using ChatGPT plan")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    NativeButton("Manage usage", kind: .ghost, small: true) {
+                // Two lines: the card is too narrow for the label and the
+                // link side by side without truncating one of them.
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        ProviderMark(icon: "openai", monogram: "C", size: 14)
+                        Text("Using ChatGPT plan")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .fixedSize()
+                        Spacer(minLength: 0)
+                    }
+                    Button("Manage usage") {
                         if let url = URL(string: "https://chatgpt.com/settings/usage") { NSWorkspace.shared.open(url) }
                     }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.C.link)
+                    .fixedSize()
+                    .padding(.leading, 22)
+                    .pointerOnHover()
                     .accessibilityIdentifier("composer-manage-usage")
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.vertical, 8)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("composer-chatgpt-plan")
             }

@@ -289,6 +289,9 @@ function providerPart(id?: string): string | undefined {
 
 function speedCaps(id?: string): Pick<ModelOption, "speeds" | "defaultSpeed"> {
   const providerId = providerPart(id);
+  // The ChatGPT plan route refuses a service-tier override (OpenAI's
+  // preview limits), so the router never sends one there: no Fast toggle.
+  if (id === "openai:oauth") return { speeds: ["standard"], defaultSpeed: "standard" };
   if (providerId === "openai" || providerId === "openrouter") {
     return { speeds: ["standard", "fast"], defaultSpeed: "standard" };
   }
