@@ -153,6 +153,13 @@ export interface ProviderStore {
   speed: SpeedId;
   /** Explicit per-role choice; absent role falls back to the active connection and the mode's default. */
   roles: { reviewer?: RoleSelection; image?: RoleSelection };
+  /**
+   * Unlisted models (provider-catalog unlistedModels) a ChatGPT account's own
+   * first use found refused, by the ID token subject of that account. Read
+   * back at every menu, so a cached list never brings one back and a switch of
+   * account shows that account's own list. Signing out drops the entry.
+   */
+  unavailableModels?: Record<string, string[]>;
 }
 
 /** @deprecated Slice 2 renders ConnectionPublic now. Kept so the old settings dialog compiles. */
@@ -415,6 +422,15 @@ export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = proces
     const image = parseRoleSelection(rec.roles.image);
     if (image && next.connections[image.connectionId]) next.roles.image = image;
   }
+  if (isRecord(rec.unavailableModels)) {
+    const dropped: Record<string, string[]> = {};
+    for (const [subject, ids] of Object.entries(rec.unavailableModels)) {
+      if (!subject || !Array.isArray(ids)) continue;
+      const kept = [...new Set(ids.filter((id): id is string => typeof id === "string" && id.length > 0))];
+      if (kept.length > 0) dropped[subject] = kept;
+    }
+    if (Object.keys(dropped).length > 0) next.unavailableModels = dropped;
+  }
   return next;
 }
 
@@ -440,6 +456,7 @@ export function writeProviderStore(store: ProviderStore, path = providersPath())
     effort: store.effort,
     speed: store.speed,
     roles: store.roles,
+    ...(store.unavailableModels && Object.keys(store.unavailableModels).length > 0 ? { unavailableModels: store.unavailableModels } : {}),
   };
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -614,7 +631,17 @@ export function clearConnection(store: ProviderStore, id: string): ProviderStore
   if (!activeConnectionId) {
     activeConnectionId = Object.values(connections).find((conn) => isConnected(conn))?.id ?? null;
   }
-  return { ...store, connections, roles, activeConnectionId };
+  // Signing out forgets what that account's first use found refused.
+  const subject = accountSubject(store.connections[id]);
+  let unavailableModels = store.unavailableModels;
+  if (subject && unavailableModels?.[subject]) {
+    const { [subject]: _forgotten, ...rest } = unavailableModels;
+    unavailableModels = Object.keys(rest).length > 0 ? rest : undefined;
+  }
+  const next: ProviderStore = { ...store, connections, roles, activeConnectionId };
+  if (unavailableModels) next.unavailableModels = unavailableModels;
+  else delete next.unavailableModels;
+  return next;
 }
 
 /**
@@ -757,12 +784,40 @@ function connectionLabel(conn: Pick<Connection, "providerId" | "mode" | "fields"
   return providerMode(conn.providerId, conn.mode).label;
 }
 
-function modelRows(id: string): Array<{ id: string; label: string }> {
+/** The ChatGPT sign-in's stable account id: the validated ID token subject. Null for any other credential. */
+function accountSubject(conn: Connection | undefined): string | null {
+  if (!conn || conn.providerId !== "openai" || conn.mode !== "oauth" || conn.credential.kind !== "oauth") return null;
+  return conn.credential.subject || null;
+}
+
+/** Unlisted models this connection's account has had refused. Empty for every other connection. */
+export function unavailableModelIds(store: ProviderStore, connectionId: string): Set<string> {
+  const subject = accountSubject(store.connections[connectionId]);
+  return new Set(subject ? store.unavailableModels?.[subject] ?? [] : []);
+}
+
+/** Remember that the account behind this connection was refused an unlisted model. No-op without a stable account id. */
+export function recordUnavailableModel(store: ProviderStore, connectionId: string, modelId: string): ProviderStore {
+  const subject = accountSubject(store.connections[connectionId]);
+  if (!subject) return store;
+  const known = store.unavailableModels?.[subject] ?? [];
+  if (known.includes(modelId)) return store;
+  return { ...store, unavailableModels: { ...store.unavailableModels, [subject]: [...known, modelId] } };
+}
+
+/** A connection's live list minus the models its account has had refused. */
+function visibleCatalog(store: ProviderStore, connectionId: string): ModelOption[] {
+  const gone = unavailableModelIds(store, connectionId);
+  const list = catalogFor(connectionId);
+  return gone.size === 0 ? list : list.filter((item) => !gone.has(item.id));
+}
+
+function modelRows(store: ProviderStore, id: string): Array<{ id: string; label: string }> {
   // A model the catalog names image-only (outputs without "text") cannot
   // carry a chat turn, and an image generator belongs to the image picker,
   // so the chat pickers offer neither. A model with no output facts stays:
   // unknown is not a refusal.
-  return catalogFor(id)
+  return visibleCatalog(store, id)
     .filter((item) => modelChats(item) !== false && !modelIsImageGenerator(item))
     .map((item) => ({ id: item.id, label: item.label }));
 }
@@ -819,7 +874,7 @@ function connectionStatus(conn: Connection): ConnectionPublic["status"] {
   return "ok";
 }
 
-function publicConnection(conn: Connection, activeId: string | null): ConnectionPublic {
+function publicConnection(store: ProviderStore, conn: Connection, activeId: string | null): ConnectionPublic {
   const def = providerDef(conn.providerId);
   const mode = providerMode(conn.providerId, conn.mode);
   return {
@@ -841,7 +896,7 @@ function publicConnection(conn: Connection, activeId: string | null): Connection
       ? conn.credential.email ?? null
       : null,
     fields: { ...conn.fields },
-    models: modelRows(conn.id),
+    models: modelRows(store, conn.id),
     defaultModelId: mode.defaults.workhorse,
   };
 }
@@ -907,16 +962,16 @@ export function publicProviders(
         accountId: null,
         accountLabel: null,
         fields: {},
-        models: modelRows(implicit.id),
+        models: modelRows(store, implicit.id),
         defaultModelId: providerMode("opencode-go", "plan").defaults.workhorse,
       }
-      : publicConnection(conn, activeId));
+      : publicConnection(store, conn, activeId));
 
   const pickerModels: RolePublic["models"] = [];
   for (const conn of listed.filter((row) => connectedIds.has(row.id))) {
     const label = connectionLabel(conn);
     const icon = providerDef(conn.providerId).icon;
-    for (const row of modelRows(conn.id)) {
+    for (const row of modelRows(store, conn.id)) {
       pickerModels.push({ connectionId: conn.id, connectionLabel: label, icon, id: row.id, label: row.label });
     }
   }
@@ -942,13 +997,13 @@ export function publicProviders(
   if (reviewerSel) {
     const conn = listed.find((row) => row.id === reviewerSel.connectionId) ?? null;
     const label = conn ? connectionLabel(conn) : reviewerSel.connectionId;
-    const rows = conn ? modelRows(conn.id) : [];
+    const rows = conn ? modelRows(store, conn.id) : [];
     // The router sends the saved id whatever the live list says, so the chip
     // names that id too rather than the first row of the list.
     const picked = rows.find((row) => row.id === reviewerSel.modelId) ?? null;
     const modelLabel = picked?.label ?? humanizeModelId(reviewerSel.modelId);
     const efforts = picked
-      ? (catalogFor(conn?.id ?? reviewerSel.connectionId).find((row) => row.id === picked.id)?.efforts ?? [])
+      ? (visibleCatalog(store, conn?.id ?? reviewerSel.connectionId).find((row) => row.id === picked.id)?.efforts ?? [])
       : [];
     reviewer = {
       connectionId: reviewerSel.connectionId,
@@ -968,12 +1023,12 @@ export function publicProviders(
       ?? null;
     if (fallbackConn) {
       const mode = providerMode(fallbackConn.providerId, fallbackConn.mode);
-      const rows = modelRows(fallbackConn.id);
+      const rows = modelRows(store, fallbackConn.id);
       const picked = rows.find((row) => row.id === mode.defaults.reviewer) ?? rows[0] ?? null;
       if (picked) {
         // The same snap resolveUpstream applies, so the chip and the router
         // agree on the effort the fallback reviewer runs with.
-        const snapped = snapComposer(fallbackConn.id, mode.label, picked.id, store.effort, store.speed, catalogFor(fallbackConn.id));
+        const snapped = snapComposer(fallbackConn.id, mode.label, picked.id, store.effort, store.speed, visibleCatalog(store, fallbackConn.id));
         reviewer = {
           connectionId: fallbackConn.id,
           connectionLabel: connectionLabel(fallbackConn),
@@ -1109,7 +1164,7 @@ function composerGroups(store: ProviderStore, env: NodeJS.ProcessEnv, firstId: s
     connectionId: row.id,
     label: connectionLabel(row),
     icon: providerDef(row.providerId).icon,
-    models: modelRows(row.id),
+    models: modelRows(store, row.id),
   }));
 }
 
@@ -1143,7 +1198,7 @@ export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = pro
     store.selectedModel ?? mode.defaults.workhorse,
     store.effort,
     store.speed,
-    catalogFor(conn.id),
+    visibleCatalog(store, conn.id),
     groups,
   );
 }
@@ -1206,9 +1261,10 @@ function selectionConnection(store: ProviderStore, id: string, env: NodeJS.Proce
  * mode's two defaults, so a model absent from it says nothing, while one absent
  * from a fetched list was really removed.
  */
-function liveCatalog(id: string): ModelOption[] {
+function liveCatalog(store: ProviderStore, id: string): ModelOption[] {
+  const gone = unavailableModelIds(store, id);
   const live = cachedModels(id);
-  if (live.length > 0) return live;
+  if (live.length > 0) return gone.size === 0 ? live : live.filter((item) => !gone.has(item.id));
   try {
     return cachedModels(parseConnectionId(id).providerId);
   } catch {
@@ -1229,7 +1285,7 @@ export function selectionAvailability(
   const conn = selectionConnection(store, selection.connectionId, env);
   if (!conn) return { available: false, reason: "connection_missing" };
   if (!isConnected(conn)) return { available: false, reason: "provider_disconnected" };
-  const live = liveCatalog(conn.id);
+  const live = liveCatalog(store, conn.id);
   if (live.length > 0 && !live.some((item) => item.id === selection.modelId)) {
     return { available: false, reason: "model_missing" };
   }
@@ -1275,7 +1331,7 @@ export function botComposerState(
     };
   }
   const name = conn.providerId === "custom" && conn.fields.name ? conn.fields.name : providerDef(conn.providerId).name;
-  const snapped = snapComposer(conn.id, name, selection.modelId, selection.effort, selection.speed, catalogFor(conn.id), groups, true);
+  const snapped = snapComposer(conn.id, name, selection.modelId, selection.effort, selection.speed, visibleCatalog(store, conn.id), groups, true);
   return { ...snapped, available: selectionAvailability(store, selection, env).available };
 }
 
@@ -1341,7 +1397,7 @@ export function applyBotPick(
       selection.modelId,
       patch.effort !== undefined ? patch.effort : selection.effort,
       patch.speed !== undefined ? patch.speed : selection.speed,
-      catalogFor(conn.id),
+      visibleCatalog(store, conn.id),
       [],
       true,
     );
@@ -1447,7 +1503,7 @@ export function resolveUpstream(
     const name = chosen.providerId === "custom" && chosen.fields.name
       ? chosen.fields.name
       : providerDef(chosen.providerId).name;
-    const snapped = snapComposer(chosen.id, name, selection.modelId, selection.effort, selection.speed, catalogFor(chosen.id), [], true);
+    const snapped = snapComposer(chosen.id, name, selection.modelId, selection.effort, selection.speed, visibleCatalog(store, chosen.id), [], true);
     const baseUrl = chosen.providerId === "opencode-go" && env.UB_OPENCODE_GO_BASE
       ? env.UB_OPENCODE_GO_BASE
       : substituteBaseUrl(mode, chosen.fields);
@@ -1486,7 +1542,7 @@ export function resolveUpstream(
     // An explicit reviewer choice wins. Otherwise the reviewer follows the
     // active connection with the mode's reviewer default, not the workhorse.
     const snapped = alias === "reviewer" && !reviewerSel
-      ? snapComposer(picked.id, name, mode.defaults.reviewer, store.effort, store.speed, catalogFor(picked.id))
+      ? snapComposer(picked.id, name, mode.defaults.reviewer, store.effort, store.speed, visibleCatalog(store, picked.id))
       : composer;
     const modelId = reviewerSel ? reviewerSel.modelId : (snapped.modelId || mode.defaults.workhorse);
     const effort = reviewerSel ? reviewerSel.effort : snapped.effort;

@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { parseConnectionId, providerMode, type KeyHeader } from "./provider-catalog.ts";
+import { parseConnectionId, providerMode, type KeyHeader, type UnlistedModel } from "./provider-catalog.ts";
 import { EFFORTS, isEffortId, mergeLiveModels, modelsFor, type EffortId, type ModelMeta, type ModelOption } from "./models.ts";
 import { statePath } from "./stack.ts";
 
@@ -381,6 +381,8 @@ export async function refreshProviderModels(input: {
   /** The vendor's image model list, merged into the list (OpenRouter's images/models). */
   imagesPath?: string;
   modelsDevId?: string | null;
+  /** Models the vendor runs but its list omits; merged after the fetch, a listed row for the same id wins. */
+  extraModels?: UnlistedModel[];
   force?: boolean;
   path?: string;
   fetchImpl?: typeof fetch;
@@ -388,7 +390,10 @@ export async function refreshProviderModels(input: {
   const path = input.path ?? modelsCachePath();
   const cache = readModelsCache(path);
   const current = cache.providers[input.providerId];
-  const fresh = current && Date.now() - current.fetchedAt < CACHE_TTL_MS && current.models.length > 0;
+  // A list cached before the unlisted models existed (1.1.2) lacks them: it
+  // is stale however young, so the first refresh after the update refetches.
+  const fresh = current && Date.now() - current.fetchedAt < CACHE_TTL_MS && current.models.length > 0
+    && (input.extraModels ?? []).every((extra) => current.models.some((row) => row.id === extra.id));
   if (!input.force && fresh) return current.models;
   try {
     const listed = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, input.query);
@@ -421,12 +426,18 @@ export async function refreshProviderModels(input: {
       for (const [id, meta] of Object.entries(images.meta)) listed.meta[id] = { ...listed.meta[id], ...meta };
     }
     const ids = [...new Set(listed.ids)];
+    const extras = (input.extraModels ?? []).filter((extra) => !ids.includes(extra.id));
+    ids.push(...extras.map((extra) => extra.id));
     const metaKey = metaKeyFor(input.providerId, input.modelsDevId);
     const catalogMeta = metaKey ? await modelMetaFor(metaKey, path, input.fetchImpl) : {};
     // The vendor's own facts win over models.dev, field by field.
     const meta: Record<string, ModelMeta> = {};
     for (const id of ids) meta[id] = { ...catalogMeta[id], ...listed.meta[id] };
+    for (const extra of extras) meta[extra.id] = { label: extra.label, ...meta[extra.id] };
     const models = mergeLiveModels(input.providerId, ids, meta);
+    for (const model of models) {
+      if (extras.some((extra) => extra.id === model.id)) model.unlisted = true;
+    }
     // The fetch awaited above can overlap a refresh for a different provider,
     // so the snapshot taken before the await is stale by write time. Re-read
     // the cache and set only this provider's entry, or the write would clobber

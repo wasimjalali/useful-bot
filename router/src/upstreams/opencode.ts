@@ -6,10 +6,12 @@ import { rewrapThinkHistory, stripEarlierReasoning, usesInlineThink } from "../i
 import { UpstreamRefusalError } from "../circuit.ts";
 import type { ModelSelection } from "../../../shared/session-selection.ts";
 import { catalogFor } from "../../../shared/live-models.ts";
+import { providerMode } from "../../../shared/provider-catalog.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
   readProviderStore,
   recordConnectionError,
+  recordUnavailableModel,
   isLegacyChatGptCredential,
   resolveUpstream,
   setOAuthCredential,
@@ -442,6 +444,11 @@ export async function completeUpstream(input: {
         body: sendBody,
         headers,
         signal: input.signal,
+        onRefusal: resolved.providerId === "openai"
+          ? ({ code, param }) => (refusalAboutModel(code, param) && dropUnlistedModel(resolved.connection.id, model, credential)
+            ? CHATGPT_MODEL_NOT_IN_PLAN
+            : null)
+          : undefined,
       });
     }
     if (resolved.protocol === "anthropic-messages") {
@@ -506,7 +513,17 @@ export async function completeUpstream(input: {
     // Every 403 on this route is a policy refusal (account not eligible, region,
     // plan sharing off), never an expired sign-in: that is a 401. The body only
     // tells which kind it is.
-    const code = await chatGptErrorCode(response) === "subscription_sharing_user_not_eligible"
+    const refused = await chatGptError(response);
+    if (refused.code === "subscription_sharing_user_not_eligible" && dropUnlistedModel(resolved.connection.id, model, credential)) {
+      throw new UpstreamRefusalError({
+        status: 403,
+        type: "permission_error",
+        code: CHATGPT_MODEL_NOT_IN_PLAN,
+        message: CHATGPT_MODEL_NOT_IN_PLAN,
+        retryable: false,
+      });
+    }
+    const code = refused.code === "subscription_sharing_user_not_eligible"
       ? "upstream_chatgpt_not_eligible"
       : "upstream_chatgpt_not_permitted";
     throw new UpstreamRefusalError({
@@ -516,6 +533,20 @@ export async function completeUpstream(input: {
       message: code,
       retryable: false,
     });
+  }
+  if (response.status === 400 && chatGptRoute) {
+    // The documented model refusal. Any other 400 (a tool or input type the
+    // plan route lacks, a bad request) keeps the generic path below.
+    const refused = await chatGptError(response.clone());
+    if (refused.code === "subscription_sharing_unsupported_capability" && refusalAboutModel(refused.code, refused.param) && dropUnlistedModel(resolved.connection.id, model, credential)) {
+      throw new UpstreamRefusalError({
+        status: 400,
+        type: "invalid_request_error",
+        code: CHATGPT_MODEL_NOT_IN_PLAN,
+        message: CHATGPT_MODEL_NOT_IN_PLAN,
+        retryable: false,
+      });
+    }
   }
   if (response.status === 503 && chatGptRoute) {
     // Plan sharing could not check usage or the user: temporary, not the
@@ -565,18 +596,64 @@ export async function completeUpstream(input: {
 
 const REFUSAL_BODY_BYTES = 4096;
 
-/** `error.code` of a JSON error body, else a top-level `detail` string; null when neither is there. */
-async function chatGptErrorCode(response: Response): Promise<string | null> {
+/** `error.code` and `error.param` of a JSON error body; the code falls back to a top-level `detail` string. Null when absent. */
+async function chatGptError(response: Response): Promise<{ code: string | null; param: string | null }> {
   try {
     const parsed = JSON.parse(await readPrefix(response, REFUSAL_BODY_BYTES)) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
+    if (!parsed || typeof parsed !== "object") return { code: null, param: null };
     const body = parsed as { error?: unknown; detail?: unknown };
-    const inner = body.error && typeof body.error === "object" ? (body.error as { code?: unknown }).code : undefined;
-    if (typeof inner === "string") return inner;
-    return typeof body.detail === "string" ? body.detail : null;
+    const error = body.error && typeof body.error === "object" ? body.error as { code?: unknown; param?: unknown } : null;
+    const param = typeof error?.param === "string" ? error.param : null;
+    if (typeof error?.code === "string") return { code: error.code, param };
+    return { code: typeof body.detail === "string" ? body.detail : null, param };
   } catch {
-    return null;
+    return { code: null, param: null };
   }
+}
+
+async function chatGptErrorCode(response: Response): Promise<string | null> {
+  return (await chatGptError(response)).code;
+}
+
+/** The code the app maps to "Your ChatGPT plan can't use <model>" (EveStream.swift). */
+export const CHATGPT_MODEL_NOT_IN_PLAN = "upstream_chatgpt_model_not_in_plan";
+
+/**
+ * Whether a plan-sharing refusal is about the model itself: the documented
+ * unsupported capability (model, tool or input type) names the model or says
+ * nothing, and an ineligible account is refused on every model it tries
+ * (docs: token-sharing-open-source/errors-and-recovery).
+ */
+export function refusalAboutModel(code: string | null, param: string | null): boolean {
+  if (code === "subscription_sharing_user_not_eligible") return true;
+  return code === "subscription_sharing_unsupported_capability" && (param === null || param === "model");
+}
+
+/**
+ * UB-016. A ChatGPT plan can run a model the vendor list omits, and only a
+ * real turn says whether this account may. When this refused model is one the
+ * app merged in (not a row the vendor listed), drop it from this account's
+ * menu, and say so (true). A listed model, another connection or an account
+ * with no stable id is never touched. The store is written under its lock, and
+ * only while the account that sent the request is still the stored one.
+ */
+function dropUnlistedModel(connectionId: string, model: string, held: Credential): boolean {
+  if (connectionId !== "openai:oauth") return false;
+  if (!providerMode("openai", "oauth").unlistedModels?.some((extra) => extra.id === model)) return false;
+  if (catalogFor(connectionId).some((row) => row.id === model && !row.unlisted)) return false;
+  const subject = held.kind === "oauth" ? held.subject : null;
+  if (!subject) return false;
+  try {
+    updateProviderStore((store) => {
+      const current = store.connections[connectionId]?.credential;
+      if (!current || current.kind !== "oauth" || current.subject !== subject) return store;
+      return recordUnavailableModel(store, connectionId, model);
+    });
+  } catch (error) {
+    // The turn still fails with the plan message; the next one asks again.
+    console.error(`[useful-bot] chatgpt model drop was not stored: ${error instanceof Error && /^[\w.-]{1,60}$/.test(error.message) ? error.message : "store_write_failed"}`);
+  }
+  return true;
 }
 const REFUSAL_MESSAGE_CHARS = 200;
 

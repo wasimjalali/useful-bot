@@ -91,6 +91,7 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
     headers,
     query,
     imagesPath,
+    extraModels: mode.unlistedModels,
     force: force || Boolean(running),
   });
   const job: Promise<unknown> = (running ? running.job.catch(() => undefined).then(run) : run()).finally(() => {

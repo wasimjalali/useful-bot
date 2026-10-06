@@ -16,6 +16,28 @@ export interface OAuthDeviceConfig {
   headers?: Record<string, string>;
 }
 
+export interface UnlistedModel {
+  id: string;
+  label: string;
+}
+
+/**
+ * GPT-6 models a ChatGPT plan runs through Sign in with ChatGPT although
+ * GET /v1/models doesn't list them (UB-016). OpenAI's docs call that list "a
+ * catalog, not an entitlement check; a successfully completed inference turn
+ * verifies access":
+ * https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
+ * Live turns on a Plus plan completed on all three, see
+ * evals/results/2026-10-06-chatgpt-model-catalog.md. A listed row for the same
+ * id wins. The first refusal for an account drops the model from that
+ * account's menu (router/src/upstreams/opencode.ts).
+ */
+export const CHATGPT_UNLISTED_MODELS: UnlistedModel[] = [
+  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+  { id: "gpt-6-sol", label: "GPT-6 Sol" },
+  { id: "gpt-6-luna", label: "GPT-6 Luna" },
+];
+
 export interface ProviderMode {
   mode: AuthMode;
   /** Name shown in the Connect list for this (provider, mode) pair, e.g. "ChatGPT" for openai/oauth, "OpenAI" for openai/api. */
@@ -36,6 +58,12 @@ export interface ProviderMode {
   oauth?: OAuthDeviceConfig;
   /** openai: Sign in with ChatGPT (browser authorization code flow) instead of a device flow. */
   signIn?: "chatgpt";
+  /**
+   * Models the plan runs that the vendor's /models list leaves out. They are
+   * merged into the live list and checked on first use (shared/live-models.ts,
+   * router/src/upstreams/opencode.ts).
+   */
+  unlistedModels?: UnlistedModel[];
   /** Default model per alias when nothing is selected yet. */
   defaults: { workhorse: string; reviewer: string };
   /**
@@ -93,6 +121,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         // and .../models-and-inference. The flow lives in
         // shared/chatgpt-signin.ts; inference is the public Responses API.
         signIn: "chatgpt",
+        unlistedModels: CHATGPT_UNLISTED_MODELS,
         // Checked against the live ChatGPT model list on 2026-09-19 (GPT-5.6
         // Sol, Terra and Luna, GPT-6 Astra, GPT-5.5). Only the fallback until
         // the live list lands; the live list overrides these.

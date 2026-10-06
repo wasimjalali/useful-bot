@@ -4,8 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROVIDER_CATALOG, providerMode } from "../shared/provider-catalog.ts";
-import { applyReasoning, modelsFor, snapComposer } from "../shared/models.ts";
+import { applyReasoning, hydrateModel, modelsFor, snapComposer } from "../shared/models.ts";
+import { writeModelsCache } from "../shared/live-models.ts";
 import {
+  applyBotPick,
+  botComposerState,
   catalogItem,
   clearConnection,
   clearProviderKey,
@@ -18,13 +21,16 @@ import {
   publicProviders,
   readProviderStore,
   recordConnectionError,
+  recordUnavailableModel,
   resolveUpstream,
   setActiveConnection,
   setActiveProvider,
   setComposer,
   setOAuthCredential,
   setProviderKey,
+  selectionAvailability,
   setRole,
+  unavailableModelIds,
   updateProviderStore,
   writeProviderStore,
 } from "../shared/providers.ts";
@@ -519,4 +525,78 @@ test("two bots on different providers do not share a credential mid-flight", () 
   assert.equal(botB.providerId, "openai");
   assert.equal(botB.credential.kind, "oauth");
   assert.notEqual(botA.baseUrl, botB.baseUrl);
+});
+
+function chatgptAccount(subject: string): Parameters<typeof setOAuthCredential>[2] {
+  return { kind: "oauth", accessToken: `access-${subject}`, refreshToken: `refresh-${subject}`, expiresAt: Date.now() + 3_600_000, accountId: null, clientId: `client-${subject}`, subject };
+}
+
+test("UB-016: a dropped unlisted model leaves that account's menus only, survives a restart, and ends with sign-out", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-prov-drop-"));
+  const saved = process.env.UB_MODELS_CACHE_PATH;
+  process.env.UB_MODELS_CACHE_PATH = join(dir, "models-cache.json");
+  try {
+    const row = (id: string, unlisted = false) => ({ ...hydrateModel("openai:oauth", id), ...(unlisted ? { unlisted: true } : {}) });
+    writeModelsCache({
+      schemaVersion: 3,
+      providers: { "openai:oauth": { fetchedAt: Date.now(), models: [row("gpt-6-astra"), row("gpt-6.1-sol", true), row("gpt-6-luna", true)] } },
+    });
+    const env = {} as NodeJS.ProcessEnv;
+    const path = join(dir, "providers.json");
+    let store = setOAuthCredential(emptyProviderStore(), "openai", chatgptAccount("account-a"));
+    store = pickComposerModel(store, "openai:oauth::gpt-6.1-sol", env);
+    assert.equal(composerState(store, env).modelId, "gpt-6.1-sol");
+    assert.deepEqual(composerState(store, env).models.map((m) => m.id).sort(), ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol"]);
+
+    // The first refusal for account A, written the way the router writes it.
+    writeProviderStore(store, path);
+    updateProviderStore((current) => recordUnavailableModel(current, "openai:oauth", "gpt-6.1-sol"), path, env);
+    // A restart is a fresh read of the file.
+    store = readProviderStore(path, env);
+    assert.deepEqual(store.unavailableModels, { "account-a": ["gpt-6.1-sol"] });
+    assert.deepEqual([...unavailableModelIds(store, "openai:oauth")], ["gpt-6.1-sol"]);
+
+    // The menu no longer lists it, and the selected model snaps to one that exists.
+    const snapped = composerState(store, env);
+    assert.deepEqual(snapped.models.map((m) => m.id).sort(), ["gpt-6-astra", "gpt-6-luna"]);
+    assert.notEqual(snapped.modelId, "gpt-6.1-sol");
+    assert.ok(snapped.models.some((m) => m.id === snapped.modelId));
+    assert.equal(snapped.groups.find((g) => g.connectionId === "openai:oauth")?.models.some((m) => m.id === "gpt-6.1-sol"), false);
+    assert.notEqual(resolveUpstream(store, "workhorse", env).modelId, "gpt-6.1-sol");
+    // A bot pinned to it is refused rather than moved, and cannot pick it again.
+    const pinned = { connectionId: "openai:oauth", modelId: "gpt-6.1-sol", effort: null, speed: "standard" as const };
+    assert.deepEqual(selectionAvailability(store, pinned, env), { available: false, reason: "model_missing" });
+    assert.equal(botComposerState(store, pinned, env).available, false);
+    assert.throws(() => applyBotPick(store, { ...pinned, modelId: "gpt-6-astra" }, { modelId: "gpt-6.1-sol" }, env), /model_selection_unavailable/);
+    // A listed model and the other unlisted one are untouched.
+    assert.deepEqual(selectionAvailability(store, { ...pinned, modelId: "gpt-6-luna" }, env), { available: true });
+
+    // Account B signs in over A: B has its own list, A's entry waits for A.
+    const asB = setOAuthCredential(store, "openai", chatgptAccount("account-b"));
+    assert.equal(unavailableModelIds(asB, "openai:oauth").size, 0);
+    assert.ok(composerState(pickComposerModel(asB, "openai:oauth::gpt-6.1-sol", env), env).models.some((m) => m.id === "gpt-6.1-sol"));
+    assert.deepEqual(selectionAvailability(asB, pinned, env), { available: true });
+    const backToA = setOAuthCredential(asB, "openai", chatgptAccount("account-a"));
+    assert.deepEqual([...unavailableModelIds(backToA, "openai:oauth")], ["gpt-6.1-sol"]);
+
+    // Recording is idempotent, keeps other accounts' entries and needs a stable account id.
+    assert.equal(recordUnavailableModel(store, "openai:oauth", "gpt-6.1-sol"), store);
+    const withB = recordUnavailableModel(asB, "openai:oauth", "gpt-6-luna");
+    assert.deepEqual(withB.unavailableModels, { "account-a": ["gpt-6.1-sol"], "account-b": ["gpt-6-luna"] });
+    const anonymous = setOAuthCredential(emptyProviderStore(), "openai", { kind: "oauth", accessToken: "a", refreshToken: null, expiresAt: null, accountId: null });
+    assert.equal(recordUnavailableModel(anonymous, "openai:oauth", "gpt-6-luna").unavailableModels, undefined);
+    // Another connection never reads the ChatGPT account's list.
+    assert.equal(unavailableModelIds(setProviderKey(withB, "openai", "api", "sk-test-12345678"), "openai:api").size, 0);
+
+    // Signing out forgets that account's entry only.
+    const signedOut = clearConnection(withB, "openai:oauth");
+    assert.deepEqual(signedOut.unavailableModels, { "account-a": ["gpt-6.1-sol"] });
+    const last = clearConnection(store, "openai:oauth");
+    assert.equal(last.unavailableModels, undefined);
+    writeProviderStore(last, path);
+    assert.equal(readProviderStore(path, env).unavailableModels, undefined);
+  } finally {
+    if (saved === undefined) delete process.env.UB_MODELS_CACHE_PATH;
+    else process.env.UB_MODELS_CACHE_PATH = saved;
+  }
 });

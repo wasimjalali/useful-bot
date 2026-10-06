@@ -14,6 +14,8 @@ import { RouterError } from "../src/errors.ts";
 import { completeUpstream, upstreamConfigError, type ResolvedUpstream } from "../src/upstreams/opencode.ts";
 import { readPrefix } from "../src/read-capped.ts";
 import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
+import { writeModelsCache } from "../../shared/live-models.ts";
+import { hydrateModel } from "../../shared/models.ts";
 import { emptyProviderStore, readProviderStore, setOAuthCredential, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
@@ -1852,14 +1854,31 @@ async function chatgptRun(options: {
   noStore?: boolean;
   /** Runs while the refresh request is in flight, before the auth server answers. */
   onToken?: () => void;
+  /** The model the turn runs on; default gpt-6.1-sol, which the static fallback list does not name. */
+  model?: string;
+  /** Ask for a streamed answer and return its text. */
+  stream?: boolean;
+  /** Rows of the cached openai:oauth list. Absent: no cache file at all. */
+  cached?: Array<{ id: string; unlisted?: boolean }>;
+  /** Extra stored state, e.g. models an account already had dropped. */
+  storeEdit?: (store: ReturnType<typeof emptyProviderStore>) => ReturnType<typeof emptyProviderStore>;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "ub-chatgpt-run-"));
   const saved = process.env.UB_PROVIDERS_PATH;
+  const savedCache = process.env.UB_MODELS_CACHE_PATH;
   process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  process.env.UB_MODELS_CACHE_PATH = join(dir, "models-cache.json");
+  if (options.cached) {
+    writeModelsCache({
+      schemaVersion: 3,
+      providers: { "openai:oauth": { fetchedAt: Date.now(), models: options.cached.map((row) => ({ ...hydrateModel("openai:oauth", row.id), ...(row.unlisted ? { unlisted: true } : {}) })) } },
+    });
+  }
   const base = { kind: "oauth", accessToken: "tok-12345678", refreshToken: "refresh-0", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_test" };
   const held = { ...base, ...(options.held ?? {}) } as never;
   if (!options.noStore) {
-    writeProviderStore(setOAuthCredential(emptyProviderStore(), "openai", { ...base, ...(options.held ?? {}), ...(options.stored ?? {}) } as never));
+    const first = setOAuthCredential(emptyProviderStore(), "openai", { ...base, ...(options.held ?? {}), ...(options.stored ?? {}) } as never);
+    writeProviderStore(options.storeEdit ? options.storeEdit(first) : first);
   }
   const bearers: string[] = [];
   const server = createServer((req, res) => {
@@ -1890,8 +1909,8 @@ async function chatgptRun(options: {
       connection: { id: "openai:oauth" },
       providerId: "openai",
       mode: { headers: {} },
-      modelId: "gpt-6.1-sol",
-      model: "gpt-6.1-sol",
+      modelId: options.model ?? "gpt-6.1-sol",
+      model: options.model ?? "gpt-6.1-sol",
       effort: null,
       speed: "standard",
       baseUrl: `http://127.0.0.1:${port}`,
@@ -1902,25 +1921,29 @@ async function chatgptRun(options: {
       fallback: false,
     } as unknown as ResolvedUpstream;
     let error: unknown = null;
+    let text = "";
     try {
       const out = await completeUpstream({
         entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
-        body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+        body: { model: "workhorse", messages: [{ role: "user", content: "hi" }], ...(options.stream ? { stream: true } : {}) },
         sessionId: randomUUID(),
         callerId: "desktop",
         signal: new AbortController().signal,
         resolved,
       });
-      await out.response.body?.cancel();
+      if (options.stream) text = await out.response.text();
+      else await out.response.body?.cancel();
     } catch (err) {
       error = err;
     }
-    return { error: error as RouterError | null, refreshes, bearers, revoked, store: readProviderStore().connections["openai:oauth"] };
+    return { error: error as RouterError | null, refreshes, bearers, revoked, text, store: readProviderStore().connections["openai:oauth"], dropped: readProviderStore().unavailableModels ?? {} };
   } finally {
     globalThis.fetch = realFetch;
     server.close();
     if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
     else process.env.UB_PROVIDERS_PATH = saved;
+    if (savedCache === undefined) delete process.env.UB_MODELS_CACHE_PATH;
+    else process.env.UB_MODELS_CACHE_PATH = savedCache;
   }
 }
 
@@ -1952,6 +1975,103 @@ test("a ChatGPT 403 names why: not eligible, other plan-sharing codes, and a bar
   // A 401 is still the auth path.
   const unauthorized = await chatgptRun({ upstream: { status: 401, body: "{}" }, token: { status: 400, body: { error: "invalid_grant" } } });
   assert.equal(unauthorized.error?.code, "upstream_auth_failed");
+});
+
+const ACCOUNT_A = { subject: "sub-account-a" };
+const NOT_ELIGIBLE = JSON.stringify({ error: { code: "subscription_sharing_user_not_eligible" } });
+const unsupported = (param?: string) => JSON.stringify({ error: { code: "subscription_sharing_unsupported_capability", ...(param ? { param } : {}) } });
+const UNLISTED_ROW = [{ id: "gpt-6.1-sol", unlisted: true }, { id: "gpt-6-astra" }];
+
+test("UB-016: a refused unlisted model is dropped for that account only, with the plan code", async () => {
+  // 400 naming the model, and 400 with no param: both are about the model.
+  for (const body of [unsupported("model"), unsupported()]) {
+    const out = await chatgptRun({ held: ACCOUNT_A, cached: UNLISTED_ROW, upstream: { status: 400, body } });
+    assert.equal(out.error?.code, "upstream_chatgpt_model_not_in_plan", body);
+    assert.equal(out.error?.retryable, false);
+    assert.deepEqual(out.dropped, { "sub-account-a": ["gpt-6.1-sol"] }, body);
+    assert.equal(out.store?.lastError, null);
+  }
+  // 403 not eligible drops it too.
+  const eligible = await chatgptRun({ held: ACCOUNT_A, cached: UNLISTED_ROW, upstream: { status: 403, body: NOT_ELIGIBLE } });
+  assert.equal(eligible.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.equal(eligible.error?.status, 403);
+  assert.deepEqual(eligible.dropped, { "sub-account-a": ["gpt-6.1-sol"] });
+  // No cache file at all: the model is not a listed row either.
+  const bare = await chatgptRun({ held: ACCOUNT_A, upstream: { status: 400, body: unsupported("model") } });
+  assert.equal(bare.error?.code, "upstream_chatgpt_model_not_in_plan");
+  // Another account's earlier drop stays and this one is added beside it.
+  const second = await chatgptRun({
+    held: { subject: "sub-account-b" },
+    cached: UNLISTED_ROW,
+    upstream: { status: 400, body: unsupported("model") },
+    storeEdit: (store) => ({ ...store, unavailableModels: { "sub-account-a": ["gpt-6-luna"] } }),
+  });
+  assert.deepEqual(second.dropped, { "sub-account-a": ["gpt-6-luna"], "sub-account-b": ["gpt-6.1-sol"] });
+});
+
+test("UB-016: refusals that are not about an unlisted model drop nothing", async () => {
+  // A tool or input type the plan lacks (param is not the model): the usual protocol error.
+  const tools = await chatgptRun({ held: ACCOUNT_A, cached: UNLISTED_ROW, upstream: { status: 400, body: unsupported("tools") } });
+  assert.equal(tools.error?.code, "upstream_protocol_error");
+  assert.deepEqual(tools.dropped, {});
+  // A model the vendor's own list names is never dropped, whatever the refusal.
+  for (const upstream of [{ status: 400, body: unsupported("model") }, { status: 403, body: NOT_ELIGIBLE }]) {
+    const listed = await chatgptRun({ held: ACCOUNT_A, model: "gpt-6-astra", cached: UNLISTED_ROW, upstream });
+    assert.notEqual(listed.error?.code, "upstream_chatgpt_model_not_in_plan");
+    assert.deepEqual(listed.dropped, {});
+  }
+  // An unlisted id that OpenAI now lists is a listed row: the listed row wins.
+  const nowListed = await chatgptRun({ held: ACCOUNT_A, cached: [{ id: "gpt-6.1-sol" }], upstream: { status: 400, body: unsupported("model") } });
+  assert.deepEqual(nowListed.dropped, {});
+  // A model that is not one of the merged ids is never dropped.
+  const other = await chatgptRun({ held: ACCOUNT_A, model: "gpt-9-made-up", upstream: { status: 400, body: unsupported("model") } });
+  assert.deepEqual(other.dropped, {});
+  // No stable account id on the credential: nothing to key the drop by.
+  const anonymous = await chatgptRun({ cached: UNLISTED_ROW, upstream: { status: 400, body: unsupported("model") } });
+  assert.deepEqual(anonymous.dropped, {});
+  // The 403 that is not the eligibility code keeps its own code.
+  const notPermitted = await chatgptRun({ held: ACCOUNT_A, cached: UNLISTED_ROW, upstream: { status: 403, body: JSON.stringify({ detail: "subscription_sharing_unsupported_capability" }) } });
+  assert.equal(notPermitted.error?.code, "upstream_chatgpt_not_permitted");
+  assert.deepEqual(notPermitted.dropped, {});
+});
+
+test("UB-016: the account that sent the request must still be the stored one", async () => {
+  const out = await chatgptRun({
+    held: ACCOUNT_A,
+    stored: { subject: "sub-account-b" },
+    cached: UNLISTED_ROW,
+    upstream: { status: 400, body: unsupported("model") },
+  });
+  assert.equal(out.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.deepEqual(out.dropped, {}, "A switched away while the call ran: B's list is not touched");
+});
+
+test("UB-016: a refusal that arrives mid-stream is handled the same way", async () => {
+  const frame = (error: Record<string, unknown>) => ({ status: 200, body: `data: ${JSON.stringify({ type: "error", error })}\n\n` });
+  const model = await chatgptRun({
+    held: ACCOUNT_A, cached: UNLISTED_ROW, stream: true,
+    upstream: frame({ code: "subscription_sharing_unsupported_capability", param: "model", message: "no" }),
+  });
+  assert.match(model.text, /"code":"upstream_chatgpt_model_not_in_plan"/);
+  assert.deepEqual(model.dropped, { "sub-account-a": ["gpt-6.1-sol"] });
+  const eligible = await chatgptRun({
+    held: ACCOUNT_A, cached: UNLISTED_ROW, stream: true,
+    upstream: frame({ code: "subscription_sharing_user_not_eligible", message: "no" }),
+  });
+  assert.match(eligible.text, /"code":"upstream_chatgpt_model_not_in_plan"/);
+  assert.deepEqual(eligible.dropped, { "sub-account-a": ["gpt-6.1-sol"] });
+  const tools = await chatgptRun({
+    held: ACCOUNT_A, cached: UNLISTED_ROW, stream: true,
+    upstream: frame({ code: "subscription_sharing_unsupported_capability", param: "tools", message: "no" }),
+  });
+  assert.doesNotMatch(tools.text, /model_not_in_plan/);
+  assert.deepEqual(tools.dropped, {});
+  const listed = await chatgptRun({
+    held: ACCOUNT_A, cached: UNLISTED_ROW, stream: true, model: "gpt-6-astra",
+    upstream: frame({ code: "subscription_sharing_user_not_eligible", message: "no" }),
+  });
+  assert.match(listed.text, /"code":"upstream_chatgpt_not_eligible"/);
+  assert.deepEqual(listed.dropped, {});
 });
 
 test("a ChatGPT 503 plan-sharing code is the retryable upstream_unavailable and records nothing", async () => {

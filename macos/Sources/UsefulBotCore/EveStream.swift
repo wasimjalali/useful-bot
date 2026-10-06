@@ -304,6 +304,9 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         if haystack.contains("upstream_unavailable") {
             return "Couldn't reach ChatGPT just now. Send again in a moment."
         }
+        if haystack.contains("upstream_chatgpt_model_not_in_plan") {
+            return "Your ChatGPT plan can't use this model in Useful Bot. Pick another model."
+        }
         if haystack.contains("upstream_chatgpt_not_permitted") {
             return "ChatGPT didn't allow this request from Useful Bot. Check Useful Bot in ChatGPT settings, or pick another model."
         }
