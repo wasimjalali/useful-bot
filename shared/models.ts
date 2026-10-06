@@ -436,7 +436,10 @@ export function snapComposer(
   const effort = model.efforts.length === 0
     ? null
     : (preferredEffort && model.efforts.includes(preferredEffort) ? preferredEffort : model.defaultEffort);
-  const speed = preferredSpeed && model.speeds.includes(preferredSpeed) ? preferredSpeed : model.defaultSpeed;
+  // A list cached before the ChatGPT plan route dropped Fast can still name
+  // it; that route never sends a service tier, so it is filtered here too.
+  const speeds = connectionId === "openai:oauth" ? model.speeds.filter((item) => item !== "fast") : model.speeds;
+  const speed = preferredSpeed && speeds.includes(preferredSpeed) ? preferredSpeed : model.defaultSpeed;
   return {
     providerId,
     connectionId,
@@ -447,7 +450,7 @@ export function snapComposer(
     effortLabel: effort ? effortLabel(effort) : null,
     speed,
     efforts: model.efforts.map((item) => ({ id: item, label: effortLabel(item) })),
-    speeds: model.speeds.map((item) => ({ id: item, label: speedLabel(item) })),
+    speeds: speeds.map((item) => ({ id: item, label: speedLabel(item) })),
     models: list.map((item) => ({ id: item.id, label: item.label })),
     groups,
     available: true,

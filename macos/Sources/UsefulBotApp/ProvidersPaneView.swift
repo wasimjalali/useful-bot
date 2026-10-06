@@ -792,7 +792,7 @@ private struct OAuthSheetView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text(model.oauth?.flow == "browser" ? "Waiting for the browser" : "Waiting for approval")
+                        Text(pending.flow == "browser" ? "Waiting for the browser" : "Waiting for approval")
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.C.inkMuted)
                         Spacer(minLength: 0)
