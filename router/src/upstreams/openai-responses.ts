@@ -94,7 +94,11 @@ function toResponsesTools(tools: unknown): Array<Record<string, unknown>> {
     const out: Record<string, unknown> = { type: "function", name: tool.function.name };
     if (typeof tool.function.description === "string") out.description = tool.function.description;
     if (tool.function.parameters !== undefined) out.parameters = tool.function.parameters;
-    if (typeof tool.function.strict === "boolean") out.strict = tool.function.strict;
+    // A Chat Completions tool with no `strict` is non-strict, while the
+    // Responses API attempts strict mode when `strict` is left out, which
+    // makes every optional field required: the model then fills them with
+    // filler (`list_bots` got botId " " and "*"). Keep the chat meaning.
+    out.strict = typeof tool.function.strict === "boolean" ? tool.function.strict : false;
     return out;
   });
 }
