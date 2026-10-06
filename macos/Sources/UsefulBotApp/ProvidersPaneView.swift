@@ -772,7 +772,8 @@ private struct OAuthSheetView: View {
                     }
                 }
                 if pending.flow == "browser", !model.oauthDone, pending.account != nil || pending.reusesSaved {
-                    HStack(spacing: 8) {
+                    // Stacked: side by side, a long email squeezed both lines.
+                    VStack(alignment: .leading, spacing: 6) {
                         if let account = pending.account {
                             Text("Continues as \(account).")
                                 .font(.system(size: 13))
@@ -780,7 +781,6 @@ private struct OAuthSheetView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
-                        Spacer(minLength: 0)
                         UseDifferentAccountControl(
                             accounts: pending.accounts, currentClientId: pending.clientId,
                             onPick: { id in Task { await model.startOAuth(providerId: pending.providerId, label: pending.label, clientId: id) } },
