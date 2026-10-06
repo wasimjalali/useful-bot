@@ -1,0 +1,5 @@
+node_modules/
+out/
+# Raw takes live in ~/UB001-footage (SHA-256 list in FOOTAGE.sha256), never in git.
+public/footage
+winrec2x

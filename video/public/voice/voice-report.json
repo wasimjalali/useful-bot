@@ -1,0 +1,979 @@
+[
+ {
+  "id": "S01",
+  "text": "A client update, built from this week's notes.",
+  "heard": "A client update built from this week's notes.",
+  "match": true,
+  "file_seconds": 3.12,
+  "speech_seconds": 2.72,
+  "wpm": 176,
+  "words": [
+   {
+    "w": "a",
+    "start": 0.24,
+    "end": 0.48
+   },
+   {
+    "w": "client",
+    "start": 0.48,
+    "end": 0.79999995
+   },
+   {
+    "w": "update",
+    "start": 0.79999995,
+    "end": 1.4399999
+   },
+   {
+    "w": "built",
+    "start": 1.4399999,
+    "end": 1.8399999
+   },
+   {
+    "w": "from",
+    "start": 1.8399999,
+    "end": 2.1599998
+   },
+   {
+    "w": "this",
+    "start": 2.1599998,
+    "end": 2.32
+   },
+   {
+    "w": "week's",
+    "start": 2.32,
+    "end": 2.6399999
+   },
+   {
+    "w": "notes",
+    "start": 2.6399999,
+    "end": 2.96
+   }
+  ],
+  "model": "cliff",
+  "chars": "46",
+  "request_id": "01a1121c-7c1a-7df1-9130-74ac14eb4934"
+ },
+ {
+  "id": "S02",
+  "text": "It runs on your ChatGPT Plus or Pro plan, through OpenAI's official sign-in.",
+  "heard": "It runs on your ChatGPT Plus or Pro plan through OpenAI's official sign in.",
+  "match": true,
+  "file_seconds": 7.12,
+  "speech_seconds": 7.04,
+  "wpm": 119,
+  "words": [
+   {
+    "w": "it",
+    "start": 0.0,
+    "end": 0.24
+   },
+   {
+    "w": "runs",
+    "start": 0.24,
+    "end": 0.56
+   },
+   {
+    "w": "on",
+    "start": 0.56,
+    "end": 0.79999995
+   },
+   {
+    "w": "your",
+    "start": 0.79999995,
+    "end": 1.04
+   },
+   {
+    "w": "chatgpt",
+    "start": 1.04,
+    "end": 1.92
+   },
+   {
+    "w": "plus",
+    "start": 1.92,
+    "end": 2.48
+   },
+   {
+    "w": "or",
+    "start": 2.48,
+    "end": 2.8
+   },
+   {
+    "w": "pro",
+    "start": 2.8,
+    "end": 3.1999998
+   },
+   {
+    "w": "plan",
+    "start": 3.1999998,
+    "end": 3.9199998
+   },
+   {
+    "w": "through",
+    "start": 4.08,
+    "end": 4.48
+   },
+   {
+    "w": "openai's",
+    "start": 4.48,
+    "end": 5.7599998
+   },
+   {
+    "w": "official",
+    "start": 5.7599998,
+    "end": 6.3999996
+   },
+   {
+    "w": "sign",
+    "start": 6.3999996,
+    "end": 6.7999997
+   },
+   {
+    "w": "in",
+    "start": 6.7999997,
+    "end": 7.04
+   }
+  ],
+  "model": "cliff",
+  "chars": "76",
+  "request_id": "01a1121c-8f98-7501-b52b-dfebb3261542"
+ },
+ {
+  "id": "S03",
+  "text": "Or use an API key, or a local model that needs no account.",
+  "heard": "Or use an API key or a local model that needs no account.",
+  "match": true,
+  "file_seconds": 7.68,
+  "speech_seconds": 7.44,
+  "wpm": 105,
+  "words": [
+   {
+    "w": "or",
+    "start": 0.0,
+    "end": 0.48
+   },
+   {
+    "w": "use",
+    "start": 0.48,
+    "end": 1.04
+   },
+   {
+    "w": "an",
+    "start": 1.04,
+    "end": 1.4399999
+   },
+   {
+    "w": "api",
+    "start": 1.4399999,
+    "end": 2.08
+   },
+   {
+    "w": "key",
+    "start": 2.08,
+    "end": 3.04
+   },
+   {
+    "w": "or",
+    "start": 3.12,
+    "end": 3.9199998
+   },
+   {
+    "w": "a",
+    "start": 4.08,
+    "end": 4.4
+   },
+   {
+    "w": "local",
+    "start": 4.4,
+    "end": 4.7999997
+   },
+   {
+    "w": "model",
+    "start": 4.7999997,
+    "end": 5.68
+   },
+   {
+    "w": "that",
+    "start": 5.68,
+    "end": 6.0
+   },
+   {
+    "w": "needs",
+    "start": 6.0,
+    "end": 6.64
+   },
+   {
+    "w": "no",
+    "start": 6.64,
+    "end": 7.04
+   },
+   {
+    "w": "account",
+    "start": 7.04,
+    "end": 7.44
+   }
+  ],
+  "model": "cliff",
+  "chars": "58",
+  "request_id": "01a1121c-ce79-7763-9f6a-b91f66c5e59f"
+ },
+ {
+  "id": "S04",
+  "text": "Ask the Generalist for a small team.",
+  "heard": "Ask the generalist for a small team.",
+  "match": true,
+  "file_seconds": 3.6,
+  "speech_seconds": 3.36,
+  "wpm": 125,
+  "words": [
+   {
+    "w": "ask",
+    "start": 0.0,
+    "end": 0.71999997
+   },
+   {
+    "w": "the",
+    "start": 0.71999997,
+    "end": 1.04
+   },
+   {
+    "w": "generalist",
+    "start": 1.04,
+    "end": 2.08
+   },
+   {
+    "w": "for",
+    "start": 2.08,
+    "end": 2.3999999
+   },
+   {
+    "w": "a",
+    "start": 2.3999999,
+    "end": 2.6399999
+   },
+   {
+    "w": "small",
+    "start": 2.6399999,
+    "end": 2.96
+   },
+   {
+    "w": "team",
+    "start": 2.96,
+    "end": 3.36
+   }
+  ],
+  "model": "cliff",
+  "chars": "36",
+  "request_id": "01a1121e-4a4a-7851-9fc1-983f967b9bc8"
+ },
+ {
+  "id": "S05",
+  "text": "It proposes two teammates. You add the ones you want.",
+  "heard": "It proposes two teammates. You add the ones you want.",
+  "match": true,
+  "file_seconds": 3.76,
+  "speech_seconds": 3.6,
+  "wpm": 167,
+  "words": [
+   {
+    "w": "it",
+    "start": 0.0,
+    "end": 0.24
+   },
+   {
+    "w": "proposes",
+    "start": 0.24,
+    "end": 0.79999995
+   },
+   {
+    "w": "two",
+    "start": 0.79999995,
+    "end": 1.1999999
+   },
+   {
+    "w": "teammates",
+    "start": 1.1999999,
+    "end": 2.0
+   },
+   {
+    "w": "you",
+    "start": 2.24,
+    "end": 2.48
+   },
+   {
+    "w": "add",
+    "start": 2.48,
+    "end": 2.72
+   },
+   {
+    "w": "the",
+    "start": 2.72,
+    "end": 2.8
+   },
+   {
+    "w": "ones",
+    "start": 2.8,
+    "end": 3.12
+   },
+   {
+    "w": "you",
+    "start": 3.12,
+    "end": 3.28
+   },
+   {
+    "w": "want",
+    "start": 3.28,
+    "end": 3.6
+   }
+  ],
+  "model": "cliff",
+  "chars": "53",
+  "request_id": "01a1121c-f856-7f80-becf-4b42439e9fa9"
+ },
+ {
+  "id": "S06",
+  "text": "Each one gets its own job, instructions and memory.",
+  "heard": "Each one gets its own job, instructions and memory.",
+  "match": true,
+  "file_seconds": 3.52,
+  "speech_seconds": 3.44,
+  "wpm": 157,
+  "words": [
+   {
+    "w": "each",
+    "start": 0.0,
+    "end": 0.39999998
+   },
+   {
+    "w": "one",
+    "start": 0.39999998,
+    "end": 0.64
+   },
+   {
+    "w": "gets",
+    "start": 0.64,
+    "end": 0.96
+   },
+   {
+    "w": "its",
+    "start": 0.96,
+    "end": 1.1999999
+   },
+   {
+    "w": "own",
+    "start": 1.1999999,
+    "end": 1.4399999
+   },
+   {
+    "w": "job",
+    "start": 1.4399999,
+    "end": 2.08
+   },
+   {
+    "w": "instructions",
+    "start": 2.08,
+    "end": 2.72
+   },
+   {
+    "w": "and",
+    "start": 2.72,
+    "end": 3.04
+   },
+   {
+    "w": "memory",
+    "start": 3.04,
+    "end": 3.4399998
+   }
+  ],
+  "model": "cliff",
+  "chars": "51",
+  "request_id": "01a1121d-0a42-7a03-8c72-4ffef6576a24"
+ },
+ {
+  "id": "S07",
+  "text": "The Analyst reads the week's notes, lists what's confirmed and what's still open, and hands it to the Writer.",
+  "heard": "The analyst reads the week's notes, lists what's confirmed and what's still open, and hands it to the writer.",
+  "match": true,
+  "file_seconds": 7.84,
+  "speech_seconds": 7.52,
+  "wpm": 152,
+  "words": [
+   {
+    "w": "the",
+    "start": 0.16,
+    "end": 0.48
+   },
+   {
+    "w": "analyst",
+    "start": 0.48,
+    "end": 0.88
+   },
+   {
+    "w": "reads",
+    "start": 0.88,
+    "end": 1.28
+   },
+   {
+    "w": "the",
+    "start": 1.28,
+    "end": 1.5999999
+   },
+   {
+    "w": "week's",
+    "start": 1.5999999,
+    "end": 1.92
+   },
+   {
+    "w": "notes",
+    "start": 1.92,
+    "end": 2.56
+   },
+   {
+    "w": "lists",
+    "start": 2.56,
+    "end": 2.96
+   },
+   {
+    "w": "what's",
+    "start": 2.96,
+    "end": 3.4399998
+   },
+   {
+    "w": "confirmed",
+    "start": 3.4399998,
+    "end": 3.9199998
+   },
+   {
+    "w": "and",
+    "start": 3.9199998,
+    "end": 4.24
+   },
+   {
+    "w": "what's",
+    "start": 4.24,
+    "end": 4.56
+   },
+   {
+    "w": "still",
+    "start": 4.56,
+    "end": 4.7999997
+   },
+   {
+    "w": "open",
+    "start": 4.7999997,
+    "end": 5.52
+   },
+   {
+    "w": "and",
+    "start": 5.68,
+    "end": 5.8399997
+   },
+   {
+    "w": "hands",
+    "start": 5.8399997,
+    "end": 6.16
+   },
+   {
+    "w": "it",
+    "start": 6.16,
+    "end": 6.3999996
+   },
+   {
+    "w": "to",
+    "start": 6.3999996,
+    "end": 6.8799996
+   },
+   {
+    "w": "the",
+    "start": 6.8799996,
+    "end": 7.2
+   },
+   {
+    "w": "writer",
+    "start": 7.2,
+    "end": 7.68
+   }
+  ],
+  "model": "cliff",
+  "chars": "109",
+  "request_id": "01a1121d-1c0d-7dc2-9c20-04ff1e7b92df"
+ },
+ {
+  "id": "S08",
+  "text": "On Auto, the everyday work just runs, and it asks before it deletes anything. You choose how much each bot may do.",
+  "heard": "On auto, the everyday work just runs, and it asks before it deletes anything. You choose how much each bot may do.",
+  "match": true,
+  "file_seconds": 9.12,
+  "speech_seconds": 9.04,
+  "wpm": 146,
+  "words": [
+   {
+    "w": "on",
+    "start": 0.0,
+    "end": 0.24
+   },
+   {
+    "w": "auto",
+    "start": 0.24,
+    "end": 1.04
+   },
+   {
+    "w": "the",
+    "start": 1.1999999,
+    "end": 1.36
+   },
+   {
+    "w": "everyday",
+    "start": 1.36,
+    "end": 1.8399999
+   },
+   {
+    "w": "work",
+    "start": 1.8399999,
+    "end": 2.1599998
+   },
+   {
+    "w": "just",
+    "start": 2.1599998,
+    "end": 2.48
+   },
+   {
+    "w": "runs",
+    "start": 2.48,
+    "end": 3.1999998
+   },
+   {
+    "w": "and",
+    "start": 3.36,
+    "end": 3.52
+   },
+   {
+    "w": "it",
+    "start": 3.52,
+    "end": 3.6799998
+   },
+   {
+    "w": "asks",
+    "start": 3.6799998,
+    "end": 4.0
+   },
+   {
+    "w": "before",
+    "start": 4.0,
+    "end": 4.4
+   },
+   {
+    "w": "it",
+    "start": 4.4,
+    "end": 4.56
+   },
+   {
+    "w": "deletes",
+    "start": 4.56,
+    "end": 4.96
+   },
+   {
+    "w": "anything",
+    "start": 4.96,
+    "end": 5.68
+   },
+   {
+    "w": "you",
+    "start": 6.16,
+    "end": 6.48
+   },
+   {
+    "w": "choose",
+    "start": 6.48,
+    "end": 6.8799996
+   },
+   {
+    "w": "how",
+    "start": 6.8799996,
+    "end": 7.2
+   },
+   {
+    "w": "much",
+    "start": 7.2,
+    "end": 7.44
+   },
+   {
+    "w": "each",
+    "start": 7.44,
+    "end": 7.7599998
+   },
+   {
+    "w": "bot",
+    "start": 7.7599998,
+    "end": 8.24
+   },
+   {
+    "w": "may",
+    "start": 8.24,
+    "end": 8.639999
+   },
+   {
+    "w": "do",
+    "start": 8.639999,
+    "end": 9.04
+   }
+  ],
+  "model": "cliff",
+  "chars": "114",
+  "request_id": "01a1121d-3af8-7fb2-a9f1-42e6405e6c57"
+ },
+ {
+  "id": "S09",
+  "text": "Your chats and files are stored on your computer. Your model provider sees what you send it.",
+  "heard": "Your chats and files are stored on your computer. Your model provider sees what you send it.",
+  "match": true,
+  "file_seconds": 8.56,
+  "speech_seconds": 8.48,
+  "wpm": 120,
+  "words": [
+   {
+    "w": "your",
+    "start": 0.0,
+    "end": 0.39999998
+   },
+   {
+    "w": "chats",
+    "start": 0.39999998,
+    "end": 0.79999995
+   },
+   {
+    "w": "and",
+    "start": 0.79999995,
+    "end": 1.04
+   },
+   {
+    "w": "files",
+    "start": 1.04,
+    "end": 1.76
+   },
+   {
+    "w": "are",
+    "start": 1.92,
+    "end": 2.24
+   },
+   {
+    "w": "stored",
+    "start": 2.24,
+    "end": 2.72
+   },
+   {
+    "w": "on",
+    "start": 2.72,
+    "end": 2.8799999
+   },
+   {
+    "w": "your",
+    "start": 2.8799999,
+    "end": 3.1999998
+   },
+   {
+    "w": "computer",
+    "start": 3.1999998,
+    "end": 4.08
+   },
+   {
+    "w": "your",
+    "start": 4.56,
+    "end": 4.88
+   },
+   {
+    "w": "model",
+    "start": 4.88,
+    "end": 5.3599997
+   },
+   {
+    "w": "provider",
+    "start": 5.3599997,
+    "end": 6.32
+   },
+   {
+    "w": "sees",
+    "start": 6.64,
+    "end": 7.12
+   },
+   {
+    "w": "what",
+    "start": 7.12,
+    "end": 7.52
+   },
+   {
+    "w": "you",
+    "start": 7.52,
+    "end": 7.9199996
+   },
+   {
+    "w": "send",
+    "start": 7.9199996,
+    "end": 8.24
+   },
+   {
+    "w": "it",
+    "start": 8.24,
+    "end": 8.48
+   }
+  ],
+  "model": "cliff",
+  "chars": "92",
+  "request_id": "01a1121d-5b8e-7f63-8c1b-1e165c09f7b5"
+ },
+ {
+  "id": "S10",
+  "text": "Useful Bot. Free and open source.",
+  "heard": "Useful bot. Free and open source.",
+  "match": true,
+  "file_seconds": 3.68,
+  "speech_seconds": 3.2,
+  "wpm": 113,
+  "words": [
+   {
+    "w": "useful",
+    "start": 0.24,
+    "end": 0.79999995
+   },
+   {
+    "w": "bot",
+    "start": 0.79999995,
+    "end": 1.52
+   },
+   {
+    "w": "free",
+    "start": 1.68,
+    "end": 2.08
+   },
+   {
+    "w": "and",
+    "start": 2.08,
+    "end": 2.56
+   },
+   {
+    "w": "open",
+    "start": 2.56,
+    "end": 2.96
+   },
+   {
+    "w": "source",
+    "start": 2.96,
+    "end": 3.4399998
+   }
+  ],
+  "model": "cliff",
+  "chars": "33",
+  "request_id": "01a1121d-7bd8-7fa2-8ee1-17470c504912"
+ },
+ {
+  "id": "V03",
+  "text": "Ask the Generalist for a small team. You add the teammates.",
+  "heard": "Ask the generalist for a small team. You add the teammates.",
+  "match": true,
+  "file_seconds": 5.2,
+  "speech_seconds": 4.88,
+  "wpm": 135,
+  "words": [
+   {
+    "w": "ask",
+    "start": 0.0,
+    "end": 0.56
+   },
+   {
+    "w": "the",
+    "start": 0.56,
+    "end": 0.88
+   },
+   {
+    "w": "generalist",
+    "start": 0.88,
+    "end": 1.5999999
+   },
+   {
+    "w": "for",
+    "start": 1.5999999,
+    "end": 1.92
+   },
+   {
+    "w": "a",
+    "start": 1.92,
+    "end": 2.1599998
+   },
+   {
+    "w": "small",
+    "start": 2.1599998,
+    "end": 2.48
+   },
+   {
+    "w": "team",
+    "start": 2.48,
+    "end": 3.28
+   },
+   {
+    "w": "you",
+    "start": 3.52,
+    "end": 3.76
+   },
+   {
+    "w": "add",
+    "start": 3.76,
+    "end": 4.08
+   },
+   {
+    "w": "the",
+    "start": 4.08,
+    "end": 4.3199997
+   },
+   {
+    "w": "teammates",
+    "start": 4.3199997,
+    "end": 4.88
+   }
+  ],
+  "model": "cliff",
+  "chars": "59",
+  "request_id": "01a1121d-8e3c-77b2-bd84-05dc96514ec0"
+ },
+ {
+  "id": "V04",
+  "text": "On Auto, it asks before it deletes anything.",
+  "heard": "On auto, it asks before it deletes anything.",
+  "match": true,
+  "file_seconds": 3.04,
+  "speech_seconds": 2.72,
+  "wpm": 176,
+  "words": [
+   {
+    "w": "on",
+    "start": 0.0,
+    "end": 0.32
+   },
+   {
+    "w": "auto",
+    "start": 0.32,
+    "end": 0.79999995
+   },
+   {
+    "w": "it",
+    "start": 0.79999995,
+    "end": 0.96
+   },
+   {
+    "w": "asks",
+    "start": 0.96,
+    "end": 1.1999999
+   },
+   {
+    "w": "before",
+    "start": 1.1999999,
+    "end": 1.5999999
+   },
+   {
+    "w": "it",
+    "start": 1.5999999,
+    "end": 1.76
+   },
+   {
+    "w": "deletes",
+    "start": 1.76,
+    "end": 2.24
+   },
+   {
+    "w": "anything",
+    "start": 2.24,
+    "end": 2.72
+   }
+  ],
+  "model": "cliff",
+  "chars": "44",
+  "request_id": "01a1121d-a636-7fa2-8a61-49b21fef47b0"
+ },
+ {
+  "id": "V05",
+  "text": "Your files are stored on your computer. Your model provider sees what you send it.",
+  "heard": "Your files are stored on your computer. Your model provider sees what you send it.",
+  "match": true,
+  "file_seconds": 7.36,
+  "speech_seconds": 7.28,
+  "wpm": 124,
+  "words": [
+   {
+    "w": "your",
+    "start": 0.0,
+    "end": 0.32
+   },
+   {
+    "w": "files",
+    "start": 0.32,
+    "end": 0.79999995
+   },
+   {
+    "w": "are",
+    "start": 0.79999995,
+    "end": 1.12
+   },
+   {
+    "w": "stored",
+    "start": 1.12,
+    "end": 1.76
+   },
+   {
+    "w": "on",
+    "start": 1.76,
+    "end": 2.08
+   },
+   {
+    "w": "your",
+    "start": 2.08,
+    "end": 2.32
+   },
+   {
+    "w": "computer",
+    "start": 2.32,
+    "end": 3.1999998
+   },
+   {
+    "w": "your",
+    "start": 3.6799998,
+    "end": 4.0
+   },
+   {
+    "w": "model",
+    "start": 4.0,
+    "end": 4.48
+   },
+   {
+    "w": "provider",
+    "start": 4.48,
+    "end": 5.44
+   },
+   {
+    "w": "sees",
+    "start": 5.52,
+    "end": 6.24
+   },
+   {
+    "w": "what",
+    "start": 6.24,
+    "end": 6.56
+   },
+   {
+    "w": "you",
+    "start": 6.56,
+    "end": 6.72
+   },
+   {
+    "w": "send",
+    "start": 6.72,
+    "end": 7.04
+   },
+   {
+    "w": "it",
+    "start": 7.04,
+    "end": 7.2799997
+   }
+  ],
+  "model": "cliff",
+  "chars": "82",
+  "request_id": "01a1121d-b66d-76e1-93cc-ac17a3c88d52"
+ }
+]

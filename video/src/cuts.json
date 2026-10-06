@@ -1,0 +1,1815 @@
+{
+ "16x9": {
+  "S02": {
+   "voice": "S02",
+   "voiceAt": 0.4,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-02-cold-signin.mp4",
+      "from": 16.9,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 0,
+     "seconds": 1.6
+    },
+    {
+     "spec": {
+      "src": "take-02-cold-signin.mp4",
+      "from": 33.4,
+      "crop": {
+       "x": 0,
+       "y": 0,
+       "w": 3156,
+       "h": 1972
+      },
+      "cropTo": {
+       "x": 980,
+       "y": 330,
+       "w": 1200,
+       "h": 750
+      },
+      "moveSeconds": 0.6,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 1.6,
+     "seconds": 1.8
+    },
+    {
+     "spec": {
+      "src": "take-02-cold-signin.mp4",
+      "from": 35.5,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 3.4,
+     "seconds": 1.8
+    },
+    {
+     "spec": {
+      "src": "take-02-cold-signin.mp4",
+      "from": 74.5,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 5.2,
+     "seconds": 2.8
+    }
+   ],
+   "labels": [
+    {
+     "lines": [
+      "Sign-in shortened",
+      "Not affiliated with OpenAI"
+     ],
+     "at": 5.2,
+     "seconds": 2.8
+    }
+   ],
+   "sfx": [
+    {
+     "file": "whoosh",
+     "at": 0
+    },
+    {
+     "file": "click",
+     "at": 1.45
+    },
+    {
+     "file": "click",
+     "at": 3.35
+    },
+    {
+     "file": "click",
+     "at": 5.0
+    }
+   ]
+  },
+  "S04": {
+   "voice": "S04",
+   "voiceAt": 0.4,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 52.0,
+      "crop": {
+       "x": 740,
+       "y": 620,
+       "w": 2100,
+       "h": 1312
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 0,
+     "seconds": 2.5
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 145.4,
+      "crop": {
+       "x": 740,
+       "y": 620,
+       "w": 2100,
+       "h": 1312
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 2.5,
+     "seconds": 2.1
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 152.6,
+      "crop": {
+       "x": 740,
+       "y": 620,
+       "w": 2100,
+       "h": 1312
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 4.6,
+     "seconds": 2.4
+    }
+   ],
+   "sfx": [
+    {
+     "file": "keys",
+     "at": 0,
+     "seconds": 2.5,
+     "volume": 0.35
+    },
+    {
+     "file": "click",
+     "at": 4.35
+    }
+   ]
+  },
+  "S05": {
+   "voice": "S05",
+   "voiceAt": 0.4,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 159.8,
+      "crop": {
+       "x": 740,
+       "y": 620,
+       "w": 2100,
+       "h": 1312
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 0,
+     "seconds": 1.6
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 189.0,
+      "crop": {
+       "x": 0,
+       "y": 0,
+       "w": 3148,
+       "h": 1968
+      },
+      "cropTo": {
+       "x": 700,
+       "y": 900,
+       "w": 1700,
+       "h": 1062
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 1.6,
+     "seconds": 3.4
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 215.6,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 5.0,
+     "seconds": 1.9
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 224.6,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 6.9,
+     "seconds": 2.1
+    }
+   ],
+   "labels": [
+    {
+     "lines": [
+      "Waiting time shortened"
+     ],
+     "at": 1.6,
+     "seconds": 3.4
+    }
+   ],
+   "sfx": [
+    {
+     "file": "click",
+     "at": 1.4
+    },
+    {
+     "file": "click",
+     "at": 5.2
+    },
+    {
+     "file": "thud",
+     "at": 5.4
+    },
+    {
+     "file": "click",
+     "at": 7.3
+    },
+    {
+     "file": "thud",
+     "at": 7.5
+    }
+   ]
+  },
+  "S07": {
+   "voice": "S07",
+   "voiceAt": 0.4,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 606.8,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 740,
+       "y": 620,
+       "w": 2100,
+       "h": 1312
+      }
+     },
+     "at": 0,
+     "seconds": 2.8
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 689.0,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 440,
+       "y": 330,
+       "w": 2400,
+       "h": 1500
+      },
+      "cropTo": {
+       "x": 480,
+       "y": 420,
+       "w": 2240,
+       "h": 1400
+      }
+     },
+     "at": 2.8,
+     "seconds": 5.2
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 696.0,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 0,
+       "y": 0,
+       "w": 3148,
+       "h": 1968
+      },
+      "cropTo": {
+       "x": 440,
+       "y": 330,
+       "w": 2400,
+       "h": 1500
+      }
+     },
+     "at": 8.0,
+     "seconds": 5.0
+    }
+   ],
+   "labels": [
+    {
+     "lines": [
+      "Waiting time shortened",
+      "Replies: ChatGPT"
+     ],
+     "at": 2.8,
+     "seconds": 10.2
+    }
+   ],
+   "sfx": [
+    {
+     "file": "click",
+     "at": 2.55
+    }
+   ]
+  },
+  "S08": {
+   "voice": "S08",
+   "voiceAt": 0.4,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 816.6,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 740,
+       "y": 620,
+       "w": 2100,
+       "h": 1312
+      }
+     },
+     "at": 0,
+     "seconds": 2.6
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 886.2,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 740,
+       "y": 620,
+       "w": 2100,
+       "h": 1312
+      },
+      "cropTo": {
+       "x": 1000,
+       "y": 1000,
+       "w": 1600,
+       "h": 1000
+      },
+      "moveSeconds": 1.2
+     },
+     "at": 2.6,
+     "seconds": 5.0
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 893.6,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 1000,
+       "y": 1000,
+       "w": 1600,
+       "h": 1000
+      }
+     },
+     "at": 7.6,
+     "seconds": 2.4
+    },
+    {
+     "spec": {
+      "src": "short-s08-menu.mp4",
+      "from": 2.8,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 10.0,
+     "seconds": 2.0
+    }
+   ],
+   "labels": [
+    {
+     "lines": [
+      "Waiting time shortened"
+     ],
+     "at": 2.6,
+     "seconds": 2.0
+    }
+   ],
+   "sfx": [
+    {
+     "file": "click",
+     "at": 2.35
+    },
+    {
+     "file": "click",
+     "at": 9.0
+    },
+    {
+     "file": "click",
+     "at": 10.85
+    }
+   ],
+   "voiceGap": {
+    "at": 5.92,
+    "gap": 1.2
+   }
+  },
+  "S03": {
+   "voice": "S03",
+   "voiceAt": 0.4,
+   "shots": [
+    {
+     "spec": {
+      "src": "short-s03-local-d.mp4",
+      "from": 3.6,
+      "crop": {
+       "x": 1450,
+       "y": 900,
+       "w": 1300,
+       "h": 812
+      }
+     },
+     "at": 0,
+     "seconds": 5.0
+    },
+    {
+     "spec": {
+      "src": "short-s03-local-d.mp4",
+      "from": 11.28,
+      "crop": {
+       "x": 1450,
+       "y": 1112,
+       "w": 1300,
+       "h": 812
+      }
+     },
+     "at": 5.0,
+     "seconds": 3.0
+    }
+   ],
+   "chip": {
+    "at": 5.2
+   },
+   "sfx": [
+    {
+     "file": "whoosh",
+     "at": 0
+    },
+    {
+     "file": "click",
+     "at": 1.2
+    }
+   ]
+  },
+  "S06": {
+   "voice": "S06",
+   "voiceAt": 2.3,
+   "shots": [
+    {
+     "spec": {
+      "src": "short-s06-pane-b.mp4",
+      "from": 2.15,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 500,
+       "y": 0,
+       "w": 2680,
+       "h": 1675
+      }
+     },
+     "at": 0,
+     "seconds": 2.8
+    },
+    {
+     "spec": {
+      "src": "short-s06-pane-b.mp4",
+      "from": 4.95,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ],
+      "crop": {
+       "x": 500,
+       "y": 0,
+       "w": 2680,
+       "h": 1675
+      },
+      "cropTo": {
+       "x": 1880,
+       "y": 0,
+       "w": 1300,
+       "h": 812
+      },
+      "moveSeconds": 1.6
+     },
+     "at": 2.8,
+     "seconds": 4.2
+    }
+   ],
+   "sfx": [
+    {
+     "file": "click",
+     "at": 2.35
+    }
+   ]
+  },
+  "S09": {
+   "voice": "S09",
+   "voiceAt": 0.4,
+   "shots": [
+    {
+     "spec": {
+      "src": "short-s09-finder.mp4",
+      "from": 0.5,
+      "crop": {
+       "x": 506,
+       "y": 0,
+       "w": 1100,
+       "h": 688
+      }
+     },
+     "at": 4.5,
+     "seconds": 4.5
+    }
+   ]
+  }
+ },
+ "9x16": {
+  "S02": {
+   "voice": "S02",
+   "voiceAt": 0.3,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-02-cold-signin.mp4",
+      "from": 33.4,
+      "crop": {
+       "x": 1028,
+       "y": 150,
+       "w": 1100,
+       "h": 1100
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 0,
+     "seconds": 2.6
+    },
+    {
+     "spec": {
+      "src": "take-02-cold-signin.mp4",
+      "from": 35.5,
+      "crop": {
+       "x": 1028,
+       "y": 450,
+       "w": 1100,
+       "h": 1100
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 2.6,
+     "seconds": 1.6
+    },
+    {
+     "spec": {
+      "src": "take-02-cold-signin.mp4",
+      "from": 74.5,
+      "crop": {
+       "x": 1028,
+       "y": 560,
+       "w": 1100,
+       "h": 1100
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 4.2,
+     "seconds": 2.8
+    }
+   ],
+   "labels": [
+    {
+     "lines": [
+      "Sign-in shortened",
+      "Not affiliated with OpenAI"
+     ],
+     "at": 4.2,
+     "seconds": 2.8
+    }
+   ],
+   "sfx": [
+    {
+     "file": "whoosh",
+     "at": 0
+    },
+    {
+     "file": "click",
+     "at": 2.45
+    },
+    {
+     "file": "click",
+     "at": 4.0
+    }
+   ]
+  },
+  "S04": {
+   "voice": "V03",
+   "voiceAt": 0.3,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 52.0,
+      "crop": {
+       "x": 1060,
+       "y": 868,
+       "w": 1100,
+       "h": 1100
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 0,
+     "seconds": 1.8
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 145.6,
+      "crop": {
+       "x": 1060,
+       "y": 868,
+       "w": 1100,
+       "h": 1100
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 1.8,
+     "seconds": 1.8
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 189.0,
+      "crop": {
+       "x": 1020,
+       "y": 800,
+       "w": 1200,
+       "h": 1200
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 3.6,
+     "seconds": 2.6
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 228.0,
+      "crop": {
+       "x": 0,
+       "y": 0,
+       "w": 1100,
+       "h": 1100
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 6.2,
+     "seconds": 1.8
+    }
+   ],
+   "labels": [
+    {
+     "lines": [
+      "Waiting time shortened"
+     ],
+     "at": 3.6,
+     "seconds": 2.6
+    }
+   ],
+   "sfx": [
+    {
+     "file": "keys",
+     "at": 0,
+     "seconds": 1.8,
+     "volume": 0.35
+    },
+    {
+     "file": "click",
+     "at": 3.4
+    },
+    {
+     "file": "thud",
+     "at": 6.4
+    }
+   ]
+  },
+  "S08": {
+   "voice": "V04",
+   "voiceAt": 0.3,
+   "shots": [
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 886.2,
+      "crop": {
+       "x": 1040,
+       "y": 560,
+       "w": 1500,
+       "h": 1500
+      },
+      "cropTo": {
+       "x": 1150,
+       "y": 800,
+       "w": 1200,
+       "h": 1200
+      },
+      "moveSeconds": 1.2,
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 0,
+     "seconds": 5.0
+    },
+    {
+     "spec": {
+      "src": "take-6.mp4",
+      "from": 893.4,
+      "crop": {
+       "x": 1150,
+       "y": 800,
+       "w": 1200,
+       "h": 1200
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 5.0,
+     "seconds": 1.8
+    },
+    {
+     "spec": {
+      "src": "short-s08-menu.mp4",
+      "from": 2.4,
+      "crop": {
+       "x": 700,
+       "y": 560,
+       "w": 1400,
+       "h": 1400
+      },
+      "covers": [
+       {
+        "kind": "lights",
+        "rect": {
+         "x": 0,
+         "y": 8,
+         "w": 160,
+         "h": 62
+        },
+        "bg": "#F3F3F3",
+        "color": "#DCDCDC",
+        "ring": "#CDCDCD"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 244,
+         "y": 116,
+         "w": 64,
+         "h": 54
+        },
+        "color": "#F3F3F3"
+       },
+       {
+        "kind": "fill",
+        "rect": {
+         "x": 40,
+         "y": 1884,
+         "w": 46,
+         "h": 40
+        },
+        "color": "#F0F0F0",
+        "radius": 8
+       }
+      ]
+     },
+     "at": 6.8,
+     "seconds": 3.2
+    }
+   ],
+   "labels": [
+    {
+     "lines": [
+      "Waiting time shortened"
+     ],
+     "at": 0,
+     "seconds": 2.0
+    }
+   ],
+   "sfx": [
+    {
+     "file": "click",
+     "at": 6.2
+    },
+    {
+     "file": "click",
+     "at": 8.0
+    }
+   ]
+  },
+  "S09": {
+   "voice": "V05",
+   "voiceAt": 0.3,
+   "shots": [
+    {
+     "spec": {
+      "src": "short-s09-finder.mp4",
+      "from": 1.0,
+      "crop": {
+       "x": 506,
+       "y": 0,
+       "w": 900,
+       "h": 900
+      }
+     },
+     "at": 4.0,
+     "seconds": 4.0
+    }
+   ]
+  }
+ }
+}

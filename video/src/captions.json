@@ -1,0 +1,138 @@
+{
+ "S01": [
+  {
+   "text": "A client update, built from this week's notes.",
+   "start": 0.24,
+   "end": 2.96
+  }
+ ],
+ "S02": [
+  {
+   "text": "It runs on your ChatGPT Plus or Pro plan,",
+   "start": 0.0,
+   "end": 3.92
+  },
+  {
+   "text": "through OpenAI's official sign-in.",
+   "start": 4.08,
+   "end": 7.04
+  }
+ ],
+ "S03": [
+  {
+   "text": "Or use an API key, or a local model that needs no account.",
+   "start": 0.0,
+   "end": 7.44
+  }
+ ],
+ "S04": [
+  {
+   "text": "Ask the Generalist for a small team.",
+   "start": 0.0,
+   "end": 3.36
+  }
+ ],
+ "S05": [
+  {
+   "text": "It proposes two teammates.",
+   "start": 0.0,
+   "end": 2.0
+  },
+  {
+   "text": "You add the ones you want.",
+   "start": 2.24,
+   "end": 3.6
+  }
+ ],
+ "S06": [
+  {
+   "text": "Each one gets its own job, instructions and memory.",
+   "start": 0.0,
+   "end": 3.44
+  }
+ ],
+ "S07": [
+  {
+   "text": "The Analyst reads the week's notes,",
+   "start": 0.16,
+   "end": 2.56
+  },
+  {
+   "text": "lists what's confirmed and what's still open, and hands it to the Writer.",
+   "start": 2.56,
+   "end": 7.68
+  }
+ ],
+ "S08": [
+  {
+   "text": "On Auto, the everyday work just runs,",
+   "start": 0.0,
+   "end": 3.2
+  },
+  {
+   "text": "and it asks before it deletes anything.",
+   "start": 3.36,
+   "end": 5.68
+  },
+  {
+   "text": "You choose how much each bot may do.",
+   "start": 6.16,
+   "end": 9.04
+  }
+ ],
+ "S09": [
+  {
+   "text": "Your chats and files are stored on your computer.",
+   "start": 0.0,
+   "end": 4.08
+  },
+  {
+   "text": "Your model provider sees what you send it.",
+   "start": 4.56,
+   "end": 8.48
+  }
+ ],
+ "S10": [
+  {
+   "text": "Useful Bot.",
+   "start": 0.24,
+   "end": 1.52
+  },
+  {
+   "text": "Free and open source.",
+   "start": 1.68,
+   "end": 3.44
+  }
+ ],
+ "V03": [
+  {
+   "text": "Ask the Generalist for a small team.",
+   "start": 0.0,
+   "end": 3.28
+  },
+  {
+   "text": "You add the teammates.",
+   "start": 3.52,
+   "end": 4.88
+  }
+ ],
+ "V04": [
+  {
+   "text": "On Auto, it asks before it deletes anything.",
+   "start": 0.0,
+   "end": 2.72
+  }
+ ],
+ "V05": [
+  {
+   "text": "Your files are stored on your computer.",
+   "start": 0.0,
+   "end": 3.2
+  },
+  {
+   "text": "Your model provider sees what you send it.",
+   "start": 3.68,
+   "end": 7.28
+  }
+ ]
+}
