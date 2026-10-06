@@ -1912,6 +1912,8 @@ async function chatgptRun(options: {
   stream?: boolean;
   /** Rows of the cached openai:oauth list. Absent: no cache file at all. */
   cached?: Array<{ id: string; unlisted?: boolean }>;
+  /** The account the cached list was fetched for; default the held account. Null: none recorded. */
+  cacheAccount?: string | null;
   /** Extra stored state, e.g. models an account already had dropped. */
   storeEdit?: (store: ReturnType<typeof emptyProviderStore>) => ReturnType<typeof emptyProviderStore>;
 }) {
@@ -1921,9 +1923,12 @@ async function chatgptRun(options: {
   process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
   process.env.UB_MODELS_CACHE_PATH = join(dir, "models-cache.json");
   if (options.cached) {
+    const account = options.cacheAccount === undefined
+      ? ((options.held as { clientId?: string } | undefined)?.clientId ?? "oaiapp_test")
+      : options.cacheAccount;
     writeModelsCache({
       schemaVersion: 3,
-      providers: { "openai:oauth": { fetchedAt: Date.now(), models: options.cached.map((row) => ({ ...hydrateModel("openai:oauth", row.id), ...(row.unlisted ? { unlisted: true } : {}) })) } },
+      providers: { "openai:oauth": { fetchedAt: Date.now(), ...(account ? { account } : {}), models: options.cached.map((row) => ({ ...hydrateModel("openai:oauth", row.id), ...(row.unlisted ? { unlisted: true } : {}) })) } },
     });
   }
   const base = { kind: "oauth", accessToken: "tok-12345678", refreshToken: "refresh-0", expiresAt: Date.now() + 3_600_000, accountId: null, clientId: "oaiapp_test" };
@@ -2120,9 +2125,9 @@ test("UB-016: a refusal is recorded for the account that sent the request, not t
   assert.deepEqual(signedOut.dropped, {});
 });
 
-const cacheRows = (rows: Array<{ id: string; unlisted?: boolean }>) => writeModelsCache({
+const cacheRows = (rows: Array<{ id: string; unlisted?: boolean }>, account = "client-a") => writeModelsCache({
   schemaVersion: 3,
-  providers: { "openai:oauth": { fetchedAt: Date.now(), models: rows.map((row) => ({ ...hydrateModel("openai:oauth", row.id), ...(row.unlisted ? { unlisted: true } : {}) })) } },
+  providers: { "openai:oauth": { fetchedAt: Date.now(), account, models: rows.map((row) => ({ ...hydrateModel("openai:oauth", row.id), ...(row.unlisted ? { unlisted: true } : {}) })) } },
 });
 
 // The unlisted/listed call is made when the request is dispatched, not when the refusal comes back.
@@ -2147,7 +2152,7 @@ test("UB-016: after a 401 renews into another account, the refusal uses that acc
     cached: UNLISTED_ROW,
     first: { status: 401, body: "{}" },
     upstream: { status: 403, body: NOT_ELIGIBLE },
-    onUpstream: (call) => { if (call === 0) cacheRows([{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }]); },
+    onUpstream: (call) => { if (call === 0) cacheRows([{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }], "client-b"); },
   });
   assert.equal(unlistedForA.error?.code, "upstream_chatgpt_not_eligible", "B lists the model, so the refusal is not a plan drop");
   assert.deepEqual(unlistedForA.dropped, {}, "nothing is recorded for B");
@@ -2157,10 +2162,44 @@ test("UB-016: after a 401 renews into another account, the refusal uses that acc
     cached: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }],
     first: { status: 401, body: "{}" },
     upstream: { status: 403, body: NOT_ELIGIBLE },
-    onUpstream: (call) => { if (call === 0) cacheRows(UNLISTED_ROW); },
+    onUpstream: (call) => { if (call === 0) cacheRows(UNLISTED_ROW, "client-b"); },
   });
   assert.equal(listedForA.error?.code, "upstream_chatgpt_model_not_in_plan");
   assert.deepEqual(listedForA.dropped, { "client-b": ["gpt-6.1-sol"] }, "B does not list it, so it is recorded for B");
+});
+
+// The cache is per connection, not per account. After A switches to B and B's refresh has not landed
+// (pending, timed out, failed), it still holds A's list.
+test("UB-016: a cache fetched for another account never counts as listed for the account that sends", async () => {
+  const asB = { ...ACCOUNT_B, accessToken: "tok-b-87654321" };
+  const aList = [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }];
+  // B sends, A's cache lists the id, B refuses: dropped for B.
+  const sent = await chatgptRun({ held: asB, cached: aList, cacheAccount: "client-a", upstream: { status: 400, body: unsupported("model") } });
+  assert.equal(sent.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.deepEqual(sent.dropped, { "client-b": ["gpt-6.1-sol"] });
+  // A cache with no account recorded is no better.
+  const unrecorded = await chatgptRun({ held: asB, cached: aList, cacheAccount: null, upstream: { status: 400, body: unsupported("model") } });
+  assert.deepEqual(unrecorded.dropped, { "client-b": ["gpt-6.1-sol"] });
+  // Only the merged ids are ever dropped, whatever cache is there.
+  const other = await chatgptRun({ held: asB, model: "gpt-9-made-up", cached: [{ id: "gpt-9-made-up" }], cacheAccount: "client-a", upstream: { status: 400, body: unsupported("model") } });
+  assert.deepEqual(other.dropped, {});
+  // The same account's cache still keeps a listed model.
+  const same = await chatgptRun({ held: asB, cached: aList, cacheAccount: "client-b", upstream: { status: 400, body: unsupported("model") } });
+  assert.deepEqual(same.dropped, {});
+});
+
+test("UB-016: a 401 that renews into B while only A's cache exists drops the refused model for B", async () => {
+  const asB = { ...ACCOUNT_B, accessToken: "tok-b-87654321" };
+  const out = await chatgptRun({
+    held: ACCOUNT_A,
+    stored: asB,
+    cached: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }],
+    cacheAccount: "client-a",
+    first: { status: 401, body: "{}" },
+    upstream: { status: 403, body: NOT_ELIGIBLE },
+  });
+  assert.equal(out.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.deepEqual(out.dropped, { "client-b": ["gpt-6.1-sol"] }, "B's refresh never landed, A's list is not B's");
 });
 
 test("UB-016: a model listed at dispatch is not dropped even if the cache loses the row before the refusal", async () => {

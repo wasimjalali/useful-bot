@@ -19,7 +19,11 @@ const CACHE_SCHEMA = 3;
 
 type CacheFile = {
   schemaVersion: typeof CACHE_SCHEMA;
-  providers: Record<string, { fetchedAt: number; models: ModelOption[] }>;
+  /**
+   * `account` is the saved ChatGPT account (accountKey) the list was fetched
+   * for. The list is that account's own, so another account never reads it as fresh.
+   */
+  providers: Record<string, { fetchedAt: number; models: ModelOption[]; account?: string }>;
   /** models.dev facts per provider, keyed by the provider's model id. */
   meta?: { fetchedAt: number; providers: Record<string, Record<string, ModelMeta>> };
 };
@@ -76,6 +80,17 @@ export function writeModelsCache(cache: CacheFile, path = modelsCachePath()): vo
 
 export function cachedModels(providerId: string, path = modelsCachePath()): ModelOption[] {
   return readModelsCache(path).providers[providerId]?.models ?? [];
+}
+
+/**
+ * Whether the vendor's own list, fetched for exactly this account, names the
+ * model as a listed row. A cache from another account (or one with no account
+ * recorded) says nothing about this one, so it answers false.
+ */
+export function listedForAccount(connectionId: string, model: string, account: string | null, path = modelsCachePath()): boolean {
+  const entry = readModelsCache(path).providers[connectionId];
+  if (!entry || !account || entry.account !== account) return false;
+  return entry.models.some((row) => row.id === model && !row.unlisted);
 }
 
 /**
@@ -390,7 +405,7 @@ export function mergeExtrasIntoCached(providerId: string, extras: UnlistedModel[
     // Re-read: only the entry this call saw is replaced, a newer one from an overlapping refresh wins.
     const latest = readModelsCache(path);
     if (latest.providers[providerId]?.fetchedAt === current.fetchedAt) {
-      latest.providers[providerId] = { fetchedAt: current.fetchedAt, models: merged };
+      latest.providers[providerId] = { ...current, models: merged };
       writeModelsCache(latest, path);
     }
   } catch (err) {
@@ -411,6 +426,8 @@ export async function refreshProviderModels(input: {
   modelsDevId?: string | null;
   /** Models the vendor runs but its list omits; merged after the fetch, a listed row for the same id wins. */
   extraModels?: UnlistedModel[];
+  /** The saved account the request is made as (accountKey); the list is stored as that account's. */
+  account?: string | null;
   force?: boolean;
   path?: string;
   fetchImpl?: typeof fetch;
@@ -420,7 +437,10 @@ export async function refreshProviderModels(input: {
   const current = cache.providers[input.providerId];
   // A list cached before the unlisted models existed (1.1.2) lacks them: it
   // is stale however young, so the first refresh after the update refetches.
+  // A list fetched for another account (or before accounts were recorded) is
+  // stale for this one however young: it refetches on the next sync.
   const fresh = current && Date.now() - current.fetchedAt < CACHE_TTL_MS && current.models.length > 0
+    && (current.account ?? null) === (input.account ?? null)
     && (input.extraModels ?? []).every((extra) => current.models.some((row) => row.id === extra.id));
   if (!input.force && fresh) return current.models;
   // The list could not be fetched (expired token, network, an empty answer):
@@ -474,7 +494,7 @@ export async function refreshProviderModels(input: {
     // the cache and set only this provider's entry, or the write would clobber
     // the models the overlapping refresh just stored.
     const latest = readModelsCache(path);
-    latest.providers[input.providerId] = { fetchedAt: Date.now(), models };
+    latest.providers[input.providerId] = { fetchedAt: Date.now(), models, ...(input.account ? { account: input.account } : {}) };
     writeModelsCache(latest, path);
     return models;
   } catch {

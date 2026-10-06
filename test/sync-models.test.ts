@@ -306,3 +306,38 @@ test("UB-016: the GPT-6 models join an old ChatGPT list when the token is expire
     delete process.env.UB_MODELS_CACHE_PATH;
   }
 });
+
+test("UB-016: a ChatGPT list cached for another account is stale for the current one and refetches", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-sync-account-")), "models-cache.json");
+  process.env.UB_MODELS_CACHE_PATH = path;
+  const realFetch = globalThis.fetch;
+  let lists = 0;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.startsWith("https://models.dev/")) return new Response("{}");
+    lists += 1;
+    return new Response(JSON.stringify({ models: [{ slug: "gpt-6-astra", visibility: "list" }] }));
+  }) as typeof fetch;
+  const as = (clientId: string) => ({
+    activeConnectionId: "openai:oauth",
+    connections: {
+      "openai:oauth": {
+        id: "openai:oauth", providerId: "openai", mode: "oauth", fields: {},
+        credential: { kind: "oauth", accessToken: `token-${clientId}-12345678`, refreshToken: null, expiresAt: null, accountId: null, clientId },
+      },
+    },
+  }) as unknown as ProviderStore;
+  try {
+    await syncProviderModels(as("client-a"), { alsoAwait: "openai:oauth" });
+    assert.equal(lists, 1);
+    assert.equal(readModelsCache(path).providers["openai:oauth"].account, "client-a");
+    await syncProviderModels(as("client-a"), { alsoAwait: "openai:oauth" });
+    assert.equal(lists, 1, "same account, young cache: no refetch");
+    await syncProviderModels(as("client-b"), { alsoAwait: "openai:oauth" });
+    assert.equal(lists, 2, "another account's young list is stale: refetched at once");
+    assert.equal(readModelsCache(path).providers["openai:oauth"].account, "client-b");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.UB_MODELS_CACHE_PATH;
+  }
+});

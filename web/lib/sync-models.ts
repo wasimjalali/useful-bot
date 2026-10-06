@@ -1,7 +1,7 @@
 import { keyRejected, mergeExtrasIntoCached, refreshProviderModels } from "../../shared/live-models.ts";
 import { providerMode, type AuthMode, type ProviderMode } from "../../shared/provider-catalog.ts";
 import { accessTokenFor } from "../../shared/provider-oauth.ts";
-import { isLegacyChatGptCredential, type ProviderStore } from "../../shared/providers.ts";
+import { accountKey, isLegacyChatGptCredential, type ProviderStore } from "../../shared/providers.ts";
 
 function substituteFields(baseUrl: string, fields: Record<string, string>): string {
   return baseUrl.replace(/\{(\w+)\}/g, (_, name: string) => fields[name] ?? "");
@@ -98,6 +98,7 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
     query,
     imagesPath,
     extraModels: mode.unlistedModels,
+    account: conn ? accountKey(conn.credential) : null,
     force: force || Boolean(running),
   });
   const job: Promise<unknown> = (running ? running.job.catch(() => undefined).then(run) : run()).finally(() => {

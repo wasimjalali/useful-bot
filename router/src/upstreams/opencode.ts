@@ -5,7 +5,7 @@ import { applyReasoning, modelOption, modelSeesImages } from "../../../shared/mo
 import { rewrapThinkHistory, stripEarlierReasoning, usesInlineThink } from "../inline-think.ts";
 import { UpstreamRefusalError } from "../circuit.ts";
 import type { ModelSelection } from "../../../shared/session-selection.ts";
-import { catalogFor } from "../../../shared/live-models.ts";
+import { catalogFor, listedForAccount } from "../../../shared/live-models.ts";
 import { providerMode } from "../../../shared/provider-catalog.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
@@ -392,7 +392,11 @@ export async function completeUpstream(input: {
   const sees = modelSeesImages(option);
   // Whether the vendor's own list names this model, read now: the cache can
   // change before a refusal comes back (see dropUnlistedModel).
-  let listedAtDispatch = catalogFor(resolved.connection.id).some((row) => row.id === model && !row.unlisted);
+  // Only a list fetched for the account that sends counts: the cache is per
+  // connection and can still hold another saved account's list after a switch.
+  // Without a match the model reads as unlisted, so a refusal drops it for the
+  // sending account (and only the merged GPT-6 ids are ever dropped).
+  let listedAtDispatch = listedForAccount(resolved.connection.id, model, accountKey(credential));
   // eve compacts at 75% of the model's window (agent/lib/model-window.ts reads
   // the same catalog), so the output cap keeps to the last tenth: a prompt at
   // the threshold plus a full answer still fits a small model's window.
@@ -496,7 +500,7 @@ export async function completeUpstream(input: {
     // switched meanwhile). The listed snapshot belongs to the account that
     // sends, so it is taken again for that one; the same account keeps it.
     if (accountKey(credential) !== accountKey(before)) {
-      listedAtDispatch = catalogFor(resolved.connection.id).some((row) => row.id === model && !row.unlisted);
+      listedAtDispatch = listedForAccount(resolved.connection.id, model, accountKey(credential));
     }
     response = await dispatch();
   }
