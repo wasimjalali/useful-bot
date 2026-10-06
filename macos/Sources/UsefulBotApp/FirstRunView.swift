@@ -479,7 +479,7 @@ private struct WelcomePage: View {
                     .font(.system(size: 30, weight: .semibold))
                     .tracking(DesignTokens.Tracking.heading * 30)
                     .foregroundStyle(Theme.C.ink)
-                Text("A team of AI helpers that works on your Mac. Your chats and keys are stored here.")
+                Text("Useful Bot is the free, open-source alternative to Grok Bot.\nRuns locally with no limits, on the subscription you already pay for.")
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.C.inkMuted)
                     .multilineTextAlignment(.center)
