@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { catalogFor, writeModelsCache } from "../shared/live-models.ts";
+import { catalogFor, readModelsCache, writeModelsCache } from "../shared/live-models.ts";
 import { hydrateModel } from "../shared/models.ts";
 import type { ProviderStore } from "../shared/providers.ts";
 import { syncProviderModels } from "../web/lib/sync-models.ts";
@@ -199,7 +199,7 @@ test("UB-016: the GPT-6 models the list omits join the ChatGPT list only, and a 
     assert.equal(luna?.contextTokens, 123000);
     assert.equal(luna?.unlisted, undefined, "listed means the router must never drop it");
     assert.equal(chatgpt.find((item) => item.id === "gpt-6.1-sol")?.unlisted, true);
-    assert.equal(chatgpt.find((item) => item.id === "gpt-6.1-sol")?.label, "GPT-6.1 Sol");
+    assert.equal(chatgpt.find((item) => item.id === "gpt-6.1-sol")?.label, "GPT-6.1-Sol");
     assert.equal(chatgpt.find((item) => item.id === "gpt-6-astra")?.unlisted, undefined);
     // The API-key connection is never given them.
     await syncProviderModels(store, { force: true, alsoAwait: "openai:api" });
@@ -237,6 +237,70 @@ test("UB-016: a ChatGPT list cached by 1.1.2 refetches on the next unforced refr
     assert.equal(catalogFor("openai:oauth", path).some((item) => item.id === "gpt-6.1-sol"), true);
     await syncProviderModels(store, { alsoAwait: "openai:oauth" });
     assert.equal(lists, 1, "once the rows are there the 30 minute TTL holds again");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.UB_MODELS_CACHE_PATH;
+  }
+});
+
+// Seen live: a ChatGPT list cached before the update, the access token expired,
+// and the menu showed only the four listed models until a turn refreshed the token.
+test("UB-016: the GPT-6 models join an old ChatGPT list when the token is expired or the list call fails, with no fetch of its own and no fresh fetchedAt", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-sync-offline-")), "models-cache.json");
+  process.env.UB_MODELS_CACHE_PATH = path;
+  const realFetch = globalThis.fetch;
+  const calls: string[] = [];
+  let listStatus = 401;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.startsWith("https://models.dev/")) return new Response("{}");
+    return new Response("{}", { status: listStatus });
+  }) as typeof fetch;
+  const oldAt = Date.now() - 3 * 60 * 60 * 1000;
+  const seed = () => writeModelsCache({
+    schemaVersion: 3,
+    providers: { "openai:oauth": { fetchedAt: oldAt, models: ["gpt-6-astra", "gpt-5.6-sol"].map((id) => hydrateModel("openai:oauth", id)) } },
+  }, path);
+  const connection = (expiresAt: number) => ({
+    activeConnectionId: "openai:oauth",
+    connections: {
+      "openai:oauth": {
+        id: "openai:oauth", providerId: "openai", mode: "oauth", fields: {},
+        credential: { kind: "oauth", accessToken: "token-offline-12345678", refreshToken: "refresh-1", expiresAt, accountId: null, clientId: "oaiapp_test" },
+      },
+    },
+  }) as unknown as ProviderStore;
+  const ids = () => catalogFor("openai:oauth", path).map((item) => item.id).sort();
+  const all = ["gpt-5.6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"];
+  try {
+    // Expired token: nothing is fetched, nothing is refreshed, the rows still appear.
+    seed();
+    await syncProviderModels(connection(Date.now() - 60_000), { force: true, alsoAwait: "openai:oauth" });
+    assert.deepEqual(calls, [], "no list fetch, no token call");
+    assert.deepEqual(ids(), all);
+    assert.equal(readModelsCache(path).providers["openai:oauth"].fetchedAt, oldAt, "still stale, so the next refresh refetches");
+    assert.equal(catalogFor("openai:oauth", path).find((item) => item.id === "gpt-6.1-sol")?.unlisted, true);
+    assert.equal(catalogFor("openai:oauth", path).find((item) => item.id === "gpt-6.1-sol")?.label, "GPT-6.1-Sol");
+    // Live token, list call refused: same result.
+    seed();
+    await syncProviderModels(connection(Date.now() + 3_600_000), { force: true, alsoAwait: "openai:oauth" });
+    assert.deepEqual(ids(), all);
+    assert.equal(readModelsCache(path).providers["openai:oauth"].fetchedAt, oldAt);
+    // Network failure is the same.
+    seed();
+    listStatus = 200;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      if (String(input).startsWith("https://models.dev/")) return new Response("{}");
+      throw new Error("offline");
+    }) as typeof fetch;
+    await syncProviderModels(connection(Date.now() + 3_600_000), { force: true, alsoAwait: "openai:oauth" });
+    assert.deepEqual(ids(), all);
+    assert.equal(readModelsCache(path).providers["openai:oauth"].fetchedAt, oldAt);
+    // No cached list at all: the static fallback is never turned into a vendor list.
+    writeModelsCache({ schemaVersion: 3, providers: {} }, path);
+    await syncProviderModels(connection(Date.now() - 60_000), { force: true, alsoAwait: "openai:oauth" });
+    assert.equal(readModelsCache(path).providers["openai:oauth"], undefined);
   } finally {
     globalThis.fetch = realFetch;
     delete process.env.UB_MODELS_CACHE_PATH;

@@ -1,4 +1,4 @@
-import { keyRejected, refreshProviderModels } from "../../shared/live-models.ts";
+import { keyRejected, mergeExtrasIntoCached, refreshProviderModels } from "../../shared/live-models.ts";
 import { providerMode, type AuthMode, type ProviderMode } from "../../shared/provider-catalog.ts";
 import { accessTokenFor } from "../../shared/provider-oauth.ts";
 import { isLegacyChatGptCredential, type ProviderStore } from "../../shared/providers.ts";
@@ -59,7 +59,12 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
     } else if (conn.credential.kind === "oauth") {
       const auth = accessTokenFor(conn.providerId, conn.credential);
       // An expired ChatGPT token would only fail; the cached list stays until a chat call refreshes it.
-      if (conn.providerId === "openai" && auth.expired) return;
+      // The models the vendor omits still join that list: no fetch, and no token refresh here, which
+      // could race the router's own and trip refresh_token_reused.
+      if (conn.providerId === "openai" && auth.expired) {
+        mergeExtrasIntoCached(id, mode.unlistedModels ?? []);
+        return;
+      }
       key = auth.token;
       headers = { ...headers, ...auth.headers };
     }

@@ -154,8 +154,10 @@ export interface ProviderStore {
   roles: { reviewer?: RoleSelection; image?: RoleSelection };
   /**
    * Unlisted models (provider-catalog unlistedModels) a ChatGPT account's own
-   * first use found refused, by the ID token subject of that account. Read
-   * back at every menu, so a cached list never brings one back and a switch of
+   * first use found refused, by that account's issued client id (one per saved
+   * workspace, so two workspaces of one login keep separate lists; the ID token
+   * subject only when a credential has no client id). Read back at every menu
+   * and every dispatch, so a cached list never brings one back and a switch of
    * account shows that account's own list. Signing out drops the entry.
    */
   unavailableModels?: Record<string, string[]>;
@@ -411,19 +413,17 @@ export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = proces
     ? active
     : null;
   next.selectedModel = typeof rec.selectedModel === "string" && rec.selectedModel ? rec.selectedModel : null;
-  // A retired route (UB-015) can't be the chat connection: move to another
-  // connected one the way clearConnection does, and forget its model.
-  if (next.activeConnectionId && isRetired({ id: next.activeConnectionId })) {
-    next.activeConnectionId = Object.values(next.connections).find((conn) => isConnected(conn))?.id ?? null;
-    next.selectedModel = null;
-  }
+  // A retired route (UB-015) stays the chat connection until the owner picks
+  // another or removes it: every turn on it is refused with its sentence
+  // (resolveUpstream, modelSelectionRefusal), never moved to another provider
+  // or the env key behind the owner's back.
   next.effort = isEffortId(rec.effort) ? rec.effort : null;
   next.speed = isSpeedId(rec.speed) ? rec.speed : "standard";
   if (isRecord(rec.roles)) {
     const reviewer = parseRoleSelection(rec.roles.reviewer);
-    if (reviewer && next.connections[reviewer.connectionId] && !isRetired({ id: reviewer.connectionId })) next.roles.reviewer = reviewer;
+    if (reviewer && next.connections[reviewer.connectionId]) next.roles.reviewer = reviewer;
     const image = parseRoleSelection(rec.roles.image);
-    if (image && next.connections[image.connectionId] && !isRetired({ id: image.connectionId })) next.roles.image = image;
+    if (image && next.connections[image.connectionId]) next.roles.image = image;
   }
   if (isRecord(rec.unavailableModels)) {
     const dropped: Record<string, string[]> = {};
@@ -636,10 +636,10 @@ export function clearConnection(store: ProviderStore, id: string): ProviderStore
     activeConnectionId = Object.values(connections).find((conn) => isConnected(conn))?.id ?? null;
   }
   // Signing out forgets what that account's first use found refused.
-  const subject = accountSubject(store.connections[id]);
+  const account = accountKey(store.connections[id]?.credential);
   let unavailableModels = store.unavailableModels;
-  if (subject && unavailableModels?.[subject]) {
-    const { [subject]: _forgotten, ...rest } = unavailableModels;
+  if (account && unavailableModels?.[account]) {
+    const { [account]: _forgotten, ...rest } = unavailableModels;
     unavailableModels = Object.keys(rest).length > 0 ? rest : undefined;
   }
   const next: ProviderStore = { ...store, connections, roles, activeConnectionId };
@@ -674,6 +674,9 @@ function withImplicit(store: ProviderStore, id: string, env: NodeJS.ProcessEnv):
 }
 
 export function setActiveConnection(store: ProviderStore, id: string, env: NodeJS.ProcessEnv = process.env): ProviderStore {
+  // A retired route says so, like a turn on it does, instead of "not connected".
+  const retired = retiredRouteMessage(id);
+  if (retired) throw new ProviderRouteRetiredError(retired);
   store = withImplicit(store, id, env);
   const conn = store.connections[id];
   if (!conn) throw new Error("connection_unknown");
@@ -723,6 +726,8 @@ export function setRole(store: ProviderStore, role: "reviewer" | "image", select
     return { ...store, roles };
   }
   store = withImplicit(store, selection.connectionId, env);
+  const retired = retiredRouteMessage(selection.connectionId);
+  if (retired) throw new ProviderRouteRetiredError(retired);
   const conn = store.connections[selection.connectionId];
   if (!conn) throw new Error("connection_unknown");
   if (role === "image" && !providerMode(conn.providerId, conn.mode).images) {
@@ -792,25 +797,39 @@ function connectionLabel(conn: Pick<Connection, "providerId" | "mode" | "fields"
   return providerMode(conn.providerId, conn.mode).label;
 }
 
-/** The ChatGPT sign-in's stable account id: the validated ID token subject. Null for any other credential. */
-function accountSubject(conn: Connection | undefined): string | null {
-  if (!conn || conn.providerId !== "openai" || conn.mode !== "oauth" || conn.credential.kind !== "oauth") return null;
-  return conn.credential.subject || null;
+/**
+ * The ChatGPT account a credential belongs to: its issued client id, which the
+ * sign-in registers once per saved workspace (the same login in two workspaces
+ * has one subject and two client ids). The ID token subject only stands in for
+ * a credential without one. Null for any other credential.
+ */
+export function accountKey(credential: Credential | undefined): string | null {
+  if (!credential || credential.kind !== "oauth") return null;
+  return credential.clientId || credential.subject || null;
+}
+
+function chatGptAccount(conn: Connection | undefined): string | null {
+  if (!conn || conn.providerId !== "openai" || conn.mode !== "oauth") return null;
+  return accountKey(conn.credential);
 }
 
 /** Unlisted models this connection's account has had refused. Empty for every other connection. */
 export function unavailableModelIds(store: ProviderStore, connectionId: string): Set<string> {
-  const subject = accountSubject(store.connections[connectionId]);
-  return new Set(subject ? store.unavailableModels?.[subject] ?? [] : []);
+  const account = chatGptAccount(store.connections[connectionId]);
+  return new Set(account ? store.unavailableModels?.[account] ?? [] : []);
 }
 
-/** Remember that the account behind this connection was refused an unlisted model. No-op without a stable account id. */
-export function recordUnavailableModel(store: ProviderStore, connectionId: string, modelId: string): ProviderStore {
-  const subject = accountSubject(store.connections[connectionId]);
-  if (!subject) return store;
-  const known = store.unavailableModels?.[subject] ?? [];
+/** Remember that an account (accountKey) was refused an unlisted model. Idempotent. */
+export function recordUnavailableModelFor(store: ProviderStore, account: string, modelId: string): ProviderStore {
+  const known = store.unavailableModels?.[account] ?? [];
   if (known.includes(modelId)) return store;
-  return { ...store, unavailableModels: { ...store.unavailableModels, [subject]: [...known, modelId] } };
+  return { ...store, unavailableModels: { ...store.unavailableModels, [account]: [...known, modelId] } };
+}
+
+/** Remember that the account behind this connection was refused an unlisted model. No-op without an account id. */
+export function recordUnavailableModel(store: ProviderStore, connectionId: string, modelId: string): ProviderStore {
+  const account = chatGptAccount(store.connections[connectionId]);
+  return account ? recordUnavailableModelFor(store, account, modelId) : store;
 }
 
 /** A connection's live list minus the models its account has had refused. */
@@ -1325,6 +1344,9 @@ export function selectionAvailability(
   const conn = selectionConnection(store, selection.connectionId, env);
   if (!conn) return { available: false, reason: "connection_missing" };
   if (!isConnected(conn)) return { available: false, reason: "provider_disconnected" };
+  // What the account's own first use refused is checked on its own, so a
+  // missing model cache never lets it back in.
+  if (unavailableModelIds(store, conn.id).has(selection.modelId)) return { available: false, reason: "model_missing" };
   const live = liveCatalog(store, conn.id);
   if (live.length > 0 && !live.some((item) => item.id === selection.modelId)) {
     return { available: false, reason: "model_missing" };
@@ -1506,6 +1528,9 @@ export function resolveUpstream(
     const implicit = !store.connections["opencode-go:plan"] ? envConnection(env) : null;
     const listed = implicit ? [...Object.values(store.connections), implicit] : Object.values(store.connections);
     const sel = store.roles.image;
+    // A saved image choice on a retired route is refused with its sentence, not swapped for another connection.
+    const selRetired = sel ? retiredRouteMessage(sel.connectionId) : null;
+    if (selRetired) throw new ProviderRouteRetiredError(selRetired);
     const selConn = sel ? listed.find((conn) => conn.id === sel.connectionId) : undefined;
     const picked = selConn && isConnected(selConn)
       ? selConn
@@ -1567,11 +1592,20 @@ export function resolveUpstream(
   // The chat connection is a retired route: say so, never fall through to
   // the env key or another connection.
   const activeRetired = store.activeConnectionId ? retiredRouteMessage(store.activeConnectionId) : null;
-  if (activeRetired) throw new ProviderRouteRetiredError(activeRetired);
   const live = activeConnection(store, env);
   const reviewerSel = alias === "reviewer" && store.roles.reviewer
     ? store.roles.reviewer
     : null;
+  const reviewerOwn = reviewerSel !== null
+    && (retiredRouteMessage(reviewerSel.connectionId) !== null || isConnected(store.connections[reviewerSel.connectionId]));
+  if (activeRetired && !reviewerOwn) throw new ProviderRouteRetiredError(activeRetired);
+  if (reviewerSel && reviewerOwn) {
+    // A saved reviewer choice is held to the same checks as a bot's pick: a
+    // retired route or a model the account's own turn refused is refused here,
+    // not sent. A disconnected reviewer connection still follows the chat one.
+    const verdict = selectionAvailability(store, { connectionId: reviewerSel.connectionId, modelId: reviewerSel.modelId, effort: reviewerSel.effort, speed: store.speed }, env);
+    if (!verdict.available) throw unavailableError(verdict);
+  }
   const picked = reviewerSel && store.connections[reviewerSel.connectionId]
     && isConnected(store.connections[reviewerSel.connectionId])
     ? store.connections[reviewerSel.connectionId]

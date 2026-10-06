@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROVIDER_CATALOG, providerMode, retiredRouteMessage } from "../shared/provider-catalog.ts";
@@ -10,6 +10,7 @@ import {
   clearConnection,
   effectiveDefault,
   parseProviderStore,
+  pickComposerModel,
   ProviderRouteRetiredError,
   publicProviders,
   readProviderStore,
@@ -17,6 +18,7 @@ import {
   selectionAvailability,
   setActiveConnection,
   setOAuthCredential,
+  setRole,
   setProviderKey,
   emptyProviderStore,
 } from "../shared/providers.ts";
@@ -24,7 +26,8 @@ import type { ModelSelection } from "../shared/session-selection.ts";
 import { readShell, updateShell } from "../shared/shell-io.ts";
 import { withBotSelection } from "../shared/shell-store.ts";
 import { modelSelectionRefusal } from "../web/lib/agent-exec.ts";
-import { applyProvidersDelete, applyProvidersPut } from "../web/lib/providers-write.ts";
+import { applyProvidersDelete, applyProvidersPut, oauthStartRetired } from "../web/lib/providers-write.ts";
+import { dropLegacyDeviceFlowFile } from "../shared/provider-oauth.ts";
 
 // Ways UB-015 can fail, written before the code:
 // 1. a retired route still shows in the Connect list or a picker;
@@ -127,16 +130,91 @@ test("a stored connection of each retired route shows as retired with its own me
   for (const row of RETIRED) assert.equal((retiredRouteMessage(row.id) ?? "").includes("—"), false);
 });
 
-test("loading a store with a retired active connection snaps to a live one and drops its roles", () => {
+test("loading a store keeps a retired active connection, its model and its roles: nothing moves behind the owner's back", () => {
   const store = parseProviderStore(raw(), {});
-  assert.equal(store.activeConnectionId, GO);
-  assert.equal(store.selectedModel, null);
-  assert.equal(store.roles.reviewer, undefined);
-  assert.equal(store.roles.image, undefined);
+  assert.equal(store.activeConnectionId, "zai:plan");
+  assert.equal(store.selectedModel, "glm-5.3");
+  assert.equal(store.roles.reviewer?.connectionId, "zai:plan");
+  assert.equal(store.roles.image?.connectionId, "alibaba:plan");
   assert.equal(Object.keys(store.connections).length, 4, "the retired connections are kept to be shown and removed");
-  const alone = raw();
-  delete (alone.connections as Record<string, unknown>)[GO];
-  assert.equal(parseProviderStore(alone, {}).activeConnectionId, null, "nothing live to snap to");
+  // Nothing runs on it, and nothing else answers in its place.
+  assert.equal(effectiveDefault(store, {}), null);
+  assert.equal(publicProviders(store, {}).connections.some((conn) => conn.active), false);
+  // Removing it (an explicit act) is what moves the default.
+  assert.equal(clearConnection(store, "zai:plan").activeConnectionId, GO);
+});
+
+// The owner's own store, read back from disk. A retired chat connection used
+// to be rewritten at parse time to the next connection, or to the env Go key
+// (UB_OPENCODE_GO_KEY, loaded from Keychain), or a paid openai:api key, and the
+// owner never saw the sentence.
+test("a retired chat connection read from disk answers its sentence, with the env Go key set and with openai:api stored", async () => {
+  await withWorld(async ({ providers }) => {
+    const sentence = retiredRouteMessage("zai:plan");
+    const file = raw();
+    (file.connections as Record<string, unknown>)["openai:api"] = stored("openai:api", "openai", "api", { kind: "key", key: "sk-paid-key-12345678" });
+    writeFileSync(providers, JSON.stringify(file));
+    process.env.UB_OPENCODE_GO_KEY = "env-go-key-12345678";
+    const env = { UB_OPENCODE_GO_KEY: "env-go-key-12345678" };
+    const store = readProviderStore();
+    assert.equal(store.activeConnectionId, "zai:plan");
+    for (const alias of ["workhorse", "reviewer", "image"] as const) {
+      assert.throws(() => resolveUpstream(store, alias, env), (error: unknown) => (
+        error instanceof ProviderRouteRetiredError && error.message === (alias === "image" ? retiredRouteMessage("alibaba:plan") : sentence)
+      ), alias);
+    }
+    // A bot with no model of its own follows the default and is refused before eve with the sentence.
+    const refusal = modelSelectionRefusal(readShell().bots[0], store);
+    assert.ok(refusal);
+    assert.equal(refusal.status, 409);
+    const body = await refusal.json() as { error: string; message: string };
+    assert.equal(body.error, "provider_route_retired");
+    assert.equal(body.message, sentence);
+  });
+});
+
+test("a saved reviewer or image role on a retired route is refused with its sentence, even while the chat connection is live", () => {
+  const live = raw(GO);
+  const store = parseProviderStore(live, {});
+  assert.equal(store.activeConnectionId, GO);
+  const env = { UB_OPENCODE_GO_KEY: "env-go-key-12345678" };
+  for (const alias of ["reviewer", "image"] as const) {
+    assert.throws(() => resolveUpstream(store, alias, env), (error: unknown) => (
+      error instanceof ProviderRouteRetiredError && error.message === retiredRouteMessage(alias === "reviewer" ? "zai:plan" : "alibaba:plan")
+    ), alias);
+  }
+  assert.equal(resolveUpstream(store, "workhorse", env).providerId, "opencode-go");
+});
+
+test("a role write, an active pick and a model pick on a retired route are refused with the retired error", () => {
+  const store = parseProviderStore(raw(GO), {});
+  for (const row of RETIRED) {
+    assert.throws(() => setRole(store, "reviewer", { connectionId: row.id, modelId: "x", effort: null }), ProviderRouteRetiredError, row.id);
+    assert.throws(() => setRole(store, "image", { connectionId: row.id, modelId: "x", effort: null }), ProviderRouteRetiredError, row.id);
+    assert.throws(() => setActiveConnection(store, row.id), ProviderRouteRetiredError, row.id);
+    assert.throws(() => pickComposerModel(store, `${row.id}::x`, {}), ProviderRouteRetiredError, row.id);
+  }
+  withWorld(() => {
+    assert.throws(() => applyProvidersPut({ roles: { reviewer: { connectionId: "zai:plan", modelId: "glm-5.3", effort: null } } }), ProviderRouteRetiredError);
+    assert.throws(() => applyProvidersPut({ activeConnectionId: "zai:plan" }), ProviderRouteRetiredError);
+    assert.throws(() => applyProvidersPut({ modelId: "zai:plan::x" }), ProviderRouteRetiredError);
+  });
+});
+
+test("the sign-in start route's check names a retired route and passes the live ones", () => {
+  assert.equal(oauthStartRetired("github-copilot"), retiredRouteMessage("github-copilot:oauth"));
+  assert.equal(oauthStartRetired("openai"), null);
+  assert.equal(oauthStartRetired("not-a-provider"), null);
+  assert.equal(oauthStartRetired(""), null);
+});
+
+test("the old pending device-flow file is removed once, a missing one is fine", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-device-flow-"));
+  const file = join(dir, "provider-oauth.json");
+  writeFileSync(file, "{}");
+  dropLegacyDeviceFlowFile(file);
+  assert.equal(existsSync(file), false);
+  dropLegacyDeviceFlowFile(file);
 });
 
 test("a turn on a retired route is refused with its own code and sentence, never substituted", () => {
@@ -149,12 +227,12 @@ test("a turn on a retired route is refused with its own code and sentence, never
     ));
     assert.equal(botComposerState(store, pick).available, false);
     assert.throws(() => applyBotPick(store, pick, { effort: "high" }, {}), ProviderRouteRetiredError);
-    assert.throws(() => setActiveConnection(store, row.id), /provider_disconnected/);
+    assert.throws(() => setActiveConnection(store, row.id), ProviderRouteRetiredError);
   }
   // An in-memory store that still names a retired chat connection is refused too, not sent to the env key.
   const stale = { ...store, activeConnectionId: "zai:plan" };
   assert.throws(() => resolveUpstream(stale, "workhorse", { UB_OPENCODE_GO_KEY: "env-key-12345678" }), ProviderRouteRetiredError);
-  assert.equal(effectiveDefault(parseProviderStore(raw(), {}), {})?.connectionId, GO);
+  assert.equal(effectiveDefault(parseProviderStore(raw(GO), {}), {})?.connectionId, GO);
 });
 
 test("a retired route takes no new key or sign-in", () => {
@@ -195,8 +273,10 @@ test("a bot pinned to a retired route is refused before eve with the route's own
     const body = await refusal.json() as { error: string; message: string };
     assert.equal(body.error, "provider_route_retired");
     assert.equal(body.message, retiredRouteMessage("alibaba:plan"));
-    // Removing the connection resets the pin to inherit the default, so the bot runs again.
+    // Removing the connection resets the pin to inherit the default. The default itself
+    // is on a retired route here, so removing that one too is what lets the bot run again.
     applyProvidersDelete({ connectionId: "alibaba:plan" });
+    applyProvidersDelete({ connectionId: "zai:plan" });
     assert.equal(readShell().bots[0].model, null);
     assert.equal(modelSelectionRefusal(readShell().bots[0], readProviderStore()), null);
   });

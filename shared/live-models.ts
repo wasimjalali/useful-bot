@@ -371,6 +371,34 @@ function metaKeyFor(providerId: string, override?: string | null): string | null
   }
 }
 
+/**
+ * The cached list with the models the vendor omits merged in, for a refresh
+ * that could not fetch (expired token, network, an empty answer). The merged
+ * list is stored under the OLD fetchedAt: the menu shows the models at once and
+ * the next refresh still sees the list as stale and refetches. No fetch, no
+ * token refresh. Null when there is no cached list to merge into (the static
+ * fallback is not the vendor's list and must not become one).
+ */
+export function mergeExtrasIntoCached(providerId: string, extras: UnlistedModel[], path = modelsCachePath()): ModelOption[] | null {
+  const current = readModelsCache(path).providers[providerId];
+  if (!current?.models?.length) return null;
+  const missing = extras.filter((extra) => !current.models.some((row) => row.id === extra.id));
+  if (missing.length === 0) return current.models;
+  const rows = mergeLiveModels(providerId, missing.map((extra) => extra.id), Object.fromEntries(missing.map((extra) => [extra.id, { label: extra.label }])));
+  const merged = [...current.models, ...rows.map((row) => ({ ...row, unlisted: true }))];
+  try {
+    // Re-read: only the entry this call saw is replaced, a newer one from an overlapping refresh wins.
+    const latest = readModelsCache(path);
+    if (latest.providers[providerId]?.fetchedAt === current.fetchedAt) {
+      latest.providers[providerId] = { fetchedAt: current.fetchedAt, models: merged };
+      writeModelsCache(latest, path);
+    }
+  } catch (err) {
+    console.error(`[models] unlisted rows for ${providerId} were not stored`, err);
+  }
+  return merged;
+}
+
 export async function refreshProviderModels(input: {
   providerId: string;
   baseUrl: string;
@@ -395,9 +423,12 @@ export async function refreshProviderModels(input: {
   const fresh = current && Date.now() - current.fetchedAt < CACHE_TTL_MS && current.models.length > 0
     && (input.extraModels ?? []).every((extra) => current.models.some((row) => row.id === extra.id));
   if (!input.force && fresh) return current.models;
+  // The list could not be fetched (expired token, network, an empty answer):
+  // the last good list stays, with the models the vendor omits merged in.
+  const keepLast = (): ModelOption[] => mergeExtrasIntoCached(input.providerId, input.extraModels ?? [], path) ?? modelsFor(input.providerId);
   try {
     const listed = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, input.query);
-    if (listed.ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
+    if (listed.ids.length === 0) return keepLast();
     if (input.imagesPath) {
       // The image list is a separate call. If it fails, the chat list still
       // lands and the image rows from the last good refresh stay with all
@@ -447,6 +478,6 @@ export async function refreshProviderModels(input: {
     writeModelsCache(latest, path);
     return models;
   } catch {
-    return current?.models?.length ? current.models : modelsFor(input.providerId);
+    return keepLast();
   }
 }

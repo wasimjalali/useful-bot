@@ -21,9 +21,9 @@ export interface UnlistedModel {
  * account's menu (router/src/upstreams/opencode.ts).
  */
 export const CHATGPT_UNLISTED_MODELS: UnlistedModel[] = [
-  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
-  { id: "gpt-6-sol", label: "GPT-6 Sol" },
-  { id: "gpt-6-luna", label: "GPT-6 Luna" },
+  { id: "gpt-6.1-sol", label: "GPT-6.1-Sol" },
+  { id: "gpt-6-sol", label: "GPT-6-Sol" },
+  { id: "gpt-6-luna", label: "GPT-6-Luna" },
 ];
 
 export interface ProviderMode {

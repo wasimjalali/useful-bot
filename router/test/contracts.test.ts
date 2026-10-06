@@ -1998,7 +1998,8 @@ async function chatgptRun(options: {
 const SSE_OK = { status: 200, body: "data: [DONE]\n\n" };
 
 test("a ChatGPT 403 names why: not eligible, other plan-sharing codes, and a bare admission 403", async () => {
-  const eligible = await chatgptRun({ upstream: { status: 403, body: JSON.stringify({ error: { code: "subscription_sharing_user_not_eligible" } }) } });
+  // A listed model: the unlisted-model drop (UB-016) has its own tests below.
+  const eligible = await chatgptRun({ model: "gpt-5.6-sol", upstream: { status: 403, body: JSON.stringify({ error: { code: "subscription_sharing_user_not_eligible" } }) } });
   assert.equal(eligible.error?.code, "upstream_chatgpt_not_eligible");
   assert.equal(eligible.error?.status, 403);
   assert.equal(eligible.error?.retryable, false);
@@ -2025,7 +2026,9 @@ test("a ChatGPT 403 names why: not eligible, other plan-sharing codes, and a bar
   assert.equal(unauthorized.error?.code, "upstream_auth_failed");
 });
 
-const ACCOUNT_A = { subject: "sub-account-a" };
+// One issued client id per saved workspace: the refusal list is keyed by it.
+const ACCOUNT_A = { subject: "sub-account-a", clientId: "client-a" };
+const ACCOUNT_B = { subject: "sub-account-b", clientId: "client-b" };
 const NOT_ELIGIBLE = JSON.stringify({ error: { code: "subscription_sharing_user_not_eligible" } });
 const unsupported = (param?: string) => JSON.stringify({ error: { code: "subscription_sharing_unsupported_capability", ...(param ? { param } : {}) } });
 const UNLISTED_ROW = [{ id: "gpt-6.1-sol", unlisted: true }, { id: "gpt-6-astra" }];
@@ -2036,25 +2039,33 @@ test("UB-016: a refused unlisted model is dropped for that account only, with th
     const out = await chatgptRun({ held: ACCOUNT_A, cached: UNLISTED_ROW, upstream: { status: 400, body } });
     assert.equal(out.error?.code, "upstream_chatgpt_model_not_in_plan", body);
     assert.equal(out.error?.retryable, false);
-    assert.deepEqual(out.dropped, { "sub-account-a": ["gpt-6.1-sol"] }, body);
+    assert.deepEqual(out.dropped, { "client-a": ["gpt-6.1-sol"] }, body);
     assert.equal(out.store?.lastError, null);
   }
   // 403 not eligible drops it too.
   const eligible = await chatgptRun({ held: ACCOUNT_A, cached: UNLISTED_ROW, upstream: { status: 403, body: NOT_ELIGIBLE } });
   assert.equal(eligible.error?.code, "upstream_chatgpt_model_not_in_plan");
   assert.equal(eligible.error?.status, 403);
-  assert.deepEqual(eligible.dropped, { "sub-account-a": ["gpt-6.1-sol"] });
+  assert.deepEqual(eligible.dropped, { "client-a": ["gpt-6.1-sol"] });
   // No cache file at all: the model is not a listed row either.
   const bare = await chatgptRun({ held: ACCOUNT_A, upstream: { status: 400, body: unsupported("model") } });
   assert.equal(bare.error?.code, "upstream_chatgpt_model_not_in_plan");
   // Another account's earlier drop stays and this one is added beside it.
   const second = await chatgptRun({
-    held: { subject: "sub-account-b" },
+    held: ACCOUNT_B,
     cached: UNLISTED_ROW,
     upstream: { status: 400, body: unsupported("model") },
-    storeEdit: (store) => ({ ...store, unavailableModels: { "sub-account-a": ["gpt-6-luna"] } }),
+    storeEdit: (store) => ({ ...store, unavailableModels: { "client-a": ["gpt-6-luna"] } }),
   });
-  assert.deepEqual(second.dropped, { "sub-account-a": ["gpt-6-luna"], "sub-account-b": ["gpt-6.1-sol"] });
+  assert.deepEqual(second.dropped, { "client-a": ["gpt-6-luna"], "client-b": ["gpt-6.1-sol"] });
+  // The same login in another workspace (same subject, other client id) is another account.
+  const sameLogin = await chatgptRun({
+    held: { subject: "sub-account-a", clientId: "client-a2" },
+    cached: UNLISTED_ROW,
+    upstream: { status: 400, body: unsupported("model") },
+    storeEdit: (store) => ({ ...store, unavailableModels: { "client-a": ["gpt-6.1-sol"] } }),
+  });
+  assert.deepEqual(sameLogin.dropped, { "client-a": ["gpt-6.1-sol"], "client-a2": ["gpt-6.1-sol"] });
 });
 
 test("UB-016: refusals that are not about an unlisted model drop nothing", async () => {
@@ -2074,24 +2085,32 @@ test("UB-016: refusals that are not about an unlisted model drop nothing", async
   // A model that is not one of the merged ids is never dropped.
   const other = await chatgptRun({ held: ACCOUNT_A, model: "gpt-9-made-up", upstream: { status: 400, body: unsupported("model") } });
   assert.deepEqual(other.dropped, {});
-  // No stable account id on the credential: nothing to key the drop by.
-  const anonymous = await chatgptRun({ cached: UNLISTED_ROW, upstream: { status: 400, body: unsupported("model") } });
-  assert.deepEqual(anonymous.dropped, {});
   // The 403 that is not the eligibility code keeps its own code.
   const notPermitted = await chatgptRun({ held: ACCOUNT_A, cached: UNLISTED_ROW, upstream: { status: 403, body: JSON.stringify({ detail: "subscription_sharing_unsupported_capability" }) } });
   assert.equal(notPermitted.error?.code, "upstream_chatgpt_not_permitted");
   assert.deepEqual(notPermitted.dropped, {});
 });
 
-test("UB-016: the account that sent the request must still be the stored one", async () => {
-  const out = await chatgptRun({
+test("UB-016: a refusal is recorded for the account that sent the request, not the one stored now, and never for a signed-out connection", async () => {
+  // A switched to B while the call ran: the refusal is A's, and B's list is not touched.
+  const switched = await chatgptRun({
     held: ACCOUNT_A,
-    stored: { subject: "sub-account-b" },
+    stored: ACCOUNT_B,
     cached: UNLISTED_ROW,
     upstream: { status: 400, body: unsupported("model") },
   });
-  assert.equal(out.error?.code, "upstream_chatgpt_model_not_in_plan");
-  assert.deepEqual(out.dropped, {}, "A switched away while the call ran: B's list is not touched");
+  assert.equal(switched.error?.code, "upstream_chatgpt_model_not_in_plan", "the owner is still told the plan message");
+  assert.deepEqual(switched.dropped, { "client-a": ["gpt-6.1-sol"] }, "recorded for A, so switching back does not offer it again");
+  assert.equal(switched.store?.credential.kind === "oauth" ? switched.store.credential.clientId : null, "client-b", "B stays the stored account");
+  // Signed out while the call ran: no entry is brought back for an account nobody has any more.
+  const signedOut = await chatgptRun({
+    held: ACCOUNT_A,
+    noStore: true,
+    cached: UNLISTED_ROW,
+    upstream: { status: 400, body: unsupported("model") },
+  });
+  assert.equal(signedOut.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.deepEqual(signedOut.dropped, {});
 });
 
 test("UB-016: a refusal that arrives mid-stream is handled the same way", async () => {
@@ -2101,13 +2120,13 @@ test("UB-016: a refusal that arrives mid-stream is handled the same way", async 
     upstream: frame({ code: "subscription_sharing_unsupported_capability", param: "model", message: "no" }),
   });
   assert.match(model.text, /"code":"upstream_chatgpt_model_not_in_plan"/);
-  assert.deepEqual(model.dropped, { "sub-account-a": ["gpt-6.1-sol"] });
+  assert.deepEqual(model.dropped, { "client-a": ["gpt-6.1-sol"] });
   const eligible = await chatgptRun({
     held: ACCOUNT_A, cached: UNLISTED_ROW, stream: true,
     upstream: frame({ code: "subscription_sharing_user_not_eligible", message: "no" }),
   });
   assert.match(eligible.text, /"code":"upstream_chatgpt_model_not_in_plan"/);
-  assert.deepEqual(eligible.dropped, { "sub-account-a": ["gpt-6.1-sol"] });
+  assert.deepEqual(eligible.dropped, { "client-a": ["gpt-6.1-sol"] });
   const tools = await chatgptRun({
     held: ACCOUNT_A, cached: UNLISTED_ROW, stream: true,
     upstream: frame({ code: "subscription_sharing_unsupported_capability", param: "tools", message: "no" }),

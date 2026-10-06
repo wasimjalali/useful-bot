@@ -150,6 +150,9 @@ private func composerJSON(model: String, label: String, available: Bool = true) 
         // Wrapped in eve's own message and a JSON tail.
         let wrapped = #"Failed after 1 attempt. Last error: {"error":{"code":"provider_route_retired","message":"provider_route_retired: \#(sentence)"}}"#
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: wrapped).message == sentence)
+        // An escaped apostrophe cuts the text at the backslash: a half sentence is never shown.
+        let escaped = #"{"error":{"code":"provider_route_retired","message":"provider_route_retired: GitHub doesn\u0027t support this Copilot sign-in."}}"#
+        #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: escaped).message == "Useful Bot can't use this provider connection any more. Pick another model.")
         // No sentence in the text: still an honest plain line, never a generic failure.
         #expect(TurnFailure(code: "provider_route_retired", detail: "").message == "Useful Bot can't use this provider connection any more. Pick another model.")
     }

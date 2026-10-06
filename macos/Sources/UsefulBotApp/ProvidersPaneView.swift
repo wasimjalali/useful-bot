@@ -131,7 +131,9 @@ struct ProvidersPaneView: View {
     }
 
     private func statusDot(_ status: String) -> some View {
-        let color: Color = status == "ok" ? Theme.C.success : (status == "expired" ? Theme.C.warning : Theme.C.danger)
+        // A turned-off route isn't a failure: muted, not the Error red.
+        let color: Color = status == "ok" ? Theme.C.success
+            : (status == "expired" ? Theme.C.warning : (status == "retired" ? Theme.C.inkFaint : Theme.C.danger))
         let label = status == "ok" ? "Connected" : (status == "expired" ? "Expired" : (status == "retired" ? "Turned off" : "Error"))
         return Circle()
             .fill(color)

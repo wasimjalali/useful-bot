@@ -656,6 +656,17 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+extension ConnectionPublic {
+    /// Why nothing is connected, when the only connections left were turned
+    /// off by their vendor: the first one's own sentence. Nil when something
+    /// usable is connected or nothing was turned off.
+    public static func retiredReason(connected: [ConnectionPublic], retired: [ConnectionPublic]) -> String? {
+        guard connected.isEmpty,
+              let sentence = retired.compactMap(\.lastError).first(where: { !$0.isEmpty }) else { return nil }
+        return sentence
+    }
+}
+
 /// One reasoning effort choice on a role.
 public struct RoleEffortOption: Codable, Equatable, Sendable {
     public let id: String

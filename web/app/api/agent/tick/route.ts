@@ -14,6 +14,10 @@ import {
 import { pumpConnects } from "../../../../../shared/connect-flow.ts";
 import { pumpConnections } from "../../../../../shared/connection-flow.ts";
 import { seedDefaultConnections } from "../../../../../shared/connections-store.ts";
+import { dropLegacyDeviceFlowFile } from "../../../../../shared/provider-oauth.ts";
+
+/** The removed Copilot sign-in's pending file is dropped on the first tick of a start (UB-015). */
+let legacyDeviceFlowDropped = false;
 
 /**
  * Handoff pump and routine scheduler. The sending agent tool only queues a
@@ -99,6 +103,10 @@ export async function POST(request: Request) {
   void pumpConnects().catch(() => undefined);
   void pumpConnections().catch(() => undefined);
   try { seedDefaultConnections(); } catch { /* a locked file retries next tick */ }
+  if (!legacyDeviceFlowDropped) {
+    legacyDeviceFlowDropped = true;
+    dropLegacyDeviceFlowFile();
+  }
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),

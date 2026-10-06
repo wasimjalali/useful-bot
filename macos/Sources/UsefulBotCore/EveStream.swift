@@ -298,7 +298,10 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         let rest = text[range.upperBound...].drop { $0 == " " }
         let sentence = rest.prefix { $0 != "\"" && $0 != "\n" && $0 != "\\" }
         let trimmed = sentence.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? nil : trimmed
+        // Cut at an escape (a JSON-escaped apostrophe, say) it is a half
+        // sentence: only one that ends like a sentence is shown.
+        guard let last = trimmed.last, ".!?".contains(last) else { return nil }
+        return trimmed
     }
 
     public var reason: String? {

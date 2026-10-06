@@ -22,6 +22,7 @@ import {
   readProviderStore,
   recordConnectionError,
   recordUnavailableModel,
+  recordUnavailableModelFor,
   resolveUpstream,
   setActiveConnection,
   setActiveProvider,
@@ -554,7 +555,7 @@ test("UB-016: a dropped unlisted model leaves that account's menus only, survive
     updateProviderStore((current) => recordUnavailableModel(current, "openai:oauth", "gpt-6.1-sol"), path, env);
     // A restart is a fresh read of the file.
     store = readProviderStore(path, env);
-    assert.deepEqual(store.unavailableModels, { "account-a": ["gpt-6.1-sol"] });
+    assert.deepEqual(store.unavailableModels, { "client-account-a": ["gpt-6.1-sol"] });
     assert.deepEqual([...unavailableModelIds(store, "openai:oauth")], ["gpt-6.1-sol"]);
 
     // The menu no longer lists it, and the selected model snaps to one that exists.
@@ -583,7 +584,7 @@ test("UB-016: a dropped unlisted model leaves that account's menus only, survive
     // Recording is idempotent, keeps other accounts' entries and needs a stable account id.
     assert.equal(recordUnavailableModel(store, "openai:oauth", "gpt-6.1-sol"), store);
     const withB = recordUnavailableModel(asB, "openai:oauth", "gpt-6-luna");
-    assert.deepEqual(withB.unavailableModels, { "account-a": ["gpt-6.1-sol"], "account-b": ["gpt-6-luna"] });
+    assert.deepEqual(withB.unavailableModels, { "client-account-a": ["gpt-6.1-sol"], "client-account-b": ["gpt-6-luna"] });
     const anonymous = setOAuthCredential(emptyProviderStore(), "openai", { kind: "oauth", accessToken: "a", refreshToken: null, expiresAt: null, accountId: null });
     assert.equal(recordUnavailableModel(anonymous, "openai:oauth", "gpt-6-luna").unavailableModels, undefined);
     // Another connection never reads the ChatGPT account's list.
@@ -591,11 +592,76 @@ test("UB-016: a dropped unlisted model leaves that account's menus only, survive
 
     // Signing out forgets that account's entry only.
     const signedOut = clearConnection(withB, "openai:oauth");
-    assert.deepEqual(signedOut.unavailableModels, { "account-a": ["gpt-6.1-sol"] });
+    assert.deepEqual(signedOut.unavailableModels, { "client-account-a": ["gpt-6.1-sol"] });
     const last = clearConnection(store, "openai:oauth");
     assert.equal(last.unavailableModels, undefined);
     writeProviderStore(last, path);
     assert.equal(readProviderStore(path, env).unavailableModels, undefined);
+  } finally {
+    if (saved === undefined) delete process.env.UB_MODELS_CACHE_PATH;
+    else process.env.UB_MODELS_CACHE_PATH = saved;
+  }
+});
+
+function chatgptWorkspace(subject: string, clientId: string): Parameters<typeof setOAuthCredential>[2] {
+  return { kind: "oauth", accessToken: `access-${subject}-${clientId}`, refreshToken: `refresh-${subject}`, expiresAt: Date.now() + 3_600_000, accountId: null, clientId, subject };
+}
+
+test("UB-016: two saved workspaces of one login keep separate refusal lists, and signing out of one leaves the other's", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-prov-ws-"));
+  const saved = process.env.UB_MODELS_CACHE_PATH;
+  process.env.UB_MODELS_CACHE_PATH = join(dir, "models-cache.json");
+  try {
+    const env = {} as NodeJS.ProcessEnv;
+    const row = (id: string, unlisted = false) => ({ ...hydrateModel("openai:oauth", id), ...(unlisted ? { unlisted: true } : {}) });
+    writeModelsCache({ schemaVersion: 3, providers: { "openai:oauth": { fetchedAt: Date.now(), models: [row("gpt-6-astra"), row("gpt-6.1-sol", true)] } } });
+    // Same login (one subject), two workspaces (two issued client ids).
+    const workspaceA = chatgptWorkspace("same-login", "client-workspace-a");
+    const workspaceB = chatgptWorkspace("same-login", "client-workspace-b");
+    const inA = recordUnavailableModel(setOAuthCredential(emptyProviderStore(), "openai", workspaceA), "openai:oauth", "gpt-6.1-sol");
+    assert.deepEqual(inA.unavailableModels, { "client-workspace-a": ["gpt-6.1-sol"] });
+    const inB = setOAuthCredential(inA, "openai", workspaceB);
+    assert.equal(unavailableModelIds(inB, "openai:oauth").size, 0, "B does not inherit A's refusal");
+    assert.ok(composerState({ ...inB, activeConnectionId: "openai:oauth" }, env).models.some((m) => m.id === "gpt-6.1-sol"));
+    assert.deepEqual(selectionAvailability(inB, { connectionId: "openai:oauth", modelId: "gpt-6.1-sol", effort: null, speed: "standard" }, env), { available: true });
+    // Signing out of B leaves A's entry.
+    assert.deepEqual(clearConnection(inB, "openai:oauth").unavailableModels, { "client-workspace-a": ["gpt-6.1-sol"] });
+    // Signing back into A finds its own entry.
+    assert.deepEqual([...unavailableModelIds(setOAuthCredential(inB, "openai", workspaceA), "openai:oauth")], ["gpt-6.1-sol"]);
+    // A refusal recorded for B is B's alone.
+    const both = recordUnavailableModel(inB, "openai:oauth", "gpt-6-luna");
+    assert.deepEqual(both.unavailableModels, { "client-workspace-a": ["gpt-6.1-sol"], "client-workspace-b": ["gpt-6-luna"] });
+    assert.deepEqual(recordUnavailableModelFor(inA, "client-workspace-b", "gpt-6-luna").unavailableModels, both.unavailableModels);
+  } finally {
+    if (saved === undefined) delete process.env.UB_MODELS_CACHE_PATH;
+    else process.env.UB_MODELS_CACHE_PATH = saved;
+  }
+});
+
+test("UB-016: a refused unlisted model stays refused with no model cache, and a saved reviewer choice is held to it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-prov-nocache-"));
+  const saved = process.env.UB_MODELS_CACHE_PATH;
+  process.env.UB_MODELS_CACHE_PATH = join(dir, "never-written.json");
+  try {
+    const env = {} as NodeJS.ProcessEnv;
+    let store = setOAuthCredential(emptyProviderStore(), "openai", chatgptAccount("account-a"));
+    store = recordUnavailableModel(store, "openai:oauth", "gpt-6.1-sol");
+    const pinned = { connectionId: "openai:oauth", modelId: "gpt-6.1-sol", effort: null, speed: "standard" as const };
+    // No cache file: the vendor list is empty, so only the stored refusal can say no.
+    assert.deepEqual(selectionAvailability(store, pinned, env), { available: false, reason: "model_missing" });
+    assert.deepEqual(selectionAvailability(store, { ...pinned, modelId: "gpt-6-luna" }, env), { available: true });
+    assert.throws(() => resolveUpstream(store, "workhorse", env, pinned), /model_selection_unavailable/);
+    // The reviewer role goes through the same check, with and without a cache.
+    const withReviewer = { ...store, activeConnectionId: "openai:oauth", roles: { reviewer: { connectionId: "openai:oauth", modelId: "gpt-6.1-sol", effort: null } } };
+    assert.throws(() => resolveUpstream(withReviewer, "reviewer", env), /model_selection_unavailable/);
+    writeModelsCache({
+      schemaVersion: 3,
+      providers: { "openai:oauth": { fetchedAt: Date.now(), models: [{ ...hydrateModel("openai:oauth", "gpt-6.1-sol"), unlisted: true }, hydrateModel("openai:oauth", "gpt-6-astra")] } },
+    });
+    assert.throws(() => resolveUpstream(withReviewer, "reviewer", env), /model_selection_unavailable/);
+    // A reviewer on a model that was never refused still resolves.
+    const fine = { ...withReviewer, roles: { reviewer: { connectionId: "openai:oauth", modelId: "gpt-6-astra", effort: null } } };
+    assert.equal(resolveUpstream(fine, "reviewer", env).modelId, "gpt-6-astra");
   } finally {
     if (saved === undefined) delete process.env.UB_MODELS_CACHE_PATH;
     else process.env.UB_MODELS_CACHE_PATH = saved;

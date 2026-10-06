@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
 import { providerMode } from "../../../../../shared/provider-catalog.ts";
+import { oauthStartRetired } from "../../../../lib/providers-write";
 import { startChatGptSignIn } from "../../../../../shared/chatgpt-signin.ts";
 
 export const runtime = "nodejs";
@@ -24,6 +25,9 @@ export async function POST(request: Request) {
   }
   try {
     const providerId = typeof body.providerId === "string" ? body.providerId : "";
+    // A route turned off by its vendor's terms says so (UB-015), like every other write does.
+    const retired = oauthStartRetired(providerId);
+    if (retired) return NextResponse.json({ ok: false, error: "provider_route_retired", message: retired }, { status: 409 });
     // Only providers with a sign-in entry accept this route.
     const mode = providerMode(providerId, "oauth");
     if (mode.signIn === "chatgpt") {

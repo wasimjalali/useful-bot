@@ -118,6 +118,23 @@ import Testing
         #expect(try decode(#"{"connections":[]}"#).retired.isEmpty)
     }
 
+    @Test func aUserWhoseOnlyConnectionWasTurnedOffSeesWhy() throws {
+        let sentence = "Z.ai only allows the GLM Coding Plan in its supported coding tools, so Useful Bot can't use it. Connect a Z.ai API key instead."
+        let payload = try decode("""
+        {"connections":[{"id":"opencode-go:plan","status":"ok"}],
+         "retired":[{"id":"zai:plan","providerId":"zai","mode":"plan","status":"retired","lastError":"\(sentence)"}]}
+        """)
+        let alone = try decode("""
+        {"connections":[],
+         "retired":[{"id":"zai:plan","providerId":"zai","mode":"plan","status":"retired","lastError":"\(sentence)"}]}
+        """)
+        #expect(ConnectionPublic.retiredReason(connected: alone.connections, retired: alone.retired) == sentence)
+        // Something usable is connected: the generic empty state never applies, so no reason is offered.
+        #expect(ConnectionPublic.retiredReason(connected: payload.connections, retired: payload.retired) == nil)
+        // Nothing connected and nothing turned off: the plain "connect a model" copy.
+        #expect(ConnectionPublic.retiredReason(connected: [], retired: []) == nil)
+    }
+
     @Test func decodesTheDeviceFlowStart() throws {
         let flow = try JSONDecoder().decode(DeviceFlowStart.self, from: Data("""
         {"ok":true,"pollId":"p1","userCode":"ABCD-1234",

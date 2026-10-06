@@ -11,7 +11,8 @@ import { UNKNOWN_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
   readProviderStore,
   recordConnectionError,
-  recordUnavailableModel,
+  recordUnavailableModelFor,
+  accountKey,
   isLegacyChatGptCredential,
   resolveUpstream,
   setOAuthCredential,
@@ -643,22 +644,25 @@ export function refusalAboutModel(code: string | null, param: string | null): bo
 /**
  * UB-016. A ChatGPT plan can run a model the vendor list omits, and only a
  * real turn says whether this account may. When this refused model is one the
- * app merged in (not a row the vendor listed), drop it from this account's
- * menu, and say so (true). A listed model, another connection or an account
- * with no stable id is never touched. The store is written under its lock, and
- * only while the account that sent the request is still the stored one.
+ * app merged in (not a row the vendor listed), drop it from the menu of the
+ * account that sent the request, and say so (true). A listed model, another
+ * connection or a credential with no account id is never touched. The drop is
+ * keyed by the held credential, so an account switch while the call ran still
+ * records it for the account that was refused and leaves the one now stored
+ * alone. It is skipped when no ChatGPT sign-in is stored any more (signed out).
+ * The store is written under its lock.
  */
 function dropUnlistedModel(connectionId: string, model: string, held: Credential): boolean {
   if (connectionId !== "openai:oauth") return false;
   if (!providerMode("openai", "oauth").unlistedModels?.some((extra) => extra.id === model)) return false;
   if (catalogFor(connectionId).some((row) => row.id === model && !row.unlisted)) return false;
-  const subject = held.kind === "oauth" ? held.subject : null;
-  if (!subject) return false;
+  const account = accountKey(held);
+  if (!account) return false;
   try {
     updateProviderStore((store) => {
       const current = store.connections[connectionId]?.credential;
-      if (!current || current.kind !== "oauth" || current.subject !== subject) return store;
-      return recordUnavailableModel(store, connectionId, model);
+      if (!current || current.kind !== "oauth") return store;
+      return recordUnavailableModelFor(store, account, model);
     });
   } catch (error) {
     // The turn still fails with the plan message; the next one asks again.

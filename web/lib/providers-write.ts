@@ -64,6 +64,15 @@ export function activeUsable(store: ProviderStore): boolean {
   return Boolean(process.env.UB_OPENCODE_GO_KEY);
 }
 
+/** The sentence for a sign-in start on a retired route (UB-015), or null when the route is live or unknown. */
+export function oauthStartRetired(providerId: string): string | null {
+  try {
+    return retiredRouteMessage(connectionId(providerId, "oauth"));
+  } catch {
+    return null;
+  }
+}
+
 export interface ProvidersPutBody {
   providerId?: unknown;
   mode?: unknown;

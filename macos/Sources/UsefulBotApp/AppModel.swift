@@ -257,6 +257,10 @@ final class AppModel: ObservableObject {
     /// Connections turned off because the vendor doesn't allow Useful Bot on that route. Listed in Providers so they can be removed.
     @Published private(set) var providerRetired: [ConnectionPublic] = []
     var providerRows: [ConnectionPublic] { providerConnections + providerRetired }
+    /// With no usable connection, the sentence of the turned-off one that explains why.
+    var noModelRetiredSentence: String? {
+        noModelConnected ? ConnectionPublic.retiredReason(connected: providerConnections, retired: providerRetired) : nil
+    }
     @Published private(set) var defaultRole: RolePublic?
     @Published private(set) var reviewerRole: RolePublic?
     @Published private(set) var imageRole: RolePublic?
