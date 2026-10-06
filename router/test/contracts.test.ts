@@ -1903,7 +1903,9 @@ async function chatgptRun(options: {
   /** Runs while the refresh request is in flight, before the auth server answers. */
   onToken?: () => void;
   /** Runs while the upstream request is in flight, before the plan route answers. */
-  onUpstream?: () => void;
+  onUpstream?: (call: number) => void;
+  /** The answer to the first upstream request only; later ones use `upstream`. */
+  first?: { status: number; body: string };
   /** The model the turn runs on; default gpt-6.1-sol, which the static fallback list does not name. */
   model?: string;
   /** Ask for a streamed answer and return its text. */
@@ -1932,10 +1934,12 @@ async function chatgptRun(options: {
   }
   const bearers: string[] = [];
   const server = createServer((req, res) => {
+    const call = bearers.length;
     bearers.push(String(req.headers.authorization ?? ""));
-    options.onUpstream?.();
-    res.writeHead(options.upstream?.status ?? 200, { "content-type": "application/json" });
-    res.end(options.upstream?.body ?? "{}");
+    options.onUpstream?.(call);
+    const answer = call === 0 && options.first ? options.first : options.upstream;
+    res.writeHead(answer?.status ?? 200, { "content-type": "application/json" });
+    res.end(answer?.body ?? "{}");
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const realFetch = globalThis.fetch;
@@ -2131,6 +2135,32 @@ test("UB-016: a model unlisted at dispatch is dropped even if another account's 
   });
   assert.equal(out.error?.code, "upstream_chatgpt_model_not_in_plan");
   assert.deepEqual(out.dropped, { "client-a": ["gpt-6.1-sol"] });
+});
+
+// A sent as account A, got a 401, and the retry ran as B (the owner switched accounts meanwhile).
+// The listed snapshot has to be B's, read when B takes over.
+test("UB-016: after a 401 renews into another account, the refusal uses that account's listed snapshot", async () => {
+  const asB = { ...ACCOUNT_B, accessToken: "tok-b-87654321" };
+  const unlistedForA = await chatgptRun({
+    held: ACCOUNT_A,
+    stored: asB,
+    cached: UNLISTED_ROW,
+    first: { status: 401, body: "{}" },
+    upstream: { status: 403, body: NOT_ELIGIBLE },
+    onUpstream: (call) => { if (call === 0) cacheRows([{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }]); },
+  });
+  assert.equal(unlistedForA.error?.code, "upstream_chatgpt_not_eligible", "B lists the model, so the refusal is not a plan drop");
+  assert.deepEqual(unlistedForA.dropped, {}, "nothing is recorded for B");
+  const listedForA = await chatgptRun({
+    held: ACCOUNT_A,
+    stored: asB,
+    cached: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }],
+    first: { status: 401, body: "{}" },
+    upstream: { status: 403, body: NOT_ELIGIBLE },
+    onUpstream: (call) => { if (call === 0) cacheRows(UNLISTED_ROW); },
+  });
+  assert.equal(listedForA.error?.code, "upstream_chatgpt_model_not_in_plan");
+  assert.deepEqual(listedForA.dropped, { "client-b": ["gpt-6.1-sol"] }, "B does not list it, so it is recorded for B");
 });
 
 test("UB-016: a model listed at dispatch is not dropped even if the cache loses the row before the refusal", async () => {

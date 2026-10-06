@@ -424,7 +424,8 @@ struct ProvidersPaneView: View {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .disabled(model.providerBusy == "role-\(role)")
+        // An unavailable role with nothing to pick would open an empty list; its row says what to do.
+        .disabled(model.providerBusy == "role-\(role)" || (detail.unavailable != nil && detail.models.isEmpty))
         .accessibilityIdentifier("role-\(role)-model")
     }
 

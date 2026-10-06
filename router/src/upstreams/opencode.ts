@@ -392,7 +392,7 @@ export async function completeUpstream(input: {
   const sees = modelSeesImages(option);
   // Whether the vendor's own list names this model, read now: the cache can
   // change before a refusal comes back (see dropUnlistedModel).
-  const listedAtDispatch = catalogFor(resolved.connection.id).some((row) => row.id === model && !row.unlisted);
+  let listedAtDispatch = catalogFor(resolved.connection.id).some((row) => row.id === model && !row.unlisted);
   // eve compacts at 75% of the model's window (agent/lib/model-window.ts reads
   // the same catalog), so the output cap keeps to the last tenth: a prompt at
   // the threshold plus a full answer still fits a small model's window.
@@ -490,7 +490,14 @@ export async function completeUpstream(input: {
     try {
       await response.body?.cancel();
     } catch { /* the retry carries on regardless */ }
+    const before = credential;
     credential = await renewedCredential(resolved.connection.id, resolved.providerId, credential);
+    // The renewed credential can belong to another saved account (the owner
+    // switched meanwhile). The listed snapshot belongs to the account that
+    // sends, so it is taken again for that one; the same account keeps it.
+    if (accountKey(credential) !== accountKey(before)) {
+      listedAtDispatch = catalogFor(resolved.connection.id).some((row) => row.id === model && !row.unlisted);
+    }
     response = await dispatch();
   }
   // A server that rejects stream_options (400, or 422 from strict schema
