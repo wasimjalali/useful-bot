@@ -33,9 +33,10 @@ const EXCLUDE = [
   /^docs\/plan\/UB-001-FINAL-PLAN\.md$/,
   /^evals\/results\/2026-10-05-ub001-council\//,
   /^evals\/results\/2026-10-05-ub001-council\.md$/,
-  // The film's source and its build record would show the cut before launch.
+  // The film's source and the UI reference stills would show the cut before
+  // launch; the stills also carry the owner's name in bot replies.
   /^video\//,
-  /^evals\/results\/2026-10-06-ub001-video-build\.md$/,
+  /^docs\/plan\/UB-001-ui-reference\//,
 ];
 
 const { values } = parseArgs({
