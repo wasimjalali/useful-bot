@@ -27,16 +27,8 @@ const EXCLUDE = [
   /^evals\/.*\.(png|jpe?g|webp|gif|mp4|mov)$/i,
   // Its process list names another private project on the owner's Mac.
   /^evals\/results\/2026-09-26-perf-check-1156-7dfbcbc\/report\.json$/,
-  // UB-001 launch-video plan and council: private until the launch video
-  // ships (owner, 2026-10-06), then all six entries come off this list together.
-  /^docs\/plan\/UB-001-research\.md$/,
-  /^docs\/plan\/UB-001-FINAL-PLAN\.md$/,
-  /^evals\/results\/2026-10-05-ub001-council\//,
-  /^evals\/results\/2026-10-05-ub001-council\.md$/,
-  // The film's source and the UI reference stills would show the cut before
-  // launch; the stills also carry the owner's name in bot replies.
+  // A launch film's source would show the cut before launch.
   /^video\//,
-  /^docs\/plan\/UB-001-ui-reference\//,
 ];
 
 const { values } = parseArgs({
