@@ -164,33 +164,37 @@ Every change lands like this, start to finish, without waiting on me:
 
 1. **Plan.** Split the task. Decide the worker count, how the code lands (one PR or several)
    and which pieces are sensitive. If one agent can do it, use one.
-2. **Branch and fan out.** Create the feature branch. Start workers in worktrees (see Parallel
-   work), each with a brief naming the files it owns, the change and how to verify it.
+2. **Branch and fan out.** Create the feature branch in its own worktree (see Parallel work).
+   Start workers in worktrees, each with a brief naming the files it owns, the change and how
+   to verify it.
 3. **Build and self-check.** Each worker gets type check, lint and tests green in its worktree
    before it reports back.
-4. **Integrate and verify.** The orchestrator merges worker branches into the feature branch,
-   runs E2E and live checks (shared resources one at a time) and saves artifacts to
+4. **Integrate and verify.** The orchestrator merges worker branches into the feature branch
+   (in the feature worktree), runs E2E and live checks (shared resources one at a time) and saves artifacts to
    `verify/<branch>/`.
 5. **Update stale docs:** README, docs, progress notes, the repo's rules file.
 6. **Commit, push, open the PR.**
 7. **Review** (see Reviews). The original worker fixes the findings. Lows get fixed too.
 8. **Merge** once review and CI are clean, one PR at a time: remove the PR's worktree, then
    `gh pr merge <n> --delete-branch` (deletes the branch locally and on GitHub). Remaining
-   branches rebase on the new `main` and go green again before they merge.
+   branches merge the new `main` into themselves (never rebase a pushed branch: that needs a
+   force-push) and go green again before they merge.
 9. **Clean up and sync.** Remove every worktree from this task, `git worktree prune`, sync
    local `main`, then run the repo's post-merge steps.
 10. **Report** (see Final report).
 
-Doc-only changes: commit, PR, merge. Add one light review pass (Sonnet at medium) when the
-wording carries a decision.
+Doc-only changes run the same loop with the small-PR review row (Sonnet alone at medium).
 
 ## Parallel work and worktrees
 
 - **Fan out only for independent pieces.** When a task splits into parts that don't touch the
   same files, run them in parallel.
-- **The orchestrator stays in the main checkout.** Each worker runs in its own worktree (Agent
-  tool with `isolation: "worktree"`, created under `.claude/worktrees/`). Workers never share a
-  working tree.
+- **The main checkout stays on `main`.** It holds `verify/` and is where the orchestrator
+  syncs and cleans up. Every PR branch lives in its own worktree under `.claude/worktrees/`: the
+  orchestrator's feature branch (`git worktree add .claude/worktrees/<name> -b <branch>`) and
+  each worker's (Agent tool with `isolation: "worktree"`). Workers never share a working tree.
+  Exception: a single-PR task with no workers may use its branch in the main checkout, and then
+  reviewers read the main checkout.
 - **Limits:** up to 10 workers at once locally and up to 20 in a cloud session. Size the count
   to the task; ask before going over.
 - **Agent tool by default.** Switch to the Workflow tool when running many workers or a
@@ -285,7 +289,7 @@ skills, not this Mac.
   only when `CLAUDE_CODE_REMOTE` is `true`. When this file changes, refresh the copy in the
   repo you're working in, in your next PR. Repos that use cloud sessions also commit the agents
   they need (`.claude/agents/`).
-- **Limits:** up to 20 workers. The Workflow tool is allowed above 10.
+- **Limits:** up to 20 workers. The Workflow tool is the orchestrator's call, as locally.
 - **Reviews:** Codex is usually not available there, so Opus takes its slot and the report
   says so.
 - **Web:** Playwright works headless. The cloud environment's setup script installs the
@@ -294,7 +298,7 @@ skills, not this Mac.
   PR with the `needs-mac-verify` label and the exact check steps, and don't merge. The next
   local session runs the live check and merges.
 - **Artifacts:** a short test summary in the PR body; send key screenshots to me with
-  `SendUserFile`.
+  `SendUserFile` when the session has it, otherwise say where they are.
 - **Starting cloud work from this Mac:** `claude --cloud "<task>"` starts a separate cloud
   session on the pushed branch. Its result doesn't come back to the local session; I follow it
   at claude.ai/code. Offer it for big independent tasks; launch one only when I say so.

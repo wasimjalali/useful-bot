@@ -53,4 +53,6 @@ web/tsconfig.tsbuildinfo
 /ownapp-*.png
 # verification screenshots and recordings, per branch (global rules: Verification)
 /verify/
+# agent worktrees (global rules: Parallel work and worktrees)
+/.claude/worktrees/
 yarn.lock
