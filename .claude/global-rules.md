@@ -175,8 +175,9 @@ Every change lands like this, start to finish, without waiting on me:
 5. **Update stale docs:** README, docs, progress notes, the repo's rules file.
 6. **Commit, push, open the PR.**
 7. **Review** (see Reviews). The original worker fixes the findings. Lows get fixed too.
-8. **Merge** once review and CI are clean, one PR at a time: remove the PR's worktree, then
-   `gh pr merge <n> --delete-branch` (deletes the branch locally and on GitHub). Remaining
+8. **Merge** once review and CI are clean, one PR at a time: `gh pr merge <n> --delete-branch`
+   (deletes the GitHub branch), sync local `main`, then `git worktree remove` the PR's worktree
+   and `git branch -d` its local branch. Remaining
    branches merge the new `main` into themselves (never rebase a pushed branch: that needs a
    force-push) and go green again before they merge.
 9. **Clean up and sync.** Remove every worktree from this task, `git worktree prune`, sync
@@ -241,7 +242,7 @@ cost more and found nothing more (evidence:
 - **Opus:** a subagent with `model: opus`.
 - **Review the PR, not the worker.** A feature built by five workers ships as one PR and gets
   one review loop.
-- **Reviewers read the PR's worktree,** so the main checkout never switches branches and
+- **Reviewers read the PR's worktree** (or the main checkout in the single-PR exception), so
   several PRs can be reviewed at once. Commit and push first, and change nothing in that
   worktree while a reviewer runs. Check `git status` there when it returns; `git checkout -- .`
   undoes anything it wrote.
