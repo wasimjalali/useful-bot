@@ -25,29 +25,23 @@ When a change touches more than one surface, do the macOS work first and complet
 
 ## Change management
 
-Since 2026-10-01, Opus 5.5 plans, orchestrates and verifies. Sonnet 5.5 writes the code:
-`sonnet-worker` (medium) for scoped jobs, `sonnet-sweeper` (high) for audits. Opus checks every
-worker's result before it lands.
+The global rules set the loop, parallel work, reviews and models: `~/.agents/AGENTS.md`, copied
+to `.claude/global-rules.md` so cloud sessions get them (a SessionStart hook prints it only when
+`CLAUDE_CODE_REMOTE` is `true`; the copy is kept out of the public source snapshot). What this repo
+adds:
 
-Reviews run in parallel, split by area so every file in the diff has an owner:
-- **Small, non-sensitive PRs:** Sonnet 5.5 alone.
-- **Bigger or sensitive PRs:** Sonnet 5.5 plus GPT-6.1-Sol at medium through Codex
-  (`codex exec -m gpt-6.1-sol -c model_reasoning_effort="medium" --sandbox read-only
-  --output-last-message <file> - < <brief>`).
-- **Tough or very sensitive work:** add one Opus 5.5 reviewer at medium.
-- **Muse Spark in opencode:** may join as an extra free reviewer when it's available, never as
-  the only one.
-
-Not `/code-review`. Write briefs and commit messages with the Write tool: the bash guard blocks
-heredocs with odd quotes. Check out the branch under review first: the reviewer reads the files,
-and a diff against code that is not in the tree wastes the pass. Never accept a bare empty array,
-ask for the DISMISSED list of what it considered and why. Fix every finding above low (critical, high, medium, major) and
-review again until a pass from every reviewer has none. Then fix every low too; lows need no
-further pass. Then merge, sync local `main`, and rebuild and reinstall Useful Bot Dev from it
-(`npm run build:dev-app`, `npm run install:dev-app`). The daily app is not rebuilt per PR: it
-updates through releases (see Verification).
-
-This arrangement expires on 2026-10-15; ask Wasim what to move to rather than falling back.
+- **Shared resources take turns, run by the orchestrator only:** Useful Bot Dev (one app identity,
+  state in `~/.useful-bot-dev-app`, ports 4419/4420/4421, `com.usefulbot.dev.*` Keychain items),
+  `npm run build:dev-app` and `install:dev-app` (a build swaps the installed dev app), Test Bot and
+  `perf:check`. Worktree workers run `tsc`, lint, node tests and Swift builds and tests in their
+  own tree, never the dev app.
+- **After every merge:** sync local `main`, then rebuild and reinstall Useful Bot Dev from it
+  (`npm run build:dev-app`, `npm run install:dev-app`). The daily app is not rebuilt per PR: it
+  updates through releases (see Verification).
+- **Cloud sessions** can't run the macOS app: a PR that changes `macos/` gets the
+  `needs-mac-verify` label and waits for a local live check before merge.
+- Write briefs and commit messages with the Write tool: the bash guard blocks heredocs with odd
+  quotes.
 
 ## Verification
 
