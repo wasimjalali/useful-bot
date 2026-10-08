@@ -237,7 +237,7 @@ fi
 # Named after the logo it holds, and renamed whenever the logo changes, so
 # nothing that cached the bundle's icon by file name can match the old one.
 # (A Dock tile pinned before the change can still hold the old picture until
-# the system icon cache is cleared: see the logo gotcha in CLAUDE.md.) The
+# the system icon cache is cleared: see the logo gotcha in AGENTS.md.) The
 # last build's icon file goes first, so the bundle carries only this one.
 find "$APP/Contents/Resources" -maxdepth 1 -name '*.icns' -delete
 cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/UsefulBotHead.icns"
