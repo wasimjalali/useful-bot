@@ -1,7 +1,7 @@
 # Useful Bot: working rules
 
-Project rules for coding agents. The global rules in `~/.claude/` still apply; this file
-governs what they leave open, and wins where the two disagree.
+Project rules for coding agents. Wasim's global rules still apply (see Change management); this
+file governs what they leave open, and wins where the two disagree.
 
 ## Surfaces and priority
 
@@ -45,7 +45,8 @@ script in cloud sessions. What this repo adds:
 ## Verification
 
 A UI change is verified with a real screenshot of the running macOS app, not with tests
-alone. **Every live check runs in Useful Bot Dev, never the daily app** (decided 2026-10-01,
+alone. Drive it with the `mac-app-verify` skill and save artifacts under `verify/<branch>/`.
+**Every live check runs in Useful Bot Dev, never the daily app** (decided 2026-10-01,
 UB-004). `/Applications/Useful Bot.app` is the owner's daily install with his real bots: agents
 never launch, quit, screenshot-test or send to it. Useful Bot Dev is a separate identity
 (`ai.useful.bot.dev`, `~/Applications/Useful Bot Dev.app`, state in `~/.useful-bot-dev-app`,
@@ -85,12 +86,9 @@ auto-install rewrites `package-lock.json`, and the router refuses a changed lock
 
 ## Performance guard
 
-Until launch, PRs don't run `npm run perf:check` (decided 2026-09-28, to stop spending 20 minutes
-on every PR). The check runs once before the macOS app ships to users (after the landing page and
-the rest of launch are done): on `main` and on the newest open branch, each on its own
-`build:dev-app` (about 20 minutes; it drives only Useful Bot Dev and never quits or relaunches
-the daily app), and the records it writes
-under `evals/results/` are committed. After launch, every change that touches `macos/`, `shared/`,
-`agent/`, `router/src` or `web/` runs it again before merge. A breach is fixed, or the
+`npm run perf:check` runs once per release, before the release build, not on each PR (decided
+2026-10-08; it takes about 20 minutes). It runs on its own `build:dev-app`, drives only Useful Bot
+Dev and never quits or relaunches the daily app, and the records it writes under `evals/results/`
+are committed. It's a shared resource: one run at a time, by the orchestrator. A breach is fixed, or the
 budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-run never erases a
 breach. The fixture bots ("Perf ...") are frozen: never send to them. See `perf/README.md`.
