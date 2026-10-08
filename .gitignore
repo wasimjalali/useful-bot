@@ -51,4 +51,6 @@ web/tsconfig.tsbuildinfo
 /.playwright-mcp/
 /cli-verify-*.png
 /ownapp-*.png
+# verification screenshots and recordings, per branch (global rules: Verification)
+/verify/
 yarn.lock
