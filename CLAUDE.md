@@ -25,10 +25,9 @@ When a change touches more than one surface, do the macOS work first and complet
 
 ## Change management
 
-The global rules set the loop, parallel work, reviews and models: `~/.agents/AGENTS.md`, copied
-to `.claude/global-rules.md` so cloud sessions get them (a SessionStart hook prints it only when
-`CLAUDE_CODE_REMOTE` is `true`; the copy is kept out of the public source snapshot). What this repo
-adds:
+The global rules set the loop, parallel work, reviews, models and cloud handoffs:
+`~/.agents/AGENTS.md` locally, and the same file written by the "Wasim" cloud environment's setup
+script in cloud sessions. What this repo adds:
 
 - **Shared resources take turns, run by the orchestrator only:** Useful Bot Dev (one app identity,
   state in `~/.useful-bot-dev-app`, ports 4419/4420/4421, `com.usefulbot.dev.*` Keychain items),
@@ -38,8 +37,8 @@ adds:
 - **After every merge:** sync local `main`, then rebuild and reinstall Useful Bot Dev from it
   (`npm run build:dev-app`, `npm run install:dev-app`). The daily app is not rebuilt per PR: it
   updates through releases (see Verification).
-- **Cloud sessions** can't run the macOS app: a PR that changes `macos/` gets the
-  `needs-mac-verify` label and waits for a local live check before merge.
+- **Cloud sessions** can't run the macOS app: a PR that changes `macos/` gets the `needs-local`
+  label and a Local handoff section, and waits for a live check in Useful Bot Dev before merge.
 - Write briefs and commit messages with the Write tool: the bash guard blocks heredocs with odd
   quotes.
 

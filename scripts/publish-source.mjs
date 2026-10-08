@@ -29,8 +29,6 @@ const EXCLUDE = [
   /^evals\/results\/2026-09-26-perf-check-1156-7dfbcbc\/report\.json$/,
   // A launch film's source would show the cut before launch.
   /^video\//,
-  // The owner's personal global agent rules, copied in for cloud sessions.
-  /^\.claude\/global-rules\.md$/,
 ];
 
 const { values } = parseArgs({
