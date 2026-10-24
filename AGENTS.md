@@ -31,8 +31,8 @@ script in cloud sessions. What this repo adds:
 
 - **Shared resources take turns, run by the orchestrator only:** Useful Bot Dev (one app identity,
   state in `~/.useful-bot-dev-app`, ports 4419/4420/4421, `com.usefulbot.dev.*` Keychain items),
-  `npm run build:dev-app` and `install:dev-app` (a build swaps the installed dev app), Test Bot and
-  `perf:check`. Worktree workers run `tsc`, lint, node tests and Swift builds and tests in their
+  `npm run build:dev-app` and `install:dev-app` (a build swaps the installed dev app), the dev
+  app's bot and `perf:check`. Worktree workers run `tsc`, lint, node tests and Swift builds and tests in their
   own tree, never the dev app.
 - **After every merge:** sync local `main`, then rebuild and reinstall Useful Bot Dev from it
   (`npm run build:dev-app`, `npm run install:dev-app`). The daily app is not rebuilt per PR: it
@@ -56,7 +56,7 @@ the working tree (stage `macos/.build/runtime-stage-dev`, stamp `<version>-dev+<
 runs its services from a copy under `~/Library/Application Support/Useful Bot Dev/app`, never from
 the checkout (an ad hoc signed bundle gets a fresh Desktop-folder privacy prompt on every rebuild,
 and a service reading the checkout blocks on it). Inside the dev app, a check that sends
-a message still goes to "Test Bot" (create it if missing). Never use `~/.useful-bot-dev`: it
+a message goes to its one bot (`bot-useful`), never to a perf fixture bot. Never use `~/.useful-bot-dev`: it
 holds older owner data. The daily app is a release build with a runtime payload: it comes from
 `npm run release:mac` (installed from the DMG or by Sparkle), and only when the owner asks for it.
 A plain `npm run build:app` then `npm run install:app` installs a checkout-run daily app instead
