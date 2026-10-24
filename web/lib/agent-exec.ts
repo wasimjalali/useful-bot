@@ -3,14 +3,13 @@ import {
   appendAgentEvent,
   referencedWidgetIds,
   sweepOrphanThreads,
-  type ThreadKind,
 } from "../../shared/agent-store.ts";
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { libraryDrawingIds } from "../../shared/media-store.ts";
 import { parseEveStreamLine, takeStreamLines, type EveEvent as StreamEvent } from "../../shared/eve-stream.ts";
 import { BRIEF_MAX_CHARS, buildContinuationBrief, settledByBriefTurn, withSessionNotes } from "../../shared/continuation-brief.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
-import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
+import { writeHandoffReply } from "../../shared/agents-send.ts";
 import {
   claimHandoff,
   listDeliverable,
@@ -20,7 +19,6 @@ import {
   readHandoff,
   releaseHandoffClaim,
   HANDOFF_ATTEMPTS_MAX,
-  HANDOFF_DEPTH_MAX,
   type HandoffRecord,
 } from "../../shared/handoffs.ts";
 import {
@@ -37,7 +35,7 @@ import {
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
-import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V2, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V3, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { retiredRouteMessage } from "../../shared/provider-catalog.ts";
 import { effectiveDefault, ProviderRouteRetiredError, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
@@ -61,17 +59,14 @@ import { readConnectionsStore } from "../../shared/connections-store.ts";
 import { sharedMemoryStore } from "../../agent/lib/memory.ts";
 
 /**
- * Handoff delivery. The sending agent tool only writes a queue record, so a
- * bot-to-bot message never blocks the sender's turn. The web server drains that
- * queue: it opens (or reuses) the receiving bot's eve session, waits for the
- * reply, and appends the result to the receiving transcript.
+ * Handoff delivery. The only thing queued is a connect card's resume (see
+ * shared/connect-flow.ts). The web server drains that queue: it opens (or
+ * reuses) the receiving bot's eve session, waits for the reply, and appends
+ * the result to the receiving transcript.
  */
 
 const EVE = eveOrigin();
-/**
- * A handoff is a bot waiting on another bot inside its own turn, so the wait
- * has to stay short: two minutes, then the sender is told it got nothing.
- */
+/** A queued handoff (a connect card's resume) gets two minutes, then it counts as a failed try. */
 const DELIVER_TIMEOUT_MS = 120_000;
 /**
  * A routine is not a wait, it is the work. The same two minutes were applied
@@ -86,10 +81,9 @@ const ROUTINE_TIMEOUT_MS = 60 * 60_000;
 /**
  * No event at all from the session for this long ends the run. Sized off the
  * longest gap a healthy turn can leave: a model call the router caps at 180
- * seconds, a shell line the bash tool caps at 60, or a `send_to_bot` waiting
- * out a teammate's whole turn on the handoff's two-minute budget. Ten minutes
- * clears all three with room to spare, so silence this long is a turn that is
- * not coming back rather than one taking its time.
+ * seconds or a shell line the bash tool caps at 60. Ten minutes clears both
+ * with room to spare, so silence this long is a turn that is not coming back
+ * rather than one taking its time.
  */
 const ROUTINE_IDLE_MS = 10 * 60_000;
 
@@ -144,7 +138,6 @@ export function botContextReport(botId: string) {
   if (!bot) return null;
   const envelope = envelopeFor({
     bot,
-    shell,
     store,
     notesChars: notesCharsFor(bot.id),
     mountedToolChars: mountedToolChars(bot.sessionId ?? null),
@@ -156,7 +149,7 @@ export function botContextReport(botId: string) {
     windowTokens: envelope.windowTokens,
     modelLabel: envelope.modelLabel,
     fits: envelope.tokens <= envelope.windowTokens && envelope.descriptionChars <= DESCRIPTION_MAX,
-    seed: seedFor(bot, GENERALIST_SEED_V2),
+    seed: seedFor(bot, GENERALIST_SEED_V3),
   };
 }
 
@@ -168,14 +161,12 @@ export function botContextReport(botId: string) {
  */
 export function admitTurn(
   bot: ShellBot,
-  shell: { bots: ShellBot[] },
   store: ProviderStore,
   hiddenChars = 0,
   sessionId: string | null = bot.sessionId ?? null,
 ): Admission {
   return admission({
     bot,
-    shell,
     store,
     notesChars: notesCharsFor(bot.id),
     briefChars: hiddenChars,
@@ -186,12 +177,11 @@ export function admitTurn(
 /** The most a carry-over brief may take for this bot's model. */
 export function briefMaxCharsFor(
   bot: ShellBot,
-  shell: { bots: ShellBot[] },
   store: ProviderStore,
   sessionId: string | null = bot.sessionId ?? null,
 ): number {
   return briefBudgetChars(
-    { bot, shell, store, notesChars: notesCharsFor(bot.id), mountedToolChars: mountedToolChars(sessionId) },
+    { bot, store, notesChars: notesCharsFor(bot.id), mountedToolChars: mountedToolChars(sessionId) },
     BRIEF_MAX_CHARS,
   );
 }
@@ -202,7 +192,6 @@ export function briefMaxCharsFor(
  */
 export function admissionRefusal(
   bot: ShellBot,
-  shell: { bots: ShellBot[] },
   store: ProviderStore,
   hiddenChars = 0,
   sessionId: string | null = bot.sessionId ?? null,
@@ -213,7 +202,7 @@ export function admissionRefusal(
       { status: 409 },
     );
   }
-  const verdict = admitTurn(bot, shell, store, hiddenChars, sessionId);
+  const verdict = admitTurn(bot, store, hiddenChars, sessionId);
   if (verdict.ok) return null;
   return Response.json({ ok: false, error: verdict.code, message: verdict.message }, { status: 409 });
 }
@@ -739,30 +728,19 @@ export async function continuationBriefFor(
 }
 
 function handoffEnvelope(handoff: HandoffRecord): string {
-  // Names are flattened to one line: the transcript and the brief recognise a
+  // The name is flattened to one line: the transcript and the brief recognise a
   // handoff by lines 1 and 2, and a newline in a name would break both.
-  const source = flat(handoff.sourceName) || "a bot";
-  const group = handoff.groupName ? flat(handoff.groupName) || "this group" : "";
+  const source = flat(handoff.sourceName) || "the app";
   const lines = [
     `Handoff from ${source}.`,
-    group ? `This belongs to the group chat ${group}.` : "This arrives in your own chat.",
+    "This arrives in your own chat.",
     // Lines 1 and 2 above are parsed by the transcript (Swift isHandoffEnvelope,
     // continuation-brief.ts): keep them exactly.
-    `This is another bot on this Mac, not the owner. Do the part that fits your role and permission, and say what you declined. Your reply goes back to ${source} and the owner reads both chats.`,
-    ...(handoff.depth > 0 ? [`Relay hop ${handoff.depth} of ${HANDOFF_DEPTH_MAX}.`] : []),
+    "This is a message from the app, not the owner. Do the part that fits your role and permission, and say what you declined.",
     "",
     handoff.message,
   ];
   return lines.join("\n");
-}
-
-function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; kind: ThreadKind } | null {
-  if (handoff.groupId) {
-    const group = bots.find((bot) => bot.id === handoff.groupId && bot.kind === "group");
-    if (group) return { bot: group, kind: "group" };
-  }
-  const target = bots.find((bot) => bot.id === handoff.targetBotId);
-  return target ? { bot: target, kind: "bot" } : null;
 }
 
 /**
@@ -841,7 +819,7 @@ async function runEveTurn(
     if (retired) throw new ProviderRouteRetiredError(retired);
     if (!botSelectionUsable(live, freshStore)) throw new Error("model_selection_unavailable");
     if (descriptionTooLong(live)) throw new Error("description_too_long");
-    if (!admitTurn(live, freshShell, freshStore, hiddenChars, intoSession).ok) throw new Error("context_too_large");
+    if (!admitTurn(live, freshStore, hiddenChars, intoSession).ok) throw new Error("context_too_large");
     return live;
   };
   const hidden = withSessionNotes("", notes).length;
@@ -918,7 +896,7 @@ async function runEveTurn(
           jwt,
           undefined,
           undefined,
-          briefMaxCharsFor(sizing, readShell(), readProviderStore(), null),
+          briefMaxCharsFor(sizing, readProviderStore(), null),
         );
         // The whole hidden prefix of the carried send, and the stores as they
         // are after the brief read, not the ones the first send was sized on.
@@ -1009,12 +987,8 @@ async function runEveTurn(
 }
 
 async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
-  if (handoff.depth > HANDOFF_DEPTH_MAX) throw new Error("handoff_depth_exceeded");
-  const shell = readShell();
-  const receiver = receiverOf(handoff, shell.bots);
-  if (!receiver) throw new Error("receiver_missing");
-  const { bot, kind } = receiver;
-  if (bot.hidden) throw new Error("receiver_hidden");
+  const bot = readShell().bots.find((item) => item.id === handoff.targetBotId);
+  if (!bot) throw new Error("receiver_missing");
 
   const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff), undefined, "handoff");
 
@@ -1024,15 +998,7 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
   // Transcript and shell row first, delivery marker last: a crash in between
   // leaves the record claimed/pending so the next pump retries, and the event
   // dedupe keeps the retry from appending a second copy.
-  const sender = shell.bots.find((item) => item.id === handoff.sourceBotId);
-  writeHandoffReply({
-    handoff,
-    reply,
-    sessionId,
-    receiverId: bot.id,
-    threadKind: kind,
-    sourceThreadKind: sender?.kind === "group" ? "group" : "bot",
-  });
+  writeHandoffReply({ handoff, reply, sessionId, receiverId: bot.id });
   const stamp = new Date().toISOString();
   const preview = reply ? reply.slice(0, 160) : "";
   updateShell((current) => ({
@@ -1046,9 +1012,6 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
           lastAt: stamp,
           updatedAt: stamp,
         };
-      }
-      if (preview && item.id === handoff.sourceBotId) {
-        return { ...item, lastPreview: preview, lastAt: stamp, updatedAt: stamp };
       }
       return item;
     }),
@@ -1066,16 +1029,12 @@ export function handoffWorkingBotIds(): string[] {
   const ids = new Set<string>();
   for (const id of inflight) {
     const record = readHandoff(id);
-    if (!record) continue;
-    // A group handoff runs on the room, not on the member it names. Same
-    // fallback as the delivery: a room that is gone means the member runs it.
-    const bots = peekShell()?.bots ?? [];
-    ids.add(receiverOf(record, bots)?.bot.id ?? record.targetBotId);
+    if (record) ids.add(record.targetBotId);
   }
   return [...ids];
 }
 
-// Pumps are single-flight: the UI poll, wakePump and fan-out confirmations can
+// Pumps are single-flight: the UI poll and the connect flows can
 // all call this within the same second, and overlapping pumps would hold many
 // eve deliveries open at once. Callers queue behind the pump in progress.
 // Inside one pump the batch runs together, one delivery per receiving bot: the
@@ -1107,14 +1066,12 @@ async function pumpOnce(limit: number): Promise<{
   const delivered: Array<{ id: string; to: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
   const candidates = listDeliverable().filter((record) => !inflight.has(record.id));
-  const bots = peekShell()?.bots ?? [];
   const receivers = new Set<string>();
   const batch: HandoffRecord[] = [];
   for (const record of candidates) {
     if (batch.length >= limit) break;
-    const receiver = receiverOf(record, bots)?.bot.id ?? record.targetBotId;
-    if (receivers.has(receiver)) continue;
-    receivers.add(receiver);
+    if (receivers.has(record.targetBotId)) continue;
+    receivers.add(record.targetBotId);
     batch.push(record);
   }
   await Promise.all(batch.map(async (record) => {
@@ -1142,20 +1099,11 @@ async function pumpOnce(limit: number): Promise<{
       const next = markFailed(record.id, message, undefined, claimToken, modelGone);
       const terminal = next && next.status === "failed" && (modelGone || next.attempts >= HANDOFF_ATTEMPTS_MAX);
       if (terminal) {
-        // The sender card still reads as a normal outgoing handoff, so say
-        // here that delivery gave up, the way a failed routine run does.
+        // Say here that delivery gave up, the way a failed routine run does.
         try {
-          let threadKind: ThreadKind = "bot";
-          try {
-            const sender = readShell().bots.find((item) => item.id === record.sourceBotId);
-            if (sender?.kind === "group") threadKind = "group";
-          } catch {
-            /* unreadable roster keeps the default kind */
-          }
-          appendAgentEvent(record.sourceBotId, {
+          appendAgentEvent(record.targetBotId, {
             kind: "note",
-            threadKind,
-            text: `Handoff to ${record.targetName} failed: ${shown}`.slice(0, 300),
+            text: `Resuming after connecting failed: ${shown}`.slice(0, 300),
           });
         } catch {
           /* the failed status still records the outcome */
@@ -1175,77 +1123,6 @@ async function pumpOnce(limit: number): Promise<{
     }
   }));
   return { delivered, failed, queued: Math.max(0, candidates.length - batch.length) };
-}
-
-/**
- * Confirm a fan-out: one handoff per target. Every target gets a copy in its own
- * thread and the room gets one card showing the same message. Replies land back
- * in the group. A single-bot send is the same path with one target and no group.
- */
-/**
- * Hand a newly created bot the first brief its proposal card carried, as a
- * message from the bot that proposed it.
- *
- * Without this the brief was only ever shown on the card: the owner approved
- * it, the bot was created idle, and the work stayed in the proposer's chat.
- * Returns the number of handoffs queued, so a card with no brief and a
- * creation that did not happen both read as zero.
- */
-export function deliverFirstBrief(input: {
-  brief: string;
-  createdBotId: string | undefined;
-  sourceBotId: string | null;
-  bots: ShellBot[];
-}): number {
-  const brief = input.brief.trim();
-  if (!brief || !input.createdBotId) return 0;
-  const target = input.bots.find((bot) => bot.id === input.createdBotId);
-  // A group is never created by a createBot card, and a bot that is already
-  // gone cannot be briefed.
-  if (!target || target.kind === "group") return 0;
-  const source = input.sourceBotId
-    ? input.bots.find((bot) => bot.id === input.sourceBotId) ?? null
-    : null;
-  return fanOut({
-    source: source ? { id: source.id, name: source.name } : null,
-    targets: [{ id: target.id, name: target.name }],
-    message: brief,
-  });
-}
-
-export function fanOut(input: {
-  source: { id: string; name: string } | null;
-  targets: Array<{ id: string; name: string }>;
-  message: string;
-  group?: { id: string; name: string } | null;
-}): number {
-  if (input.targets.length === 0) throw new Error("fanout_empty");
-  const sourceBotId = input.source?.id ?? null;
-  const sourceName = input.source?.name ?? "Useful Bot";
-  let count = 0;
-  for (const target of input.targets) {
-    sendHandoff({
-      source: input.source,
-      target,
-      message: input.message,
-      group: input.group ?? null,
-      // Explicit receiver: with a group set, the default would put every copy
-      // in the room instead of in each member's own thread.
-      receiver: target,
-    });
-    count += 1;
-  }
-  if (input.group) {
-    appendAgentEvent(input.group.id, {
-      kind: "post",
-      threadKind: "group",
-      text: input.message,
-      authorBotId: sourceBotId,
-      authorName: sourceName,
-      targetBotIds: input.targets.map((target) => target.id),
-    });
-  }
-  return count;
 }
 
 /**
@@ -1318,8 +1195,6 @@ async function executeRoutine(
   const shell = readShell();
   const bot = shell.bots.find((item) => item.id === routine.botId);
   if (!bot) throw new Error("routine_bot_missing");
-  if (bot.hidden) throw new Error("routine_bot_hidden");
-  const threadKind: ThreadKind = bot.kind === "group" ? "group" : "bot";
   // These two go in before the turn so the live stream echo pairs with the
   // durable row rather than rendering a second bubble. If the agent store
   // itself will not open, there is no transcript to leave hanging and no point
@@ -1329,7 +1204,6 @@ async function executeRoutine(
     // as something the owner typed.
     appendAgentEvent(bot.id, {
       kind: "note",
-      threadKind,
       text: trigger === "manual"
         ? `Test run of routine "${routine.name}".`
         : `Routine "${routine.name}" ran.`,
@@ -1338,7 +1212,6 @@ async function executeRoutine(
     // on the way to eve (see runEveTurn).
     appendAgentEvent(bot.id, {
       kind: "user",
-      threadKind,
       sessionId: bot.sessionId ?? "",
       text: routine.instruction,
     });
@@ -1348,7 +1221,6 @@ async function executeRoutine(
     try {
       appendAgentEvent(bot.id, {
         kind: "note",
-        threadKind,
         text: `Routine "${routine.name}" could not start: the transcript was unavailable.`,
       });
     } catch {
@@ -1384,7 +1256,6 @@ async function executeRoutine(
     try {
       appendAgentEvent(bot.id, {
         kind: "note",
-        threadKind,
         text: `Routine "${routine.name}" failed: ${routineFailureText(err)}`.slice(0, 300),
       });
     } catch { /* the run history still records the failure */ }
@@ -1396,7 +1267,6 @@ async function executeRoutine(
   if (reply) {
     appendAgentEvent(bot.id, {
       kind: "assistant",
-      threadKind,
       sessionId,
       text: reply,
     });

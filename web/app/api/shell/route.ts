@@ -13,16 +13,15 @@ import {
   threadIdFor,
   type Proposal,
 } from "../../../../shared/agent-store.ts";
-import { deliverFirstBrief, fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
+import { syncSessionWorkspace } from "../../../lib/agent-exec";
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { unbindBot } from "../../../../shared/session-bindings.ts";
-import { applyShellAction, DESCRIPTION_MAX, isGrantableRootPath, profileCardIsCurrent, proposerMayConfirm, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { applyShellAction, DESCRIPTION_MAX, isGrantableRootPath, isShellActionType, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
 import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
-import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 import { webOrigin } from "../../../../shared/stack.ts";
 
 export async function GET(request: Request) {
@@ -36,42 +35,14 @@ export async function GET(request: Request) {
 }
 
 /**
- * Side effects the UI asks for alongside a shell action:
- *  - a confirmed fan-out (a bot proposed a group post) queues one handoff per
- *    member bot and touches both sides of every transcript;
- *  - clearing a thread drops that bot's agent transcript with its eve session.
+ * Side effects the UI asks for alongside a shell action: clearing a thread
+ * drops that bot's agent transcript with its eve session.
  *
  * Deleting a bot is not here: see `detachBot`, which runs after the roster
  * commit and reports its own failure rather than being swallowed.
  */
-function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): number {
-  if (!action) return 0;
-  if (action.type === "sendToBot") {
-    const target = shell.bots.find((bot) => bot.id === action.botId);
-    if (!target) return 0;
-    const source = action.sourceBotId
-      ? shell.bots.find((bot) => bot.id === action.sourceBotId) ?? null
-      : null;
-    const from = source ? { id: source.id, name: source.name } : null;
-    if (target.kind === "group") {
-      const members = groupMembers(speakersFrom(shell.bots), target.memberIds);
-      return fanOut({
-        source: from,
-        targets: members.map((member) => ({ id: member.id, name: member.name })),
-        message: action.message,
-        group: { id: target.id, name: target.name },
-      });
-    }
-    return fanOut({
-      source: from,
-      targets: [{ id: target.id, name: target.name }],
-      message: action.message,
-    });
-  }
-  if (action.type === "clearThread") {
-    clearThread(action.botId);
-  }
-  return 0;
+function applyFollowUp(action: ShellAction | undefined): void {
+  if (action?.type === "clearThread") clearThread(action.botId);
 }
 
 /**
@@ -155,41 +126,7 @@ function serverCallbackUrl(profile: string): string {
 /** The action a card sends must match every field the proposal carried. */
 function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefined): boolean {
   if (!action) return false;
-  const sameName = (left: string, right: string) => left.trim().toLowerCase() === right.trim().toLowerCase();
-  const sameSet = (left: string[], right: string[]) => {
-    const a = [...new Set(left)].sort();
-    const b = [...new Set(right)].sort();
-    return a.length === b.length && a.every((value, index) => value === b[index]);
-  };
   switch (proposal.kind) {
-    case "createBot":
-      // A group cannot ride a createBot card: applyShellAction rejects kind
-      // "group" here, so the shape check must reject it too.
-      return action.type === "createBot"
-        && action.kind !== "group"
-        && sameName(action.name, proposal.name)
-        && (action.petname ?? "") === proposal.petname
-        && (action.label ?? "") === proposal.title
-        && (action.description ?? "") === proposal.description
-        && (action.sectionId ?? null) === proposal.sectionId;
-    case "createGroup":
-      return action.type === "createGroup"
-        && sameName(action.name, proposal.name)
-        && sameSet(action.memberIds, proposal.memberIds)
-        && (action.description ?? "") === proposal.description;
-    case "updateBotProfile":
-      return action.type === "updateBot"
-        && action.botId === proposal.botId
-        && (action.patch?.name ?? "") === proposal.patch.name
-        && (action.patch?.label ?? "") === proposal.patch.title
-        // An absent description means "unchanged" on both sides.
-        && action.patch?.description === proposal.patch.description
-        && (action.patch?.avatarShape ?? null) === proposal.patch.avatarShape
-        && (action.patch?.avatarColor ?? null) === proposal.patch.avatarColor;
-    case "fanout":
-      return action.type === "sendToBot"
-        && action.message === proposal.message
-        && (action.botId === proposal.groupId || proposal.targetIds.includes(action.botId));
     case "connectApp":
       return (action as { type?: string }).type === "connectApp"
         && (action as { slug?: string }).slug === proposal.slug;
@@ -200,27 +137,14 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
 }
 
 /** Note that the proposal was answered, on the thread that raised it. */
-function noteProposal(
-  claimed: Proposal,
-  action: ShellAction | undefined,
-  queued: number,
-  briefFailed = false,
-): void {
+function noteProposal(claimed: Proposal, action: ShellAction | undefined): void {
   const fallback = action && "botId" in action && typeof action.botId === "string"
     ? threadIdFor(action.botId)
     : "";
   const threadId = claimed.threadId || fallback;
   if (!threadId) return;
   const label = claimed.status === "confirmed" ? "Confirmed" : "Dismissed";
-  const extra = queued > 0 ? ` and queued ${queued} handoff${queued === 1 ? "" : "s"}` : "";
-  // The teammate exists but never got the brief the card promised it, and the
-  // card is spent, so the only way it reaches them now is a fresh message.
-  const tail = briefFailed ? " The first brief was not handed over; send it again." : "";
-  appendAgentEvent(threadId, {
-    kind: "note",
-    text: `${label} ${claimed.kind}${extra}.${tail}`,
-    threadKind: claimed.kind === "fanout" && claimed.groupId ? "group" : "bot",
-  });
+  appendAgentEvent(threadId, { kind: "note", text: `${label} ${claimed.kind}.` });
 }
 
 export async function PUT(request: Request) {
@@ -241,6 +165,11 @@ export async function PUT(request: Request) {
       proposalStatus?: "confirmed" | "dismissed";
     };
     if (!body.action && !body.proposalId) {
+      return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+    }
+    // An action this build does not know (a removed one such as createGroup,
+    // pin or sendToBot included) is refused before anything else runs.
+    if (body.action && !isShellActionType((body.action as { type?: unknown }).type)) {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
     const current = readShell();
@@ -298,22 +227,6 @@ export async function PUT(request: Request) {
           "tool_name_too_long",
         ]);
         return NextResponse.json({ ok: false, error: known.has(code) ? code : "connect_failed" }, { status: 400 });
-      }
-    }
-
-    // Resolve fan-out recipients before anything is claimed or written, so an
-    // empty or missing group cannot consume a proposal or leave a phantom card.
-    if (body.action?.type === "sendToBot") {
-      const action = body.action;
-      const target = current.bots.find((bot) => bot.id === action.botId);
-      if (!target) {
-        return NextResponse.json({ ok: false, error: "target_missing" }, { status: 400 });
-      }
-      if (target.kind === "group") {
-        const members = groupMembers(speakersFrom(current.bots), target.memberIds);
-        if (members.length === 0) {
-          return NextResponse.json({ ok: false, error: "fanout_empty" }, { status: 400 });
-        }
       }
     }
 
@@ -375,24 +288,6 @@ export async function PUT(request: Request) {
         if (!proposalMatchesAction(existing, body.action)) {
           return NextResponse.json({ ok: false, error: "proposal_mismatch" }, { status: 400 });
         }
-        // A profile card is bound to the exact text it showed and to the
-        // revision of the profile it was raised against. A profile that moved
-        // on since is a stale card: confirming it would overwrite newer text.
-        if (existing.kind === "updateBotProfile") {
-          const target = current.bots.find((bot) => bot.id === existing.botId);
-          if (!profileCardIsCurrent(target, existing.baseRevision)) {
-            return NextResponse.json({ ok: false, error: "proposal_stale" }, { status: 409 });
-          }
-        }
-        // The bot that raised the card must still be allowed to: a bot that
-        // lost the orchestrator role, or was deleted, cannot have its card
-        // applied after the fact.
-        if (
-          (existing.kind === "createBot" || existing.kind === "createGroup" || existing.kind === "updateBotProfile")
-          && !proposerMayConfirm(current, existing)
-        ) {
-          return NextResponse.json({ ok: false, error: "proposal_stale" }, { status: 409 });
-        }
       }
       claimed = claimProposal(body.proposalId, status);
       if (!claimed) {
@@ -408,28 +303,8 @@ export async function PUT(request: Request) {
     }
 
     const action = body.action;
-    // The roster commit is what assigns a new bot its id, and the brief below
-    // has to reach that exact bot.
-    let createdBotId: string | undefined;
-    const profileCard = claimed?.kind === "updateBotProfile" && claimed.status === "confirmed" ? claimed : null;
-    const proposedCard = claimed
-      && claimed.status === "confirmed"
-      && (claimed.kind === "createBot" || claimed.kind === "createGroup" || claimed.kind === "updateBotProfile")
-      ? claimed
-      : null;
     const next = action
-      ? updateShell((shell) => {
-        // The revision is checked again under the roster lock: the pre-check
-        // above read an earlier snapshot.
-        if (proposedCard && !proposerMayConfirm(shell, proposedCard)) throw new Error("proposal_stale");
-        if (profileCard) {
-          const target = shell.bots.find((bot) => bot.id === profileCard.botId);
-          if (!profileCardIsCurrent(target, profileCard.baseRevision)) throw new Error("proposal_stale");
-        }
-        const applied = applyShellAction(shell, action);
-        createdBotId = applied.createdId;
-        return applied.store;
-      })
+      ? updateShell((shell) => applyShellAction(shell, action).store)
       : current;
     // Revoking here, not only at the next turn stamp. `syncSessionWorkspace`
     // runs when a turn starts, so without this a detach leaves the capability
@@ -480,32 +355,10 @@ export async function PUT(request: Request) {
     // Only once the roster commit stood. A failure here is reported, not
     // swallowed, and the tick's sweep clears whatever was left behind.
     const detachError = action?.type === "deleteBot" ? detachBot(action.botId) : null;
-    let queued = 0;
-    if (action) {
-      try {
-        queued = applyFollowUp(action, next);
-      } catch {
-        /* the shell action already landed; the handoff pump reports the rest */
-      }
-    }
-    // The card carried a first brief, so the owner approved that work too.
-    // Without this the brief was only ever shown on the card: the new bot was
-    // created idle and the brief stayed in the proposer's own chat.
-    let briefFailed = false;
-    if (claimed?.kind === "createBot" && claimed.status === "confirmed") {
-      try {
-        queued += deliverFirstBrief({
-          brief: claimed.brief,
-          createdBotId,
-          sourceBotId: claimed.sourceBotId,
-          bots: next.bots,
-        });
-      } catch {
-        // The bot exists and the card is spent, so this cannot be retried
-        // here. Say so on the thread rather than leaving a teammate that
-        // looks briefed and is not.
-        briefFailed = true;
-      }
+    try {
+      applyFollowUp(action);
+    } catch {
+      /* the shell action already landed; the transcript clear is best effort */
     }
     // `appendAgentEvent` upserts, so noting a confirmed delete on the deleted
     // bot's own thread rebuilds the row the teardown just removed. Only that
@@ -515,12 +368,12 @@ export async function PUT(request: Request) {
       && (claimed?.threadId || threadIdFor(action.botId)) === threadIdFor(action.botId);
     if (claimed && !notesDeletedThread) {
       try {
-        noteProposal(claimed, body.action, queued, briefFailed);
+        noteProposal(claimed, body.action);
       } catch {
         /* the transcript note is best effort */
       }
     }
-    return NextResponse.json({ ok: true, store: next, queued, detachError });
+    return NextResponse.json({ ok: true, store: next, queued: 0, detachError });
   } catch (err) {
     const guarded = apiError(err);
     if (guarded) return guarded;

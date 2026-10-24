@@ -34,6 +34,14 @@ test("a made-up tool in a skill body is reported", () => {
   assert.deepEqual(unknownToolNames("Call `connector_search`, then `connector_run_all`.", known), ["connector_run_all"]);
 });
 
+test("team, peer, handoff, sub-agent and reviewer talk is reported", () => {
+  assert.deepEqual(multiBotWords("Another bot is a peer, not the owner."), ["another bot", "peer"]);
+  assert.deepEqual(multiBotWords("Split the work into parallel sub-agents, or ask the Reviewer."), ["sub-agent", "reviewer"]);
+  assert.deepEqual(multiBotWords("Hand it to a teammate with a handoff."), ["handoff", "teammate"]);
+  assert.deepEqual(multiBotWords("Post to the group, or run the whole team."), ["team", "group"]);
+  assert.deepEqual(multiBotWords("You are the owner's assistant. Read the file, then answer."), []);
+});
+
 test("status codes and mounted connection tools are not tool names", () => {
   const known = new Set<string>();
   assert.deepEqual(unknownToolNames("`connectors_not_set_up` and `excalidraw__create_view`.", known), []);
@@ -73,18 +81,50 @@ test("no backticked identifier in the instructions, skills or tool descriptions 
   }
 });
 
-test("known tools include find_tools and eve's sub-agent tools", () => {
+test("known tools include find_tools, and eve's sub-agent tools are switched off", () => {
   const known = knownTools();
   assert.ok(known.has("find_tools"));
   assert.ok(known.has("connection_search"));
-  assert.ok(known.has("task_cancel"));
-  assert.ok(known.has("agent"));
+  assert.equal(known.has("task_cancel"), false);
+  assert.equal(known.has("agent"), false);
+});
+
+test("the instructions and skills have no team, peer, handoff, sub-agent or reviewer text", () => {
+  for (const file of ["agent/instructions.md", ...skillFiles()]) {
+    assert.deepEqual(multiBotWords(read(file)), [], `${file} talks about other bots, groups, sub-agents or a reviewer`);
+  }
+});
+
+test("none of the removed multi-bot tools is named in the instructions or skills", () => {
+  const removed = ["list_bots", "rail_action", "delete_bot", "propose_bot", "propose_group", "post_to_group", "send_to_bot", "update_bot_profile", "clear_history", "review", "list_models"];
+  const dir = join(ROOT, "agent/tools");
+  for (const name of removed) assert.equal(existsSync(join(dir, `${name}.ts`)), false, `${name}.ts is still there`);
+  for (const file of ["agent/instructions.md", ...skillFiles()]) {
+    const text = read(file);
+    for (const name of removed) assert.equal(text.includes(`\`${name}\``), false, `${file} names \`${name}\``);
+  }
 });
 
 // Helpers.
 
 function read(path: string): string {
   return readFileSync(join(ROOT, path), "utf8");
+}
+
+/** Words the one-bot prompts must not use: other bots, groups, sub-agents, handoffs, a reviewer. */
+const MULTI_BOT = [
+  ["another bot", /\banother bot\b/i],
+  ["sub-agent", /\bsub-?agents?\b/i],
+  ["handoff", /\bhand-?offs?\b/i],
+  ["reviewer", /\breviewers?\b/i],
+  ["teammate", /\bteammates?\b/i],
+  ["peer", /\bpeers?\b/i],
+  ["team", /\bteam\b/i],
+  ["group", /\bgroups?\b/i],
+] as const;
+
+function multiBotWords(text: string): string[] {
+  return MULTI_BOT.filter(([, pattern]) => pattern.test(text)).map(([word]) => word);
 }
 
 function overWordCap(text: string): boolean {
@@ -142,8 +182,8 @@ function unknownToolNames(text: string, known: Set<string>): string[] {
  */
 const ALLOWED_IDENTIFIERS = new Set<string>([
   // parameters, enum values and result fields
-  "botId", "timeoutMs", "timedOut", "exitCode", "status", "blocked", "active", "schedules", "model", "connectionId", "kind", "query",
-  "updateSection", "removeSection", "list", "install", "todos", "sectionId", "all", "format", "text", "markdown", "html",
+  "timeoutMs", "timedOut", "exitCode", "status", "blocked", "active", "schedules", "model", "connectionId", "kind", "query",
+  "list", "install", "todos", "all", "format", "text", "markdown", "html",
   // commands and tools on the owner's Mac
   "ls", "cat", "grep", "find", "git", "gh", "npm", "codex", "claude", "curl", "python", "node", "make", "brew", "textutil", "sips", "mdls", "pip", "rm", "sh",
   // modes, files and folders

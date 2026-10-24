@@ -20,9 +20,9 @@ import { dropLegacyDeviceFlowFile } from "../../../../../shared/provider-oauth.t
 let legacyDeviceFlowDropped = false;
 
 /**
- * Handoff pump and routine scheduler. The sending agent tool only queues a
- * record, so delivery is driven from here: the UI poll POSTs every few seconds
- * and wakePump() POSTs once right after a send. The same tick is where due
+ * Handoff pump and routine scheduler. The only handoff left is a connect
+ * card's resume, queued by the connect flows below, so delivery is driven from
+ * here: the UI poll POSTs every few seconds. The same tick is where due
  * routines fire. The agent key reaches this route as a header; the browser
  * reaches it as a same-origin desktop request.
  */

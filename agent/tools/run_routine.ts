@@ -11,7 +11,7 @@ export default defineTool({
     routineId: z.string().min(1).max(120),
   }),
   async execute(input, ctx) {
-    // A run starts a teammate turn and writes transcripts, so Read only
+    // A run starts a bot turn and writes transcripts, so Read only
     // refuses it like every other change inside the app.
     const who = await callerOf(readShell(), ctx);
     if (!who.ok) return who.result;

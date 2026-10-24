@@ -8,6 +8,7 @@ import {
   applyShellAction,
   DEFAULT_BOT_ID,
   GENERALIST_SEED_V2,
+  GENERALIST_SEED_V3,
   GENERALIST_SEEDS,
   parseShell,
   seedStore,
@@ -43,14 +44,14 @@ function tempShell(store: ShellStore): string {
 
 test("a fresh store seeds the current Generalist text", () => {
   const [bot] = seedStore().bots;
-  assert.equal(bot.description, GENERALIST_SEED_V2);
+  assert.equal(bot.description, GENERALIST_SEED_V3);
   assert.equal(bot.name, "Generalist");
 });
 
 for (const [index, seed] of GENERALIST_SEEDS.entries()) {
   test(`seed ${index + 1} of the shipped list becomes the current text and the new name`, () => {
     const [bot] = reread(oldStore({ description: seed })).bots;
-    assert.equal(bot.description, GENERALIST_SEED_V2);
+    assert.equal(bot.description, GENERALIST_SEED_V3);
     assert.equal(bot.name, "Generalist");
   });
 }
@@ -60,7 +61,7 @@ test("a seed with extra spaces, tabs and line breaks still matches", () => {
   const broken = GENERALIST_SEEDS[1].replace(". ", ".\n\t");
   for (const description of [spaced, broken]) {
     const [bot] = reread(oldStore({ description })).bots;
-    assert.equal(bot.description, GENERALIST_SEED_V2);
+    assert.equal(bot.description, GENERALIST_SEED_V3);
   }
 });
 
@@ -98,26 +99,26 @@ test("the rename needs the name Useful Bot, a seed and an untouched avatar", () 
   const seed = GENERALIST_SEEDS[0];
   const custom = reread(oldStore({ description: seed, avatarCustom: true })).bots[0];
   assert.equal(custom.name, "Useful Bot");
-  assert.equal(custom.description, GENERALIST_SEED_V2);
+  assert.equal(custom.description, GENERALIST_SEED_V3);
   const renamed = reread(oldStore({ name: "Jarvis", description: seed })).bots[0];
   assert.equal(renamed.name, "Jarvis");
-  assert.equal(renamed.description, GENERALIST_SEED_V2);
+  assert.equal(renamed.description, GENERALIST_SEED_V3);
 });
 
 test("reading the shell never writes it", () => {
   const path = tempShell(oldStore({ description: GENERALIST_SEEDS[1] }));
   const before = readFileSync(path, "utf8");
   const loaded = readShell(path);
-  assert.equal(loaded.bots[0].description, GENERALIST_SEED_V2);
+  assert.equal(loaded.bots[0].description, GENERALIST_SEED_V3);
   assert.equal(readFileSync(path, "utf8"), before);
   assert.equal(existsSync(`${path}.reseeded`), false);
 });
 
 test("the overlay persists on the next normal write", () => {
   const path = tempShell(oldStore({ description: GENERALIST_SEEDS[1] }));
-  updateShell((shell) => applyShellAction(shell, { type: "toggleSection", sectionId: "unassigned" }).store, path);
+  updateShell((shell) => applyShellAction(shell, { type: "select", botId: DEFAULT_BOT_ID }).store, path);
   const file = JSON.parse(readFileSync(path, "utf8")) as ShellStore;
-  assert.equal(file.bots[0].description, GENERALIST_SEED_V2);
+  assert.equal(file.bots[0].description, GENERALIST_SEED_V3);
   assert.equal(file.bots[0].name, "Generalist");
 });
 
@@ -135,6 +136,6 @@ test("two processes reading the same old file agree and leave it untouched", () 
   });
   const [first, second] = [run(), run()];
   assert.equal(first, second);
-  assert.deepEqual(JSON.parse(first), ["Generalist", GENERALIST_SEED_V2]);
+  assert.deepEqual(JSON.parse(first), ["Generalist", GENERALIST_SEED_V3]);
   assert.equal(readFileSync(path, "utf8"), before);
 });

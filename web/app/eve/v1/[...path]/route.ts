@@ -2,11 +2,10 @@ import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
   bodyHasInputResponses,
-  childStreamQuery,
   turnRewriteFailure,
   eveGetAllowed,
   evePostAllowed,
-  eveSessionRoute,
+  eveTurnBot,
   hiddenPrefixChars,
   isEveSessionPost,
   parseInputResponses,
@@ -14,9 +13,7 @@ import {
   parseTurnMessage,
   relayedEveCode,
   rewriteEveTurnBody,
-  sessionRouteHeader,
   turnHasImages,
-  type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
 import { catalogFor } from "../../../../../shared/live-models.ts";
 import { exactModelOption, modelSeesImages } from "../../../../../shared/models.ts";
@@ -32,14 +29,13 @@ import {
   sessionHasCompletedTurn,
   syncSessionWorkspace,
 } from "../../../../lib/agent-exec";
-import { authorizeChildCancel, authorizeChildStream, authorizeEveCall, carryOverReader, childStreamDeps, childWriteRefusal, type ChildCancel, type EveCallAuth } from "../../../../lib/eve-session-auth";
+import { authorizeEveCall, carryOverReader, childWriteRefusal, type EveCallAuth } from "../../../../lib/eve-session-auth";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { bindSession, readSessionParent, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
-import { recordSubagentStop } from "../../../../../shared/subagent-stops.ts";
 import { eveOrigin } from "../../../../../shared/stack.ts";
 
 const EVE = eveOrigin();
@@ -75,15 +71,11 @@ export async function POST(
  * session's cards are retired instead of staying up over the chat until they
  * expire.
  */
-function retireCards(method: string, suffix: string, search: string): void {
+function retireCards(method: string, suffix: string): void {
   const cancelled = method === "POST" ? /^session\/([^/]+)\/cancel$/.exec(suffix) : null;
   if (!cancelled) return;
-  // The app's automatic cancel of a stopped-report turn says so with
-  // scope=report: it retires only that session's own cards. Every other cancel
-  // (the owner's Stop) also retires its sub-agents' cards, failing closed.
-  const children = new URLSearchParams(search).get("scope") !== "report";
   try {
-    new ApprovalStore(Date.now, defaultApprovalsPath()).expireSession(cancelled[1], { children });
+    new ApprovalStore(Date.now, defaultApprovalsPath()).expireSession(cancelled[1]);
   } catch (err) {
     console.error("approval cards of a stopped session were left pending", err);
   }
@@ -113,26 +105,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   const url = new URL(request.url);
   let target = `${EVE}/eve/v1/${suffix}${url.search}`;
   const sessionPath = /^session\/([^/]+)(?:\/(?:stream|cancel))?$/.exec(suffix);
-  // A cancel into a sub-agent's child is verified as one decision (see
-  // authorizeChildCancel), before anything else. eve's background tasks outlive
-  // a parent's cancel, so this is the owner's way to stop one. Only a verified
-  // result skips the write refusals below.
-  let childCancel: Extract<ChildCancel, { kind: "verified" }> | null = null;
-  if (sessionPath) {
-    let decision: ChildCancel;
-    try {
-      decision = await authorizeChildCancel(method, suffix, url.search, childStreamDeps(), request.signal);
-    } catch (err) {
-      console.error("child cancel could not be verified", err instanceof Error ? err.message : err);
-      const missing = err instanceof Error && err.message === "channel_credential_missing";
-      return Response.json({ ok: false, error: missing ? "channel_credential_missing" : "child_session_unverifiable" }, { status: 503 });
-    }
-    if (decision.kind === "refused") return Response.json({ ok: false, error: decision.error }, { status: decision.status });
-    if (decision.kind === "verified") childCancel = decision;
-  }
-  // A sub-agent's child session is otherwise read only. A send, a cancel or a
-  // reset into one is refused here, whatever binding eve holds for it.
-  if (method !== "GET" && sessionPath && !childCancel) {
+  // A sub-agent's child session (one recorded before sub-agents were removed)
+  // is read only. A send, a cancel or a reset into one is refused here,
+  // whatever binding eve holds for it.
+  if (method !== "GET" && sessionPath) {
     try {
       if (readSessionParent(sessionPath[1]) !== null) {
         return Response.json({ ok: false, error: "child_session_readonly" }, { status: 403 });
@@ -159,45 +135,25 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     }
   };
   if (method === "GET") {
-    // A read of a sub-agent's child stream names the session it was delegated
-    // from (`parent`) and the index of that session's `subagent.called` event
-    // for it (`at`), which is checked against that one event on the parent's
-    // own stream (see authorizeChildStream). A session recorded as a child is
-    // never read without its parent.
-    const child = sessionPath && suffix.endsWith("/stream") ? childStreamQuery(url.search) : null;
-    let auth: EveCallAuth | Response;
-    if (sessionPath && child?.present) {
-      if (child.parent === null) return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
-      try {
-        auth = await authorizeChildStream(child.parent, sessionPath[1], child.at, childStreamDeps(), request.signal);
-      } catch (err) {
-        console.error("child stream could not be verified", err instanceof Error ? err.message : err);
-        const missing = err instanceof Error && err.message === "channel_credential_missing";
-        return Response.json({ ok: false, error: missing ? "channel_credential_missing" : "child_session_unverifiable" }, { status: 503 });
+    // A session recorded as a sub-agent's child is never read: nothing shows
+    // sub-agents any more.
+    try {
+      if (sessionPath && readSessionParent(sessionPath[1]) !== null) {
+        return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
       }
-      target = `${EVE}/eve/v1/${suffix}${child.search}`;
-    } else {
-      try {
-        if (sessionPath && readSessionParent(sessionPath[1]) !== null) {
-          return Response.json({ ok: false, error: "child_session_unverified" }, { status: 403 });
-        }
-      } catch (err) {
-        console.error("child session check failed", err instanceof Error ? err.message : err);
-        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
-      }
-      auth = authorize(null);
+    } catch (err) {
+      console.error("child session check failed", err instanceof Error ? err.message : err);
+      return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
     }
+    const auth = authorize(null);
     if (auth instanceof Response) return auth;
     if (!auth.ok) return Response.json({ ok: false, error: auth.error }, { status: auth.status });
     jwt = auth.jwt;
     if (jwt) headers.set("authorization", `Bearer ${jwt}`);
   }
-  if (childCancel) {
-    headers.set("authorization", `Bearer ${childCancel.jwt}`);
-    target = `${EVE}/eve/v1/${suffix}${childCancel.search}`;
-  }
   let body: Uint8Array | undefined;
-  let route: SessionRoute | null = null;
+  // The bot a turn is routed to, once the body is validated.
+  let turnBot: ShellBot | null = null;
   // The session a replacement carries over from, once verified.
   let carriedFrom: string | null = null;
   let carriedOwner: string | null = null;
@@ -214,7 +170,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     }
     // Every session path, a cancel included, is authorised against the binding
     // for its path id before anything else; a create has no session yet.
-    if (suffix !== "session" && !childCancel) {
+    if (suffix !== "session") {
       const auth = authorize(new TextDecoder().decode(body));
       if (auth instanceof Response) return auth;
       if (!auth.ok) return Response.json({ ok: false, error: auth.error }, { status: auth.status });
@@ -322,7 +278,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       try {
         const refusal = sender === null
           ? null
-          : modelSelectionRefusal(sender, senderStore) ?? admissionRefusal(sender, readShell(), senderStore, 0, intoSession);
+          : modelSelectionRefusal(sender, senderStore) ?? admissionRefusal(sender, senderStore, 0, intoSession);
         if (refusal) return refusal;
       } catch (err) {
         console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
@@ -345,7 +301,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           reader.jwt,
           undefined,
           request.signal,
-          sender ? briefMaxCharsFor(sender, readShell(), senderStore, null) : undefined,
+          sender ? briefMaxCharsFor(sender, senderStore, null) : undefined,
         ));
       }
       if (suffix !== "session") {
@@ -389,7 +345,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
                 reader.jwt,
                 undefined,
                 request.signal,
-                sender ? briefMaxCharsFor(sender, readShell(), senderStore, target) : undefined,
+                sender ? briefMaxCharsFor(sender, senderStore, target) : undefined,
               ));
             }
             else console.error("earlier session is not this bot's; its brief was not read");
@@ -403,21 +359,19 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         // Store before roster, as the agent freezes (see syncSessionWorkspaceFresh).
         stampStore = readProviderStore();
         const shell = readShell();
-        route = eveSessionRoute(raw, shell);
-        if (!route) {
+        bot = eveTurnBot(raw, shell);
+        if (!bot) {
           return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
         }
-        bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
-        body = new TextEncoder().encode(rewriteEveTurnBody(raw, route, notes));
+        turnBot = bot;
+        body = new TextEncoder().encode(rewriteEveTurnBody(raw, notes));
         // The definitive check, on the very bot, roster and providers store
         // this turn is dispatched with, and the whole hidden prefix it carries
-        // (the brief, a retry note, the mention line and their framing). The
-        // earlier checks only spared a long carry-over read; the owner may have
-        // changed the model, the instructions or the notes during it.
-        if (bot) {
-          finalRefusal = modelSelectionRefusal(bot, stampStore)
-            ?? admissionRefusal(bot, shell, stampStore, hiddenPrefixChars(route, notes), intoSession);
-        }
+        // (the brief, a retry note and their framing). The earlier checks only
+        // spared a long carry-over read; the owner may have changed the model,
+        // the instructions or the notes during it.
+        finalRefusal = modelSelectionRefusal(bot, stampStore)
+          ?? admissionRefusal(bot, stampStore, hiddenPrefixChars(notes), intoSession);
         headers.set("content-type", "application/json");
       } catch (err) {
         // Routing and rewriting fail closed. Forwarding the original body
@@ -428,15 +382,12 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const failure = turnRewriteFailure(err);
         return Response.json({ ok: false, error: failure.error }, { status: failure.status });
       }
-      if (!route) {
-        return Response.json({ ok: false, error: "session_route_failed" }, { status: 503 });
-      }
       if (finalRefusal) return finalRefusal;
       if (suffix === "session") {
-        // A create is made as the validated route bot, never as a bot the body
-        // names but the roster does not hold (eveSessionRoute returned null for it).
+        // A create is made as the validated bot, never as a bot the body
+        // names but the roster does not hold (eveTurnBot returned null for it).
         try {
-          jwt = channelJwt(route.threadId);
+          jwt = channelJwt(turnBot.id);
         } catch (err) {
           console.error("new session could not be authorised", err instanceof Error ? err.message : err);
           return Response.json({ ok: false, error: "channel_credential_missing" }, { status: 503 });
@@ -469,20 +420,11 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   // A child can be recorded while this request was being read and prepared:
   // one last look, right before anything reaches eve.
   try {
-    const readOnly = childCancel ? null : childWriteRefusal(method, suffix, (id) => readSessionParent(id) !== null);
+    const readOnly = childWriteRefusal(method, suffix, (id) => readSessionParent(id) !== null);
     if (readOnly) return Response.json({ ok: false, error: readOnly.error }, { status: readOnly.status });
   } catch (err) {
     console.error("child session check failed", err instanceof Error ? err.message : err);
     return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
-  }
-  // Before the cancel reaches eve, so the marker exists when eve's cancelled
-  // report reaches the parent. A marker that cannot be written is said, not hidden.
-  if (childCancel) {
-    try {
-      recordSubagentStop({ rootSessionId: childCancel.parent, childSessionId: childCancel.child, agentId: childCancel.agentId });
-    } catch (err) {
-      console.error("owner stop of a sub-agent was not recorded", err instanceof Error ? err.message : err);
-    }
   }
   try {
     const signal = method === "GET"
@@ -503,13 +445,13 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         : (await upstream.body?.cancel().catch(() => undefined), "");
       const code = relayedEveCode(upstream.status, text);
       // A session eve already retired can't act on its cards either.
-      if (code === "session_not_active") retireCards(method, suffix, url.search);
+      if (code === "session_not_active") retireCards(method, suffix);
       return Response.json(
         { ok: false, error: "eve_error", status: upstream.status, ...(code ? { code } : {}) },
         { status: upstream.status },
       );
     }
-    retireCards(method, suffix, url.search);
+    retireCards(method, suffix);
     const out = new Headers();
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);
@@ -522,7 +464,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     // JSON body to stamp the grant before returning it: a tolerant parse that
     // fails still passes the body through untouched. The shell is re-read so
     // the stamp cannot come from a pre-request snapshot.
-    if (method === "POST" && suffix === "session" && route) {
+    if (method === "POST" && suffix === "session" && turnBot) {
       const text = await upstream.text();
       let created = "";
       try {
@@ -530,13 +472,13 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       } catch {
         /* a body this build cannot parse still belongs to the caller */
       }
-      if (created && route) {
+      if (created && turnBot) {
         // The new session is bound to the bot before anything else happens to
         // it, so every tool the first turn runs finds its owner. eve minted
         // the id inside this call, so this is the earliest point it exists.
         // A session that cannot be bound is stopped: it would run unowned.
         try {
-          bindSession(created, route.threadId);
+          bindSession(created, turnBot.id);
         } catch (err) {
           console.error("new session could not be bound", err instanceof Error ? err.message : err);
           await cancelEveTurn(created, jwt ?? "");
@@ -548,7 +490,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         // the carry-over was verified and the new session exists. The client
         // moves the live pointer with its usual touchChat.
         const previous = carriedFrom;
-        const botId = route.threadId;
+        const botId = turnBot.id;
         let lost = false;
         try {
           updateShell((current) => {
@@ -579,7 +521,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         try {
           // Store before roster, as the agent freezes.
           const store = readProviderStore();
-          const bot = readShell().bots.find((item) => item.id === route?.threadId) ?? null;
+          const bot = readShell().bots.find((item) => item.id === turnBot?.id) ?? null;
           if (bot) syncSessionWorkspace(created, bot, store);
           else removeSessionGrant(created);
         } catch {
@@ -592,10 +534,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       }
       return new Response(text, { status: upstream.status, headers: out });
     }
-    const encoded = sessionRouteHeader(route);
-    // Tells the caller which bot or group answered, and which member an
-    // @mention directed the turn at.
-    if (encoded) out.set("x-ub-route", encoded);
     return new Response(upstream.body, { status: upstream.status, headers: out });
   } catch {
     return Response.json({ ok: false, error: "eve_unavailable" }, { status: 503 });
