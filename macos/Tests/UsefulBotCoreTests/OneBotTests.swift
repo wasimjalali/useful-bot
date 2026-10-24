@@ -135,25 +135,30 @@ import Testing
         #expect(!projection.pending)
     }
 
-    @Test func aBackgroundReportFromAnOlderSessionIsNotAnOwnerBubble() throws {
+    /// Only eve's mark says a message is a report: the wording is text an owner
+    /// can type, and hiding it would drop their message.
+    @Test func aMarkedBackgroundReportIsNotAnOwnerBubble() throws {
         let report = "Background task task_1 (agent) is completed.\n\nResult:\nFine."
-        // With eve's mark, and without it (merged turns and streams from before the mark).
-        for marked in [true, false] {
-            var projection = StreamProjection()
-            projection.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_2"},"meta":{"id":"r1"}}"#))
-            let mark = marked ? #","kind":"execution.background_task""# : ""
-            projection.apply(try line(#"{"type":"message.received","data":{"message":\#(quoted(report)),"turnId":"turn_2"\#(mark)},"meta":{"id":"r2"}}"#))
-            projection.apply(try line(#"{"type":"message.completed","data":{"message":"The critic found nothing.","turnId":"turn_2"},"meta":{"id":"r3"}}"#))
-            #expect(projection.messages.filter { $0.role == .user }.isEmpty, Comment(rawValue: "marked: \(marked)"))
-            #expect(projection.messages.map(\.text) == ["The critic found nothing."])
-        }
+        var projection = StreamProjection()
+        projection.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_2"},"meta":{"id":"r1"}}"#))
+        projection.apply(try line(#"{"type":"message.received","data":{"message":\#(quoted(report)),"turnId":"turn_2","kind":"execution.background_task"},"meta":{"id":"r2"}}"#))
+        projection.apply(try line(#"{"type":"message.completed","data":{"message":"The critic found nothing.","turnId":"turn_2"},"meta":{"id":"r3"}}"#))
+        #expect(projection.messages.filter { $0.role == .user }.isEmpty)
+        #expect(projection.messages.map(\.text) == ["The critic found nothing."])
     }
 
-    @Test func anOwnerWhoWritesAboutBackgroundTasksStillGetsTheirBubble() throws {
-        var projection = StreamProjection()
-        projection.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_1"},"meta":{"id":"e1"}}"#))
-        projection.apply(try line(#"{"type":"message.received","data":{"message":"Why did the Background task task_1 fail earlier?","turnId":"turn_1"},"meta":{"id":"e2"}}"#))
-        #expect(projection.messages.map(\.role) == [.user])
+    @Test func ownerTextThatStartsWithReportWordingKeepsItsBubble() throws {
+        for text in [
+            "Background task task_1 is completed. Can you check why?",
+            "Background task task_1 (agent) is completed.\n\nResult:\nFine.",
+            "Why did the Background task task_1 fail earlier?",
+        ] {
+            var projection = StreamProjection()
+            projection.apply(try line(#"{"type":"turn.started","data":{"turnId":"turn_1"},"meta":{"id":"e1"}}"#))
+            projection.apply(try line(#"{"type":"message.received","data":{"message":\#(quoted(text)),"turnId":"turn_1"},"meta":{"id":"e2"}}"#))
+            #expect(projection.messages.map(\.role) == [.user], Comment(rawValue: text))
+            #expect(projection.messages.first?.text == text)
+        }
     }
 
     // MARK: Approvals
