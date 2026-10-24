@@ -9,13 +9,15 @@ the SPEC sections it names and the matching `app-map/*.md`, then builds.
 ```
 PR 1  router accepts Pi requests                 main   (eve still runs)
 PR 2  one strong bot                             main   (eve still runs)
+PR 2b chat-first UI to the approved mockups      main   (eve still runs)
 PR 3  engine swap, feature branch feat/pi-engine -> main as one PR
         orchestrator contract commit, then W1 engine, W2 tools, W3 web and ops, W4 Swift
 PR 4  one-release-later cleanup                  main
 ```
 
 - PR 1 and PR 2 are independent and can run in parallel sessions (no shared files).
-- PR 3 starts after both merge. It ships in one release with the clean slate (SPEC D22, D23).
+- PR 2b starts after PR 2 merges, and merges before PR 3's W4 starts (they share Swift files).
+- PR 3 starts after PR 1, PR 2 and PR 2b merge. It ships in one release with the clean slate (SPEC D22, D23).
 - PR 4 lands in the release after PR 3's.
 
 Every PR follows the global change loop: worktree, build, self-check (`npx tsc --noEmit` for the
@@ -30,6 +32,7 @@ Reviews (GPT paused until 2026-11-01: Opus takes the GPT slot, GLM 5.3 runs besi
 |---|---|---|
 | 1 | feature | Sonnet + Opus + GLM 5.3, medium |
 | 2 | feature, stored roster state | Sonnet + Opus + GLM 5.3, high |
+| 2b | feature | Sonnet + Opus + GLM 5.3, medium |
 | 3 | sensitive (process auth, state, concurrency, data drop) | Sonnet + Opus + Opus + GLM 5.3, high; split by worker area so every file has one reviewer |
 | 4 | small | Sonnet, medium |
 
@@ -70,8 +73,8 @@ and forwards the expected upstream body.
 
 **Goal:** one all-round bot and a chat-first sidebar; no second bot, groups, sections, cross-bot
 tools or sub-agents. Still on eve. Decisions SPEC D5 to D9, D20, D25 and the "PR 2" rows of
-`UI.md` section 9. The UI parts wait for the owner's approval of the Claude Design mockups (the
-"Pi engine UI" session sends it). Tool merges (D21) wait for PR 3.
+`UI.md` section 9. The chat-first UI was held for the owner's mockup approval and lands in PR 2b;
+PR 2 builds the decoding, payloads and removals it needs. Tool merges (D21) wait for PR 3.
 
 **Node worker owns:**
 - delete `agent/tools/{list_bots,rail_action,delete_bot,propose_bot,propose_group,post_to_group,
@@ -124,8 +127,8 @@ data), new `App/RoutinesPage.swift` (`UI.md` 5, built from the routine views of
 `ChatDetailsPaneView.swift`), `App/LibraryView.swift` (stage page), `App/RootView.swift`
 (create-bot and create-group dialogs, sections, stage routing), `App/PickerViews.swift` (bot
 picker out; Chats, Library, Routines tabs), `App/ProposalCardView.swift`,
-`App/SettingsPaneView.swift` (becomes the Bot pane of `UI.md` 6), `App/AppSettingsView.swift`
-(Earlier bots, reviewer row), `App/UsefulBotApp.swift` (⌘N and the other shortcuts of `UI.md` 11),
+`App/SettingsPaneView.swift` (group and routine parts out), `App/AppSettingsView.swift`
+(reviewer row), `App/UsefulBotApp.swift` (⌘N and the other shortcuts of `UI.md` 11),
 `App/ChatDetailsPaneView.swift`, `App/ChatView.swift`
 (sub-agent cards, handoff and post strips, group header), `App/SubagentCard.swift` (delete),
 `App/AvatarStackView.swift` (delete), `App/ProvidersPaneView.swift` (reviewer row),
@@ -140,12 +143,41 @@ and open flows), and the Swift tests that cover these
 (`SubagentCardTests`, `SubagentRunTests`, `ThreadsTests`, `ChatAttributionTests`, the group and
 fan-out cases of `TranscriptTests`, `TranscriptBlocksTests`, `ProposalTests`, `ShellActionsTests`).
 
+**Verify:** node and Swift suites green. Live in Useful Bot Dev: the bot runs a turn with bash and
+an approval; a routine runs; asked to "use a sub-agent", the bot does the work itself; connecting an
+app resumes the chat.
+
+---
+
+## PR 2b: chat-first UI
+
+**Goal:** the UI held from PR 2, built to the approved mockups (`UI.md`, artboards in
+`docs/plan/pi-engine/mockups/chat-first-useful-bot.html`), on eve data. The "PR 2" rows of `UI.md`
+section 9 that PR 2 did not build, plus the Connectors polish of `UI.md` 8b.
+
+**Swift worker** (sonnet-worker) owns: `App/RailView.swift` (the chat-first sidebar of `UI.md` 3:
+logo, fixed rows, chat list by day, dots ring for a working chat, pencil New chat, account row with
+the owner name), new `App/RoutinesPage.swift` (`UI.md` 5, built from the routine views of
+`ChatDetailsPaneView.swift`), `App/LibraryView.swift` (stage page), `App/RootView.swift` (stage
+routing; `ConnectorsDialog` and `ConnectorDetailPage` polish of `UI.md` 8b), `App/PickerViews.swift`
+(Chats, Library, Routines tabs), `App/SettingsPaneView.swift` (its instructions and memory sections
+move into the new Settings tab; the pane and its toggle go), `App/AppSettingsView.swift` (the
+Instructions and memory tab of `UI.md` 6, notify and Earlier bots in General, 220pt nav),
+`App/ChatView.swift` (title-only header, logo empty chat, dots working row, "From another chat"
+approval label), `App/UsefulBotApp.swift` (⌘N and the other shortcuts of `UI.md` 11),
+`Core/BackendModels.swift` (`needsSignIn` on connected apps, `risk` on tools), and the Swift tests
+that cover these.
+
+**Node worker** (sonnet-worker) owns: `web/app/api/connectors/route.ts` (`needsSignIn` per
+connected app), `web/app/api/connectors/tools/route.ts` (`risk` per tool from `connectorRisk`; move
+it to `shared/` if the web build can't import `agent/lib`), and their tests.
+
 **Verify:** node and Swift suites green. Live in Useful Bot Dev: the sidebar matches the approved
-mockups (fixed rows, chat list, account row); New chat and opening a recent chat work; the Routines
-page shows the moved routines paused; Settings > Earlier bots copies instructions and moves notes;
-the bot runs a turn with bash and an approval; a routine runs; asked to "use a sub-agent", the bot
-does the work itself; connecting an app resumes the chat. Screenshots, light and dark, side by side
-with the approved mockups.
+artboards (fixed rows, chat list, account row); New chat and opening a recent chat work; the
+Routines page shows the moved routines paused; Settings > Instructions and memory edits
+instructions and lists notes; Settings > General > Earlier bots copies instructions and moves
+notes; Connectors shows Sign in again on an expired app and an app's tools grouped into reads and
+writes. Screenshots, light and dark, side by side with the After artboards.
 
 ---
 

@@ -95,7 +95,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D3 | Model path | Through the router. A registered native provider delegates to Pi's built-in `openai-completions` stream with our `routerFetch` |
 | D4 | Pi built-ins | All off: no built-in tools, no extensions from disk, no skill or context-file discovery, in-memory settings, nothing read under `~/.pi` |
 | D5 | Bots | One bot: the default (`bot-useful`, keeps its current name). No second bot, no bot switcher, no bot creation |
-| D6 | Other existing bots | Archived ("earlier bots"): hidden, record and memory notes kept under their id; their routines move to the bot, paused; Settings > Earlier bots offers Copy instructions, Move notes and Remove. No restore |
+| D6 | Other existing bots | Archived ("earlier bots"): hidden, record and memory notes kept under their id; their routines move to the bot, paused; Settings > General > Earlier bots offers Copy instructions, Move notes and Remove. No restore |
 | D7 | Sub-agents | Removed |
 | D8 | Groups, sections, pins, hide, handoffs, fan-out, cross-bot send, bot and group proposals, profile proposals | Removed |
 | D9 | Chats | The sidebar is the chat list (one Pi session per chat): new, open, rename, delete (to a trash kept 30 days), search, live state per chat (`UI.md` 3.3) |
@@ -611,6 +611,8 @@ Same bearer and Host rules as 5.1. Writes are idempotent by the key given.
 | `shared/mcp-apps.ts` | widget detection from the tool-call shape |
 | `shared/routines-store.ts` | routine gains `chatId` (its chat) and `movedFrom` (archive migration, PR 2); `RoutineRun` gains `chatId`; `parseRoutine` keeps the new fields |
 | `/api/memory` | GET adds `total` (the store's `countLive`) for Earlier bots (PR 2) |
+| `/api/connectors` | each connected app gains `needsSignIn` (its Composio account expired or failed auth) for the Sign in again chip (PR 2b) |
+| `/api/connectors/tools` | each tool gains `risk` (`read`, `write` or `destructive`) from `connectorRisk` in `agent/lib/connector-risk.ts`, so the app page groups reads and writes (PR 2b) |
 
 ## 8. Router changes
 
@@ -647,8 +649,9 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
   `Threads.swift` except `defaultBotId`, and the eve-only tests (`app-map/swift.md` 7.1).
 - **UI:** everything in `UI.md`: the chat-first sidebar (fixed Routines, Library and Connectors
   rows, chat list with per-chat state marks, row menu), chat header with the chat title, the
-  Routines page on the stage, the Bot pane without routines or group fields, the search palette
-  (Chats, Library, Routines), Settings > Earlier bots, and the removals of `UI.md` section 10.
+  Routines page on the stage, Settings > Instructions and memory in place of the Bot pane (notify
+  moves to Settings > General), the search palette (Chats, Library, Routines), Settings > General >
+  Earlier bots, the Connectors polish of `UI.md` 8b, and the removals of `UI.md` section 10.
   Also: proposal cards keep connect kinds; Providers pane drops the reviewer row;
   `AppStatus.eve` becomes `engine`.
 - **Supervisor:** `ServiceMode.eve` becomes `.engine`, health `/health`, `enginePort`, own-process
@@ -664,7 +667,7 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
 
 - One bot (the current default). The sidebar lists chats, each showing whether it is working,
   waiting on him, has a reply or failed; Routines, Library and Connectors sit above the list.
-- Other bots appear only under Settings > Earlier bots (copy instructions, move notes, remove);
+- Other bots appear only under Settings > General > Earlier bots (copy instructions, move notes, remove);
   their routines are on the Routines page, paused, each with its own chat once it runs.
 - Chats start fresh after the update; chats open from rows without the replay pause; chats can
   be renamed, deleted and searched by message text.

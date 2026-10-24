@@ -234,7 +234,8 @@ the Composio key line. Polish only:
 
 ## 9. Contract: UI element to backend
 
-Every row must exist in both columns before PR 3 merges. "PR" says where it is built.
+Every row must exist in both columns before PR 3 merges. "PR" says where it is built; the UI of a
+"2" row lands in PR 2b where PR 2 held it for the mockups (PLAN "PR 2b").
 
 | UI element | Backend source | PR |
 |---|---|---|
@@ -259,10 +260,10 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
-| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2 for connections; Composio tiles need item 14.3 |
+| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b (`needsSignIn` added to `/api/connectors`) |
 | App page Reconnect and Disconnect (Refresh for a direct MCP server) | `/api/connectors` (Composio), `/api/connections` (MCP), the same calls as today | 2 |
 | Account row owner name | `GET /api/status` (operator name) | 2 |
-| App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read` or `write`) from `connector-risk.ts` | 3 |
+| App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read`, `write` or `destructive`, the last two under Writes) from `connector-risk.ts` | 2b |
 | Settings > Instructions and memory: instructions and counter | `PUT /api/shell` `updateBot`, `GET /api/bots/context` | 2, 3 (engine-measured) |
 | Settings > Instructions and memory: memory | `/api/memory` | 2 |
 | Settings > General: notify when a chat finishes | `PUT /api/shell` `updateBot {notify}` on the one bot; the "only in the background or when closed" rule is today's app-side check, not a setting | 2 |
@@ -321,30 +322,9 @@ chat. All in Useful Bot Dev with its one bot.
 | Connectors | dialog with "Added" | same dialog, Connected / Sign in again |
 | An app's tools | plain list | Reconnect, Disconnect, reads and writes, filter |
 
-## 14. For the orchestrator: what the approved design needs from SPEC and the backend
+## 14. Open item for the orchestrator
 
-Not changed here (this file only); each needs a decision or a SPEC edit by the orchestrator:
-
-1. **SPEC D5** says the default bot keeps its current name ("Generalist"). The approved design shows
-   no editable name and calls the bot Useful Bot. Rename the default bot to "Useful Bot" in the
-   PR 2 migration and drop name, face color and label editing from the UI (the shell fields can stay).
-2. **Tool risk on the wire:** `GET /api/connectors/tools` must return each tool's `risk` (`read` or
-   `write`) computed with `connector-risk.ts`; today the risk is computed only agent-side.
-3. **Sign in again:** the Connectors chips need a per-connection and per-connector `needsSignIn`
-   state on the list routes (connection auth failures are recorded today; Composio expiry needs the
-   same).
-4. **Notify toggle** moves from the Bot pane to Settings > General; with one bot it keeps writing
-   `updateBot {notify}` on that bot, so no backend change.
-5. **SPEC 10 and PLAN** still describe a Bot pane: SPEC 10 ("the Bot pane without routines or group
-   fields") and PLAN W4 (`App/SettingsPaneView.swift` "becomes the Bot pane"). Both should become
-   the Settings tab of section 6, with notify in General; PLAN should name the Swift file that owns
-   the new tab.
-6. **SPEC 5.6 and the `/api/shell` row** keep "You are NAME." and `renameBot` / avatar edits. With no
-   name editing, NAME is always "Useful Bot"; the shell fields can stay unused.
-7. **Earlier bots location:** SPEC D6, SPEC 10 and PLAN say "Settings > Earlier bots"; the approved
-   board puts it inside Settings > General. Align the wording.
-8. **Connectors polish has no owner in PLAN:** `ConnectorsDialog` and `ConnectorDetailPage` (Swift)
-   plus items 2 and 3 (backend) need a PR. Until then the chips show Connected only and the tools
-   page lists tools without the reads and writes split.
-9. **PR 2 held UI** (sidebar, Routines page, Settings tab, Earlier bots) can now be built to the
-   After artboards, except what this file marks PR 3.
+SPEC D5 says the default bot keeps its current name. The approved design shows no editable name and
+calls the bot Useful Bot everywhere, so SPEC 5.6's "You are NAME." should read "You are Useful Bot."
+Decide whether PR 2's migration renames the stored default bot or the UI just ignores the stored
+name; the `renameBot` and avatar fields on `/api/shell` can stay unused either way.
