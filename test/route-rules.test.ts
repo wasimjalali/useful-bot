@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "../agent/lib/memory.ts";
 import { createRoutine, listRoutines, moveRoutinesToBot, readRoutinesStore, updateRoutine } from "../shared/routines-store.ts";
-import { writeFixtureShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell, writeShell } from "../shared/shell-io.ts";
 import { archiveEarlierBots, DEFAULT_BOT_ID, seedStore } from "../shared/shell-store.ts";
-import { archivedBotRefusal, routineCreateRefusal, routineRunRefusal } from "../web/lib/archived-bots.ts";
+import { approvalDecisionRefusal, archivedBotRefusal, routineCreateRefusal, routineRunRefusal } from "../web/lib/archived-bots.ts";
+import { ApprovalStore } from "../agent/lib/approvals.ts";
+import { bindSession } from "../shared/session-bindings.ts";
 import { memoryListing } from "../web/lib/memory-listing.ts";
 import { applyProvidersPut } from "../web/lib/providers-write.ts";
 import { withBot } from "./helpers/roster.ts";
@@ -54,6 +56,37 @@ test("each route calls its rule, and the eve proxy checks the sender, the routed
   assert.match(read("web/app/api/routines/route.ts"), /routineCreateRefusal\(readShell\(\)\.bots, body\.botId\)/);
   assert.match(read("web/app/api/routines/[id]/run/route.ts"), /routineRunRefusal\(readShell\(\)\.bots, routine\)/);
   assert.match(read("web/app/api/memory/route.ts"), /memoryListing\(memoryStore\(\), botId\)/);
+});
+
+test("approving a card raised by an archived bot's parked turn is refused; denying it is not", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-route-"));
+  const saved = { shell: process.env.UB_SHELL_PATH, owners: process.env.UB_SESSION_OWNERS_PATH };
+  process.env.UB_SHELL_PATH = join(dir, "shell.json");
+  process.env.UB_SESSION_OWNERS_PATH = join(dir, "session-owners.json");
+  try {
+    const made = withBot(seedStore(), "Alpha");
+    writeFixtureShell(made.store);
+    bindSession("sess-alpha", made.id);
+    bindSession("sess-useful", DEFAULT_BOT_ID);
+    // Alpha has a card open, then the archive pass runs.
+    const store = new ApprovalStore(Date.now, join(dir, "approvals.json"));
+    const ask = (sessionId: string) => store.request({ sessionId, turnId: "t", toolCallId: "c", tool: "bash", actionSha256: "h".repeat(64), preview: "p" });
+    const alphaCard = ask("sess-alpha");
+    const usefulCard = ask("sess-useful");
+    const ghostCard = ask("sess-unbound");
+    writeShell(archiveEarlierBots(readShell()).store);
+    assert.deepEqual(approvalDecisionRefusal(store, alphaCard.id, "approve"), { error: "shell_bot_archived", status: 409 });
+    assert.equal(approvalDecisionRefusal(store, alphaCard.id, "deny"), null, "a deny only closes the card");
+    assert.equal(approvalDecisionRefusal(store, usefulCard.id, "approve"), null);
+    assert.equal(approvalDecisionRefusal(store, ghostCard.id, "approve"), null, "a session nobody owns is the store's business");
+    assert.equal(approvalDecisionRefusal(store, "apr_missing", "approve"), null, "an unknown card is the store's 404");
+    assert.match(readFileSync(new URL("../web/app/api/approvals/[id]/route.ts", import.meta.url), "utf8"), /approvalDecisionRefusal\(/);
+  } finally {
+    for (const [key, value] of [["UB_SHELL_PATH", saved.shell], ["UB_SESSION_OWNERS_PATH", saved.owners]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("PUT /api/providers refuses a per-bot model pick for an archived bot and writes nothing", () => {

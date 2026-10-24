@@ -1,4 +1,7 @@
+import type { ApprovalStore } from "../../agent/lib/approvals.ts";
 import type { Routine } from "../../shared/routines-store.ts";
+import { resolveSessionBot } from "../../shared/session-bindings.ts";
+import { readShell } from "../../shared/shell-io.ts";
 
 /**
  * The refusals for an archived (earlier) bot, one rule for every route that
@@ -24,4 +27,17 @@ export function routineCreateRefusal(roster: Roster, botId: string): Refusal | n
 /** POST /api/routines/:id/run: a routine of an archived bot does not run, even from the Test run button. */
 export function routineRunRefusal(roster: Roster, routine: Pick<Routine, "botId">): Refusal | null {
   return archivedBotRefusal(roster, routine.botId);
+}
+
+/**
+ * POST /api/approvals/:id: approving lets a parked tool call run, so an archived
+ * bot's card cannot be approved. Denying it only closes the card and is always
+ * allowed. The card names its session, and the session's binding names the bot.
+ */
+export function approvalDecisionRefusal(store: Pick<ApprovalStore, "get">, id: string, decision: "approve" | "deny"): Refusal | null {
+  if (decision !== "approve") return null;
+  const record = store.get(id);
+  if (!record) return null;
+  const shell = readShell();
+  return archivedBotRefusal(shell.bots, resolveSessionBot(record.sessionId, shell));
 }
