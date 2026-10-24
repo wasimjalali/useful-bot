@@ -1,7 +1,9 @@
 # Pi engine: replace eve, one strong bot
 
-Status: draft 2, 2026-10-24, hardened by a five-model council (Fable 5.1, Sonnet 5.5, Haiku 5.5,
-GLM 5.3, DeepSeek V4.1 Flash; record in `evals/results/2026-10-24-pi-engine-spec-council.md`). Author: Opus 5.5 orchestrator.
+Status: draft 3, 2026-10-25 (one bot only, chat-first UI). Draft 2 was hardened by a five-model
+council (Fable 5.1, Sonnet 5.5, Haiku 5.5, GLM 5.3, DeepSeek V4.1 Flash; record in
+`evals/results/2026-10-24-pi-engine-spec-council.md`). Author: Opus 5.5 orchestrator.
+UI, UX and the UI-to-backend contract: `UI.md` (mockups pending owner approval in Claude Design).
 Plan, PR briefs and the file ownership table: `PLAN.md`. Ground truth of today's code (file:line
 on `main` @ 9dc43a0f): `app-map/agent.md`, `app-map/web-shared.md`, `app-map/swift.md`,
 `app-map/router-ops-tests.md`. Read the matching map before touching a file this spec names.
@@ -12,8 +14,9 @@ on `main` @ 9dc43a0f): `app-map/agent.md`, `app-map/web-shared.md`, `app-map/swi
    harness SDK (`@earendil-works/pi-coding-agent`, exact pin), hosted in our own Node process.
 2. The app gets one engine-neutral chat protocol of our own. The engine serves chat history as
    ready rows; the Swift app stops replaying and folding eve's event journal.
-3. The product goes from a team of specialist bots to one strong all-round bot, with an optional
-   second one. Groups, sections, handoffs, fan-out and sub-agents are removed.
+3. The product goes from a team of specialist bots to **one** strong all-round bot (owner's
+   decision, 2026-10-25), and the sidebar lists chats instead of bots (`UI.md`). Groups,
+   sections, handoffs, fan-out, sub-agents and bot creation are removed.
 4. Everything that already works without eve stays: the router, the approval store, command risk,
    the seatbelt sandbox, memory, routines, Composio, our MCP client, media, auth.
 5. **Clean slate for chats** (owner's decision, 2026-10-24): old eve chats are not migrated. The
@@ -91,11 +94,11 @@ The implementing agents follow these defaults. The owner can override any of the
 | D2 | Where Pi runs | Separate plain Node process. Not inside Next (dev duplicates route modules and hot-reloads) |
 | D3 | Model path | Through the router. A registered native provider delegates to Pi's built-in `openai-completions` stream with our `routerFetch` |
 | D4 | Pi built-ins | All off: no built-in tools, no extensions from disk, no skill or context-file discovery, in-memory settings, nothing read under `~/.pi` |
-| D5 | Bots | The default bot (`bot-useful`, keeps its current name) plus at most one more. Cap 2 |
-| D6 | Extra existing bots | Archived: hidden from the rail, instructions, memory and routines kept (routines paused). Restore takes the second slot |
+| D5 | Bots | One bot: the default (`bot-useful`, keeps its current name). No second bot, no bot switcher, no bot creation |
+| D6 | Other existing bots | Archived ("earlier bots"): hidden, record and memory notes kept under their id; their routines move to the bot, paused; Settings > Earlier bots offers Copy instructions, Move notes and Remove. No restore |
 | D7 | Sub-agents | Removed |
 | D8 | Groups, sections, pins, hide, handoffs, fan-out, cross-bot send, bot and group proposals, profile proposals | Removed |
-| D9 | Chats per bot | "New chat" and recents kept (one Pi session per chat) |
+| D9 | Chats | The sidebar is the chat list (one Pi session per chat): new, open, rename, delete (to a trash kept 30 days), search, live state per chat (`UI.md` 3.3) |
 | D10 | Transcript | Rows built by the engine from the session file. Overlay rows (images, pages, widgets, notes, cards, failures) are `custom` entries in the same file |
 | D11 | Live updates | Per-chat NDJSON event stream with host-owned `seq` and engine `epoch`, ring buffer, heartbeat |
 | D12 | Approvals | Keep `approvals.json`, hash binding, routes, 1.5 s poll; waits race the abort signal; stale cards expire at boot |
@@ -104,7 +107,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D15 | Mid-turn crash | No resume. The turn is closed with an "Interrupted" row and Retry |
 | D16 | MCP | Our own client, OAuth, Keychain auth, `find_tools` and `<connectionId>__<tool>` names; picked tools registered as Pi tools |
 | D17 | OpenAPI connections | Dropped. Existing entries show "No longer supported, add it as an MCP server" |
-| D18 | Routines | Scheduler in the engine (20 s timer), at most 4 at once, one per bot, waits for the chat to be idle (as today) |
+| D18 | Routines | Scheduler in the engine (20 s timer), at most 4 at once. Each routine runs in its own chat (created on first run, reused), so runs never pile into the owner's chat |
 | D19 | Connect-card resume | Web calls the engine's system-turn endpoint (PR 3, which also deletes the handoff queue); PR 2 keeps the handoff queue for this one use |
 | D20 | Tools dropped | `list_bots`, `rail_action`, `delete_bot`, `propose_bot`, `propose_group`, `post_to_group`, `send_to_bot`, `update_bot_profile`, `clear_history`, `review`, `list_models`, `plant_read`, eve `agent`, `task_cancel` |
 | D21 | Tools merged | memory (4 to 1), routines (5 to 1), Composio apps (4 to 1) |
@@ -209,9 +212,10 @@ The implementing agents follow these defaults. The owner can override any of the
 
 - A chat is one Pi session file under `<stateRoot>/engine/sessions/<botId>/`.
 - The engine owns the chat index `<stateRoot>/engine/chats.json`:
-  `{schemaVersion: 1, chats: [{chatId, botId, sessionFile|null, title, preview, createdAt,
-  updatedAt}]}` (atomic write, single writer). Title = first owner message (60 chars); preview =
-  last assistant text (120 chars).
+  `{schemaVersion: 1, chats: [{chatId, botId, sessionFile|null, title, titleSetByOwner, preview,
+  routineId|null, createdAt, updatedAt}]}` (atomic write, single writer). Title = first owner
+  message (60 chars) until the owner renames it; a routine chat's title is the routine's name;
+  preview = last assistant text (120 chars).
 - `shell.json` keeps per bot only `chatId` (the current chat) and drops `sessionId`, `recents`,
   `previousSessionIds`, `continuedSessionId`, lineage and carry-over fields. The engine writes the
   bot's `chatId`, `lastPreview` and `lastAt` under the shell lock when a turn settles.
@@ -220,8 +224,16 @@ The implementing agents follow these defaults. The owner can override any of the
   supported.
 - New chat: `POST /api/chats {botId}` mints a `chatId` (UUID v4) and makes it current; the file
   appears with the first message.
-- Recents: `GET /api/chats?botId=` lists the bot's chats from the index, newest first (cap 40).
-- No chat deletion in v1.
+- List: `GET /api/chats?botId=&before=&limit=60` pages the bot's chats from the index, newest
+  `updatedAt` first, no cap on the total.
+- Rename: `PATCH /api/chats/:id {title}` (1 to 60 chars, sets `titleSetByOwner`).
+- Delete: `DELETE /api/chats/:id` refuses while a turn runs (`chat_busy`), else moves the session
+  file to `<stateRoot>/engine/trash/` with a `deletedAt` stamp, removes the chat from the index
+  and expires its approval cards. The engine purges trash older than 30 days at boot. A routine's
+  chat can be deleted; the next run creates a new one. Library items the chat produced stay.
+- Search: `GET /api/chats/search?q=&limit=50` matches titles and previews from the index, then
+  scans row text of chats newest first (case-insensitive substring, stops at `limit` hits or
+  2 s), returning `{chatId, rowId, title, snippet, at}`.
 
 ### 5.5 Turns
 
@@ -422,10 +434,11 @@ The `tool_call` gate also refuses any tool name not in the registered set (fail 
 ### 5.11 Routines and system turns
 
 - Engine timer every 20 s (today the cadence comes from the app's poll; behaviour while the app
-  runs is the same): `pendingRoutines(now)`, at most 4 running, one per bot, claimed with
+  runs is the same): `pendingRoutines(now)`, at most 4 running, one per routine, claimed with
   `claimDueRoutine` / `claimManualRun`.
-- A routine runs in the bot's current chat (a new chat if it has none) with `origin: routine`,
-  queued behind a running turn like any message (no timeout, as today). A `ub.context` message
+- A routine runs in **its own chat** (`routine.chatId`, created on the first run with the
+  routine's name as title and `routineId` in the index, reused afterwards) with
+  `origin: routine`, queued behind a running turn in that chat (no timeout, as today). A `ub.context` message
   says "Scheduled run of the routine NAME. Nobody is watching: do not ask questions or wait for
   cards." A note row "Routine NAME ran." precedes it. Budget: 1 hour per run, 10 minutes without
   events aborts it. The result is recorded with `appendRoutineRun`.
@@ -475,20 +488,23 @@ proxies them to the engine with the engine token and streams NDJSON without buff
 
 | Method + path | Body | Result |
 |---|---|---|
-| `GET /api/chats?botId=` | | `{current: chatId|null, chats: [{chatId, title, preview, updatedAt}]}` |
+| `GET /api/chats?botId=&before=&limit=` | | `{current: chatId|null, chats: [{chatId, title, preview, routineId, updatedAt}], nextBefore}` |
 | `POST /api/chats` | `{botId}` | `{chatId}` (new chat, becomes current) |
+| `PATCH /api/chats/:chatId` | `{title}` | 200 |
+| `DELETE /api/chats/:chatId` | | 200, or 409 `chat_busy` |
+| `GET /api/chats/search?q=&limit=` | | `{hits: [{chatId, rowId, title, snippet, at}]}` |
 | `POST /api/chats/:chatId/open` | | marks it current and open in the app (clears `replyReady`) |
 | `GET /api/chats/:chatId/rows?before=&limit=` | | page (5.12) |
 | `GET /api/chats/:chatId/events?after=<seq>&epoch=<epoch>` | | NDJSON, stays open |
 | `POST /api/chats/:chatId/turns` | `{clientId, text, attachments: [{uploadId}], retry?: true}` | 202 `{turnId}` or `{queued: true}`; refusals 6.4 |
 | `POST /api/chats/:chatId/cancel` | | 202 |
-| `GET /api/engine/status` | | `{epoch, bots: [{botId, running: {chatId, turnId, activity}|null, waitingOnOwner: "question"|"approval"|null, replyReadySince|null, lastTurn: {chatId, turnId, outcome, endedAt}|null}]}` |
+| `GET /api/engine/status` | | `{epoch, cleanSlateNotice, chats: [{chatId, running: {turnId, activity}|null, waitingOnOwner: "question"|"approval"|null, replyReadySince|null, lastTurn: {turnId, outcome, endedAt}|null}]}`: only chats with a non-idle state or a `lastTurn` in the last 24 h |
 | `GET /api/proposals?botId=` | | open connect-app and connect-server proposals with their phase (replaces the proposals half of `/api/agent/state`) |
 
 - `clientId` is a client UUID echoed on `message.user`, so the optimistic bubble binds by id.
-- The app polls `/api/engine/status` with the approvals poll (1.5 s) and drives the rail (working,
-  waiting, reply ready), turn notifications (on `lastTurn` change for a chat that is not open) and
-  hops from it. `replyReadySince` is set when a turn settles in a chat that is not open in the app
+- The app polls `/api/engine/status` with the approvals poll (1.5 s) and drives the chat-row state
+  marks (`UI.md` 3.3), turn notifications (on `lastTurn` change for a chat that is not open) and
+  the Dock badge from it. `cleanSlateNotice` is true until the first-launch note was shown once. `replyReadySince` is set when a turn settles in a chat that is not open in the app
   and cleared by `POST /open`.
 - The app polls `/api/proposals` while a card is in the waiting phase (2.5 s), as it polls
   `/api/agent/state` today. Proposal confirm and dismiss stay on `PUT /api/shell`.
@@ -543,7 +559,8 @@ Envelope `{seq, epoch, at, chatId, turnId?, type, ...}`. The **host** owns `seq`
 ### 6.4 Refusal and failure codes
 
 Refusals (HTTP, before a turn): `model_selection_unavailable`, `provider_route_retired {message}`,
-`model_no_vision`, `description_too_long`, `context_too_large`, `retry_too_soon {retryAfterMs}`.
+`model_no_vision`, `description_too_long`, `context_too_large`, `retry_too_soon {retryAfterMs}`;
+chat routes add `chat_busy` (delete while a turn runs) and `chat_not_found`.
 Failures (`turn.failed`): every router code passes through (`circuit_open`, `upstream_*`,
 `budget_exhausted`, `global_concurrency_limit` after its waits, and the rest of the router's
 table), plus `engine_error`, `interrupted`, `refused`, `unreadable`. The Swift `TurnFailure` copy
@@ -574,7 +591,7 @@ Same bearer and Host rules as 5.1. Writes are idempotent by the key given.
 | `/api/agent/widget` | body gains `chatId`; row through `/internal/bots/:botId/rows` |
 | `/api/routines/:id/run` | calls the engine |
 | `/api/status` | probes `GET <engine>/health`; field `engine` replaces `eve` (iOS contract fixtures updated in the same PR) |
-| `/api/shell` | keep `select`, `renameBot`, `updateBot` (instructions, model, permission, workspace, notify, avatar), `setWorkspace`, `setPermission`, `createBot` (cap 2), `archiveBot`, `restoreBot`, proposal confirm and dismiss; delete groups, sections, pin, hide, move, `sendToBot`, fan-out, `touchChat`, `setSession`, `clearThread`, `newChat`, `openRecent`, bot, group and profile proposals |
+| `/api/shell` | keep `renameBot`, `updateBot` (instructions, model, permission, workspace, notify, avatar), `setWorkspace`, `setPermission`, proposal confirm and dismiss; add `moveNotes {fromBotId}` and `removeArchivedBot {botId}` (Earlier bots); delete `select`, `createBot`, `deleteBot`, groups, sections, pin, hide, move, `sendToBot`, fan-out, `touchChat`, `setSession`, `clearThread`, `newChat`, `openRecent`, bot, group and profile proposals |
 | `/api/approvals` | records carry `chatId` and `botId`; no session-binding lookup |
 | `/api/bots/context` | from the engine |
 | `/api/reviewer` | delete |
@@ -612,18 +629,20 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
 - **BackendClient:** the eve section (about 600 lines) becomes the 6.1 requests and an NDJSON
   reader keyed by `seq`/`epoch` with the reconnect rules of 6.2.
 - **AppModel:** the chat core (send, follow, reload, retry, cancel, queue, questions, background
-  bots via `/api/engine/status`, notifications, rail hops, reply ready) is rewritten for 1-2 bots;
-  stash, prewarm, snapshots, sub-agent, handoff and the handoff pump go. The 2.5 s tick call stays.
+  chats via `/api/engine/status`, notifications, Dock badge, reply ready) is rewritten for one bot
+  and many chats; the per-bot runtime (bot selection, per-bot caches, rail hops), stash, prewarm,
+  snapshots, sub-agent, handoff and the handoff pump go. The 2.5 s tick call stays.
 - **Unsent messages** (`UnsentMessages.swift`) stay for refused sends and gain `message.dropped`
   and leftover queued messages.
 - **Delete:** `ReplayGate.swift`, `ChatSnapshot.swift` and prewarm, `SubagentRuns.swift`,
   `SubagentCard.swift` (Core and App), `ChatAttribution.swift`, `AvatarStackView.swift`,
   `Threads.swift` except `defaultBotId`, and the eve-only tests (`app-map/swift.md` 7.1).
-- **Simplify:** rail becomes a 1-2 bot switcher with the account row; chat view drops sub-agent
-  cards, handoff and post strips, group header, "never got this message", continuation divider
-  (the queued tag stays); "New chat" plus recents in the search palette; Settings drops group
-  fields and gains Archived bots with Restore; proposal cards keep connect kinds; create-bot allowed
-  while fewer than 2 bots; Providers pane drops the reviewer row; `AppStatus.eve` becomes `engine`.
+- **UI:** everything in `UI.md`: the chat-first sidebar (fixed Routines, Library and Connectors
+  rows, chat list with per-chat state marks, row menu), chat header with the chat title, the
+  Routines page on the stage, the Bot pane without routines or group fields, the search palette
+  (Chats, Library, Routines), Settings > Earlier bots, and the removals of `UI.md` section 10.
+  Also: proposal cards keep connect kinds; Providers pane drops the reviewer row;
+  `AppStatus.eve` becomes `engine`.
 - **Supervisor:** `ServiceMode.eve` becomes `.engine`, health `/health`, `enginePort`, own-process
   pattern `agent/server.ts`. The eve patterns in `isStrayServiceLine` / `isOwnNodeProcess` stay for
   one release so an eve left from the old install is recognised and stopped. Order: router, engine,
@@ -635,9 +654,12 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
 
 ## 10. What the owner sees
 
-- One bot in the rail (the current default), a second can be created (cap 2); other bots appear
-  under Settings > Archived bots and can be restored into the second slot.
-- Chats start fresh after the update; chats open from rows without the replay pause.
+- One bot (the current default). The sidebar lists chats, each showing whether it is working,
+  waiting on him, has a reply or failed; Routines, Library and Connectors sit above the list.
+- Other bots appear only under Settings > Earlier bots (copy instructions, move notes, remove);
+  their routines are on the Routines page, paused, each with its own chat once it runs.
+- Chats start fresh after the update; chats open from rows without the replay pause; chats can
+  be renamed, deleted and searched by message text.
 - A failed turn never kills the chat; Retry continues it.
 - Sub-agent cards, group chats and bot-to-bot messages are gone; so is the reviewer role.
 - OpenAPI connections show a note to re-add them as MCP servers.
@@ -733,7 +755,8 @@ writes an HTML page, searches the web, draws with Excalidraw (widget), generates
 a memory note; switch the model mid-chat; send two more messages while the first turn runs; cancel
 one turn with a card pending; force a router 5xx (fake upstream connection) and Retry; push the
 chat past a 32k window so it compacts; kill the engine mid-turn and relaunch; run a routine
-manually while the other bot's chat is open (rail and notification); open a 15k-entry synthetic
+manually while another chat is open (its row marks and the notification); rename, delete and
+search for a chat; open a 15k-entry synthetic
 chat. Artifact: a JSON report of every step with timings, the session files, screenshots, frame
 sheets.
 
@@ -743,9 +766,9 @@ after, same model, graded by rubric. Write-up `evals/results/<date>-pi-engine-go
 cost, latency and pass rate. The owner approves the spend first.
 
 **Perf:** fixtures are synthetic Pi session files written by `scripts/perf-fixtures.mjs` (no paid
-turns): four chats (Long Replies about 15k entries, Long Tools about 3.5k, Short A, Short B) of a
-dev-only fixture bot `bot-perf` (`fixture: true`: exempt from the cap and the archive, hidden from
-the rail outside perf runs). Re-lock, re-baseline, review budgets for `rows_first_paint` and
+turns): four chats (Long Replies about 15k entries, Long Tools about 3.5k, Short A, Short B) of
+the dev app's one bot, flagged `fixture: true` in the chat index (listed in the sidebar only during
+perf runs; the dev stack only). The old fixture bots are archived like any earlier bot. Re-lock, re-baseline, review budgets for `rows_first_paint` and
 `rows_done`; raise a budget only in a reviewed edit that says why. Done inside PR 3, so `main` is
 never red.
 
@@ -778,7 +801,7 @@ The complete per-file list with owners is the ownership table in `PLAN.md`.
 | No mid-turn durability | interrupted row and Retry; image and proposal reserves keep tools idempotent |
 | Router refuses Pi's requests | router changes in 8, golden payload test |
 | Compaction quality differs from eve | the eval includes a long chat; `session_before_compact` can supply a custom summary |
-| Two-bot cap disappoints users | archive keeps everything; restore swaps |
+| Owners with several bots lose personas | Earlier bots keeps their instructions (copy) and notes (move); their routines move to the one bot, paused, for review |
 | Big Swift rewrite | the protocol and fixtures come first; the client is built against fixtures |
 
 ## 17. Glossary

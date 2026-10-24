@@ -1,6 +1,6 @@
 # Pi engine: delivery plan
 
-Status: draft 2, 2026-10-24. Companion to `SPEC.md` (decisions D1 to D26, sections cited as
+Status: draft 3, 2026-10-25 (one bot, chat-first UI; `UI.md`). Companion to `SPEC.md` (decisions D1 to D26, sections cited as
 SPEC 5.3 and so on). Each PR below is one session's work. An implementing agent reads this file,
 the SPEC sections it names and the matching `app-map/*.md`, then builds.
 
@@ -68,8 +68,10 @@ and forwards the expected upstream body.
 
 ## PR 2: one strong bot
 
-**Goal:** one all-round bot plus at most one more; no groups, sections, cross-bot tools or
-sub-agents. Still on eve. Decisions SPEC D5 to D8, D20, D25. Tool merges (D21) wait for PR 3.
+**Goal:** one all-round bot and a chat-first sidebar; no second bot, groups, sections, cross-bot
+tools or sub-agents. Still on eve. Decisions SPEC D5 to D9, D20, D25 and the "PR 2" rows of
+`UI.md` section 9. The UI parts wait for the owner's approval of the Claude Design mockups (the
+"Pi engine UI" session sends it). Tool merges (D21) wait for PR 3.
 
 **Node worker owns:**
 - delete `agent/tools/{list_bots,rail_action,delete_bot,propose_bot,propose_group,post_to_group,
@@ -82,7 +84,9 @@ sub-agents. Still on eve. Decisions SPEC D5 to D8, D20, D25. Tool merges (D21) w
 - `shared/shell-store.ts`, `shared/shell-io.ts`, `shared/threads.ts` (delete group and mention
   code; keep `stripThreadPrefix` and the default bot id, which other files still import),
   `shared/context-blocks.ts`, `shared/admission.ts` (group branch), `shared/agent-store.ts`
-  (bot, group, profile and fan-out proposal kinds), `shared/bot-face.ts`, `shared/subagent-stops.ts`;
+  (bot, group, profile and fan-out proposal kinds), `shared/bot-face.ts`, `shared/subagent-stops.ts`,
+  `shared/routines-store.ts` (move routines between bots), `agent/lib/memory.ts` (re-key a bot's
+  notes, today immutable, for `moveNotes`);
 - `web/app/api/shell/route.ts`, `web/lib/agent-exec.ts` (fan-out, first brief, cross-bot
   deliveries; **keep** the handoff pump for connect-card resume, the only remaining handoff use),
   `web/app/api/agent/tick/route.ts`, `web/lib/eve-session-auth.ts` (child-stream verification),
@@ -92,19 +96,32 @@ sub-agents. Still on eve. Decisions SPEC D5 to D8, D20, D25. Tool merges (D21) w
   `turn-snapshot`, `first-brief`, the group cases of `shell-store` and `context-blocks`.
 
 Rules it builds:
-- Bot cap 2: `createBot` refuses a third with `bot_cap_reached`.
+- One bot: `createBot`, `deleteBot` and `select` shell actions are removed; the app always uses
+  `bot-useful`.
 - Archive (D6): a one-time shell migration (marker `shell.json.archived-v1`) marks every bot except
-  `bot-useful` and the most recently used other bot `archived: true`, pauses their routines, deletes
-  nothing. Shell actions `archiveBot` and `restoreBot`. In the dev stack, bots named in
-  `perf/fixtures.dev.lock.json` are exempt (the perf guard still needs them until PR 3).
+  `bot-useful` `archived: true`, moves their routines to `bot-useful` with `active: false` (name
+  kept), keeps their memory notes under their own id, deletes nothing. Shell actions `moveNotes
+  {fromBotId}` (re-keys that bot's notes to `bot-useful`) and `removeArchivedBot {botId}` (deletes
+  the record and its notes). In the dev stack, the perf fixture bots named in
+  `perf/fixtures.dev.lock.json` stay unarchived and selectable by the perf harness only (never in
+  the sidebar) until PR 3 replaces them.
+- Live checks: the dev app's one bot replaces "Test Bot"; PR 2 updates that line in `AGENTS.md`.
+- Chat list on eve data: current chat (`bot.sessionId`) plus `recents` (title, preview,
+  `updatedAt`) of `bot-useful`; New chat and open use the existing `newChat` / `openRecent` actions
+  until PR 3 replaces them.
 - `GENERALIST_SEED_V3` without team language.
 
-**Swift worker owns:** `App/RailView.swift`, `App/RootView.swift` (create-group dialog, sections),
-`App/PickerViews.swift`, `App/ProposalCardView.swift`, `App/SettingsPaneView.swift` (group fields
-out; Archived bots with Restore in), `App/ChatDetailsPaneView.swift`, `App/ChatView.swift`
+**Swift worker owns:** `App/RailView.swift` (becomes the chat-first sidebar of `UI.md` 3, on eve
+data), new `App/RoutinesPage.swift` (`UI.md` 5, built from the routine views of
+`ChatDetailsPaneView.swift`), `App/LibraryView.swift` (stage page), `App/RootView.swift`
+(create-bot and create-group dialogs, sections, stage routing), `App/PickerViews.swift` (bot
+picker out; Chats, Library, Routines tabs), `App/ProposalCardView.swift`,
+`App/SettingsPaneView.swift` (becomes the Bot pane of `UI.md` 6), `App/AppSettingsView.swift`
+(Earlier bots, reviewer row), `App/UsefulBotApp.swift` (⌘N and the other shortcuts of `UI.md` 11),
+`App/ChatDetailsPaneView.swift`, `App/ChatView.swift`
 (sub-agent cards, handoff and post strips, group header), `App/SubagentCard.swift` (delete),
-`App/AvatarStackView.swift` (delete), `App/ProvidersPaneView.swift` and `App/AppSettingsView.swift`
-(reviewer row), `App/ComposerView.swift` (group placeholder), `Core/SubagentRuns.swift` and
+`App/AvatarStackView.swift` (delete), `App/ProvidersPaneView.swift` (reviewer row),
+`App/ComposerView.swift` (group placeholder), `Core/SubagentRuns.swift` and
 `Core/SubagentCard.swift` (delete), `Core/Threads.swift` (keep `defaultBotId`),
 `Core/ChatAttribution.swift` (delete), `Core/ShellActions.swift`, `Core/Proposal.swift`,
 `Core/TranscriptBlocks.swift`, `Core/Transcript.swift`, `Core/BackendModels.swift`, the sub-agent
@@ -112,10 +129,12 @@ branches of `Core/EveStream.swift` and `App/AppModel.swift`, and the Swift tests
 (`SubagentCardTests`, `SubagentRunTests`, `ThreadsTests`, `ChatAttributionTests`, the group and
 fan-out cases of `TranscriptTests`, `TranscriptBlocksTests`, `ProposalTests`, `ShellActionsTests`).
 
-**Verify:** node and Swift suites green. Live in Useful Bot Dev: the rail shows the two bots; a
-third cannot be created; an archived bot appears in Settings and restores; Test Bot runs a turn
-with bash and an approval; a routine runs; asked to "use a sub-agent", the bot does the work
-itself; connecting an app resumes the chat. Screenshots of rail, chat, Settings.
+**Verify:** node and Swift suites green. Live in Useful Bot Dev: the sidebar matches the approved
+mockups (fixed rows, chat list, account row); New chat and opening a recent chat work; the Routines
+page shows the moved routines paused; Settings > Earlier bots copies instructions and moves notes;
+the bot runs a turn with bash and an approval; a routine runs; asked to "use a sub-agent", the bot
+does the work itself; connecting an app resumes the chat. Screenshots, light and dark, side by side
+with the approved mockups.
 
 ---
 
@@ -155,7 +174,9 @@ In `.claude/worktrees/pi-engine` from main:
 outside-content}.ts`, `test/engine/**`, `test/turn-snapshot.test.ts`,
 `test/router-identity.test.ts`. Builds SPEC 5.1 to 5.7, 5.11, 5.12, 6, the boot-time migration
 runner of SPEC 11 (`migrate.ts`, which calls W3's store functions) and contract
-tests 1 to 8 and 11 to 14 against a fake router (`test/engine/fake-router.ts`). Done when those
+tests 1 to 8 and 11 to 14 against a fake router (`test/engine/fake-router.ts`). Also the chat
+routes of SPEC 5.4 and 6.1 (list paging, rename, delete to trash with the 30-day purge, search,
+per-chat status with `cleanSlateNotice`) and routine chats (5.11). Done when those
 pass, the fixtures match, and `npx tsc --noEmit` is clean for `agent/engine` and `agent/server.ts`.
 
 **W2 tools** (sonnet-worker): `agent/lib/tool.ts` (beyond the contract), `agent/tools/**`,
@@ -197,9 +218,12 @@ against a stub engine and `npx tsc --noEmit` is clean for `web/` and `router/`.
 9 names, including `Core/{EveStream,BackendClient,BackendModels,Transcript,TranscriptBlocks,
 ReplayGate,ChatSnapshot,UnsentMessages,Attachments,LocalServices,ServiceSupervisor,AppVariant,
 RuntimeInstall,ShellActions,Proposal}.swift`, `App/{AppModel,ChatView,RailView,PickerViews,
-SettingsPaneView,TurnNotifier,ComposerView,PerfHarness}.swift`, and the tests in
+SettingsPaneView,TurnNotifier,ComposerView,PerfHarness,RoutinesPage}.swift`, and the tests in
 `app-map/swift.md` 7.1 to 7.3. Builds against the protocol fixtures; no running engine needed until
-integration. Done when `macos/test.sh` passes and the app builds.
+integration. Also the "PR 3" rows of `UI.md` section 9: the sidebar moves from shell recents to
+`/api/chats`, gains the per-chat state marks, rename, delete, the routine clock mark, message-text
+search hits, the Dock badge and the first-launch note. Done when `macos/test.sh` passes and the app
+builds.
 
 ### Ownership rules
 
@@ -222,7 +246,7 @@ integration. Done when `macos/test.sh` passes and the app builds.
 ### Integration (orchestrator)
 
 1. Merge W1 to W4 into the feature branch; rewrite the `npm test` list; run every suite.
-2. `scripts/perf-fixtures.mjs` writes the four synthetic fixture chats of `bot-perf`; update
+2. `scripts/perf-fixtures.mjs` writes the four synthetic fixture chats (SPEC 14 Perf); update
    `perf/config.json`, `perf/runner/perfguard.py` (rows marks, snapshot cases out, fixture check by
    entry count), `perf/README.md`, re-lock.
 3. `npm run build:dev-app`, `npm run install:dev-app` (shared resource, orchestrator only).
@@ -231,7 +255,9 @@ integration. Done when `macos/test.sh` passes and the app builds.
    spend first). Write-up in `evals/results/`.
 6. `perf:check` baseline on the new engine; review budgets; commit the records.
 7. Docs: `AGENTS.md`, `README.md`, `docs/audit/SCOREBOARD.md`, this plan's status.
-8. One PR to main; the review row above; then merge, build and install the dev app.
+8. Contract check (`UI.md` section 9): every route in `web/app/api/**` and every event type of
+   SPEC 6.2 has a UI row, or is internal (SPEC 6.5), health or auth; every UI row has its route.
+9. One PR to main; the review row above; then merge, build and install the dev app.
 
 ---
 
@@ -245,8 +271,9 @@ the engine's eve-listener kill at boot, once every install has run the PR 3 rele
 
 ## What the owner decides or does
 
-- Confirm or override SPEC 4 defaults, especially D5 and D6 (cap 2, archive), D17 (OpenAPI
-  dropped), D25 (reviewer role removed).
+- Decided 2026-10-25: one bot only (D5, D6), OpenAPI dropped (D17), reviewer role removed (D25).
+- Approve the UI mockups in Claude Design (before and after per screen); PR 2's UI parts wait
+  for that approval.
 - Approve the golden-eval spend (two runs of 10 tasks on his subscriptions).
 - Ship the PR 3 release when he decides (`npm run release:mac`); its notes say old chats are not
   carried over.
