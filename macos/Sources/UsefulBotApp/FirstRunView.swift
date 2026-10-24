@@ -1382,7 +1382,7 @@ private struct ModelPage: View {
             StepHeader(
                 eyebrow: "Step 2 of 2",
                 title: "Pick your default model",
-                detail: "Every bot starts with this one. You can switch per chat anytime."
+                detail: "New chats start with this one. You can switch anytime."
             )
             if groups.isEmpty {
                 empty
