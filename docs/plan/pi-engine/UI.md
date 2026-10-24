@@ -69,9 +69,9 @@ Library moves out of the account menu. The Connectors footer pill goes (the row 
 | State | Mark | Clears when |
 |---|---|---|
 | working (a turn is running) | the bot face, small, in its working pose | the turn settles |
-| waiting on owner (open question or pending approval in that chat) | amber dot | the question is answered, or the approval is decided or expires (5 min) |
-| reply ready (a turn settled while the chat was not open) | blue dot | the chat is opened |
-| failed (newest turn failed, not retried) | red mark | Retry succeeds or a new turn starts |
+| waiting on owner (open question or pending approval in that chat) (PR 3) | amber dot | the question is answered, or the approval is decided or expires (5 min) |
+| reply ready (a turn settled while the chat was not open) (PR 3) | blue dot | the chat is opened |
+| failed (newest turn failed, not retried) (PR 3) | red mark | Retry succeeds or a new turn starts |
 | idle | relative time ("2m", "Tue") | |
 
   Priority when several apply: waiting on owner, working, failed, reply ready.
@@ -154,14 +154,15 @@ history views (`ChatDetailsPaneView.swift` 149-786) at full width:
 - **Each routine has its own chat** (SPEC D18), titled with the routine's name and reused for every
   run, so runs never pile into the chat the owner is in. It appears in the sidebar like any chat,
   with a small clock mark before the title. Run history rows link to the chat the run used
-  (**Open chat**); a run whose chat was deleted shows "Chat deleted" instead. Deleting a routine
+  (**Open chat**); a run whose chat was deleted shows "Chat deleted" instead, and a run recorded before PR 3 (no
+  `chatId`) shows neither. Deleting a routine
   turns its chat into an ordinary chat (no clock mark). Deleting a routine's chat is allowed; the
   next run starts a new one.
 - "Test run" runs it now (as today) in that routine chat.
 - A notice while any routine still carries `movedFrom` (set by the archive migration, section 8):
   "N routines from your earlier bots are paused. Review them and turn on the ones you want."
-  Turning a moved routine on or editing it clears its `movedFrom`; a Dismiss on the notice clears
-  them all.
+  Turning a moved routine on or editing it clears its `movedFrom`; Dismiss on the notice clears
+  them all (one `PATCH` per moved routine).
 
 ## 6. Bot pane (right, 320pt)
 
@@ -193,7 +194,7 @@ Tabs **All**, **Chats**, **Library**, **Routines**:
   role row.
 - **Earlier bots** (new, in General, shown only if the migration archived any): one row per earlier
   bot with its name, a **Copy instructions** button, its memory-note count with **Move notes to
-  NAME** (the bot's name), and **Remove** (confirm; deletes that archived bot's record and notes). This is the
+  NAME** (the bot's name), and **Remove** (confirm; deletes that archived bot's record and archives its notes, so they leave memory). This is the
   only place earlier bots appear.
 
 ## 9. Contract: UI element to backend

@@ -135,7 +135,7 @@ picker out; Chats, Library, Routines tabs), `App/ProposalCardView.swift`,
 `Core/TranscriptBlocks.swift`, `Core/Transcript.swift`, `Core/BackendModels.swift`,
 `Core/Routines.swift` (`movedFrom`), `App/PerfHarness.swift` (fixture bots through the dev-only
 `select`), the sub-agent branches of `Core/EveStream.swift`, `App/AppModel.swift` (sub-agent
-branches, bot selection, create and delete bot, sections, the bot picker, and the chat-first new
+branches, bot selection except the dev-only path `PerfHarness` uses, create and delete bot, sections, the bot picker, and the chat-first new
 and open flows), and the Swift tests that cover these
 (`SubagentCardTests`, `SubagentRunTests`, `ThreadsTests`, `ChatAttributionTests`, the group and
 fan-out cases of `TranscriptTests`, `TranscriptBlocksTests`, `ProposalTests`, `ShellActionsTests`).

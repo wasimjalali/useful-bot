@@ -776,8 +776,8 @@ cost, latency and pass rate. The owner approves the spend first.
 
 **Perf:** fixtures are synthetic Pi session files written by `scripts/perf-fixtures.mjs` (no paid
 turns): four chats (Long Replies about 15k entries, Long Tools about 3.5k, Short A, Short B) of
-the dev app's one bot, flagged `fixture: true` in the chat index (listed in the sidebar only during
-perf runs; the dev stack only). The old fixture bots are archived like any earlier bot. Re-lock, re-baseline, review budgets for `rows_first_paint` and
+the dev app's one bot, flagged `fixture: true` in the chat index (listed by the perf harness only,
+never in the sidebar; the dev stack only). The old fixture bots are archived like any earlier bot. Re-lock, re-baseline, review budgets for `rows_first_paint` and
 `rows_done`; raise a budget only in a reviewed edit that says why. Done inside PR 3, so `main` is
 never red.
 
