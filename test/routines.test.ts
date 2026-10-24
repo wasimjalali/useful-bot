@@ -121,6 +121,7 @@ test("routineNextRun takes the earliest schedule and routineDueAt anchors on the
     lastRunAt: null,
     runHistory: [],
     manualRunRequested: false,
+    movedFrom: null,
   };
   // Daily 07:00 Berlin beats weekly Monday 09:00 Berlin on the same day.
   const next = routineNextRun(routine, new Date("2026-09-14T00:00:00.000Z"));

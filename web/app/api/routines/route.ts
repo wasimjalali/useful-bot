@@ -55,8 +55,12 @@ export async function POST(request: Request) {
     }
     // A routine that names no live bot would never run and would keep firing
     // nothing after the bot is gone.
-    if (!readShell().bots.some((bot) => bot.id === body.botId)) {
+    const target = readShell().bots.find((bot) => bot.id === body.botId);
+    if (!target) {
       return NextResponse.json({ ok: false, error: "bot_missing" }, { status: 400 });
+    }
+    if (target.archived) {
+      return NextResponse.json({ ok: false, error: "shell_bot_archived" }, { status: 409 });
     }
     const routine = createRoutine({
       botId: body.botId,

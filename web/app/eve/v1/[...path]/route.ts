@@ -269,6 +269,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       } catch {
         /* a malformed body is judged by the rewrite below, as before */
       }
+      if (sender?.archived) return Response.json({ ok: false, error: "shell_bot_archived" }, { status: 409 });
       // The bot's own model has to be servable before the turn reaches eve:
       // its connection signed in and its model still in the live list. The
       // router would refuse it too, but a turn eve has accepted and failed
@@ -363,6 +364,8 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         if (!bot) {
           return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
         }
+        // An earlier bot takes no more turns: refused before anything reaches eve.
+        if (bot.archived) return Response.json({ ok: false, error: "shell_bot_archived" }, { status: 409 });
         turnBot = bot;
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, notes));
         // The definitive check, on the very bot, roster and providers store

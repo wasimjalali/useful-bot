@@ -8,7 +8,7 @@ import {
 } from "./bot-face.ts";
 import { parseModelSelection, type ModelSelection } from "./session-selection.ts";
 import { foldPath } from "./fold-path.ts";
-import { APP_STATE_DIR, isAppStateSegment, isRuntimeInstallPath } from "./stack.ts";
+import { APP_STATE_DIR, isAppStateSegment, isRuntimeInstallPath, stackName } from "./stack.ts";
 
 /** Client-safe: this file must never pull in node builtins. */
 export type WorkspacePermission = "read_only" | "auto" | "full_access";
@@ -53,6 +53,14 @@ export type ShellBot = {
   label: string;
   description: string;
   notify: boolean;
+  /**
+   * True for a bot from before the app had one bot: the archive migration
+   * marks every bot but the default one. An archived bot is hidden, takes no
+   * writes and never chats; its record and notes stay until the owner removes
+   * it (Settings > Earlier bots).
+   */
+  archived: boolean;
+  archivedAt: string | null;
   sessionId: string | null;
   /**
    * Sessions this bot's chat was carried over from, newest first, recorded
@@ -136,13 +144,6 @@ export type ShellStore = {
 
 export type ShellAction =
   | { type: "select"; botId: string }
-  | {
-      type: "createBot";
-      name: string;
-      petname?: string;
-      label?: string;
-      description?: string;
-    }
   | { type: "renameBot"; botId: string; name: string }
   | { type: "nameBot"; botId: string; name: string; label?: string; description?: string; avatarShape?: string; avatarColor?: string }
   | {
@@ -150,7 +151,6 @@ export type ShellAction =
       botId: string;
       patch: BotProfilePatch;
     }
-  | { type: "deleteBot"; botId: string }
   | { type: "setSession"; botId: string; sessionId: string | null }
   | {
       type: "setWorkspace";
@@ -161,15 +161,17 @@ export type ShellAction =
   | { type: "touchChat"; botId: string; preview: string; sessionId?: string | null }
   | { type: "newChat"; botId?: string }
   | { type: "clearThread"; botId: string }
-  | { type: "openRecent"; recentId: string };
+  | { type: "openRecent"; recentId: string }
+  /** Move the live notes of an archived bot to the default bot (the route does the move). */
+  | { type: "moveNotes"; fromBotId: string }
+  /** Drop an archived bot's record (the route archives its notes). */
+  | { type: "removeArchivedBot"; botId: string };
 
 const ACTION_TYPES = {
   select: true,
-  createBot: true,
   renameBot: true,
   nameBot: true,
   updateBot: true,
-  deleteBot: true,
   setSession: true,
   setWorkspace: true,
   setPermission: true,
@@ -177,6 +179,8 @@ const ACTION_TYPES = {
   newChat: true,
   clearThread: true,
   openRecent: true,
+  moveNotes: true,
+  removeArchivedBot: true,
 } satisfies Record<ShellAction["type"], true>;
 
 /**
@@ -217,13 +221,6 @@ function requireName(value: string, max = NAME_MAX): string {
 
 function isId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 80;
-}
-
-// New bots prepend, except behind the Generalist when it is first: that keeps the starter on top.
-function withNewBot(bots: ShellBot[], bot: ShellBot): ShellBot[] {
-  const first = bots[0];
-  if (first && first.id === DEFAULT_BOT_ID) return [first, bot, ...bots.slice(1)];
-  return [bot, ...bots];
 }
 
 /**
@@ -306,6 +303,8 @@ export function seedStore(at = new Date()): ShellStore {
         label: "",
         description: GENERALIST_SEED_V3,
         notify: false,
+        archived: false,
+        archivedAt: null,
         sessionId: null,
         lastPreview: "",
         lastAt: null,
@@ -337,6 +336,10 @@ function parseBot(raw: unknown): ShellBot {
   if (typeof rec.description !== "string") throw new Error("shell_bot_description");
   if (typeof rec.notify !== "boolean") throw new Error("shell_bot_notify");
   if (rec.sessionId !== null && typeof rec.sessionId !== "string") throw new Error("shell_bot_session");
+  if (rec.archived !== undefined && typeof rec.archived !== "boolean") throw new Error("shell_bot_archived_flag");
+  if (rec.archivedAt !== undefined && rec.archivedAt !== null && typeof rec.archivedAt !== "string") {
+    throw new Error("shell_bot_archived_at");
+  }
   if (typeof rec.createdAt !== "string" || typeof rec.updatedAt !== "string") {
     throw new Error("shell_bot_dates");
   }
@@ -358,6 +361,8 @@ function parseBot(raw: unknown): ShellBot {
     // when a turn is sent, not when the file is read.
     description: rec.description.trim(),
     notify: rec.notify,
+    archived: rec.archived === true,
+    archivedAt: rec.archived === true && typeof rec.archivedAt === "string" ? rec.archivedAt : null,
     sessionId: rec.sessionId,
     ...(Array.isArray(rec.previousSessionIds)
       ? {
@@ -448,7 +453,7 @@ function parseWorkspacePermissionStrict(value: unknown): WorkspacePermission {
  *
  * A grant is keyed by eve session id, so it stops being the owner's decision
  * the moment a bot stops holding that session. Rather than listing the actions
- * that do it — `newChat`, `clearThread`, `deleteBot`, but also `sendToBot`,
+ * that do it — `newChat`, `clearThread`, `removeArchivedBot`, but also
  * `touchChat`, `setSession` and `openRecent`, which rotate a session quietly —
  * this diffs the roster: every session id a bot held before the commit and
  * nobody holds after it. A session that simply moved between bots is still
@@ -653,9 +658,11 @@ export function parseShell(raw: unknown): ShellStore {
   if (bots.length === 0) throw new Error("shell_empty");
   const botIds = new Set(bots.map((bot) => bot.id));
   if (botIds.size !== bots.length) throw new Error("shell_bot_duplicate");
-  const selectedBotId = isId(rec.selectedBotId) && botIds.has(rec.selectedBotId)
+  // An archived bot is never the selected one: it takes no chats.
+  const active = bots.filter((bot) => !bot.archived);
+  const selectedBotId = isId(rec.selectedBotId) && active.some((bot) => bot.id === rec.selectedBotId)
     ? rec.selectedBotId
-    : bots[0].id;
+    : (active.find((bot) => bot.id === DEFAULT_BOT_ID) ?? active[0] ?? bots[0]).id;
   return {
     schemaVersion: 1,
     selectedBotId,
@@ -681,19 +688,55 @@ function touch(bot: ShellBot, at: string, patch: Partial<ShellBot>): ShellBot {
   };
 }
 
-function uniqueName(store: ShellStore, base: string): string {
-  const names = new Set(store.bots.map((bot) => bot.name.toLowerCase()));
-  if (!names.has(base.toLowerCase())) return base;
-  let n = 2;
-  while (names.has(`${base} ${n}`.toLowerCase())) n += 1;
-  return `${base} ${n}`;
+/**
+ * The bots the perf guard drives in the dev stack (perf/fixtures.dev.lock.json
+ * names them). They stay unarchived there until PR 3 replaces them with
+ * fixture chats. The runtime does not carry perf/, so the names are kept here
+ * and a test holds them to the lock file.
+ */
+export const PERF_FIXTURE_BOT_NAMES: readonly string[] = ["Perf Long Replies", "Perf Long Tools", "Perf Short A", "Perf Short B"];
+
+/** A perf fixture bot, in the dev stack only. Anywhere else it is a bot like any other. */
+export function isPerfFixtureBot(bot: Pick<ShellBot, "kind" | "name" | "id">): boolean {
+  return bot.kind === "bot"
+    && bot.id !== DEFAULT_BOT_ID
+    && PERF_FIXTURE_BOT_NAMES.includes(bot.name)
+    && stackName() === "dev";
 }
 
-function selectFallback(store: ShellStore, removedId: string): string {
-  if (store.selectedBotId !== removedId && store.bots.some((bot) => bot.id === store.selectedBotId)) {
-    return store.selectedBotId;
+/**
+ * The archive migration, pure: every bot but the default one (and, in the dev
+ * stack, the perf fixtures) and every group becomes archived, nothing is
+ * deleted, and the default bot is seeded if it is missing. Idempotent: a bot
+ * that is archived keeps its first `archivedAt`, so a second run changes
+ * nothing. `moved` names the bots whose routines move to the default bot.
+ */
+export function archiveEarlierBots(
+  store: ShellStore,
+  at = new Date(),
+): { store: ShellStore; moved: Array<{ id: string; name: string }>; changed: boolean } {
+  const stamp = nowIso(at);
+  const moved: Array<{ id: string; name: string }> = [];
+  let changed = false;
+  let bots = store.bots.map((bot) => {
+    if (bot.id === DEFAULT_BOT_ID || isPerfFixtureBot(bot)) return bot;
+    moved.push({ id: bot.id, name: bot.name });
+    if (bot.archived && bot.archivedAt) return bot;
+    changed = true;
+    return { ...bot, archived: true, archivedAt: bot.archivedAt ?? stamp };
+  });
+  if (!bots.some((bot) => bot.id === DEFAULT_BOT_ID)) {
+    bots = [seedStore(at).bots[0], ...bots];
+    changed = true;
   }
-  return store.bots[0].id;
+  const selectedBotId = DEFAULT_BOT_ID;
+  if (store.selectedBotId !== selectedBotId) changed = true;
+  return { store: { ...store, selectedBotId, bots }, moved, changed };
+}
+
+/** A bot that is archived takes no writes: nothing chats with it, edits it or points a session at it. */
+function assertNotArchived(store: Pick<ShellStore, "bots">, botId: string): void {
+  if (store.bots.some((bot) => bot.id === botId && bot.archived)) throw new Error("shell_bot_archived");
 }
 
 function pushRecent(store: ShellStore, bot: ShellBot, stamp: string): ShellRecent[] {
@@ -716,44 +759,19 @@ export function applyShellAction(
   store: ShellStore,
   action: ShellAction,
   at = new Date(),
-): { store: ShellStore; createdId?: string } {
+): { store: ShellStore } {
   const stamp = nowIso(at);
   switch (action.type) {
     case "select": {
-      if (!store.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
+      // Kept for the dev stack's perf harness: the app has one bot, so only the
+      // default bot passes, and the perf fixtures in the dev stack.
+      const bot = store.bots.find((item) => item.id === action.botId);
+      if (!bot) throw new Error("shell_bot_missing");
+      if (bot.id !== DEFAULT_BOT_ID && !isPerfFixtureBot(bot)) throw new Error("shell_bot_forbidden");
       return { store: { ...store, selectedBotId: action.botId } };
     }
-    case "createBot": {
-      const id = crypto.randomUUID();
-      const face = defaultFaceFor(id);
-      const bot: ShellBot = {
-        id,
-        kind: "bot",
-        name: uniqueName(store, requireName(action.name)),
-        petname: action.petname !== undefined ? clip(action.petname, NAME_MAX) || null : null,
-        label: clip(action.label ?? "", LABEL_MAX),
-        description: checkDescription(action.description ?? ""),
-        notify: false,
-        sessionId: null,
-        lastPreview: "",
-        lastAt: null,
-        createdAt: stamp,
-        updatedAt: stamp,
-        avatarShape: face.shape,
-        avatarColor: face.color,
-        avatarImage: null,
-        avatarCustom: true,
-        permission: "auto",
-        workspace: null,
-        model: null,
-        profileRevision: 0,
-      };
-      return {
-        store: { ...store, selectedBotId: id, bots: withNewBot(store.bots, bot) },
-        createdId: id,
-      };
-    }
     case "nameBot": {
+      assertNotArchived(store, action.botId);
       const name = clip(action.name, NAME_MAX);
       if (!name) throw new Error("shell_name_required");
       const patch: Partial<ShellBot> = { name };
@@ -775,6 +793,7 @@ export function applyShellAction(
       };
     }
     case "renameBot": {
+      assertNotArchived(store, action.botId);
       return {
         store: {
           ...store,
@@ -785,6 +804,7 @@ export function applyShellAction(
       };
     }
     case "updateBot": {
+      assertNotArchived(store, action.botId);
       const patch: Partial<ShellBot> = {};
       if (action.patch.name !== undefined) {
         const name = clip(action.patch.name, NAME_MAX);
@@ -819,16 +839,8 @@ export function applyShellAction(
         },
       };
     }
-    case "deleteBot": {
-      if (store.bots.length <= 1) throw new Error("shell_last_bot");
-      if (!store.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
-      const bots = store.bots.filter((bot) => bot.id !== action.botId);
-      const next = { ...store, bots };
-      next.selectedBotId = selectFallback(next, action.botId);
-      next.recents = store.recents.filter((item) => item.botId !== action.botId);
-      return { store: next };
-    }
     case "setSession": {
+      assertNotArchived(store, action.botId);
       return {
         store: {
           ...store,
@@ -848,6 +860,7 @@ export function applyShellAction(
     }
     case "setWorkspace": {
       if (!store.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
+      assertNotArchived(store, action.botId);
       // The route validates the folder exists before calling; the store only
       // enforces shape. An explicit null detaches the folder.
       const workspace = action.workspace === null ? null : {
@@ -869,6 +882,7 @@ export function applyShellAction(
     }
     case "setPermission": {
       if (!store.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
+      assertNotArchived(store, action.botId);
       const permission = parseWorkspacePermissionStrict(action.permission);
       return {
         store: {
@@ -885,6 +899,7 @@ export function applyShellAction(
       };
     }
     case "touchChat": {
+      assertNotArchived(store, action.botId);
       const preview = clip(action.preview, PREVIEW_MAX);
       return {
         store: {
@@ -911,6 +926,7 @@ export function applyShellAction(
       const botId = action.botId ?? store.selectedBotId;
       const bot = store.bots.find((item) => item.id === botId);
       if (!bot) throw new Error("shell_bot_missing");
+      assertNotArchived(store, botId);
       const recents = pushRecent(store, bot, stamp);
       // "New chat" clears the bot row, but the bot's agent transcript is the
       // durable handoff log and is cleared separately.
@@ -928,6 +944,7 @@ export function applyShellAction(
     case "clearThread": {
       const bot = store.bots.find((item) => item.id === action.botId);
       if (!bot) throw new Error("shell_bot_missing");
+      assertNotArchived(store, action.botId);
       const recents = pushRecent(store, bot, stamp);
       return {
         store: {
@@ -947,6 +964,7 @@ export function applyShellAction(
       if (!bot) {
         return { store: { ...store, recents: store.recents.filter((item) => item.id !== action.recentId) } };
       }
+      assertNotArchived(store, bot.id);
       let recents = store.recents;
       if (bot.sessionId && bot.sessionId !== recent.sessionId) {
         recents = pushRecent(store, bot, stamp);
@@ -965,6 +983,27 @@ export function applyShellAction(
               })
               : item
           )),
+        },
+      };
+    }
+    case "moveNotes": {
+      // The route moves the notes; this only says whether the move is allowed.
+      const bot = store.bots.find((item) => item.id === action.fromBotId);
+      if (!bot) throw new Error("shell_bot_missing");
+      if (bot.id === DEFAULT_BOT_ID || isPerfFixtureBot(bot)) throw new Error("shell_bot_forbidden");
+      if (!bot.archived) throw new Error("shell_bot_not_archived");
+      return { store };
+    }
+    case "removeArchivedBot": {
+      const bot = store.bots.find((item) => item.id === action.botId);
+      if (!bot) throw new Error("shell_bot_missing");
+      if (bot.id === DEFAULT_BOT_ID || isPerfFixtureBot(bot)) throw new Error("shell_bot_forbidden");
+      if (!bot.archived) throw new Error("shell_bot_not_archived");
+      return {
+        store: {
+          ...store,
+          bots: store.bots.filter((item) => item.id !== action.botId),
+          recents: store.recents.filter((item) => item.botId !== action.botId),
         },
       };
     }

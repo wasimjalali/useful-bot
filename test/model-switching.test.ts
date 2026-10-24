@@ -23,7 +23,8 @@ import {
   SELECTION_HEADER,
   type ModelSelection,
 } from "../shared/session-selection.ts";
-import { applyShellAction, parseShell, withBotSelection } from "../shared/shell-store.ts";
+import { parseShell, withBotSelection } from "../shared/shell-store.ts";
+import { withBot } from "./helpers/roster.ts";
 import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
 import { readSessionGrant, removeSessionGrant, upsertSessionGrant } from "../shared/workspace-store.ts";
 import { exactModelOption, snapComposer } from "../shared/models.ts";
@@ -146,19 +147,10 @@ const selOa: ModelSelection = { connectionId: OA, modelId: "gpt-4.1", effort: "l
 
 /** A roster with two extra bots, each with the model given (null leaves it unpinned). */
 function twoBots(a: ModelSelection | null, b: ModelSelection | null, path: string): { aId: string; bId: string } {
-  let store = readShell(path);
-  const first = applyShellAction(store, { type: "createBot", name: "Alpha" });
-  store = first.store;
-  const second = applyShellAction(store, { type: "createBot", name: "Beta" });
-  store = second.store;
-  store = {
-    ...store,
-    bots: store.bots.map((bot) => (
-      bot.id === first.createdId ? { ...bot, model: a } : bot.id === second.createdId ? { ...bot, model: b } : bot
-    )),
-  };
-  writeShell(store, path);
-  return { aId: first.createdId as string, bId: second.createdId as string };
+  const first = withBot(readShell(path), "Alpha", { model: a });
+  const second = withBot(first.store, "Beta", { model: b });
+  writeShell(second.store, path);
+  return { aId: first.id, bId: second.id };
 }
 
 /** What the model resolver does at a step: ensure the turn's snapshot for the bot, then take the handle. */

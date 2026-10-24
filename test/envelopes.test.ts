@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProviderStore } from "../shared/providers.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
-import { applyShellAction, DEFAULT_BOT_ID } from "../shared/shell-store.ts";
+import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
+import { withBot } from "./helpers/roster.ts";
 import { createRoutine } from "../shared/routines-store.ts";
 import { queueHandoff } from "../shared/handoffs.ts";
 import { stripThreadPrefix } from "../shared/threads.ts";
@@ -84,11 +85,11 @@ function recordingEve() {
   return { sent, restore: () => { globalThis.fetch = original; } };
 }
 
-/** The Generalist plus one more bot, the most a roster holds. */
+/** The Generalist plus one more bot, a roster an earlier build wrote (the app makes no second bot any more). */
 function twoBots() {
-  const made = applyShellAction(readShell(), { type: "createBot", name: "Alpha", description: "Alpha does research." });
+  const made = withBot(readShell(), "Alpha", { description: "Alpha does research." });
   writeShell(made.store);
-  return { alpha: made.createdId as string, useful: DEFAULT_BOT_ID };
+  return { alpha: made.id, useful: DEFAULT_BOT_ID };
 }
 
 test("a routine run carries the nobody-is-watching line as an app note the transcript hides", async () => {

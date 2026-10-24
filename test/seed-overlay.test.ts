@@ -15,6 +15,7 @@ import {
   type ShellStore,
 } from "../shared/shell-store.ts";
 import { readShell, updateShell } from "../shared/shell-io.ts";
+import { withBot } from "./helpers/roster.ts";
 
 /** A store as an older build wrote it: the Generalist with the given name and description. */
 function oldStore(fields: { name?: string; description?: string; avatarCustom?: boolean }): ShellStore {
@@ -79,16 +80,14 @@ test("an edited seed is the owner's text and stays", () => {
 });
 
 test("only the Generalist is overlaid, never another bot with a seed text", () => {
-  let store = seedStore();
-  store = applyShellAction(store, { type: "createBot", name: "Copycat", description: GENERALIST_SEEDS[0] }).store;
+  const store = withBot(seedStore(), "Copycat", { description: GENERALIST_SEEDS[0] }).store;
   const loaded = reread(store);
   assert.equal(loaded.bots.find((bot) => bot.name === "Copycat")?.description, GENERALIST_SEEDS[0]);
 });
 
 test("a store with no Generalist loads without an overlay or a throw", () => {
-  let store = seedStore();
-  store = applyShellAction(store, { type: "createBot", name: "Other", description: GENERALIST_SEEDS[0] }).store;
-  store = applyShellAction(store, { type: "deleteBot", botId: DEFAULT_BOT_ID }).store;
+  const withOther = withBot(seedStore(), "Other", { description: GENERALIST_SEEDS[0] }).store;
+  const store = { ...withOther, bots: withOther.bots.filter((bot) => bot.id !== DEFAULT_BOT_ID) };
   assert.equal(store.bots.some((bot) => bot.id === DEFAULT_BOT_ID), false);
   const loaded = reread(store);
   assert.equal(loaded.bots[0].description, GENERALIST_SEEDS[0]);

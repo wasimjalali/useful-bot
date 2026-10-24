@@ -18,7 +18,8 @@ import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { unbindBot } from "../../../../shared/session-bindings.ts";
-import { applyShellAction, DESCRIPTION_MAX, isGrantableRootPath, isShellActionType, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { sharedMemoryStore } from "../../../../agent/lib/memory.ts";
+import { applyShellAction, DEFAULT_BOT_ID, DESCRIPTION_MAX, isGrantableRootPath, isShellActionType, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
 import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
@@ -38,8 +39,8 @@ export async function GET(request: Request) {
  * Side effects the UI asks for alongside a shell action: clearing a thread
  * drops that bot's agent transcript with its eve session.
  *
- * Deleting a bot is not here: see `detachBot`, which runs after the roster
- * commit and reports its own failure rather than being swallowed.
+ * Removing an earlier bot is not here: see `detachBot`, which runs after the
+ * roster commit and reports its own failure rather than being swallowed.
  */
 function applyFollowUp(action: ShellAction | undefined): void {
   if (action?.type === "clearThread") clearThread(action.botId);
@@ -68,11 +69,13 @@ function revokeGrantsFor(
 }
 
 /**
- * What a bot owns outside the shell store: its routines and its transcript.
+ * What an earlier bot owns outside the shell store: its routines (none, the
+ * archive migration moved them), its transcript, its session bindings and its
+ * notes, which are archived, not deleted.
  *
  * This runs after the roster commit, not before it. Before means a commit that
  * throws (a contended shell lock, a guard inside `applyShellAction`) has
- * already destroyed the routines and the transcript of a bot that still
+ * already destroyed the transcript and notes of a bot that still
  * exists, which is worse than the orphan it was trying to avoid. Nothing here
  * can be atomic with the roster write anyway: three stores, three locks. So
  * the roster is the authority, this is best effort, and `sweepOrphanState` on the
@@ -95,12 +98,17 @@ function detachBot(botId: string): string | null {
   } catch (err) {
     errors.push(`transcript:${errorCode(err, "detach_failed")}`);
   }
-  // The deleted bot's session bindings go with it: the only way a row leaves
+  // The removed bot's session bindings go with it: the only way a row leaves
   // the identity store.
   try {
     unbindBot(botId);
   } catch (err) {
     errors.push(`sessions:${errorCode(err, "detach_failed")}`);
+  }
+  try {
+    sharedMemoryStore().archiveBotNotes(botId);
+  } catch (err) {
+    errors.push(`notes:${errorCode(err, "detach_failed")}`);
   }
   return errors.length > 0 ? errors.join(",") : null;
 }
@@ -230,6 +238,14 @@ export async function PUT(request: Request) {
       }
     }
 
+    // "Move notes" changes no roster row: the action only says whether the move
+    // is allowed, and the notes move here, once.
+    if (body.action?.type === "moveNotes") {
+      applyShellAction(current, body.action);
+      const moved = sharedMemoryStore().moveBotNotes(body.action.fromBotId, DEFAULT_BOT_ID);
+      return NextResponse.json({ ok: true, store: readShell(), queued: 0, moved });
+    }
+
     // The one server-side phone ban (decision F2/S5): a phone session may
     // read the workspace grant but never change it.
     if (body.action?.type === "setWorkspace" && gate.session.profile === "phone") {
@@ -262,7 +278,7 @@ export async function PUT(request: Request) {
 
     // A proposal is confirmable once. claimProposal only returns to the caller
     // that flips it out of pending, so two concurrent confirms cannot both
-    // apply the same createBot.
+    // apply the same connect card.
     if (body.proposalId) {
       const status = body.proposalStatus === "dismissed" ? "dismissed" : "confirmed";
       // A decision that lost the race is only a benign replay when the winner
@@ -354,19 +370,13 @@ export async function PUT(request: Request) {
     }
     // Only once the roster commit stood. A failure here is reported, not
     // swallowed, and the tick's sweep clears whatever was left behind.
-    const detachError = action?.type === "deleteBot" ? detachBot(action.botId) : null;
+    const detachError = action?.type === "removeArchivedBot" ? detachBot(action.botId) : null;
     try {
       applyFollowUp(action);
     } catch {
       /* the shell action already landed; the transcript clear is best effort */
     }
-    // `appendAgentEvent` upserts, so noting a confirmed delete on the deleted
-    // bot's own thread rebuilds the row the teardown just removed. Only that
-    // thread is skipped: a delete confirmed from another bot's chat still
-    // gets its receipt, on a thread that survives.
-    const notesDeletedThread = action?.type === "deleteBot"
-      && (claimed?.threadId || threadIdFor(action.botId)) === threadIdFor(action.botId);
-    if (claimed && !notesDeletedThread) {
+    if (claimed) {
       try {
         noteProposal(claimed, body.action);
       } catch {

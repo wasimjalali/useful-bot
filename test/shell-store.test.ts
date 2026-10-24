@@ -18,6 +18,7 @@ import {
   staleSessionIds,
 } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
+import { withBot } from "./helpers/roster.ts";
 
 test("setWorkspace attaches, updates and detaches a conversation folder", () => {
   let store = seedStore();
@@ -77,29 +78,9 @@ test("seed store has the Generalist and none of the removed rail fields", () => 
   for (const key of ["pinned", "hidden", "sectionId", "memberIds"]) assert.equal(key in wire.bots[0], false, key);
 });
 
-function createNamed(store: ReturnType<typeof seedStore>, name: string) {
-  return applyShellAction(store, { type: "createBot", name });
-}
-
-test("a new bot lands behind the Generalist, and the Generalist stays first after a restart", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-shell-"));
-  const path = join(dir, "shell.json");
-  let store = readShell(path);
-  const made = createNamed(store, "Alpha");
-  assert.deepEqual(made.store.bots.map((bot) => bot.name), ["Generalist", "Alpha"]);
-  store = made.store;
-  writeShell(store, path);
-  const loaded = readShell(path);
-  assert.deepEqual(loaded.bots.map((bot) => bot.name), ["Generalist", "Alpha"]);
-  assert.equal(existsSync(`${path}.reseeded`), false);
-  // Without the Generalist first, a new bot simply prepends.
-  const swapped = { ...store, bots: [store.bots[1], store.bots[0]] };
-  assert.equal(createNamed(swapped, "Beta").store.bots[0].name, "Beta");
-});
-
 test("a store written with the rail's pins, sections and groups still reads, and drops those fields", () => {
   const seed = seedStore();
-  const alpha = createNamed(seed, "Alpha").store.bots.find((bot) => bot.name === "Alpha")!;
+  const alpha = withBot(seed, "Alpha").store.bots.find((bot) => bot.name === "Alpha")!;
   const legacyBot = (bot: typeof alpha, extra: Record<string, unknown>) => ({
     ...bot,
     pinned: true,
@@ -131,6 +112,8 @@ test("a store written with the rail's pins, sections and groups still reads, and
 test("the actions of the removed rail, groups and hand-offs are not actions any more", () => {
   const store = seedStore();
   const removed = [
+    { type: "createBot", name: "Second" },
+    { type: "deleteBot", botId: "bot-x" },
     { type: "createGroup", name: "Desk", memberIds: [] },
     { type: "createSection", name: "Work" },
     { type: "renameSection", sectionId: "x", name: "Y" },
@@ -145,41 +128,26 @@ test("the actions of the removed rail, groups and hand-offs are not actions any 
     assert.equal(isShellActionType(action.type), false, action.type);
     assert.throws(() => applyShellAction(store, action as never), /shell_action_unknown/, action.type);
   }
-  for (const type of ["select", "createBot", "renameBot", "nameBot", "updateBot", "deleteBot", "setSession", "setWorkspace", "setPermission", "touchChat", "newChat", "clearThread", "openRecent", "connectApp", "connectServer"]) {
+  for (const type of ["select", "renameBot", "nameBot", "updateBot", "setSession", "setWorkspace", "setPermission", "touchChat", "newChat", "clearThread", "openRecent", "moveNotes", "removeArchivedBot", "connectApp", "connectServer"]) {
     assert.equal(isShellActionType(type), true, type);
   }
   assert.equal(isShellActionType(undefined), false);
   assert.equal(isShellActionType("constructor"), false);
 });
 
-test("create, select, delete and new chat", () => {
+test("select takes the default bot only, a chat starts fresh with newChat and comes back with openRecent", () => {
   let store = seedStore();
-  const created = applyShellAction(store, {
-    type: "createBot",
-    name: "Researcher",
-    label: "R",
-    description: "Looks things up.",
-  });
-  store = created.store;
-  assert.equal(selectedBot(store).name, "Researcher");
-  assert.equal(selectedBot(store).avatarCustom, true);
-  assert.equal(isAvatarShape(selectedBot(store).avatarShape), true);
-  assert.equal(isAvatarColor(selectedBot(store).avatarColor), true);
-  assert.equal(selectedBot(store).avatarShape, defaultFaceFor(created.createdId!).shape);
-  assert.equal(selectedBot(store).avatarColor, defaultFaceFor(created.createdId!).color);
-  store = applyShellAction(store, { type: "select", botId: DEFAULT_BOT_ID }).store;
-  assert.equal(store.selectedBotId, DEFAULT_BOT_ID);
-  assert.throws(() => applyShellAction(store, { type: "select", botId: "nope" }), /shell_bot_missing/);
-  // Deleting the selected bot falls back to the first one left.
-  store = applyShellAction(store, { type: "select", botId: created.createdId! }).store;
-  store = applyShellAction(store, { type: "deleteBot", botId: created.createdId! }).store;
-  assert.equal(store.bots.length, 1);
+  const other = withBot(store, "Researcher", { label: "R", description: "Looks things up." });
+  assert.equal(other.store.bots.length, 2);
+  // The app has one bot: select refuses every other, in the daily stack.
+  assert.throws(() => applyShellAction(other.store, { type: "select", botId: other.id }), /shell_bot_forbidden/);
+  assert.throws(() => applyShellAction(other.store, { type: "select", botId: "nope" }), /shell_bot_missing/);
+  store = applyShellAction(other.store, { type: "select", botId: DEFAULT_BOT_ID }).store;
   assert.equal(store.selectedBotId, DEFAULT_BOT_ID);
   store = applyShellAction(store, { type: "setSession", botId: DEFAULT_BOT_ID, sessionId: "sess-old" }).store;
   store = applyShellAction(store, { type: "touchChat", botId: DEFAULT_BOT_ID, preview: "hello there" }).store;
   const chat = applyShellAction(store, { type: "newChat" });
   store = chat.store;
-  assert.equal(store.bots.length, 1);
   assert.equal(selectedBot(store).id, DEFAULT_BOT_ID);
   assert.equal(selectedBot(store).sessionId, null);
   assert.equal(selectedBot(store).lastPreview, "");
@@ -190,29 +158,25 @@ test("create, select, delete and new chat", () => {
   assert.equal(selectedBot(store).sessionId, "sess-old");
 });
 
-test("refuses deleting the last bot and tolerates unknown keys", () => {
+test("tolerates unknown keys", () => {
   const store = seedStore();
-  assert.throws(() => applyShellAction(store, { type: "deleteBot", botId: DEFAULT_BOT_ID }), /shell_last_bot/);
   // Forward compatibility: a newer build's extra field must not wipe the store.
   const parsed = parseShell({ ...store, extra: true, bots: store.bots.map((bot) => ({ ...bot, extra: 1 })) });
   assert.equal(parsed.bots.length, store.bots.length);
 });
 
-test("persist roundtrip, and a createBot that asks for a group makes a plain bot", () => {
+test("persist roundtrip keeps an earlier build's roster as it is written, without a second pass", () => {
   const dir = mkdtempSync(join(tmpdir(), "ub-shell-"));
   const path = join(dir, "shell.json");
-  let store = seedStore();
-  // Groups are gone. A client that still sends kind "group" gets a plain bot,
-  // never a group with no members.
-  const bot = applyShellAction(store, { type: "createBot", name: "Reviewer", label: "Rev", kind: "group" } as never);
-  store = bot.store;
-  assert.equal(store.bots.find((item) => item.id === bot.createdId)?.kind, "bot");
-  writeShell(store, path);
+  const made = withBot(seedStore(), "Reviewer", { label: "Rev" });
+  // A roster this build writes is not migrated: the write marks it done.
+  writeShell(made.store, path);
   const loaded = readShell(path);
   assert.equal(loaded.bots.length, 2);
+  assert.equal(loaded.bots.find((item) => item.id === made.id)?.archived, false);
   assert.equal(searchBots(loaded, "rev").some((item) => item.label === "Rev"), true);
-  store = applyShellAction(loaded, { type: "setSession", botId: bot.createdId!, sessionId: "sess-1" }).store;
-  assert.equal(store.bots.find((item) => item.id === bot.createdId)?.sessionId, "sess-1");
+  const next = applyShellAction(loaded, { type: "setSession", botId: made.id, sessionId: "sess-1" }).store;
+  assert.equal(next.bots.find((item) => item.id === made.id)?.sessionId, "sess-1");
 });
 
 test("readShell reseeds an incompatible file", () => {
@@ -226,18 +190,12 @@ test("readShell reseeds an incompatible file", () => {
 });
 
 test("search finds bots and recents", () => {
-  let store = seedStore();
-  const created = applyShellAction(store, {
-    type: "createBot",
-    name: "First Frame",
-    label: "Video",
-    description: "Short form scripts",
-  });
-  store = created.store;
-  store = applyShellAction(store, { type: "touchChat", botId: created.createdId!, preview: "write a script" }).store;
-  store = applyShellAction(store, { type: "setSession", botId: created.createdId!, sessionId: "sess-ff" }).store;
-  store = applyShellAction(store, { type: "newChat", botId: created.createdId! }).store;
-  assert.equal(searchBots(store, "first").some((bot) => bot.id === created.createdId), true);
+  const created = withBot(seedStore(), "First Frame", { label: "Video", description: "Short form scripts" });
+  let store = created.store;
+  store = applyShellAction(store, { type: "touchChat", botId: created.id, preview: "write a script" }).store;
+  store = applyShellAction(store, { type: "setSession", botId: created.id, sessionId: "sess-ff" }).store;
+  store = applyShellAction(store, { type: "newChat", botId: created.id }).store;
+  assert.equal(searchBots(store, "first").some((bot) => bot.id === created.id), true);
   assert.equal(searchBots(store, "").length, store.bots.length);
   const hits = searchShell(store, "script");
   assert.equal(hits.some((hit) => hit.kind === "new-chat"), true);
@@ -276,14 +234,13 @@ test("parseShell accepts bots without lastPreview from older files", () => {
 });
 
 test("updateBot writes a custom face", () => {
-  let store = seedStore();
-  const created = applyShellAction(store, { type: "createBot", name: "SEO" });
-  store = applyShellAction(created.store, {
+  const created = withBot(seedStore(), "SEO");
+  const store = applyShellAction(created.store, {
     type: "updateBot",
-    botId: created.createdId!,
+    botId: created.id,
     patch: { avatarShape: "drop", avatarColor: "gold", avatarCustom: true },
   }).store;
-  const bot = store.bots.find((item) => item.id === created.createdId);
+  const bot = store.bots.find((item) => item.id === created.id);
   assert.equal(bot?.avatarShape, "drop");
   assert.equal(bot?.avatarColor, "gold");
 });
@@ -326,7 +283,7 @@ test("staleSessionIds revokes a session nobody holds after the commit", () => {
 });
 
 test("staleSessionIds leaves a session that only moved between bots", () => {
-  const base = applyShellAction(seedStore(), { type: "createBot", name: "Scout" }).store;
+  const base = withBot(seedStore(), "Scout").store;
   const [first, second] = base.bots;
   const before = applyShellAction(base, { type: "setSession", botId: first.id, sessionId: "sess-1" }).store;
   // The same session is now held by the other bot. Nobody lost the capability,
@@ -351,12 +308,12 @@ test("staleSessionIds catches a detach, where the session id never changes", () 
   assert.deepEqual(staleSessionIds(action, before, after), ["sess-1"]);
 });
 
-test("staleSessionIds revokes the deleted bot's session and nobody else's", () => {
-  const base = applyShellAction(seedStore(), { type: "createBot", name: "Scout" }).store;
+test("staleSessionIds revokes a removed earlier bot's session and nobody else's", () => {
+  const base = withBot(seedStore(), "Scout", { archived: true, archivedAt: "2026-10-25T00:00:00.000Z" }).store;
   const [keep, drop] = base.bots;
-  const a = applyShellAction(base, { type: "setSession", botId: keep.id, sessionId: "sess-keep" }).store;
-  const before = applyShellAction(a, { type: "setSession", botId: drop.id, sessionId: "sess-drop" }).store;
-  const action = { type: "deleteBot", botId: drop.id } as const;
+  const a = { ...base, bots: base.bots.map((bot) => (bot.id === keep.id ? { ...bot, sessionId: "sess-keep" } : bot.id === drop.id ? { ...bot, sessionId: "sess-drop" } : bot)) };
+  const before = a;
+  const action = { type: "removeArchivedBot", botId: drop.id } as const;
   const after = applyShellAction(before, action).store;
   assert.deepEqual(staleSessionIds(action, before, after), ["sess-drop"]);
 });
@@ -417,12 +374,8 @@ test("checkDescription trims, keeps 8,000 and refuses 8,001 without slicing", ()
 test("every write path keeps 8,000 characters and refuses 8,001", () => {
   const ok = "d".repeat(8000);
   const over = "d".repeat(8001);
-  const base = seedStore();
-  const store = applyShellAction(base, { type: "createBot", name: "A" }).store;
+  const store = withBot(seedStore(), "A").store;
   const a = store.bots.find((bot) => bot.id !== DEFAULT_BOT_ID)!.id;
-
-  assert.equal(applyShellAction(base, { type: "createBot", name: "X", description: ok }).store.bots[1].description, ok);
-  assert.throws(() => applyShellAction(base, { type: "createBot", name: "X", description: over }), /shell_description_too_long/);
 
   assert.equal(applyShellAction(store, { type: "nameBot", botId: a, name: "A", description: ok }).store.bots.find((bot) => bot.id === a)?.description, ok);
   assert.throws(() => applyShellAction(store, { type: "nameBot", botId: a, name: "A", description: over }), /shell_description_too_long/);
@@ -432,8 +385,8 @@ test("every write path keeps 8,000 characters and refuses 8,001", () => {
 });
 
 test("a refused update leaves the stored description and revision as they were", () => {
-  const created = applyShellAction(seedStore(), { type: "createBot", name: "A", description: "keep me" });
-  const id = created.createdId ?? "";
+  const created = withBot(seedStore(), "A", { description: "keep me" });
+  const id = created.id;
   assert.throws(
     () => applyShellAction(created.store, { type: "updateBot", botId: id, patch: { name: "Renamed", description: "z".repeat(8001) } }),
     /shell_description_too_long/,
@@ -447,8 +400,7 @@ test("a 9,000-character description in the file is read verbatim and the store i
   const dir = mkdtempSync(join(tmpdir(), "ub-shell-"));
   const path = join(dir, "shell.json");
   const long = "w".repeat(9000);
-  const stored = applyShellAction(seedStore(), { type: "createBot", name: "Long", description: "short" }).store;
-  stored.bots = stored.bots.map((bot) => (bot.name === "Long" ? { ...bot, description: long } : bot));
+  const stored = withBot(seedStore(), "Long", { description: long }).store;
   writeFileSync(path, JSON.stringify(stored), "utf8");
   const loaded = readShell(path);
   assert.equal(loaded.bots.length, 2);

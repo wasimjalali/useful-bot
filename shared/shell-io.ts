@@ -13,7 +13,8 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { statePath } from "./stack.ts";
-import { parseShell, seedStore, type ShellStore } from "./shell-store.ts";
+import { moveRoutinesToBot } from "./routines-store.ts";
+import { archiveEarlierBots, DEFAULT_BOT_ID, parseShell, seedStore, type ShellStore } from "./shell-store.ts";
 
 export function defaultShellPath(): string {
   if (process.env.UB_SHELL_PATH) return process.env.UB_SHELL_PATH;
@@ -136,7 +137,63 @@ export function peekShell(path = defaultShellPath()): ShellStore | null {
   }
 }
 
+/**
+ * Set beside the store once the archive migration has run, or when this build
+ * wrote the store (a store this build writes has nothing left to migrate).
+ * Absent means the roster is as an older build left it.
+ */
+export function archiveMarkerPath(path = defaultShellPath()): string {
+  return `${path}.archived-v1`;
+}
+
+function writeArchiveMarker(path: string): void {
+  const marker = archiveMarkerPath(path);
+  const tmp = `${marker}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, `${new Date().toISOString()}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    renameSync(tmp, marker);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* nothing to clean */ }
+    throw err;
+  }
+}
+
+/**
+ * The one-time archive migration. Every bot but the default one becomes
+ * archived and its routines move to the default bot, paused (see
+ * `archiveEarlierBots` and `moveRoutinesToBot`); nothing is deleted. The marker
+ * is written last, after both stores are written, so a run that dies in
+ * between leaves no marker and the next read finishes it: both steps are
+ * idempotent. A store with nothing to archive only gets its marker, and the
+ * shell file is not rewritten. The shell lock is the one `updateShell` takes;
+ * `held` says the caller already has it. Returns the store as it reads after.
+ */
+function migrateArchive(path: string, held: boolean): ShellStore {
+  const release = held ? null : acquireShellLock(path);
+  try {
+    // Re-checked under the lock: another process may have finished first.
+    if (existsSync(archiveMarkerPath(path))) return readShellFile(path);
+    const current = readShellFile(path);
+    // A reseed just wrote a fresh store and its marker.
+    if (existsSync(archiveMarkerPath(path))) return current;
+    const result = archiveEarlierBots(current);
+    if (result.changed) writeShellFile(result.store, path);
+    if (result.moved.length > 0) moveRoutinesToBot(result.moved, DEFAULT_BOT_ID);
+    writeArchiveMarker(path);
+    return result.changed ? readShellFile(path) : current;
+  } finally {
+    release?.();
+  }
+}
+
 export function readShell(path = defaultShellPath()): ShellStore {
+  const store = readShellFile(path);
+  if (existsSync(archiveMarkerPath(path))) return store;
+  return migrateArchive(path, false);
+}
+
+/** The roster as it is on disk: seeded when missing, reseeded when unreadable. No migration. */
+function readShellFile(path: string): ShellStore {
   if (!existsSync(path)) {
     const seeded = seedStore();
     // A missing store lost nothing, so a mark left over from an older file
@@ -162,7 +219,13 @@ export function readShell(path = defaultShellPath()): ShellStore {
   }
 }
 
+/** Write the roster, and mark it migrated: what this build writes needs no archive pass. */
 export function writeShell(store: ShellStore, path = defaultShellPath()): void {
+  writeShellFile(store, path);
+  if (!existsSync(archiveMarkerPath(path))) writeArchiveMarker(path);
+}
+
+function writeShellFile(store: ShellStore, path: string): void {
   const parsed = parseShell(store);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}.tmp`;
@@ -208,6 +271,20 @@ export function updateShell(
   mutate: (store: ShellStore) => ShellStore,
   path = defaultShellPath(),
 ): ShellStore {
+  const release = acquireShellLock(path);
+  try {
+    // The migration runs under this lock, before the caller's change.
+    if (!existsSync(archiveMarkerPath(path))) migrateArchive(path, true);
+    const next = mutate(readShellFile(path));
+    writeShell(next, path);
+    return next;
+  } finally {
+    release();
+  }
+}
+
+/** The shell store's directory lock; the returned function releases it. */
+function acquireShellLock(path: string): () => void {
   const lock = `${path}.lock`;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
@@ -225,11 +302,7 @@ export function updateShell(
     }
   }
   if (!held) throw new Error("shell_store_locked");
-  try {
-    const next = mutate(readShell(path));
-    writeShell(next, path);
-    return next;
-  } finally {
+  return () => {
     try { rmdirSync(lock); } catch { /* ignore */ }
-  }
+  };
 }

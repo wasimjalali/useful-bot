@@ -814,6 +814,8 @@ async function runEveTurn(
     const freshStore = readProviderStore();
     const freshShell = readShell();
     const live = freshShell.bots.find((item) => item.id === bot.id) ?? bot;
+    // An earlier bot takes no turns, from a routine or a handoff either.
+    if (live.archived) throw new Error("shell_bot_archived");
     // A retired route's own sentence is the failure the owner reads.
     const retired = retiredRouteMessage(botSelection(live, freshStore).connectionId);
     if (retired) throw new ProviderRouteRetiredError(retired);
@@ -989,6 +991,7 @@ async function runEveTurn(
 async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
   const bot = readShell().bots.find((item) => item.id === handoff.targetBotId);
   if (!bot) throw new Error("receiver_missing");
+  if (bot.archived) throw new Error("shell_bot_archived");
 
   const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff), undefined, "handoff");
 
@@ -1086,8 +1089,9 @@ async function pumpOnce(limit: number): Promise<{
     } catch (err) {
       const message = err instanceof Error ? err.message : "handoff_failed";
       if (message === "claim_lost") return;
-      // Neither a gone model nor a refused size is fixed by trying again.
+      // Neither a gone model, an archived bot nor a refused size is fixed by trying again.
       const modelGone = message === "model_selection_unavailable"
+        || message === "shell_bot_archived"
         || err instanceof ProviderRouteRetiredError
         || message === "context_too_large"
         || message === "description_too_long";
@@ -1178,6 +1182,7 @@ function routineFailureText(err: unknown): string {
     return "the bot went quiet part way through and the run was stopped.";
   }
   if (code === "model_selection_unavailable") return MODEL_UNAVAILABLE_TEXT;
+  if (code === "shell_bot_archived") return "its bot is archived, so it can't run.";
   if (code === "context_too_large") return CONTEXT_TOO_LARGE_TEXT;
   if (code === "description_too_long") return DESCRIPTION_TOO_LONG_TEXT;
   return code;
@@ -1195,6 +1200,7 @@ async function executeRoutine(
   const shell = readShell();
   const bot = shell.bots.find((item) => item.id === routine.botId);
   if (!bot) throw new Error("routine_bot_missing");
+  if (bot.archived) throw new Error("shell_bot_archived");
   // These two go in before the turn so the live stream echo pairs with the
   // durable row rather than rendering a second bubble. If the agent store
   // itself will not open, there is no transcript to leave hanging and no point
