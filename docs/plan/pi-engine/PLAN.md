@@ -9,13 +9,15 @@ the SPEC sections it names and the matching `app-map/*.md`, then builds.
 ```
 PR 1  router accepts Pi requests                 main   (eve still runs)
 PR 2  one strong bot                             main   (eve still runs)
+PR 2b chat-first UI                              main   (eve still runs, after the mockups)
 PR 3  engine swap, feature branch feat/pi-engine -> main as one PR
         orchestrator contract commit, then W1 engine, W2 tools, W3 web and ops, W4 Swift
 PR 4  one-release-later cleanup                  main
 ```
 
 - PR 1 and PR 2 are independent and can run in parallel sessions (no shared files).
-- PR 3 starts after both merge. It ships in one release with the clean slate (SPEC D22, D23).
+- PR 2b follows PR 2 once the owner approves the mockups.
+- PR 3 starts after PR 1, PR 2 and PR 2b merge. It ships in one release with the clean slate (SPEC D22, D23).
 - PR 4 lands in the release after PR 3's.
 
 Every PR follows the global change loop: worktree, build, self-check (`npx tsc --noEmit` for the
@@ -30,6 +32,7 @@ Reviews (GPT paused until 2026-11-01: Opus takes the GPT slot, GLM 5.3 runs besi
 |---|---|---|
 | 1 | feature | Sonnet + Opus + GLM 5.3, medium |
 | 2 | feature, stored roster state | Sonnet + Opus + GLM 5.3, high |
+| 2b | feature, UI | Sonnet + Opus + GLM 5.3, medium |
 | 3 | sensitive (process auth, state, concurrency, data drop) | Sonnet + Opus + Opus + GLM 5.3, high; split by worker area so every file has one reviewer |
 | 4 | small | Sonnet, medium |
 
@@ -70,8 +73,11 @@ and forwards the expected upstream body.
 
 **Goal:** one all-round bot and a chat-first sidebar; no second bot, groups, sections, cross-bot
 tools or sub-agents. Still on eve. Decisions SPEC D5 to D9, D20, D25 and the "PR 2" rows of
-`UI.md` section 9. The UI parts wait for the owner's approval of the Claude Design mockups (the
-"Pi engine UI" session sends it). Tool merges (D21) wait for PR 3.
+`UI.md` section 9. Tool merges (D21) wait for PR 3.
+
+**Split (2026-10-25):** PR 2 (#212) ships the backend and the removals with today's rail showing
+the one bot. Its UI parts moved to PR 2b, which waits for the owner's approval of the Claude Design
+mockups. The ownership lists below stay as written; the items PR 2b builds are listed there.
 
 **Node worker owns:**
 - delete `agent/tools/{list_bots,rail_action,delete_bot,propose_bot,propose_group,post_to_group,
@@ -140,12 +146,40 @@ and open flows), and the Swift tests that cover these
 (`SubagentCardTests`, `SubagentRunTests`, `ThreadsTests`, `ChatAttributionTests`, the group and
 fan-out cases of `TranscriptTests`, `TranscriptBlocksTests`, `ProposalTests`, `ShellActionsTests`).
 
-**Verify:** node and Swift suites green. Live in Useful Bot Dev: the sidebar matches the approved
-mockups (fixed rows, chat list, account row); New chat and opening a recent chat work; the Routines
-page shows the moved routines paused; Settings > Earlier bots copies instructions and moves notes;
-the bot runs a turn with bash and an approval; a routine runs; asked to "use a sub-agent", the bot
-does the work itself; connecting an app resumes the chat. Screenshots, light and dark, side by side
-with the approved mockups.
+**Verify:** node and Swift suites green. Live in Useful Bot Dev, on free OpenRouter models: today's
+rail shows the one bot; the archive migration on the dev data moves routines paused with
+`movedFrom` and keeps notes; `moveNotes` moves an earlier bot's notes; the bot runs a turn with
+bash and an approval; a routine runs; asked to "use a sub-agent", the bot does the work itself;
+connecting an app resumes the chat. Screenshots of rail, chat and Settings. The UI checks moved to
+PR 2b.
+
+---
+
+## PR 2b: chat-first UI
+
+**Goal:** the UI parts of PR 2, on eve data, built to the mockups the owner approved. The "Pi
+engine UI" session sends the approval; PR 2b first updates `UI.md` with the approved mockups.
+
+**Builds** (the "PR 2" rows of `UI.md` section 9 that need UI):
+- the chat-first sidebar of `UI.md` 3 in `App/RailView.swift` (fixed rows, current chat plus up to
+  40 recents with last-message titles, no row menu, account row), on `bot.sessionId` and
+  `recents` through the `newChat` and `openRecent` shell actions;
+- the Routines page of `UI.md` 5 (`App/RoutinesPage.swift`, from the routine views of
+  `ChatDetailsPaneView.swift`), with the moved-routines notice (`movedFrom`, cleared by `PATCH`);
+- the Bot pane of `UI.md` 6 (`App/SettingsPaneView.swift`, without routines);
+- Settings > Earlier bots in `App/AppSettingsView.swift`: Copy instructions, Move notes
+  (`moveNotes`), Remove (`removeArchivedBot`), note count from `GET /api/memory` `total`;
+- the Library stage page (`App/LibraryView.swift`) and stage routing in `App/RootView.swift`;
+- search palette tabs Chats, Library and Routines in `App/PickerViews.swift`;
+- ⌘N and the other shortcuts of `UI.md` 11 in `App/UsefulBotApp.swift`.
+
+**Owns:** the Swift files above plus `App/AppModel.swift` (the chat-first new and open flows) and
+their tests. The server side is in PR 2; a server change found missing reports back first.
+
+**Verify:** Swift suite green. Live in Useful Bot Dev: the sidebar matches the approved mockups;
+New chat and opening a recent chat work; the Routines page shows the moved routines paused;
+Settings > Earlier bots copies instructions, moves notes and removes a bot. Screenshots, light
+and dark, side by side with the approved mockups.
 
 ---
 
@@ -283,8 +317,8 @@ the engine's eve-listener kill at boot, once every install has run the PR 3 rele
 ## What the owner decides or does
 
 - Decided 2026-10-25: one bot only (D5, D6), OpenAPI dropped (D17), reviewer role removed (D25).
-- Approve the UI mockups in Claude Design (before and after per screen); PR 2's UI parts wait
-  for that approval.
+- Approve the UI mockups in Claude Design (before and after per screen); PR 2b waits for that
+  approval.
 - Approve the golden-eval spend (two runs of 10 tasks on his subscriptions).
 - Ship the PR 3 release when he decides (`npm run release:mac`); its notes say old chats are not
   carried over.
