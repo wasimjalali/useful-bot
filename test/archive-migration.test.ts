@@ -329,8 +329,8 @@ test("the shell lock is not held while the routine move waits for the routines l
     const child = run(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
       env: { ...process.env, NODE_NO_WARNINGS: "1" },
     });
-    // Past the shell lock's stale window (3 s), the migration is still waiting on the routines lock.
-    await new Promise((resolve) => setTimeout(resolve, 3500));
+    // Well inside the shell lock's stale window (3 s), so the lock cannot have gone stale and been taken: it is simply not held.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(existsSync(`${shell}.lock`), false, "a waiting migration must not sit on the shell lock");
     // The shell half is already on disk, and another writer is not blocked.
     assert.equal((JSON.parse(readFileSync(shell, "utf8")) as ShellStore).bots.find((bot) => bot.id === alpha)?.archived, true);
