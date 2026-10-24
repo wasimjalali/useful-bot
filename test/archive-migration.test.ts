@@ -618,6 +618,35 @@ test("a long old bot name or routine name is clipped without losing the tag's cl
   });
 });
 
+test("clipping never splits an emoji or leaves a space before the tag", async () => {
+  await world(() => {
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    // The routine name's clip lands inside an emoji: 62 letters, then a pair at units 62-63 (budget 63 for " (from Old)").
+    routineFor(DEFAULT_BOT_ID, `${"x".repeat(62)}\u{1F600}${"y".repeat(10)}`);
+    routineFor("bot-a", `${"x".repeat(62)}\u{1F600}${"y".repeat(10)}`);
+    // A space sits at the clip boundary.
+    routineFor(DEFAULT_BOT_ID, `${"z".repeat(62)} ${"w".repeat(17)}`);
+    routineFor("bot-b", `${"z".repeat(62)} ${"w".repeat(17)}`);
+    // The old bot's name is clipped to 30 units with an emoji straddling the cut.
+    routineFor(DEFAULT_BOT_ID, "Short");
+    routineFor("bot-c", "Short");
+    moveRoutinesToBot([
+      { id: "bot-a", name: "Old" },
+      { id: "bot-b", name: "Old" },
+      { id: "bot-c", name: `${"n".repeat(29)}\u{1F600}tail` },
+    ], DEFAULT_BOT_ID);
+    const names = listRoutines(DEFAULT_BOT_ID).map((item) => item.name);
+    for (const name of names) {
+      assert.ok(!lone.test(name), `a lone surrogate in ${JSON.stringify(name)}`);
+      assert.ok(name.length <= 80);
+    }
+    const tagged = names.filter((name) => name.includes(" (from "));
+    assert.equal(tagged.length, 3);
+    for (const name of tagged) assert.doesNotMatch(name, /\s\s\(from /, `a space before the tag in ${JSON.stringify(name)}`);
+    assert.ok(tagged.some((name) => name.endsWith(`${"n".repeat(29)})`)), "the tag name stops before the emoji it cannot fit");
+  });
+});
+
 test("more routines than the per-bot cap move, and the cap still holds for a new one", async () => {
   await world(() => {
     const store = readRoutinesStore();

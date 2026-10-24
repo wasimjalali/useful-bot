@@ -668,6 +668,21 @@ export function updateRoutine(
   }, path);
 }
 
+/** The most of the old bot's name a "(from ...)" tag carries. */
+const TAG_NAME_MAX = 30;
+/** Characters kept free after the tag for " 2", " 10" and so on. */
+const COUNTER_ROOM = 6;
+
+/** The longest start of `value` that fits in `units` UTF-16 units without splitting a character. */
+function clipUnits(value: string, units: number): string {
+  let out = "";
+  for (const char of value) {
+    if (out.length + char.length > units) break;
+    out += char;
+  }
+  return out;
+}
+
 /**
  * The archive migration's routine move: every routine of an earlier bot goes to
  * the default bot, paused, remembering where it came from. Written straight
@@ -678,11 +693,6 @@ export function updateRoutine(
  * and an interrupted one picks up the rest. A request for a run is dropped, or
  * a paused routine would still fire. Returns how many moved.
  */
-/** The most of the old bot's name a "(from ...)" tag carries. */
-const TAG_NAME_MAX = 30;
-/** Characters kept free after the tag for " 2", " 10" and so on. */
-const COUNTER_ROOM = 6;
-
 export function moveRoutinesToBot(
   from: Array<{ id: string; name: string }>,
   to: string,
@@ -701,9 +711,9 @@ export function moveRoutinesToBot(
       if (taken.has(name.trim().toLowerCase())) {
         // The tag is whole and short (the old bot's name is clipped inside it);
         // the routine's own name gives way, leaving room for a number after it.
-        const from = oldName.replace(/\s+/g, " ").trim().slice(0, TAG_NAME_MAX) || "an earlier bot";
+        const from = clipUnits(oldName.replace(/\s+/g, " ").trim(), TAG_NAME_MAX).trimEnd() || "an earlier bot";
         const tag = ` (from ${from})`;
-        const base = routine.name.slice(0, NAME_MAX - tag.length - COUNTER_ROOM);
+        const base = clipUnits(routine.name, NAME_MAX - tag.length - COUNTER_ROOM).trimEnd();
         name = `${base}${tag}`;
         for (let n = 2; taken.has(name.trim().toLowerCase()); n += 1) name = `${base}${tag} ${n}`;
       }
