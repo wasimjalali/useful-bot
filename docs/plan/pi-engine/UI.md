@@ -1,7 +1,14 @@
 # Pi engine: UI and UX for one bot
 
-Status: draft 1, 2026-10-25. Decision (owner, 2026-10-25): **one bot only**, no second bot, no
-bot switcher; the sidebar is built around chats. Companion to `SPEC.md` (engine, protocol) and
+Status: draft 2, 2026-10-25, matches the mockups the owner approved on 2026-10-25. Decision
+(owner, 2026-10-25): **one bot only**, no second bot, no bot switcher; the sidebar is built around
+chats.
+
+**Approved mockups:** [Chat-first Useful Bot](https://claude.ai/code/artifact/5f4f417b-53ad-4641-81be-1e6f1f52c291)
+(private to the owner), source in `docs/plan/pi-engine/mockups/chat-first-useful-bot.html`. Twelve
+screens, each a Before (today's app) and After (this spec) artboard; open the file in a browser and
+click a board to see it full size. Section 13 lists the pairs. Where this file and the mockups
+disagree, this file wins and the mockup is fixed. Companion to `SPEC.md` (engine, protocol) and
 `PLAN.md` (who builds what). Visual rules come from the `useful-brand` and `useful-design` skills;
 this file fixes structure, states and the contract with the backend.
 
@@ -14,34 +21,39 @@ this file fixes structure, states and the contract with the backend.
   the owner, has an unread reply or failed. No bot-level guessing.
 - **Nothing the owner relies on today disappears silently.** Routines, Library, Connectors,
   memory, instructions, approvals, questions and model picking all keep a clear home.
+- **The logo is the only bot mark.** The mascot face is not drawn anywhere in the new app: not in
+  chat rows, the header, the working row or the empty chat. The Useful Bot logo (black tile, white
+  head) sits in the sidebar and at the start of an empty chat. The bot has no editable name, face
+  or role label: it is Useful Bot.
 
 ## 2. Window
 
 ```
-+-----------------+----------------------------------------------+-------------+
-| SIDEBAR 248pt   | STAGE                                        | BOT PANE    |
-|  search  new    |  header: bot face + chat title   [pane]      | 320pt, opt. |
-|  logo           |                                              |             |
-|  Routines       |  transcript                                  | Profile     |
-|  Library        |                                              | Instructions|
-|  Connectors     |                                              | Memory      |
-|  ------------   |                                              | Notify      |
-|  Today          |  ask column (approvals, question)            |             |
-|   chat rows     |  composer                                    |             |
-|  Yesterday ...  |                                              |             |
-|  ------------   |                                              |             |
-|  account row    |                                              |             |
-+-----------------+----------------------------------------------+-------------+
++-----------------+----------------------------------------------+
+| SIDEBAR 248pt   | STAGE                                        |
+|  search  new    |  header: chat title                          |
+|  logo           |                                              |
+|  Routines       |  transcript                                  |
+|  Library        |                                              |
+|  Connectors     |                                              |
+|  ------------   |                                              |
+|  Today          |  ask column (approvals, question)            |
+|   chat rows     |  composer                                    |
+|  Yesterday ...  |                                              |
+|  ------------   |                                              |
+|  account row    |                                              |
++-----------------+----------------------------------------------+
 ```
 
 The stage shows one of: a chat, the Routines page, the Library page. Connectors stays a dialog.
+There is no right-hand pane: what the Bot pane held moves to Settings (section 6).
 
 ## 3. Sidebar
 
 ### 3.1 Top band (traffic-light row)
 
 - **Search** (magnifier, ⌘K): opens the search palette (section 7).
-- **New chat** (plus, ⌘N): opens an empty chat on the stage, selected in the list once the first
+- **New chat** (pencil icon, ⌘N; a plus would read as "add"): opens an empty chat on the stage, selected in the list once the first
   message is sent. Replaces today's "New Bot" button. If the open chat is already empty, ⌘N only
   focuses the composer.
 - Logo row below, as today.
@@ -68,9 +80,9 @@ Library moves out of the account menu. The Connectors footer pill goes (the row 
 
 | State | Mark | Clears when |
 |---|---|---|
-| working (a turn is running) | the bot face, small, in its working pose | the turn settles |
+| working (a turn is running) | a ring of four dots chasing round (14pt, ink, one turn per second; still under Reduce Motion) | the turn settles |
 | waiting on owner (open question or pending approval in that chat) (PR 3) | amber dot | the question is answered, or the approval is decided or expires (5 min) |
-| reply ready (a turn settled while the chat was not open) (PR 3) | blue dot | the chat is opened |
+| reply ready (a turn settled while the chat was not open) (PR 3) | dark dot (ink; the Useful palette has no blue) | the chat is opened |
 | failed (newest turn failed, not retried) (PR 3) | red mark | Retry succeeds or a new turn starts |
 | idle | relative time ("2m", "Tue") | |
 
@@ -91,14 +103,15 @@ Library moves out of the account menu. The Connectors footer pill goes (the row 
 
 ### 3.4 Account row (footer)
 
-The owner's face opens the account menu as today: Token usage, Providers, Settings, Appearance,
-Send feedback, Contact us, version and updates. Library leaves this menu (3.2).
+The owner's avatar and name (operator name from `GET /api/status`) open the account menu as today:
+Token usage, Providers, Settings, Appearance, Send feedback, Contact us, version and updates.
+Library leaves this menu (3.2); the Connectors pill leaves the footer (3.2).
 
 ### 3.5 Background work and notifications
 
 - A routine, connect-card resume or queued turn in a chat that is not open shows only in that
-  chat's row (state mark) and, when the turn finishes, as a macOS notification if the Bot pane's
-  notify toggle is on and either the window is not key or the chat is not open.
+  chat's row (state mark) and, when the turn finishes, as a macOS notification if "Notify when a chat
+  finishes" (Settings > General) is on and either the window is not key or the chat is not open.
 - Clicking the notification opens that chat.
 - The Dock badge shows the number of chats waiting on the owner.
 
@@ -106,16 +119,16 @@ Send feedback, Contact us, version and updates. Library leaves this menu (3.2).
 
 ### 4.1 Header
 
-- Centered pill: bot face (22pt) and the **chat title** (falls back to the bot name in a new
-  chat). Clicking the title starts inline rename (same as the row menu).
-- Right: the Bot pane toggle (`sidebar.right`), as today.
+- Centered pill: the **chat title** only, no face ("New chat" in a new chat). Clicking the title
+  starts inline rename (same as the row menu).
+- No right-side control: the Bot pane toggle goes with the Bot pane.
 - The group avatar stack and group header go.
 
 ### 4.2 Transcript
 
 Rows come from `GET /api/chats/:id/rows` and live events (SPEC 5.12, 6.2):
 
-- owner bubble, bot bubble (streams), working row (activity label and timer), failure row with
+- owner bubble, bot bubble (streams), working row (the dots ring, activity label and timer), failure row with
   Retry and cool-down countdown, question card, compaction note, image row, page row, widget row,
   connect card, search chips, note rows (routine ran, connected), unsent row with Send again /
   Edit / Dismiss, queued tag under an owner bubble.
@@ -128,7 +141,7 @@ Rows come from `GET /api/chats/:id/rows` and live events (SPEC 5.12, 6.2):
 ### 4.3 Ask column (above the composer)
 
 - **Approval cards**: as today ("Needs approval", tool, preview, Deny / Approve). A card from
-  another chat shows "From another chat" and an **Open chat** link; it still docks here so the
+  another chat shows "From another chat: TITLE" and an **Open chat** link; it still docks here so the
   owner never misses one.
 - **Question card**: the open question of this chat, as today.
 
@@ -141,8 +154,9 @@ turn runs) cancels the turn. Sending while a turn runs queues the message (queue
 
 ### 4.5 Empty chat
 
-The bot face, a greeting, and the starter prompts as today (`starter-prompt`). No onboarding
-"New bot" card.
+The logo (56pt), "What should we do first?", one line ("Useful Bot can research, write, work with
+files and run routines for you.") and the three starter prompts as today (`starter-prompt`). No
+onboarding "New bot" card.
 
 ## 5. Stage: Routines page
 
@@ -164,17 +178,21 @@ history views (`ChatDetailsPaneView.swift` 149-786) at full width:
   Turning a moved routine on or editing it clears its `movedFrom`; Dismiss on the notice clears
   them all (one `PATCH` per moved routine).
 
-## 6. Bot pane (right, 320pt)
+## 6. Instructions and memory (Settings)
 
-Opened from the header toggle. Sections, in order:
+There is no Bot pane. Its contents move to app Settings:
 
-1. **Profile**: name, face color (today's avatar color and reset).
-2. **Instructions**: today's editor with the instruction counter (`/api/bots/context`).
-3. **Memory**: today's `MemorySectionView` (list, read, archive).
-4. **Notifications**: "Notify when NAME finishes" toggle (NAME is the bot's name) and the system-permission note.
-
-Routines leave the pane (section 5). Group members, delete-bot and "the last bot cannot be
-deleted" go. There is no "create bot" anywhere.
+- **Settings > Instructions and memory** (new tab, second in the list):
+  - **Instructions**: today's editor with the instruction counter ("1,240 of 8,000",
+    `/api/bots/context`) and the hint "Useful Bot reads these at the start of every chat."
+  - **Memory**: the notes list (title, who saved it, date, remove), "Show all N notes"; today's
+    `MemorySectionView` behaviour.
+- **Settings > General**: "Notify when a chat finishes" (with "Only while the window is in the
+  background or the chat is closed") and the system-permission note when notifications are off.
+- **Profile goes**: no name field, no face color, no role label. The bot is Useful Bot everywhere
+  (composer placeholder "Message Useful Bot").
+- Routines are their own page (section 5). Group members, delete-bot and "the last bot cannot be
+  deleted" go. There is no "create bot" anywhere.
 
 ## 7. Search palette (⌘K)
 
@@ -190,12 +208,29 @@ Tabs **All**, **Chats**, **Library**, **Routines**:
 
 ## 8. Settings (app)
 
-- **General, Providers, Computer, Usage, Feedback, About** as today. Providers drops the reviewer
-  role row.
+- Tabs: **General, Instructions and memory** (section 6), **Providers, Computer, Usage, Feedback,
+  About**. The nav is 220pt so every label fits on one line. Providers drops the reviewer role row.
 - **Earlier bots** (new, in General, shown only if the migration archived any): one row per earlier
-  bot with its name, a **Copy instructions** button, its memory-note count with **Move notes to
-  NAME** (the bot's name), and **Remove** (confirm; deletes that archived bot's record and archives its notes, so they leave memory). This is the
+  bot with its name and memory-note count, and three buttons in fixed columns: **Copy instructions**,
+  **Move notes** (hidden but holding its place when the bot has no notes) and **Remove** (confirm; deletes that archived bot's record and archives its notes, so they leave memory). This is the
   only place earlier bots appear.
+
+## 8b. Connectors
+
+The Connectors dialog keeps today's layout (`ConnectorsDialog`, 760pt): title and "N added" with
+the first logos, "Search 1,500 apps", the **Added** grid, the **All apps** grid with Add, Show more,
+the Composio key line. Polish only:
+
+- Added tiles show a state chip instead of "Added": **Connected**, or **Sign in again** (warning) when
+  a sign-in expired; the whole tile opens the app's page (chevron on the right, hover tone).
+- **App page** (today's `ConnectorDetailPage`, same dialog): back to Connectors; logo, name and a
+  line "App · Composio · connected as ACCOUNT"; **Reconnect** and **Disconnect** beside the name.
+  Below: the state chip, "48 tools · 31 read · 17 write", a segmented **All / Reads / Writes** and
+  a **Filter tools** field, then the tools grouped under **Reads** ("Run without asking") and
+  **Writes** ("Ask you first in Auto"), each row the tool slug in mono, a one-line description and
+  a Read or Asks first chip. The split follows today's connector risk rules
+  (`agent/lib/connector-risk.ts`). A direct MCP server's page has the same shape (Refresh instead
+  of Reconnect where today's has it).
 
 ## 9. Contract: UI element to backend
 
@@ -224,11 +259,11 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
-| Connectors dialog and its dot | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2 |
-| Bot pane: profile | `PUT /api/shell` `renameBot`, `updateBot` | 2 |
-| Bot pane: instructions and counter | `PUT /api/shell` `updateBot`, `GET /api/bots/context` | 2, 3 (engine-measured) |
-| Bot pane: memory | `/api/memory` | 2 |
-| Bot pane: notifications | `PUT /api/shell` `updateBot {notify}` | 2 |
+| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2 |
+| App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read` or `write`) from `connector-risk.ts` | 3 |
+| Settings > Instructions and memory: instructions and counter | `PUT /api/shell` `updateBot`, `GET /api/bots/context` | 2, 3 (engine-measured) |
+| Settings > Instructions and memory: memory | `/api/memory` | 2 |
+| Settings > General: notify when a chat finishes | `PUT /api/shell` `updateBot {notify}` on the one bot | 2 |
 | Composer model chip | `/api/providers` composer state | 2 |
 | Composer folder and permission | `PUT /api/shell` `setWorkspace`, `setPermission`; `/api/workspace` | 2 |
 | Attachments | `POST /api/attachments` | 3 (structured parts) |
@@ -244,7 +279,9 @@ internal (SPEC 6.5) or as health and auth.
 
 ## 10. Removed UI (complete list)
 
-Bot rail rows and pinned bot cards; sections, Unassigned and Hidden groups; row menu items Pin,
+The Bot pane and its toggle; the Profile section (name, face color, role label); the mascot face
+in chat rows, the header pill, the working row and the empty chat; bot rail rows and pinned bot
+cards; sections, Unassigned and Hidden groups; row menu items Pin,
 Move, Hide, New section; New Bot button and the create-bot and create-group dialogs; group
 settings and members; the new-chat bot picker (`NewChatPickerView`); the onboarding "New bot" card;
 sub-agent cards, runs and waiting card; handoff and post strips; fan-out and profile proposal
@@ -259,7 +296,42 @@ cards; group avatar stack; reviewer role row; Bots and Groups in search; the rai
 ## 12. Verification
 
 Screenshots (light and dark) of: sidebar with all five chat states, row menu, rename, delete
-confirm, Routines page, Library page, Bot pane, search palette with a message hit, an approval from
-another chat, Earlier bots. A 30 fps recording of: sending a message while another chat's routine
+confirm, Routines page, Library page, Settings > Instructions and memory, search palette with a
+message hit, an approval from another chat, Earlier bots, Connectors with a Sign in again chip, an
+app's tools page. Compare each against its After artboard. A 30 fps recording of: sending a message while another chat's routine
 runs (its row turns to working, then reply ready, then the notification), and of deleting the open
 chat. All in Useful Bot Dev with its one bot.
+
+## 13. Approved artboards
+
+| Screen | Before (today) | After (this spec) |
+|---|---|---|
+| Main window | bots in sections, bot in the header | chats by day with states, chat title in the header |
+| Row menu | Pin, Move, Settings, Rename, Hide, Delete | Rename, Delete |
+| Delete confirm | "Delete bot" | "Delete this chat? This can't be undone." |
+| Rename | dialog | inline in the header |
+| Approval card | the other bot's name | "From another chat: TITLE", Open chat |
+| Routines | in each bot's pane | own page, one chat per routine, moved-routines notice |
+| Instructions and memory | the bot's Settings pane | Settings tab, no Profile |
+| Search | Bots, Groups, New Bot | Chats, Library, Routines, message hits |
+| New chat | "To: Search or create bots" picker | empty chat with the logo and the first-launch note |
+| Your other bots | sidebar rows | Settings > General > Earlier bots |
+| Connectors | dialog with "Added" | same dialog, Connected / Sign in again |
+| An app's tools | plain list | Reconnect, Disconnect, reads and writes, filter |
+
+## 14. For the orchestrator: what the approved design needs from SPEC and the backend
+
+Not changed here (this file only); each needs a decision or a SPEC edit by the orchestrator:
+
+1. **SPEC D5** says the default bot keeps its current name ("Generalist"). The approved design shows
+   no editable name and calls the bot Useful Bot. Rename the default bot to "Useful Bot" in the
+   PR 2 migration and drop name, face color and label editing from the UI (the shell fields can stay).
+2. **Tool risk on the wire:** `GET /api/connectors/tools` must return each tool's `risk` (`read` or
+   `write`) computed with `connector-risk.ts`; today the risk is computed only agent-side.
+3. **Sign in again:** the Connectors chips need a per-connection and per-connector `needsSignIn`
+   state on the list routes (connection auth failures are recorded today; Composio expiry needs the
+   same).
+4. **Notify toggle** moves from the Bot pane to Settings > General; with one bot it keeps writing
+   `updateBot {notify}` on that bot, so no backend change.
+5. **PR 2 held UI** (sidebar, Routines page, Settings tab, Earlier bots) can now be built to the
+   After artboards, except what this file marks PR 3.
