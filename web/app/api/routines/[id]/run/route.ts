@@ -4,6 +4,7 @@ import { errorCode, rateLimited } from "../../../../../lib/api-guard";
 import { agentsEnabled, startRoutineNow } from "../../../../../lib/agent-exec";
 import { readRoutine } from "../../../../../../shared/routines-store.ts";
 import { readShell } from "../../../../../../shared/shell-io.ts";
+import { routineRunRefusal } from "../../../../../lib/archived-bots";
 
 export const runtime = "nodejs";
 
@@ -34,9 +35,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const routine = readRoutine(id);
     if (!routine) return NextResponse.json({ ok: false, error: "routine_missing" }, { status: 404 });
     // A routine of an earlier bot does not run, even from the Test run button.
-    if (readShell().bots.some((bot) => bot.id === routine.botId && bot.archived)) {
-      return NextResponse.json({ ok: false, error: "shell_bot_archived" }, { status: 409 });
-    }
+    const refusal = routineRunRefusal(readShell().bots, routine);
+    if (refusal) return NextResponse.json({ ok: false, error: refusal.error }, { status: refusal.status });
     // The claim happens here, before the response: a caller told "started"
     // and then left with a swallowed claim failure would have no history row
     // to show and no error anywhere.
