@@ -55,7 +55,7 @@ engineering") and our incidents:
   tools.
 - **Progressive disclosure.** Skills load on demand; MCP tools are found with `find_tools`.
 - **The session file is the durable truth; the engine is replaceable.** Nothing essential lives
-  only in engine memory, except what the spec names as lost on a crash (5.5.9).
+  only in engine memory, except what the spec names as lost on a crash (5.5.10).
 - **Prompt-cache friendly.** Static content first, per-turn updates as a message at the end; tools
   and model never change inside a turn.
 - **Typed tools for gated actions.** Bash stays general, gated by the command-risk classifier.
@@ -105,7 +105,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D16 | MCP | Our own client, OAuth, Keychain auth, `find_tools` and `<connectionId>__<tool>` names; picked tools registered as Pi tools |
 | D17 | OpenAPI connections | Dropped. Existing entries show "No longer supported, add it as an MCP server" |
 | D18 | Routines | Scheduler in the engine (20 s timer), at most 4 at once, one per bot, waits for the chat to be idle (as today) |
-| D19 | Connect-card resume | Web calls the engine's system-turn endpoint (PR 4); PR 2 keeps the handoff queue for this one use |
+| D19 | Connect-card resume | Web calls the engine's system-turn endpoint (PR 3, which also deletes the handoff queue); PR 2 keeps the handoff queue for this one use |
 | D20 | Tools dropped | `list_bots`, `rail_action`, `delete_bot`, `propose_bot`, `propose_group`, `post_to_group`, `send_to_bot`, `update_bot_profile`, `clear_history`, `review`, `list_models`, `plant_read`, eve `agent`, `task_cancel` |
 | D21 | Tools merged | memory (4 to 1), routines (5 to 1), Composio apps (4 to 1) |
 | D22 | Old chats | Clean slate. Not imported, not archived |
@@ -131,7 +131,7 @@ The implementing agents follow these defaults. The owner can override any of the
 - `GET /health` returns `{ok, stack, epoch, pi: "<version>"}`.
 - Boot order: kill any eve listener left on the engine port by an older install of the same stack
   (match `node_modules/eve/` in its command line), expire stale approvals (5.9), close interrupted
-  turns (5.5.9), start the routine timer, then listen. Boot never throws on one bad chat: a chat
+  turns (5.5.10), start the routine timer, then listen. Boot never throws on one bad chat: a chat
   file that fails to load gets an `unreadable` failure row and the engine continues.
 - SIGTERM: abort running turns, flush, exit within 10 s.
 - Every new path derives from `stateRoot()` (no new `UB_*_PATH` env vars, so `test/dev-stack.test.ts`
@@ -246,7 +246,8 @@ turn and `agent_settled` ends it. The host mints `turnId` (UUID v4).
 3. **Stamp.** Write `running.json` (`{chatId, turnId, startedAt}` per running turn), write the
    workspace grant `{chatId, path, permission, selection}` (tools read it, as today), freeze the
    selection, write a `ub.turn-start {turnId, origin, clientId}` entry.
-4. **Start.** `session.prompt(text, { images })`. Text attachments are inlined into the prompt text
+4. **Start.** `session.prompt(text, { images, expandPromptTemplates: false })` (owner text that
+   starts with `/` must never trigger Pi's command, skill or template expansion). Text attachments are inlined into the prompt text
    inside an untrusted fence titled with the file name (`shared/untrusted.ts`); a
    `ub.attachments {turnId, items: [{name, mediaType, size}]}` entry records them for the row. If
    `prompt()` rejects before the run starts, write `ub.turn-end {outcome: "refused"}` and a failure
@@ -295,7 +296,8 @@ turn and `agent_settled` ends it. The host mints `turnId` (UUID v4).
 - Untrusted content keeps the existing fences and the per-turn outside-content taint
   (`agent/lib/outside-content.ts`, root and child marks removed).
 - The notes replay-digest store (`memory/recall/`, `agent/memory/notes.ts:22-35,64-104,146-181`)
-  is deleted; the renderer moves to `agent/engine/context.ts`.
+  is deleted; the renderer moves into `shared/notes-block.ts` (W2), which `agent/engine/context.ts`
+  (W1) calls.
 
 ### 5.7 Compaction
 
@@ -334,8 +336,9 @@ defineTool({ name, label?, description, inputSchema, execute, sequential?, prepa
   validator and accepts the lenient inputs of `test/lenient-tool-input.test.ts`.
 - `executionMode: "sequential"` for every gated or stateful tool: `bash`, `write_file`, `memory`,
   `routine`, `apps`, `connect_server`, `find_tools`, every picked MCP tool, `generate_image`,
-  `install_cli`, `todo`, `ask`. Read-only tools stay parallel: `read_file`, `list_dir`,
-  `web_search`, `web_fetch`, `load_skill`.
+  `install_cli`, `todo`, `ask`. Read-only tools (`read_file`, `list_dir`, `web_search`,
+  `web_fetch`, `load_skill`) keep the default, so a batch of only read-only calls runs in
+  parallel; Pi runs the whole batch sequentially as soon as one call in it is sequential.
 - Helper replacements in tool code: `authoritySessionId(ctx)` becomes `ctx.chatId`; `callerOf(ctx)`
   becomes `ctx.botId`; `isSubAgent` and every sub-agent branch go; `markOutside(ctx)` and
   `toolRouterIds(ctx)` keep working on the new ctx; `ensureTurnSnapshot(ctx, turnId)` becomes
@@ -364,9 +367,11 @@ Picked MCP tools add at most 40 (`MAX_SESSION_TOOLS`). They register with `pi.re
 (`defaultActive: false`) at first pick and activate through `pi.setActiveTools` between model
 requests. Picks are stored per chat in `connection-tools.json` keyed by `chatId`.
 
-**`ask`.** The engine extension's `tool_call` gate blocks every other call in a batch that
-contains `ask` ("ask must be the only call; ask again after the other work"), so `terminate: true`
-always ends the turn. `ask` writes a `ub.question` entry and emits `input.requested`. If a turn
+**`ask`.** Pi's `tool_call` event carries only the one call, so the gate reads the batch from the
+last assistant message on `ctx.sessionManager.getBranch()` (Pi persists it at `message_end`,
+before any tool runs). On the batch's first `tool_call`, if the batch contains `ask` and any other
+call, every call in it is blocked ("ask must be the only call; ask again after the other work").
+So `ask` always runs alone and `terminate: true` always ends the turn. `ask` writes a `ub.question` entry and emits `input.requested`. If a turn
 settles with a question open, it stays open until the owner's next message, which emits
 `input.resolved` before its `turn.started`.
 
@@ -451,7 +456,10 @@ summarized history from the transcript.
 - **Row ids are deterministic** so live and fetched rows match: user row `<turnId>:u`; assistant
   rows `<turnId>:a<n>` where n counts text-bearing assistant messages in the turn from 0; `ub.row`
   rows use their `key`; failure `<turnId>:f`; question `<turnId>:q`. Turn boundaries come from
-  `ub.turn-start` / `ub.turn-end` entries. The host mints the same ids live at `message_start`.
+  `ub.turn-start` / `ub.turn-end` entries. Live, the host mints the user id at the user
+  `message_start` and an assistant id at that message's first `text_delta` (a message with no text
+  never gets one), so live and rebuilt ids agree. Each text-bearing assistant message is its own
+  row; consecutive ones in a turn are not merged.
 - The engine caches rows per open chat, built once from the file and appended to as entries
   arrive. Building rows for a 15k-entry chat must take under 150 ms (contract test 12).
 - `GET /api/chats/:id/rows?before=<rowId>&limit=60` pages backwards. The newest page carries
@@ -523,7 +531,7 @@ Envelope `{seq, epoch, at, chatId, turnId?, type, ...}`. The **host** owns `seq`
 |---|---|
 | host accepts the prompt | `turn.started` |
 | `message_start` user | `message.user` (row `<turnId>:u`) |
-| `message_update` `text_delta` | `message.delta` (row `<turnId>:a<n>`, minted at `message_start`) |
+| `message_update` `text_delta` | `message.delta` (row `<turnId>:a<n>`, minted at the message's first text delta) |
 | `message_update` `thinking_delta` | `activity thinking` (at most one per 500 ms) |
 | `tool_execution_start` | `activity tool` + `tool.call` |
 | `tool_execution_end` | `tool.result` |
@@ -648,6 +656,9 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
   `connection-tools.json` per-session picks.
 - **Deleted by the runtime update:** `.eve/` under the runtime install (the rsync exclude goes).
 - Migration runs once at engine boot, logged to `<stateRoot>/engine/migration.json`, idempotent.
+  `agent/engine/migrate.ts` (W1) orchestrates it and calls the store functions that do the work:
+  the `shell.json` v2 migration in `shared/shell-store.ts` and the image-prompt backfill in
+  `shared/media-store.ts` (both W3).
 - Public users: the release notes say old chats are not carried over.
 
 ## 12. Security

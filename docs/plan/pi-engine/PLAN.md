@@ -153,7 +153,8 @@ In `.claude/worktrees/pi-engine` from main:
 `queue.ts`, `rows.ts`, `events.ts`, `context.ts`, `routines.ts`, `internal.ts`, `http.ts`,
 `migrate.ts`, `api.ts`), `agent/lib/{router-fetch,router-identity,turn-snapshot,
 outside-content}.ts`, `test/engine/**`, `test/turn-snapshot.test.ts`,
-`test/router-identity.test.ts`. Builds SPEC 5.1 to 5.7, 5.11, 5.12, 6, 11 (migration) and contract
+`test/router-identity.test.ts`. Builds SPEC 5.1 to 5.7, 5.11, 5.12, 6, the boot-time migration
+runner of SPEC 11 (`migrate.ts`, which calls W3's store functions) and contract
 tests 1 to 8 and 11 to 14 against a fake router (`test/engine/fake-router.ts`). Done when those
 pass, the fixtures match, and `npx tsc --noEmit` is clean for `agent/engine` and `agent/server.ts`.
 
@@ -188,7 +189,8 @@ ios-pairing-gate}.*`, `test/fixtures/ios-contract/**`; tests `eve-stream`, `eve-
 `setup-local`, `router-entry`, `ios-contract`, `dev-stack`, `widget-sweep`, `media-store`,
 `connect-flow`, `connection-flow`, the tool-finish cases of `upstream-adapters` and
 `local-stream-usage`, `router/test/contracts.test.ts` (tool-finish cases). Builds SPEC 7, 8
-(tool-finish), 11 (`shell.json` v2 and the image-prompt backfill), 13. Done when web routes pass
+(tool-finish), 11 (the `shell.json` v2 migration function in `shell-store.ts` and the
+image-prompt backfill function in `media-store.ts`, both called by W1's `migrate.ts`), 13. Done when web routes pass
 against a stub engine and `npx tsc --noEmit` is clean for `web/` and `router/`.
 
 **W4 Swift** (sonnet-sweeper): every file under `macos/Sources/**` and `macos/Tests/**` that SPEC
@@ -204,12 +206,18 @@ integration. Done when `macos/test.sh` passes and the app builds.
 - Orchestrator only: `package.json`, `package-lock.json`, `shared/registry.json`,
   `shared/stack.ts`, `shared/policy.ts`, `tsconfig.json`, `.gitignore`, `AGENTS.md`, `README.md`,
   `perf/**`, `scripts/perf-fixtures.mjs`, `scripts/restamp-registry.mjs`, `test/fixtures/
-  chat-protocol/**`, the `npm test` list, `agent/engine/api.ts` and the stubs of step 0.
+  chat-protocol/**` and the `npm test` list.
+- Step 0 stubs (`agent/lib/tool.ts`, `agent/tools/index.ts`, `agent/engine/api.ts`, the
+  `setBotChat` signature) are written by the orchestrator; after step 0 each belongs to the worker
+  whose list names it (`agent/engine/api.ts` W1, `agent/lib/tool.ts` and `agent/tools/index.ts`
+  W2, `shared/shell-store.ts` W3).
 - A worker that needs a change outside its list reports back instead of editing.
 - Any file that mentions eve and is not listed above belongs to the worker whose folder it is in
   (`agent/` W2 unless under `agent/engine` or the W1 lib list; `web/`, `shared/`, `scripts/`,
-  `router/` W3; `macos/` W4). The orchestrator checks `git grep -il eve` is empty outside
-  `docs/` and `evals/` before opening the PR.
+  `router/` W3; `macos/` W4). Before opening the PR the orchestrator runs
+  `git grep -n -E '\beve\b|node_modules/eve|eve/v1|evePort|eveOrigin|EVE_|UB_EVE' -- ':!docs' ':!evals'`
+  and every hit must be one of the one-release-kept items (the Swift supervisor's eve process
+  patterns and the engine's boot-time eve-listener kill, SPEC 5.1 and 9), removed in PR 4.
 
 ### Integration (orchestrator)
 

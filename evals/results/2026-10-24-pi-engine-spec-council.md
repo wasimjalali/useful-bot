@@ -44,8 +44,9 @@ write the report now"), which took 242 s and 99 s. The owner then had the defaul
 
 ## Results
 
-Every model said "not ready" and every model said the architecture holds. Findings at critical or
-high severity, by who caught them (C = critical as rated by that model):
+Every model said "not ready" and every model said the architecture holds. Findings rated critical
+or high by at least one model, with every model that raised them at any severity (x = raised,
+C = rated critical by that model):
 
 | Finding | Fable | Sonnet | Haiku | GLM | DeepSeek |
 |---|---|---|---|---|---|
@@ -78,10 +79,14 @@ high severity, by who caught them (C = critical as rated by that model):
 | Old eve processes hold the port after an update | | x | x | | |
 | `/api/status` rename breaks the iOS contract fixtures | | x | x | | |
 | Unowned files in the PR 3 worker lists | x | x | x | | x |
-| Migration: rsync deletes `.eve/`; Sparkle skips the export release | C | x | | | C |
+| PR 2 and PR 3 cannot run in parallel (shared files) | | | | | x |
+| Rename list incomplete | | | x | | x |
+| Recents lose title, preview and order (`touchChat`) | | x | | | x |
+| Approval cards lose chat and bot context | | | | | x |
+| Pi session file is `<timestamp>_<id>.jsonl`, written after the first message | x | x | | | |
+| Migration: rsync deletes `.eve/` (Fable), Sparkle skips the export release (Fable, Sonnet), old chats lose images, pages and widgets (DeepSeek) | C | x | | | C |
 
-Lower-severity catches worth noting: Pi's session file is `<timestamp>_<id>.jsonl` and appears only
-after the first message (Fable, Sonnet); the custom `ResourceLoader` interface is larger than
+Lower-severity catches worth noting: the custom `ResourceLoader` interface is larger than
 listed (Fable, GLM, DeepSeek); Pi falls back to `~/.pi/agent` when a path is omitted (Haiku, GLM);
 registry restamp order (Haiku); the 50 KB `web_fetch` cap was dropped (Haiku); compaction entries
 need a note row (DeepSeek).
@@ -102,6 +107,9 @@ Not adopted as proposed:
   rule: queue in the host, one prompt per turn.
 - DeepSeek: a custom entry mapping provisional row ids. Adopted instead: deterministic row ids
   derived from turn boundaries, so live and fetched rows match without a map.
+- Fable: merge consecutive assistant text entries of a turn into one row. Not adopted: each
+  text-bearing assistant message stays its own row, as the app shows today, and the ids stay
+  deterministic.
 - All migration findings became moot when the owner chose a clean slate for chats (same day).
 
 ## Conclusion
