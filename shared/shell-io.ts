@@ -70,22 +70,6 @@ function writeReseedMark(path: string, bots: string[]): void {
   }
 }
 
-/** How long a reseeded roster is treated as a recovery stub, not the owner's roster. */
-const RESEED_PROTECT_MS = 7 * 24 * 3600_000;
-
-/** When the reseed happened: the mark's own stamp, else the file's age (an unreadable mark has no stamp). */
-function reseedMarkAt(path: string, mark: ReseedMark | "unreadable"): number {
-  if (mark !== "unreadable") {
-    const at = Date.parse(mark.at);
-    if (Number.isFinite(at)) return at;
-  }
-  try {
-    return statSync(reseedMarkerPath(path)).mtimeMs;
-  } catch {
-    return Date.now();
-  }
-}
-
 function clearReseedMark(path: string): void {
   try { unlinkSync(reseedMarkerPath(path)); } catch { /* nothing to clear */ }
 }
@@ -120,16 +104,13 @@ function readReseedMark(path: string): ReseedMark | "unreadable" | null {
  * nothing in this module can observe: copying a `.invalid.*` backup back over
  * the store is a manual file move, and the bots it brings are the proof.
  */
-export function shellWasReseeded(path = defaultShellPath(), now = Date.now()): boolean {
+export function shellWasReseeded(path = defaultShellPath()): boolean {
   const mark = readReseedMark(path);
   if (!mark) return false;
-  // A stub is protected for a week. The roster-differs rule below needs a
-  // second bot to appear, and the app makes none any more, so without an end
-  // the orphan sweep would stay off for good after one reseed.
-  if (now - reseedMarkAt(path, mark) > RESEED_PROTECT_MS) {
-    clearReseedMark(path);
-    return false;
-  }
+  // No age ends this. The earlier bots exist only on the backup, and nothing
+  // says how long the owner will take to restore it; their threads and
+  // routines must outlive that. The orphan sweep skips the two stores that
+  // hold them for as long as the mark stands (see `sweepOrphanState`).
   // A mark that exists but says nothing legible still says a reseed happened.
   if (mark === "unreadable") return true;
   const shell = peekShell(path);

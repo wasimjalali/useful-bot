@@ -1517,12 +1517,21 @@ export function sweepOrphanState(): string[] {
     // and delete all of them. No roster means no sweep, and neither does a
     // roster another process already replaced with that stub: a reseed leaves
     // valid JSON, so only the marker can tell the two apart.
-    if (shellWasReseeded()) return [];
+    //
+    // While the mark stands only the routines and threads are left alone: the
+    // earlier bots are archived records on the backup, not on the stub, and
+    // their threads must survive until the owner restores it, however long
+    // that takes. Drawings are still swept, since those threads keep naming
+    // theirs.
+    const stub = shellWasReseeded();
     const shell = peekShell();
     if (!shell) return [];
     const live = shell.bots.map((bot) => bot.id);
-    const routines = sweepOrphanRoutines(live);
-    sweepOrphanThreads(live);
+    let routines: string[] = [];
+    if (!stub) {
+      routines = sweepOrphanRoutines(live);
+      sweepOrphanThreads(live);
+    }
     // After the threads, so what is left naming a widget is all of it. A
     // cleared chat used to take its events and leave the drawings behind, and
     // nothing else ever removed one: the directory only grew.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -260,8 +260,27 @@ test("a backup restored over a reseeded roster is migrated: old bots come back a
   });
 });
 
-test("the reseed mark protects a stub for a week, then lets the orphan sweep run again", async () => {
-  await world(({ shell }) => {
+test("while the reseed mark is set the sweep keeps archived bots' threads and routines, however long ago the reseed was, and still sweeps drawings", async () => {
+  const { sweepOrphanState, resetSweepClock } = await import("../web/lib/agent-exec.ts");
+  const { appendAgentEvent, listThreadEvents } = await import("../shared/agent-store.ts");
+  const { writeWidget, WIDGET_ORPHAN_GRACE_MS } = await import("../shared/widgets-store.ts");
+  await world(({ dir, shell }) => {
+    process.env.UB_WIDGETS_DIR = join(dir, "widgets");
+    process.env.UB_MEDIA_INDEX_PATH = join(dir, "media.json");
+    const alpha = withBot(seedStore(), "Alpha");
+    writeShell(archiveEarlierBots(alpha.store).store);
+    appendAgentEvent(alpha.id, { kind: "widget", text: "drawing", widgetId: "keptwidget1" });
+    const widget = (id: string) => ({
+      id, connectionId: "excalidraw", toolName: "excalidraw__create_view", resourceUri: "ui://excalidraw/mcp-app.html",
+      arguments: { elements: "[]" }, result: null, createdAt: new Date(0).toISOString(),
+    });
+    const old = new Date(Date.now() - WIDGET_ORPHAN_GRACE_MS * 2);
+    for (const id of ["keptwidget1", "orphanwidget"]) {
+      writeWidget(widget(id), process.env.UB_WIDGETS_DIR);
+      utimesSync(join(process.env.UB_WIDGETS_DIR, `${id}.json`), old, old);
+    }
+    const stray = routineFor(alpha.id, "Left under the earlier bot");
+    // The file goes bad and is reseeded: the roster is now the stub, and the earlier bots are only on the backup.
     writeFileSync(shell, "not json", "utf8");
     const warn = console.warn;
     console.warn = () => undefined;
@@ -270,17 +289,24 @@ test("the reseed mark protects a stub for a week, then lets the orphan sweep run
     } finally {
       console.warn = warn;
     }
+    // A reseed from long ago: no age ends the protection.
     const markPath = `${shell}.reseeded`;
+    const mark = JSON.parse(readFileSync(markPath, "utf8")) as { at: string; bots: string[] };
+    writeFileSync(markPath, JSON.stringify({ ...mark, at: new Date(Date.now() - 60 * 24 * 3600_000).toISOString() }), "utf8");
     assert.equal(shellWasReseeded(shell), true);
-    assert.equal(shellWasReseeded(shell, Date.now() + 6 * 24 * 3600_000), true, "still a stub on day six");
-    assert.equal(existsSync(markPath), true);
-    assert.equal(shellWasReseeded(shell, Date.now() + 8 * 24 * 3600_000), false, "the owner has had a week to restore");
-    assert.equal(existsSync(markPath), false);
-    // A mark nobody can read ages out the same way.
+    resetSweepClock();
+    sweepOrphanState();
+    assert.equal(listThreadEvents(alpha.id).length, 1, "the earlier bot's thread is still in the agent store");
+    assert.equal(readRoutine(stray.id)?.botId, alpha.id, "and its routine");
+    assert.deepEqual(readdirSync(process.env.UB_WIDGETS_DIR), ["keptwidget1.json"], "the drawing nothing names is gone, the one the thread names stays");
+    // A mark nobody can read protects the same way.
     writeFileSync(markPath, "{", "utf8");
     assert.equal(shellWasReseeded(shell), true);
-    assert.equal(shellWasReseeded(shell, Date.now() + 8 * 24 * 3600_000), false);
-  });
+    sweepOrphanState();
+    assert.equal(listThreadEvents(alpha.id).length, 1);
+  }, {});
+  delete process.env.UB_WIDGETS_DIR;
+  delete process.env.UB_MEDIA_INDEX_PATH;
 });
 
 test("the shell lock is not held while the routine move waits for the routines lock", async () => {
