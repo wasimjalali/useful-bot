@@ -42,23 +42,6 @@ function fail(code, item) {
   process.exit(1);
 }
 
-// The reviewer credential arrived after the first installs. A service must
-// still boot without it: the review tool answers reviewer_unconfigured per
-// call, so the miss is logged once here instead of
-// taking chat down with it.
-async function reviewerToken() {
-  try {
-    return await keychain(keychainName("router.reviewer"));
-  } catch {
-    process.stderr.write(`${JSON.stringify({
-      warn: "reviewer_unconfigured",
-      item: keychainName("router.reviewer"),
-      hint: "run scripts/setup-local.mjs --add-missing, then restart the services",
-    })}\n`);
-    return null;
-  }
-}
-
 function preflightPort(host, port) {
   return new Promise((resolve, reject) => {
     const probe = createServer();
@@ -221,9 +204,6 @@ async function main() {
     } catch {
       fail("credential_store_locked_or_missing", keychainName("router.desktop"));
     }
-    const reviewer = await reviewerToken();
-    if (reviewer) env.UB_ROUTER_REVIEWER_TOKEN = reviewer;
-    else delete env.UB_ROUTER_REVIEWER_TOKEN;
     // Lets an agent tool wake the handoff pump at once instead of waiting for
     // the next web poll. Best effort: the poll drains the same queue.
     env.UB_WEB_BASE_URL = webOrigin();
@@ -257,10 +237,6 @@ async function main() {
       delete env.UB_ROUTER_DESKTOP_TOKEN;
       process.stderr.write(`${JSON.stringify({ service: "web", warning: "router_token_missing", item: keychainName("router.desktop") })}\n`);
     }
-    // The web reviewer route runs the same alias as the agent's review tool.
-    const reviewer = await reviewerToken();
-    if (reviewer) env.UB_ROUTER_REVIEWER_TOKEN = reviewer;
-    else delete env.UB_ROUTER_REVIEWER_TOKEN;
     const launch = webLaunch(ROOT);
     process.stderr.write(`${JSON.stringify({ service: "web", mode: launch.mode, reason: launch.reason })}\n`);
     if (launch.mode === "production") {
