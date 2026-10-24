@@ -56,6 +56,12 @@ export type HandoffRecord = {
   response: string;
   /** Hops from the owner's turn: 0 for an owner-triggered handoff. */
   depth: number;
+  /**
+   * What the record is for. Only a connect card's resume is delivered now, and
+   * `queueHandoff` writes only that. A record from before bots stopped handing
+   * work to each other has none (null) and is failed, not delivered.
+   */
+  purpose: "resume" | null;
 };
 
 export type HandoffDraft = Pick<
@@ -116,6 +122,7 @@ function parseHandoff(raw: unknown): HandoffRecord | null {
     depth: typeof rec.depth === "number" && Number.isInteger(rec.depth) && rec.depth >= 0
       ? Math.min(rec.depth, 100)
       : 0,
+    purpose: rec.purpose === "resume" ? "resume" : null,
   };
 }
 
@@ -256,6 +263,7 @@ export function queueHandoff(input: HandoffDraft, dir = handoffDir()): HandoffRe
     depth: typeof input.depth === "number" && Number.isInteger(input.depth) && input.depth >= 0
       ? Math.min(input.depth, 100)
       : 0,
+    purpose: "resume",
   };
   writeHandoff(record, dir);
   try { pruneHandoffs(dir); } catch { /* pruning is best effort */ }
