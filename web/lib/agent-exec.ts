@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import {
   appendAgentEvent,
+  listProposalsOfKind,
   referencedWidgetIds,
   sweepOrphanThreads,
 } from "../../shared/agent-store.ts";
@@ -988,9 +989,19 @@ async function runEveTurn(
   return { sessionId, reply };
 }
 
+/**
+ * Whether a connect card holds this record as its resume. An older build queued
+ * resumes with no purpose, and the card already points at the record, so the
+ * connect flow will not queue another: those still go out.
+ */
+function namedByConnectCard(handoffId: string): boolean {
+  return [...listProposalsOfKind("connectApp"), ...listProposalsOfKind("connectServer")]
+    .some((card) => card.handoffId === handoffId);
+}
+
 async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
   // A bot-to-bot message an older build queued must not arrive framed as an app message.
-  if (handoff.purpose !== "resume") throw new Error("handoff_retired");
+  if (handoff.purpose !== "resume" && !namedByConnectCard(handoff.id)) throw new Error("handoff_retired");
   const bot = readShell().bots.find((item) => item.id === handoff.targetBotId);
   if (!bot) throw new Error("receiver_missing");
   if (bot.archived) throw new Error("shell_bot_archived");

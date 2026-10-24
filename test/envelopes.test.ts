@@ -9,7 +9,7 @@ import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
 import { withBot } from "./helpers/roster.ts";
 import { createRoutine } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
-import { listThreadEvents } from "../shared/agent-store.ts";
+import { createProposal, listThreadEvents } from "../shared/agent-store.ts";
 import { stripThreadPrefix } from "../shared/threads.ts";
 import { pumpHandoffs, startRoutineNow } from "../web/lib/agent-exec.ts";
 
@@ -205,6 +205,48 @@ test("a bot-to-bot handoff left on disk by an older build is failed, not deliver
     assert.equal(readHandoff(old.id)?.attempts, 1, "terminal on the first attempt");
     assert.equal(readHandoff(old.id)?.lastError, "handoff_retired");
     assert.deepEqual(listThreadEvents(alpha).filter((event) => event.kind === "note"), [], "no note about a resume that never was one");
+  });
+});
+
+test("a purpose-less record is a resume when a connect card names it as its handoff, and retired when none does", async () => {
+  await withWorld(async () => {
+    const { alpha, useful } = twoBots();
+    const legacy = (message: string) => {
+      const record = queueHandoff({ sourceBotId: useful, sourceName: "Generalist", targetBotId: alpha, targetName: "Alpha", message });
+      const file = join(process.env.UB_HANDOFF_DIR as string, `${record.id}.json`);
+      const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      delete raw.purpose;
+      writeFileSync(file, JSON.stringify(raw), "utf8");
+      return record.id;
+    };
+    const appResume = legacy("The owner connected the app gmail. Continue the task: read mail");
+    const serverResume = legacy("The owner connected the server files. Continue the task: list files");
+    const bot = legacy("Send the script to Beta.");
+    createProposal({
+      kind: "connectApp", slug: "gmail", name: "Gmail", logo: null, purpose: "read mail", sourceBotId: alpha, threadId: alpha,
+      phase: "connected", accountId: "ca_1", waitingSince: null, toolCount: null, handoffId: appResume,
+    });
+    createProposal({
+      kind: "connectServer", connectionKind: "mcp", connectionId: "files", name: "Files", description: "Files", url: "https://mcp.example.com/mcp",
+      urlHost: "mcp.example.com", purpose: "list files", authKind: "none", authHeader: null, sourceBotId: alpha, threadId: alpha,
+      phase: "connected", redirectHost: null, waitingSince: null, toolCount: null, handoffId: serverResume,
+    });
+    const eve = recordingEve();
+    const failed: string[] = [];
+    const delivered: string[] = [];
+    try {
+      for (let round = 0; round < 3; round += 1) {
+        const result = await pumpHandoffs(1);
+        failed.push(...result.failed.map((item) => item.id));
+        delivered.push(...result.delivered.map((item) => item.id));
+      }
+    } finally {
+      eve.restore();
+    }
+    assert.deepEqual(delivered.sort(), [appResume, serverResume].sort());
+    assert.deepEqual(failed, [bot]);
+    assert.equal(eve.sent.length, 2);
+    assert.equal(readHandoff(bot)?.lastError, "handoff_retired");
   });
 });
 

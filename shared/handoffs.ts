@@ -59,7 +59,8 @@ export type HandoffRecord = {
   /**
    * What the record is for. Only a connect card's resume is delivered now, and
    * `queueHandoff` writes only that. A record from before bots stopped handing
-   * work to each other has none (null) and is failed, not delivered.
+   * work to each other has none (null) and is failed, not delivered, unless a
+   * connect card names it as its resume (web/lib/agent-exec.ts).
    */
   purpose: "resume" | null;
 };
