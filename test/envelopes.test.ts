@@ -250,6 +250,42 @@ test("a purpose-less record is a resume when a connect card names it as its hand
   });
 });
 
+test("an unreadable agent store leaves a purpose-less resume queued; it goes out once the store reads again", async () => {
+  for (const [label, damage] of [
+    ["not json", () => "{ not json"],
+    ["unknown schemaVersion", (good: string) => JSON.stringify({ ...JSON.parse(good), schemaVersion: 99 })],
+  ] as const) {
+    await withWorld(async () => {
+      const { alpha, useful } = twoBots();
+      const record = queueHandoff({ sourceBotId: useful, sourceName: "Generalist", targetBotId: alpha, targetName: "Alpha", message: "The owner connected the app gmail. Continue the task: read mail" });
+      const file = join(process.env.UB_HANDOFF_DIR as string, `${record.id}.json`);
+      const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      delete raw.purpose;
+      writeFileSync(file, JSON.stringify(raw), "utf8");
+      createProposal({
+        kind: "connectApp", slug: "gmail", name: "Gmail", logo: null, purpose: "read mail", sourceBotId: alpha, threadId: alpha,
+        phase: "connected", accountId: "ca_1", waitingSince: null, toolCount: null, handoffId: record.id,
+      });
+      const storePath = process.env.UB_AGENT_STORE_PATH as string;
+      const good = readFileSync(storePath, "utf8");
+      writeFileSync(storePath, damage(good), "utf8");
+      const eve = recordingEve();
+      try {
+        const first = await pumpHandoffs(1);
+        assert.deepEqual(first.delivered, [], label);
+        assert.equal(first.failed[0]?.error, "agent_store_unreadable", label);
+        assert.equal(readHandoff(record.id)?.status, "pending", `${label}: still queued`);
+        assert.equal(eve.sent.length, 0, label);
+        writeFileSync(storePath, good, "utf8");
+        const second = await pumpHandoffs(1);
+        assert.deepEqual(second.delivered.map((item) => item.id), [record.id], label);
+      } finally {
+        eve.restore();
+      }
+    });
+  }
+});
+
 test("hostile source names cannot break the envelope's first two lines", async () => {
   await withWorld(async () => {
     const { alpha, useful } = twoBots();

@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import {
+  agentStoreUnreadable,
   appendAgentEvent,
   listProposalsOfKind,
   referencedWidgetIds,
@@ -995,6 +996,8 @@ async function runEveTurn(
  * connect flow will not queue another: those still go out.
  */
 function namedByConnectCard(handoffId: string): boolean {
+  // An unreadable store lists no cards, which would retire a real resume for good: try again instead.
+  if (agentStoreUnreadable()) throw new Error("agent_store_unreadable");
   return [...listProposalsOfKind("connectApp"), ...listProposalsOfKind("connectServer")]
     .some((card) => card.handoffId === handoffId);
 }

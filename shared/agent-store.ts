@@ -367,6 +367,21 @@ export function readAgentStore(path = agentStorePath()): AgentStore {
 }
 
 /**
+ * Whether the file on disk is there but cannot be read as the current schema.
+ * readAgentStore answers an empty store for those, which is right for a reader
+ * that only lists things, and wrong for one that acts on what is missing.
+ */
+export function agentStoreUnreadable(path = agentStorePath()): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> | null;
+    return !raw || typeof raw !== "object" || raw.schemaVersion !== AGENT_SCHEMA;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * If the file on disk cannot be parsed as the current schema, move it aside
  * before the next write. A crash during migration must never destroy the only
  * copy of every transcript.
