@@ -30,6 +30,7 @@ import {
   syncSessionWorkspace,
 } from "../../../../lib/agent-exec";
 import { authorizeEveCall, carryOverReader, childWriteRefusal, type EveCallAuth } from "../../../../lib/eve-session-auth";
+import { archivedBotRefusal } from "../../../../lib/archived-bots";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
@@ -182,6 +183,9 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         // bound bot); the body is rebuilt from the validated fields alone.
         const answer = parseInputResponses(new TextDecoder().decode(body));
         if (!answer.ok) return Response.json({ ok: false, error: "input_responses_invalid" }, { status: 400 });
+        // An answer resumes a parked turn, which is a turn: an archived bot's takes none.
+        const archived = archivedBotRefusal(readShell().bots, auth.bound);
+        if (archived) return Response.json({ ok: false, error: archived.error }, { status: archived.status });
         body = new TextEncoder().encode(JSON.stringify({ inputResponses: answer.inputResponses }));
         headers.set("content-type", "application/json");
         inputAnswer = true;
@@ -269,7 +273,8 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       } catch {
         /* a malformed body is judged by the rewrite below, as before */
       }
-      if (sender?.archived) return Response.json({ ok: false, error: "shell_bot_archived" }, { status: 409 });
+      const senderArchived = archivedBotRefusal(readShell().bots, sender?.id);
+      if (senderArchived) return Response.json({ ok: false, error: senderArchived.error }, { status: senderArchived.status });
       // The bot's own model has to be servable before the turn reaches eve:
       // its connection signed in and its model still in the live list. The
       // router would refuse it too, but a turn eve has accepted and failed
@@ -365,7 +370,8 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
         }
         // An earlier bot takes no more turns: refused before anything reaches eve.
-        if (bot.archived) return Response.json({ ok: false, error: "shell_bot_archived" }, { status: 409 });
+        const botArchived = archivedBotRefusal(shell.bots, bot.id);
+        if (botArchived) return Response.json({ ok: false, error: botArchived.error }, { status: botArchived.status });
         turnBot = bot;
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, notes));
         // The definitive check, on the very bot, roster and providers store

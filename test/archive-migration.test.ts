@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,6 +9,7 @@ import { MemoryStore } from "../agent/lib/memory.ts";
 import {
   archiveMarkerPath,
   readShell,
+  shellWasReseeded,
   updateShell,
   writeShell,
 } from "../shared/shell-io.ts";
@@ -203,17 +204,113 @@ function updateRoutineRaw(id: string, fields: Record<string, unknown>): void {
   writeFileSync(path, JSON.stringify(raw), "utf8");
 }
 
-test("it runs once: a bot an older build added afterwards is not archived by a later read", async () => {
+test("a bot an older build adds after the marker is archived by the next read, with its routines; one this build wrote is left", async () => {
   await world(({ shell }) => {
     writeOldRoster(shell, (store) => withBot(store, "Alpha").store);
     assert.equal(readShell().bots.find((bot) => bot.name === "Alpha")?.archived, true);
-    // The file changes under the app (a restored backup, say); the marker says the pass is done.
+    // An older build runs again (a downgrade, a restored file) and adds a bot and a routine.
     const raw = JSON.parse(readFileSync(shell, "utf8")) as ShellStore;
-    const extra = withBot(raw, "Gamma").store;
-    writeFileSync(shell, JSON.stringify(extra), "utf8");
+    const extra = withBot(raw, "Gamma");
+    writeFileSync(shell, JSON.stringify(extra.store), "utf8");
+    routineFor(extra.id, "Gamma job");
     const later = readShell();
-    assert.equal(later.bots.find((bot) => bot.name === "Gamma")?.archived, false);
+    assert.equal(later.bots.find((bot) => bot.name === "Gamma")?.archived, true);
     assert.equal(later.bots.find((bot) => bot.name === "Alpha")?.archived, true);
+    assert.equal(later.selectedBotId, DEFAULT_BOT_ID);
+    const job = readRoutinesStore().routines.find((item) => item.name === "Gamma job");
+    assert.equal(job?.botId, DEFAULT_BOT_ID);
+    assert.equal(job?.active, false);
+    assert.equal(job?.movedFrom, extra.id);
+    // A bot this build itself wrote (a fixture roster) is not archived on the next read.
+    const mine = withBot(later, "Fixture bot");
+    writeShell(mine.store);
+    assert.equal(readShell().bots.find((bot) => bot.id === mine.id)?.archived, false);
+  });
+});
+
+test("a backup restored over a reseeded roster is migrated: old bots come back archived and their routines paused", async () => {
+  await world(({ shell }) => {
+    let alpha = "";
+    const old = writeOldRoster(shell, (store) => {
+      const made = withBot(store, "Alpha", { sessionId: "sess-a" });
+      alpha = made.id;
+      return made.store;
+    });
+    routineFor(alpha, "Weekly report", { active: true });
+    const backup = JSON.stringify(old);
+    // The file goes bad; the app reseeds it and works on the stub for a while.
+    writeFileSync(shell, "not json", "utf8");
+    const warn = console.warn;
+    console.warn = () => undefined;
+    try {
+      assert.deepEqual(readShell().bots.map((bot) => bot.id), [DEFAULT_BOT_ID]);
+    } finally {
+      console.warn = warn;
+    }
+    assert.equal(shellWasReseeded(shell), true);
+    // The owner copies the backup back over it.
+    writeFileSync(shell, backup, "utf8");
+    const restored = readShell();
+    assert.equal(restored.bots.find((bot) => bot.id === alpha)?.archived, true);
+    assert.equal(restored.selectedBotId, DEFAULT_BOT_ID);
+    const job = readRoutinesStore().routines[0];
+    assert.equal(job.botId, DEFAULT_BOT_ID);
+    assert.equal(job.active, false);
+    assert.equal(job.movedFrom, alpha);
+  });
+});
+
+test("the reseed mark protects a stub for a week, then lets the orphan sweep run again", async () => {
+  await world(({ shell }) => {
+    writeFileSync(shell, "not json", "utf8");
+    const warn = console.warn;
+    console.warn = () => undefined;
+    try {
+      readShell();
+    } finally {
+      console.warn = warn;
+    }
+    const markPath = `${shell}.reseeded`;
+    assert.equal(shellWasReseeded(shell), true);
+    assert.equal(shellWasReseeded(shell, Date.now() + 6 * 24 * 3600_000), true, "still a stub on day six");
+    assert.equal(existsSync(markPath), true);
+    assert.equal(shellWasReseeded(shell, Date.now() + 8 * 24 * 3600_000), false, "the owner has had a week to restore");
+    assert.equal(existsSync(markPath), false);
+    // A mark nobody can read ages out the same way.
+    writeFileSync(markPath, "{", "utf8");
+    assert.equal(shellWasReseeded(shell), true);
+    assert.equal(shellWasReseeded(shell, Date.now() + 8 * 24 * 3600_000), false);
+  });
+});
+
+test("the shell lock is not held while the routine move waits for the routines lock", async () => {
+  await world(async ({ shell, routines }) => {
+    let alpha = "";
+    writeOldRoster(shell, (store) => {
+      const made = withBot(store, "Alpha");
+      alpha = made.id;
+      return made.store;
+    });
+    routineFor(alpha, "Weekly report");
+    // Another process holds the routines lock (fresh, so it is not reclaimed).
+    mkdirSync(`${routines}.lock`);
+    const script = `
+      import { readShell } from ${JSON.stringify(new URL("../shared/shell-io.ts", import.meta.url).href)};
+      readShell();
+      process.stdout.write("done");
+    `;
+    const child = run(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
+      env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    });
+    // Past the shell lock's stale window (3 s), the migration is still waiting on the routines lock.
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+    assert.equal(existsSync(`${shell}.lock`), false, "a waiting migration must not sit on the shell lock");
+    // The shell half is already on disk, and another writer is not blocked.
+    assert.equal((JSON.parse(readFileSync(shell, "utf8")) as ShellStore).bots.find((bot) => bot.id === alpha)?.archived, true);
+    rmSync(`${routines}.lock`, { recursive: true, force: true });
+    assert.equal((await child).stdout, "done");
+    assert.equal(readRoutinesStore().routines[0].botId, DEFAULT_BOT_ID);
+    assert.equal(existsSync(archiveMarkerPath(shell)), true);
   });
 });
 
@@ -404,6 +501,26 @@ test("moved routines keep their names unless they clash, then say where they cam
     assert.equal(readRoutinesStore().routines.filter((item) => item.movedFrom === null).length, 3);
     // A second move finds nothing.
     assert.equal(moveRoutinesToBot([{ id: "bot-old", name: "Old Bot" }, { id: "bot-other", name: "Other" }], DEFAULT_BOT_ID), 0);
+  });
+});
+
+test("a long old bot name or routine name is clipped without losing the tag's closing parenthesis", async () => {
+  await world(() => {
+    const long = "L".repeat(120);
+    routineFor(DEFAULT_BOT_ID, "J".repeat(80));
+    routineFor("bot-old", "J".repeat(80));
+    routineFor("bot-two", "J".repeat(80));
+    routineFor(DEFAULT_BOT_ID, "Short");
+    routineFor("bot-old", "Short");
+    moveRoutinesToBot([{ id: "bot-old", name: long }, { id: "bot-two", name: long }], DEFAULT_BOT_ID);
+    const names = listRoutines(DEFAULT_BOT_ID).map((item) => item.name);
+    assert.equal(names.length, 5);
+    assert.equal(new Set(names.map((name) => name.toLowerCase())).size, 5, "every name is unique");
+    for (const name of names) assert.ok(name.length <= 80, `${name.length} characters`);
+    const tagged = names.filter((name) => name.includes(" (from "));
+    assert.equal(tagged.length, 3);
+    for (const name of tagged) assert.match(name, /\(from [^)]*\)( \d+)?$/, `the tag closes in "${name}"`);
+    assert.ok(tagged.some((name) => /\) \d+$/.test(name)), "the second clash got a number after the tag");
   });
 });
 

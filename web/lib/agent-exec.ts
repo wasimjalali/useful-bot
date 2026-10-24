@@ -989,6 +989,8 @@ async function runEveTurn(
 }
 
 async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
+  // A bot-to-bot message an older build queued must not arrive framed as an app message.
+  if (handoff.purpose !== "resume") throw new Error("handoff_retired");
   const bot = readShell().bots.find((item) => item.id === handoff.targetBotId);
   if (!bot) throw new Error("receiver_missing");
   if (bot.archived) throw new Error("shell_bot_archived");
@@ -1092,6 +1094,7 @@ async function pumpOnce(limit: number): Promise<{
       // Neither a gone model, an archived bot nor a refused size is fixed by trying again.
       const modelGone = message === "model_selection_unavailable"
         || message === "shell_bot_archived"
+        || message === "handoff_retired"
         || err instanceof ProviderRouteRetiredError
         || message === "context_too_large"
         || message === "description_too_long";
@@ -1102,7 +1105,8 @@ async function pumpOnce(limit: number): Promise<{
           : message === "description_too_long" ? DESCRIPTION_TOO_LONG_TEXT : message;
       const next = markFailed(record.id, message, undefined, claimToken, modelGone);
       const terminal = next && next.status === "failed" && (modelGone || next.attempts >= HANDOFF_ATTEMPTS_MAX);
-      if (terminal) {
+      // A retired record was never a resume of the owner's task: no note in anyone's chat.
+      if (terminal && message !== "handoff_retired") {
         // Say here that delivery gave up, the way a failed routine run does.
         try {
           appendAgentEvent(record.targetBotId, {

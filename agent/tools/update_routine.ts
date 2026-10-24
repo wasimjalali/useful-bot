@@ -58,6 +58,15 @@ export default defineTool({
     }
     // A routine resolves to its owner: a plain bot edits only its own.
     if (!mayActOn(who.caller, existing.botId)) return notAvailable(SELF_ONLY_HINT);
+    // A routine the archive migration moved here waits for the owner. Any edit
+    // clears its mark, so the bot must not be the one to review it.
+    if (existing.movedFrom) {
+      return {
+        status: "blocked",
+        error: "routine_awaiting_review",
+        hint: "This routine came from an earlier bot and is paused. The owner reviews moved routines; tell them it is waiting.",
+      };
+    }
     if (input.timezone !== undefined && !isValidTimeZone(input.timezone)) {
       return { status: "invalid", error: `${input.timezone} is not an IANA timezone` };
     }

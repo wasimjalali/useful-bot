@@ -31,7 +31,9 @@ import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import {
   createRoutine as storeCreateRoutine,
   listRoutines as storedRoutines,
+  moveRoutinesToBot,
   readRoutine,
+  updateRoutine as storeUpdateRoutine,
 } from "../shared/routines-store.ts";
 
 type Tool = { execute: (input: never, context: never) => unknown };
@@ -969,6 +971,36 @@ test("routine tools reject bad schedules, zones and unknown ids", async () => {
     const listed = await run<{ bot: { id: string }; routines: unknown[] }>(listRoutines, { botId: "nope" });
     assert.equal(listed.bot.id, idOf(store, "SEO"));
     assert.equal(listed.routines.length, 1);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a routine moved from an earlier bot waits for the owner: the bot can neither edit nor turn it on", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO"]);
+    const ceo = idOf(store, "CEO");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+    const routineId = createRoutineFixture("bot-gone");
+    moveRoutinesToBot([{ id: "bot-gone", name: "Gone" }], ceo);
+    const before = JSON.stringify(readRoutine(routineId));
+    assert.equal(readRoutine(routineId)?.movedFrom, "bot-gone");
+    const refused = (result: { status?: string; error?: string; hint?: string }) => ({ status: result.status, error: result.error, hintTellsOwner: /owner/i.test(result.hint ?? "") });
+    const expected = { status: "blocked", error: "routine_awaiting_review", hintTellsOwner: true };
+    assert.deepEqual(refused(await run(updateRoutine, { routineId, active: true })), expected);
+    assert.deepEqual(refused(await run(updateRoutine, { routineId, name: "Mine now" })), expected);
+    assert.deepEqual(refused(await run(updateRoutine, { routineId, instruction: "run wild" })), expected);
+    assert.equal(JSON.stringify(readRoutine(routineId)), before, "nothing changed");
+    assert.equal(approvals.listPending().length, 0);
+    // Running it is already refused while it is paused; the bot cannot get round that either.
+    assert.equal((await run<{ status: string }>(runRoutine, { routineId })).status, "paused");
+    // The owner's edit (the routes call updateRoutine) clears the mark, and then the bot may work with it.
+    storeUpdateRoutine(routineId, {});
+    assert.equal(readRoutine(routineId)?.movedFrom, null);
+    assert.equal((await run<{ status: string }>(updateRoutine, { routineId, active: true })).status, "updated");
   } finally {
     box.restore();
   }

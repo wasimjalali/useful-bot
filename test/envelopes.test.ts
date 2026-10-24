@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProviderStore } from "../shared/providers.ts";
@@ -8,7 +8,8 @@ import { readShell, writeShell } from "../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
 import { withBot } from "./helpers/roster.ts";
 import { createRoutine } from "../shared/routines-store.ts";
-import { queueHandoff } from "../shared/handoffs.ts";
+import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
+import { listThreadEvents } from "../shared/agent-store.ts";
 import { stripThreadPrefix } from "../shared/threads.ts";
 import { pumpHandoffs, startRoutineNow } from "../web/lib/agent-exec.ts";
 
@@ -172,6 +173,38 @@ test("a handoff to a bot that is gone fails without a turn", async () => {
       eve.restore();
     }
     assert.equal(eve.sent.length, 0);
+  });
+});
+
+test("a bot-to-bot handoff left on disk by an older build is failed, not delivered as an app message", async () => {
+  await withWorld(async () => {
+    const { alpha, useful } = twoBots();
+    // A record exactly as an older build queued it: no purpose field.
+    const old = queueHandoff({ sourceBotId: useful, sourceName: "Generalist", targetBotId: alpha, targetName: "Alpha", message: "Send the script to Beta." });
+    const file = join(process.env.UB_HANDOFF_DIR as string, `${old.id}.json`);
+    const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    delete raw.purpose;
+    writeFileSync(file, JSON.stringify(raw), "utf8");
+    // A connect card's resume queued now is delivered as before.
+    const resume = queueHandoff({ sourceBotId: useful, sourceName: "Generalist", targetBotId: alpha, targetName: "Alpha", message: "The owner connected the app gmail." });
+    assert.equal(readHandoff(resume.id)?.purpose, "resume");
+    assert.equal(readHandoff(old.id)?.purpose, null);
+    const eve = recordingEve();
+    try {
+      // One delivery per receiving bot per pump: the old record goes first, then the resume.
+      const first = await pumpHandoffs(2);
+      const second = await pumpHandoffs(2);
+      assert.deepEqual([...first.failed, ...second.failed].map((item) => item.id), [old.id]);
+      assert.deepEqual([...first.delivered, ...second.delivered].map((item) => item.id), [resume.id]);
+    } finally {
+      eve.restore();
+    }
+    assert.equal(eve.sent.length, 1, "only the resume reached eve");
+    assert.match(eve.sent[0], /The owner connected the app gmail\./);
+    assert.equal(readHandoff(old.id)?.status, "failed");
+    assert.equal(readHandoff(old.id)?.attempts, 1, "terminal on the first attempt");
+    assert.equal(readHandoff(old.id)?.lastError, "handoff_retired");
+    assert.deepEqual(listThreadEvents(alpha).filter((event) => event.kind === "note"), [], "no note about a resume that never was one");
   });
 });
 

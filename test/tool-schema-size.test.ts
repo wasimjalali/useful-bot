@@ -43,6 +43,22 @@ test("no tool description, hint or error names a tool in camelCase", async () =>
   }
 });
 
+test("the tools array as the model's request carries it fits TOOL_SCHEMA_CHARS with 15% to spare", async () => {
+  const { join } = await import("node:path");
+  const { measureWire } = (await import(join(import.meta.dirname, "../scripts/tool-schema-size.mjs"))) as {
+    measureWire: () => Promise<{ tools: number; chars: number }>;
+  };
+  const { TOOL_SCHEMA_CHARS } = await import("../shared/admission.ts");
+  const wire = await measureWire();
+  assert.ok(wire.tools >= 20, `only ${wire.tools} tools measured; the walk is broken`);
+  // find_tools is built per step and cannot be weighed here; it is under 500 characters.
+  const FIND_TOOLS = 600;
+  assert.ok(
+    wire.chars + FIND_TOOLS <= TOOL_SCHEMA_CHARS * 0.85,
+    `the tools array is ${wire.chars} characters (plus find_tools) against TOOL_SCHEMA_CHARS ${TOOL_SCHEMA_CHARS}; raise the constant in shared/admission.ts with a new measurement`,
+  );
+});
+
 test("the script prints a table with a total", () => {
   const out = execFileSync("/usr/local/bin/node", ["--experimental-strip-types", "scripts/tool-schema-size.mjs"], {
     encoding: "utf8",
