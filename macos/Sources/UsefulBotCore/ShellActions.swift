@@ -2,8 +2,12 @@ import Foundation
 
 /// Shell action payloads for `PUT /api/shell`, matching `ShellAction` in
 /// `shared/shell-store.ts`. Building them in one place keeps the native client
-/// from drifting from the web contract.
+/// from drifting from the web contract. There is one bot: no payload creates,
+/// deletes or arranges bots, and `select` is kept for the dev-stack perf
+/// harness alone.
 public enum ShellActions {
+    /// Dev stack only: the server refuses any bot but the default and the perf
+    /// fixtures (`shell_bot_forbidden`).
     public static func select(botId: String) -> [String: Any] {
         ["type": "select", "botId": botId]
     }
@@ -12,20 +16,16 @@ public enum ShellActions {
         ["type": "renameBot", "botId": botId, "name": name]
     }
 
-    public static func deleteBot(botId: String) -> [String: Any] {
-        ["type": "deleteBot", "botId": botId]
+    /// Move every live memory note of an archived bot to the default bot. The
+    /// server refuses a bot that is not archived.
+    public static func moveNotes(fromBotId: String) -> [String: Any] {
+        ["type": "moveNotes", "fromBotId": fromBotId]
     }
 
-    /// Set a bot aside without deleting anything. The server refuses the
-    /// default bot (`shell_default_bot`).
-    public static func archiveBot(botId: String) -> [String: Any] {
-        ["type": "archiveBot", "botId": botId]
-    }
-
-    /// Bring an archived bot back. With two bots already active the server
-    /// archives the other non-default one in the same write.
-    public static func restoreBot(botId: String) -> [String: Any] {
-        ["type": "restoreBot", "botId": botId]
+    /// Drop an archived bot's record and archive its notes. The server refuses
+    /// the default bot, a bot that is not archived and a perf fixture.
+    public static func removeArchivedBot(botId: String) -> [String: Any] {
+        ["type": "removeArchivedBot", "botId": botId]
     }
 
     public static func clearThread(botId: String) -> [String: Any] {
@@ -57,21 +57,6 @@ public enum ShellActions {
 
     public static func openRecent(recentId: String) -> [String: Any] {
         ["type": "openRecent", "recentId": recentId]
-    }
-
-    public static func createBot(
-        name: String,
-        petname: String?,
-        label: String,
-        description: String
-    ) -> [String: Any] {
-        [
-            "type": "createBot",
-            "name": name,
-            "petname": petname ?? name,
-            "label": label,
-            "description": description,
-        ]
     }
 
     public static func updateBot(botId: String, patch: [String: Any?]) -> [String: Any] {

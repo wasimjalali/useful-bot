@@ -14,12 +14,8 @@ struct RootView: View {
     @State private var stageIn = true
     @State private var composerIn = true
 
-    @State private var pickerOpen = false
     @State private var windowFullScreen = false
-    @State private var newChatTrigger = CGRect.zero
-    @State private var createOpen = false
     @State private var renameBot: ShellBot?
-    @State private var deleteBot: ShellBot?
     @State private var connectorsOpen = false
     @State private var libraryOpen = false
 
@@ -162,7 +158,7 @@ struct RootView: View {
                     onClose: { model.searchOpen = false },
                     onNewChat: {
                         model.searchOpen = false
-                        pickerOpen = true
+                        model.startNewChat(botId: Threads.defaultBotId)
                     },
                     onSelect: { id in
                         model.searchOpen = false
@@ -198,32 +194,6 @@ struct RootView: View {
                     .transition(.opacity)
             }
 
-            if createOpen {
-                CreateBotDialog(
-                    onClose: { createOpen = false },
-                    onSubmit: { input, finish in
-                        model.createBot(
-                            name: input.name,
-                            petname: input.name,
-                            label: input.label,
-                            description: input.description
-                        ) { error in
-                            // The dialog can't be closed while it waits,
-                            // but if it is gone anyway the model shows
-                            // the failure instead.
-                            guard createOpen else { return false }
-                            finish(error)
-                            if error == nil {
-                                pickerOpen = false
-                                createOpen = false
-                            }
-                            return true
-                        }
-                    }
-                )
-                .transition(.opacity)
-            }
-
             if let bot = renameBot {
                 PromptDialog(
                     title: "Rename",
@@ -239,25 +209,7 @@ struct RootView: View {
                 .transition(.opacity)
             }
 
-            if let bot = deleteBot {
-                ConfirmDialog(
-                    title: "Delete bot",
-                    message: deleteMessage(bot),
-                    confirmLabel: "Delete",
-                    onClose: { deleteBot = nil },
-                    onConfirm: {
-                        model.delete(botId: bot.id)
-                        deleteBot = nil
-                    }
-                )
-                .transition(.opacity)
-            }
-
         }
-    }
-
-    private func deleteMessage(_ bot: ShellBot) -> String {
-        return "Delete \(bot.name)? This removes the bot, its profile and its transcript. Workspace files stay."
     }
 
     private var ready: some View {
@@ -265,19 +217,17 @@ struct RootView: View {
             RailView(
                 onSearch: { model.searchOpen = true },
                 onNewChat: {
-                    pickerOpen.toggle()
                     model.settingsOpen = false
+                    model.startNewChat(botId: Threads.defaultBotId)
                 },
                 onOpenSettings: { id in
                     model.select(id)
                     model.settingsOpen = true
                 },
                 onRenameRequest: { renameBot = $0 },
-                onDeleteRequest: { deleteBot = $0 },
                 onConnectors: { connectorsOpen = true },
                 onLibrary: { libraryOpen = true },
                 onOpenAppSettings: { model.openAppSettings($0) },
-                newChatTriggerFrame: $newChatTrigger,
                 fullScreen: windowFullScreen
             )
             .offset(x: railIn || reduceMotion ? 0 : -40)
@@ -305,23 +255,7 @@ struct RootView: View {
                 .fill(Theme.C.surface)
                 .stageShadow()
 
-            if pickerOpen, let store = model.store {
-                NewChatPickerView(
-                    store: store,
-                    onClose: { pickerOpen = false },
-                    onCreateBot: {
-                        pickerOpen = false
-                        createOpen = true
-                    },
-                    onSelectBot: { id in
-                        pickerOpen = false
-                        model.startNewChat(botId: id)
-                    },
-                    plusTrigger: { newChatTrigger }
-                )
-            } else {
-                ChatView()
-            }
+            ChatView()
         }
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.stage, style: .continuous))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -524,113 +458,6 @@ struct PromptDialog: View {
     private func submit() {
         guard !trimmed.isEmpty else { return }
         onSubmit(trimmed)
-    }
-}
-
-struct CreateBotInput {
-    var name: String
-    var label: String
-    var description: String
-}
-
-struct CreateBotDialog: View {
-    let onClose: () -> Void
-    /// Calls `finish` with nil once the bot exists, or with the failure copy.
-    let onSubmit: (CreateBotInput, @escaping @MainActor (String?) -> Void) -> Void
-
-    @State private var name = ""
-    @State private var label = ""
-    @State private var description = ""
-    @State private var creating = false
-    @State private var failure: String?
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        NativeDialog(maxWidth: DesignTokens.Control.dialogFormWidth, ariaLabel: "Create bot", onClose: { if !creating { onClose() } }) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Create bot")
-                    .font(.system(size: DesignTokens.FontSize.dialogTitle, weight: .semibold))
-                    .foregroundStyle(Theme.C.ink)
-                VStack(alignment: .leading, spacing: 12) {
-                    FieldShell(label: "Name") {
-                        TextField("", text: $name)
-                            .nativeField(focused: focused)
-                            .focused($focused)
-                    }
-                    FieldShell(label: "Label") {
-                        TextField("CEO, research, home", text: $label)
-                            .nativeField(focused: false)
-                    }
-                    FieldShell(label: "Description") {
-                        TextEditor(text: $description)
-                            .font(.system(size: DesignTokens.FontSize.fieldInput))
-                            .foregroundStyle(Theme.C.ink)
-                            .scrollContentBackground(.hidden)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            // Capped: an uncapped TextEditor takes every point the
-                            // window offers and pushes the dialog to its edges.
-                            .frame(minHeight: 96, maxHeight: 200)
-                            .background(Theme.C.surface)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                                    .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
-                        switch InstructionsLimit.footer(for: description) {
-                        case .none:
-                            EmptyView()
-                        case .near(let text):
-                            Text(text)
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.C.inkMuted)
-                                .monospacedDigit()
-                        case .over(let text):
-                            Text(text)
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.C.danger)
-                                .monospacedDigit()
-                        }
-                    }
-                }
-                .padding(.top, 16)
-                if let failure {
-                    Text(failure)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.C.danger)
-                        .padding(.top, 12)
-                }
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    NativeButton("Cancel", kind: .secondary, small: true, enabled: !creating, action: onClose)
-                    NativeButton(
-                        "Create bot",
-                        kind: .primary,
-                        small: true,
-                        enabled: !trimmedName.isEmpty && InstructionsLimit.canSave(description) && !creating
-                    ) {
-                        creating = true
-                        failure = nil
-                        onSubmit(CreateBotInput(
-                            name: trimmedName,
-                            label: label.trimmingCharacters(in: .whitespacesAndNewlines),
-                            description: description.trimmingCharacters(in: .whitespacesAndNewlines)
-                        )) { error in
-                            creating = false
-                            failure = error
-                        }
-                    }
-                }
-                .padding(.top, 20)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
-        }
-        .onAppear { focused = true }
-    }
-
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

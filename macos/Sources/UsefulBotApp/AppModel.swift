@@ -387,7 +387,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var composerFocusToken: UInt64 = 0
     @Published var attachments: [Attachment] = []
     @Published var attachError: String?
-    @Published private(set) var onboardingDismissedFor: Set<String> = []
 
     private let config: ServerConfig
     private let services = LocalServices()
@@ -4255,75 +4254,11 @@ final class AppModel: ObservableObject {
         memoryError = nil
     }
 
-    /// `onResult` gets nil once the server took the bot, or the failure copy;
-    /// the create dialog stays open until then. It always fires, including
-    /// when the queued work is skipped. It returns whether a dialog took the
-    /// result: a failure nobody took lands in `saveError`, as does one with no
-    /// `onResult`.
-    func createBot(
-        name: String,
-        petname: String,
-        label: String,
-        description: String,
-        onResult: (@MainActor (String?) -> Bool)? = nil
-    ) {
-        let skipped = "Create failed."
-        enqueue(onSkip: { [weak self] in
-            if let onResult, !onResult(skipped) { self?.saveError = skipped }
-        }) { [weak self] in
-            guard let self else { return }
-            let epoch = self.storeEpoch
-            let action = ShellActions.createBot(
-                name: name,
-                petname: petname,
-                label: label,
-                description: description
-            )
-            do {
-                let next = try await self.client.shellAction(action)
-                _ = onResult?(nil)
-                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                // applyStore selects the new bot; switchToBot stashes any
-                // outgoing send so it keeps running.
-                self.applyStore(next)
-                self.saveError = nil
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription ?? "Create failed."
-                if onResult?(message) != true { self.saveError = message }
-            }
-        }
-    }
-
     func rename(botId: String, name: String) {
         perform(ShellActions.rename(botId: botId, name: name))
     }
 
-    func delete(botId: String) {
-        replyQuotes[botId] = nil
-        transcriptCache[botId] = nil
-        // Gone from disk now; blocked for good once the store drops the bot,
-        // so a delete the server refuses leaves the chat able to save again.
-        removeSnapshot(botId, blockWrites: false)
-        sendErrors[botId] = nil
-        unsentDrafts[botId] = nil
-        instructionDrafts[botId] = nil
-        forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
-        let running = inflightSessions[botId]
-        cancelSend(for: botId)
-        if let running, !running.isEmpty {
-            Task { @MainActor [weak self] in
-                _ = try? await self?.client.cancel(sessionId: running)
-            }
-        }
-        // Its pictures go only once the server has dropped the bot: a
-        // refused delete leaves the chat, pictures and all.
-        perform(ShellActions.deleteBot(botId: botId)) {
-            SentImageStore.forget(botId: botId)
-            self.clearUnsent(botId: botId)
-        }
-    }
-
-    /// New Bot from the rail: clear the thread server-side and start fresh.
+    /// New chat from the rail: clear the thread server-side and start fresh.
     func startNewChat(botId: String? = nil) {
         guard let id = botId ?? selectedBotId else { return }
         // Any in-flight turn on this bot would repopulate the cleared thread.
@@ -4945,34 +4880,12 @@ final class AppModel: ObservableObject {
         decideProposal(proposal, confirmed: true)
     }
 
-    // MARK: - Onboarding
-
-    func onboardingDismissed(for botId: String) -> Bool {
-        onboardingDismissedFor.contains(botId)
-            || UserDefaults.standard.bool(forKey: "ub-onboarding:\(botId)")
-    }
-
-    func dismissOnboarding(botId: String) {
-        onboardingDismissedFor.insert(botId)
-        UserDefaults.standard.set(true, forKey: "ub-onboarding:\(botId)")
-    }
-
-    var showOnboarding: Bool {
-        guard let bot = selectedBot, !onboardingDismissed(for: bot.id) else { return false }
-        guard bot.kind == "bot", bot.id != Threads.defaultBotId else { return false }
-        return bot.label.trimmingCharacters(in: .whitespaces).isEmpty
-            && bot.description.trimmingCharacters(in: .whitespaces).isEmpty
-            && durableEvents.isEmpty
-            && transcript.isEmpty
-            && openProposals.isEmpty
-    }
-
     var openProposals: [Proposal] {
         proposals.filter { $0.isOpen() && $0.kind != .retired }
     }
 
     var hasThreadContent: Bool {
-        !transcript.isEmpty || !openProposals.isEmpty || showOnboarding
+        !transcript.isEmpty || !openProposals.isEmpty
     }
 
     /// The first reply row of the newest turn, or nil if the turn has none.

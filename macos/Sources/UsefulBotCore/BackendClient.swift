@@ -125,14 +125,10 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "That service names its tools longer than a model accepts, so it was not connected."
         case "tool_count_unknown":
             return "That service's tool list could not be read, so it was not connected. Try again."
-        case "bot_cap_reached":
-            return "You can have up to two bots."
-        case "shell_default_bot":
-            return "The default bot can't be archived."
         case "shell_bot_archived":
-            return "That bot is archived. Restore it to use it."
-        case "shell_group_restore":
-            return "Groups can't be restored."
+            return "That bot is archived and can't be used."
+        case "shell_bot_forbidden":
+            return "That bot can't be opened."
         case "csrf":
             return "The local server rejected that write. Try again."
         case "routine_missing":

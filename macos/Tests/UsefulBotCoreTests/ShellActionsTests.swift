@@ -24,23 +24,26 @@ import Testing
     }
 
     /// The wire names are the contract with the server: a typo here is a
-    /// refused action, not a compile error.
-    @Test func archiveAndRestoreCarryTheBotId() {
-        let archive = ShellActions.archiveBot(botId: "bot-2")
-        #expect(archive["type"] as? String == "archiveBot")
-        #expect(archive["botId"] as? String == "bot-2")
-        #expect(archive.count == 2)
-        let restore = ShellActions.restoreBot(botId: "bot-2")
-        #expect(restore["type"] as? String == "restoreBot")
-        #expect(restore["botId"] as? String == "bot-2")
-        #expect(restore.count == 2)
+    /// refused action, not a compile error. Neither carries anything extra,
+    /// so a stray field cannot widen what the server does.
+    @Test func moveNotesAndRemoveArchivedBotCarryOnlyTheBotId() {
+        let move = ShellActions.moveNotes(fromBotId: "bot-old")
+        #expect(move["type"] as? String == "moveNotes")
+        #expect(move["fromBotId"] as? String == "bot-old")
+        #expect(move.count == 2)
+        let remove = ShellActions.removeArchivedBot(botId: "bot-old")
+        #expect(remove["type"] as? String == "removeArchivedBot")
+        #expect(remove["botId"] as? String == "bot-old")
+        #expect(remove.count == 2)
     }
 
-    @Test func createBotSendsNoSectionAnymore() {
-        let action = ShellActions.createBot(name: "Scout", petname: nil, label: "Research", description: "Find things")
-        #expect(action["type"] as? String == "createBot")
-        #expect(action["petname"] as? String == "Scout")
-        #expect(action["sectionId"] == nil)
+    /// The server refuses these as `invalid`; the app must not be able to
+    /// build them, and `select` stays for the dev-stack perf harness alone.
+    @Test func selectIsTheOnlyBotArrangingPayloadLeft() {
+        let select = ShellActions.select(botId: "perf-1")
+        #expect(select["type"] as? String == "select")
+        #expect(select["botId"] as? String == "perf-1")
+        #expect(select.count == 2)
     }
 
     /// An old record of a removed kind must decode and then be unconfirmable:
@@ -92,11 +95,9 @@ import Testing
                 == "That proposal is no longer available."
         )
         #expect(BackendError.shell("custom_thing").errorDescription == "Custom Thing")
-        #expect(BackendError.shell("bot_cap_reached").errorDescription == "You can have up to two bots.")
-        #expect(BackendError.shell("shell_default_bot").errorDescription == "The default bot can't be archived.")
-        #expect(BackendError.shell("shell_bot_archived").errorDescription == "That bot is archived. Restore it to use it.")
-        #expect(BackendError.shell("shell_group_restore").errorDescription == "Groups can't be restored.")
-        #expect(BackendError.shell("bot_cap_reached").shellCode == "bot_cap_reached")
+        #expect(BackendError.shell("shell_bot_archived").errorDescription == "That bot is archived and can't be used.")
+        #expect(BackendError.shell("shell_bot_forbidden").errorDescription == "That bot can't be opened.")
+        #expect(BackendError.shell("shell_bot_forbidden").shellCode == "shell_bot_forbidden")
         #expect(BackendError.shell("proposal_missing").shellCode == "proposal_missing")
     }
 

@@ -3,7 +3,7 @@ import SwiftUI
 import UsefulBotCore
 
 /// The chat column: header, transcript in a centered
-/// 768pt column, empty state, proposal and onboarding cards, composer.
+/// 768pt column, empty state, proposal cards, composer.
 struct ChatView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.starterBotId) private var starterBotId
@@ -563,18 +563,6 @@ struct ChatView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.transcriptGap) {
-                        if model.showOnboarding {
-                            OnboardingCardView(
-                                name: bot.name,
-                                onFillForm: {
-                                    model.dismissOnboarding(botId: bot.id)
-                                    model.settingsOpen = true
-                                },
-                                onDismiss: { model.dismissOnboarding(botId: bot.id) }
-                            )
-                            // A host card on the bot side, under the bubble cap.
-                            .frame(maxWidth: DesignTokens.Space.bubbleMax)
-                        }
                         if window.hidden > 0 {
                             ShowEarlierRow { model.showEarlierMessages() }
                         }

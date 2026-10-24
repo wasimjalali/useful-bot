@@ -22,14 +22,13 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
     /// server's value survives the decode.
     public var permission: String
     public var workspace: BotWorkspace?
-    /// Out of the rail but kept whole: instructions, chats, memory and
-    /// routines stay, and a restore brings it back. A bot from before the
-    /// one-bot cap that the migration set aside is archived too.
+    /// Set aside by the one-bot migration: out of the app, nothing deleted.
+    /// Settings lists the archived bots as Earlier bots.
     public var archived: Bool
     public var archivedAt: String?
 
-    /// A bot the rail lists: a 1:1 bot that is not archived. Groups only
-    /// survive as archived legacy entries and are never active.
+    /// A 1:1 bot that is not archived. Groups only survive as archived
+    /// legacy entries and are never active.
     public var isActive: Bool { kind == "bot" && !archived }
 
     public var isReadOnly: Bool { permission == "read_only" }
@@ -196,8 +195,13 @@ public struct ShellStore: Codable, Equatable, Sendable {
         recents = (try? c.decode([ShellRecent].self, forKey: .recents)) ?? []
     }
 
-    /// What the rail lists: the active bots, in store order.
+    /// The active bots, in store order. In the dev stack that includes the
+    /// perf fixture bots.
     public var activeBots: [ShellBot] { bots.filter(\.isActive) }
+
+    /// What the rail lists: the default bot alone. The perf fixture bots are
+    /// reached through `select` and never listed.
+    public var railBots: [ShellBot] { activeBots.filter { $0.id == Threads.defaultBotId } }
 
     enum CodingKeys: String, CodingKey {
         case selectedBotId, bots, recents

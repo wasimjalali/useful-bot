@@ -3,7 +3,7 @@ import SwiftUI
 import UsefulBotCore
 
 /// The 248pt rail: logo, search pill,
-/// New Bot, the active bots, account row.
+/// New chat, the bot, account row.
 struct RailView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -11,13 +11,9 @@ struct RailView: View {
     var onNewChat: () -> Void
     var onOpenSettings: (String) -> Void
     var onRenameRequest: (ShellBot) -> Void
-    var onDeleteRequest: (ShellBot) -> Void
     var onConnectors: () -> Void
     var onLibrary: () -> Void
     var onOpenAppSettings: (AppSettingsTab) -> Void
-    /// Window frame of the New Bot plus button, so overlays outside the rail
-    /// can treat clicks on it as the toggle rather than "outside".
-    @Binding var newChatTriggerFrame: CGRect
     /// This window is in full screen, where the traffic lights are hidden.
     var fullScreen = false
 
@@ -35,13 +31,12 @@ struct RailView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Search and New Bot on the traffic lights' band, on its right,
+            // Search and New chat on the traffic lights' band, on its right,
             // sitting a little lower than the lights the way Grok sets them.
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
                 RoundRailButton(systemImage: "magnifyingglass", label: "Search", help: "Search (⌘K)", action: onSearch)
-                RoundRailButton(systemImage: "plus", label: "New Bot", help: "New Bot", action: onNewChat)
-                    .trackWindowFrame($newChatTriggerFrame)
+                RoundRailButton(systemImage: "plus", label: "New chat", help: "New chat", action: onNewChat)
             }
             // Full screen hides the lights, so the band tightens.
             .padding(.top, fullScreen ? 4 : 10)
@@ -73,7 +68,6 @@ struct RailView: View {
         .overlay(alignment: .topLeading) {
             if let bot = rowMenuBot {
                 RowMenuPopover(
-                    canDelete: bot.id != Threads.defaultBotId,
                     onSettings: {
                         closeRowMenu()
                         onOpenSettings(bot.id)
@@ -81,10 +75,6 @@ struct RailView: View {
                     onRename: {
                         closeRowMenu()
                         onRenameRequest(bot)
-                    },
-                    onDelete: {
-                        closeRowMenu()
-                        onDeleteRequest(bot)
                     }
                 )
                 .frame(width: 200)
@@ -129,11 +119,11 @@ struct RailView: View {
 
     // MARK: - Bots
 
-    /// The active bots, one row each. Archived bots and legacy groups are
-    /// not listed.
+    /// The default bot, one row. Archived bots, legacy groups and the dev
+    /// stack's perf fixtures are not listed.
     private func botList(_ store: ShellStore) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(store.activeBots) { bot in
+            ForEach(store.railBots) { bot in
                 BotRowView(
                     bot: bot,
                     selected: bot.id == model.selectedBotId,
@@ -141,7 +131,6 @@ struct RailView: View {
                     onSelect: { model.select(bot.id) },
                     onOpenSettings: { onOpenSettings(bot.id) },
                     onRenameRequest: { onRenameRequest(bot) },
-                    onDeleteRequest: { onDeleteRequest(bot) },
                     onMenu: { frame, trigger in
                         toggleRowMenu(bot, frame: frame, trigger: trigger)
                     }
@@ -436,20 +425,13 @@ private struct AccountAnchorKey: PreferenceKey {
 /// The on-brand replacement for the system `Menu` on a bot row: the same
 /// white card, hairline border and sunken hover as every other popover.
 struct RowMenuPopover: View {
-    var canDelete = true
     let onSettings: () -> Void
     let onRename: () -> Void
-    let onDelete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             item(icon: "gearshape", title: "Settings", action: onSettings)
             item(icon: "pencil", title: "Rename", action: onRename)
-            Divider()
-                .overlay(Theme.C.border)
-                .padding(.vertical, 2)
-            item(icon: "trash", title: "Delete", danger: true, action: onDelete)
-                .disabled(!canDelete)
         }
         .padding(6)
         .background(Theme.C.surface)
@@ -487,21 +469,15 @@ struct RowMenuPopover: View {
 
 // MARK: - Rows
 
-/// The right-click menu behind a rail row. Delete stays off the default bot.
+/// The right-click menu behind a rail row.
 @MainActor
 @ViewBuilder
 private func rowContextMenu(
-    bot: ShellBot,
-    canDelete: Bool,
     onOpenSettings: @escaping () -> Void,
-    onRenameRequest: @escaping () -> Void,
-    onDeleteRequest: @escaping () -> Void
+    onRenameRequest: @escaping () -> Void
 ) -> some View {
     Button("Settings", action: onOpenSettings)
     Button("Rename", action: onRenameRequest)
-    Divider()
-    Button("Delete", role: .destructive, action: onDeleteRequest)
-        .disabled(!canDelete)
 }
 
 extension AppModel {
@@ -549,7 +525,6 @@ private struct BotRowView: View {
     let onSelect: () -> Void
     let onOpenSettings: () -> Void
     let onRenameRequest: () -> Void
-    let onDeleteRequest: () -> Void
     let onMenu: (CGRect, CGRect) -> Void
 
     @EnvironmentObject private var model: AppModel
@@ -608,11 +583,8 @@ private struct BotRowView: View {
         }
         .contextMenu {
             rowContextMenu(
-                bot: bot,
-                canDelete: bot.id != Threads.defaultBotId,
                 onOpenSettings: onOpenSettings,
-                onRenameRequest: onRenameRequest,
-                onDeleteRequest: onDeleteRequest
+                onRenameRequest: onRenameRequest
             )
         }
     }

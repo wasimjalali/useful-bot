@@ -55,7 +55,7 @@ import Testing
         #expect(store.bots[0].sessionId == "wrun_1")
     }
 
-    @Test func theRailListsOnlyActiveBotsInStoreOrder() throws {
+    @Test func archivedBotsAndLegacyGroupsAreNotActive() throws {
         let store = try decodeStore("""
         {"selectedBotId":"bot-useful","recents":[],"bots":[
          {"id":"bot-useful","kind":"bot","name":"Useful Bot"},
@@ -67,6 +67,29 @@ import Testing
         """)
         #expect(store.activeBots.map(\.id) == ["bot-useful", "bot-2"])
         #expect(store.bots.count == 5)
+    }
+
+    /// The dev stack keeps the perf fixture bots unarchived so the harness can
+    /// reach them with `select`; they must never turn up as a second row.
+    @Test func theRailListsOnlyTheDefaultBot() throws {
+        let store = try decodeStore("""
+        {"selectedBotId":"bot-useful","recents":[],"bots":[
+         {"id":"bot-useful","kind":"bot","name":"Useful Bot"},
+         {"id":"bot-perf1","kind":"bot","name":"Perf Long Chat"},
+         {"id":"bot-old","kind":"bot","name":"Old","archived":true}
+        ]}
+        """)
+        #expect(store.railBots.map(\.id) == ["bot-useful"])
+        #expect(store.activeBots.map(\.id) == ["bot-useful", "bot-perf1"])
+    }
+
+    /// An archived default bot cannot happen (the server refuses it), but a
+    /// damaged store must not put an archived bot in the rail.
+    @Test func anArchivedDefaultBotIsNotListed() throws {
+        let store = try decodeStore("""
+        {"bots":[{"id":"bot-useful","kind":"bot","name":"Useful Bot","archived":true}]}
+        """)
+        #expect(store.railBots.isEmpty)
     }
 
     @Test func aStoreWithEveryBotArchivedListsNone() throws {
