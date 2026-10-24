@@ -20,7 +20,7 @@ import { readCapped } from "./read-capped.ts";
 import { usageFromPayload, usageFromSseBlock, type ObservedUsage } from "../../shared/usage-parse.ts";
 import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
 import { requestSignal } from "./request-signal.ts";
-import { createThinkStream, flushThinkStream, noteInlineThink, splitThinkBlock, splitThinkCompletion } from "./inline-think.ts";
+import { createThinkStream, flushThinkStream, isToolImageCarrier, noteInlineThink, splitThinkBlock, splitThinkCompletion } from "./inline-think.ts";
 import { REASONING_TEXT_FIELDS } from "../../shared/inline-think.ts";
 
 const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
@@ -296,7 +296,7 @@ function validateToolChoice(choice: unknown): void {
  * never asked to fetch something on the caller's behalf, and no other part
  * kinds. Anything else is `message_content_part`.
  */
-function validateContentPart(part: unknown, imagesSoFar: number): number {
+function validateContentPart(part: unknown, imagesSoFar: number, maxImages: number): number {
   if (!part || typeof part !== "object") throw validationError("unsupported_parameter", "message_content_part");
   const rec = part as Record<string, unknown>;
   const keys = Object.keys(rec);
@@ -319,7 +319,7 @@ function validateContentPart(part: unknown, imagesSoFar: number): number {
     if (typeof url !== "string" || url.length > MAX_IMAGE_DATA_URL_CHARS || !IMAGE_DATA_URL.test(url)) {
       throw validationError("unsupported_parameter", "message_content_image");
     }
-    if (imagesSoFar + 1 > MAX_IMAGE_PARTS) throw validationError("unsupported_parameter", "message_content_images");
+    if (imagesSoFar + 1 > maxImages) throw validationError("unsupported_parameter", "message_content_images");
     return imagesSoFar + 1;
   }
   throw validationError("unsupported_parameter", "message_content_part");
@@ -335,7 +335,7 @@ function validateMessages(messages: unknown[]): void {
     throw validationError("unsupported_parameter", `messages_count:${messages.length}>${MAX_MESSAGE_COUNT}`);
   }
   const outstanding = new Set<string>();
-  for (const item of messages) {
+  for (const [index, item] of messages.entries()) {
     if (!item || typeof item !== "object") throw validationError("invalid_request");
     const message = item as Record<string, unknown>;
     // OpenAI's newer name for the instruction role. Pi sends it when a compat
@@ -350,8 +350,16 @@ function validateMessages(messages: unknown[]): void {
       // tool message with an array is a shape this build has not reasoned
       // about, and it stays refused.
       if (role !== "user") throw validationError("unsupported_parameter", "message_content_array");
+      // Pi's carrier holds the images of every tool result it follows, so it
+      // gets the owner's per-message allowance once per tool result.
+      let maxImages = MAX_IMAGE_PARTS;
+      if (isToolImageCarrier(messages, index)) {
+        let toolResults = 0;
+        while (index - toolResults - 1 >= 0 && (messages[index - toolResults - 1] as Record<string, unknown> | null)?.role === "tool") toolResults += 1;
+        maxImages = MAX_IMAGE_PARTS * toolResults;
+      }
       let images = 0;
-      for (const part of message.content) images = validateContentPart(part, images);
+      for (const part of message.content) images = validateContentPart(part, images, maxImages);
     } else if (message.content !== undefined && message.content !== null && typeof message.content !== "string") {
       throw validationError("invalid_request");
     }

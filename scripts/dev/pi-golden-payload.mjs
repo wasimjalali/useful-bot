@@ -6,7 +6,12 @@
 // Dev only: it loads `@earendil-works/pi-ai` from the globally installed Pi
 // (not an app dependency). Override the location with PI_AI_DIR.
 //
-//   node scripts/dev/pi-golden-payload.mjs
+//   node scripts/dev/pi-golden-payload.mjs          write the fixture
+//   node scripts/dev/pi-golden-payload.mjs --check  exit 1 if the installed Pi
+//                                                   would send something else
+//
+// Run --check after every Pi upgrade: the contract tests replay the fixture,
+// not Pi, so a new Pi shape only shows up here.
 //
 // Two requests come out of one conversation:
 // - `specCompat`: the compat flags SPEC 5.3 gives the `useful-router`
@@ -20,7 +25,7 @@
 // with an image), so the request sits mid-turn, where the router splits
 // earlier reasoning from the current turn's.
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -168,11 +173,21 @@ const defaultCompat = await capture(model(undefined, true), {
 });
 
 const out = join(repo, "router/test/fixtures/pi-request.json");
-mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, `${JSON.stringify({
+const text = `${JSON.stringify({
   generatedBy: "scripts/dev/pi-golden-payload.mjs",
   piAiVersion,
   specCompat,
   defaultCompat,
-}, null, 2)}\n`);
-console.log(`wrote ${out} (pi-ai ${piAiVersion})`);
+}, null, 2)}\n`;
+if (process.argv.includes("--check")) {
+  if (existsSync(out) && readFileSync(out, "utf8") === text) {
+    console.log(`fixture matches pi-ai ${piAiVersion}`);
+  } else {
+    console.error(`router/test/fixtures/pi-request.json differs from what pi-ai ${piAiVersion} sends: rerun without --check, then run the router contract tests`);
+    process.exit(1);
+  }
+} else {
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, text);
+  console.log(`wrote ${out} (pi-ai ${piAiVersion})`);
+}

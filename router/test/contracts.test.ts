@@ -14,6 +14,7 @@ import { AliasCircuit } from "../src/circuit.ts";
 import { RouterError } from "../src/errors.ts";
 import { completeUpstream, upstreamConfigError, type ResolvedUpstream } from "../src/upstreams/opencode.ts";
 import { readPrefix } from "../src/read-capped.ts";
+import { PI_TOOL_IMAGE_TEXT, noteInlineThink } from "../src/inline-think.ts";
 import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
 import { writeModelsCache } from "../../shared/live-models.ts";
 import { hydrateModel } from "../../shared/models.ts";
@@ -2614,7 +2615,10 @@ const PI_CAP = 6_553;
  * sees images) has a 65,536-token window. Every upstream body is captured,
  * along with the output tokens reserved while that call was in flight.
  */
-async function withPiRouter(fn: (base: string, tokens: Record<string, string>, seen: Array<{ body: Record<string, unknown>; reservedOutput: number | null }>) => Promise<void>) {
+async function withPiRouter(
+  fn: (base: string, tokens: Record<string, string>, seen: Array<{ body: Record<string, unknown>; reservedOutput: number | null }>) => Promise<void>,
+  model: { id: string; inputs: string[] } = { id: "glm-5.3-flash", inputs: ["text", "image"] },
+) {
   const previous = process.env.UB_MODELS_CACHE_PATH;
   const cachePath = join(mkdtempSync(join(tmpdir(), "ub-router-pi-models-")), "models-cache.json");
   writeFileSync(cachePath, JSON.stringify({
@@ -2623,7 +2627,7 @@ async function withPiRouter(fn: (base: string, tokens: Record<string, string>, s
       "opencode-go": {
         fetchedAt: Date.now(),
         models: [
-          { id: "glm-5.3-flash", label: "GLM 5.3 Flash", efforts: ["low", "high", "max"], defaultEffort: "low", speeds: ["standard"], defaultSpeed: "standard", contextTokens: PI_WINDOW, inputs: ["text", "image"] },
+          { id: model.id, label: "Pi test model", efforts: ["low", "high", "max"], defaultEffort: "low", speeds: ["standard"], defaultSpeed: "standard", contextTokens: PI_WINDOW, inputs: model.inputs },
         ],
       },
     },
@@ -2640,7 +2644,7 @@ async function withPiRouter(fn: (base: string, tokens: Record<string, string>, s
         schemaVersion: 1,
         activeProviderId: "opencode-go",
         keys: { "opencode-go": { key: "test-upstream-key", updatedAt: new Date().toISOString() } },
-        selectedModel: "glm-5.3-flash",
+        selectedModel: model.id,
         effort: "low",
         speed: "standard",
       }));
@@ -2841,4 +2845,49 @@ test("reasoning fields of the wrong shape are refused before any dispatch", asyn
     }
     assert.equal(seen.length, 0);
   });
+});
+
+test("Pi's tool-image carrier may hold five images per tool result it follows, an owner message still five", async () => {
+  const image = { type: "image_url", image_url: { url: PNG_DATA_URL } };
+  const call = (id: string) => ({ id, type: "function", function: { name: "screenshot", arguments: "{}" } });
+  const afterTools = (tools: number, images: number, text = PI_TOOL_IMAGE_TEXT) => ({
+    model: "workhorse",
+    stream: true,
+    messages: [
+      { role: "user", content: "screenshot these" },
+      { role: "assistant", content: null, tool_calls: Array.from({ length: tools }, (_, i) => call(`c${i}`)) },
+      ...Array.from({ length: tools }, (_, i) => ({ role: "tool", tool_call_id: `c${i}`, content: "(see attached image)" })),
+      { role: "user", content: [{ type: "text", text }, ...Array.from({ length: images }, () => image)] },
+    ],
+  });
+  await withPiRouter(async (base, tokens, seen) => {
+    for (const [body, status] of [
+      [afterTools(2, 10), 200],
+      [afterTools(2, 11), 400],
+      [afterTools(1, 6), 400],
+      // Not the carrier's text: the owner's own allowance.
+      [afterTools(2, 6, "look at these"), 400],
+    ] as const) {
+      const res = await postCompletion(base, tokens.desktop, body);
+      assert.equal(res.status, status);
+      if (status === 400) assert.equal((await res.json()).error.code, "unsupported_parameter");
+      else await res.text();
+    }
+    assert.equal(seen.length, 1);
+  });
+});
+
+test("an inline-thinking text-only model still gets the current turn's reasoning back when Pi's carrier loses its images", async () => {
+  noteInlineThink("opencode-go", "pi-inline-text");
+  await withPiRouter(async (base, tokens, seen) => {
+    const res = await postCompletion(base, tokens.desktop, PI_GOLDEN.specCompat);
+    assert.equal(res.status, 200);
+    await res.text();
+    const messages = messagesOf(seen[0].body);
+    assert.equal(messages[5].content, "<think>Two tools, one after the other.</think>");
+    assert.equal("reasoning_content" in messages[5], false);
+    // The carrier's image became a note for the text-only model.
+    const carrier = messages[8].content as Array<Record<string, unknown>>;
+    assert.equal(carrier.some((part) => part.type === "image_url"), false);
+  }, { id: "pi-inline-text", inputs: ["text"] });
 });

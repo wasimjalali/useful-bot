@@ -305,7 +305,7 @@ export const PI_TOOL_IMAGE_TEXT = "Attached image(s) from tool result:";
  * message, holding that exact text and images only. It belongs to the turn
  * of the tool call before it, not a new one.
  */
-function isToolImageCarrier(messages: unknown[], index: number): boolean {
+export function isToolImageCarrier(messages: unknown[], index: number): boolean {
   const item = messages[index];
   const before = messages[index - 1];
   if (!isRecord(item) || !isRecord(before) || before.role !== "tool" || !Array.isArray(item.content)) return false;

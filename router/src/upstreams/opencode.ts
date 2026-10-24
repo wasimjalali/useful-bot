@@ -415,13 +415,18 @@ export async function completeUpstream(input: {
   const outputCap = outputCapFor(input.entry, resolved);
   // Reasoning from earlier turns may belong to another model: only the
   // current turn keeps it (see stripEarlierReasoning).
-  const history = withoutImagesForTextModel(stripEarlierReasoning(forwardedBody.messages), sees);
+  const history = stripEarlierReasoning(forwardedBody.messages);
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
-    // A model that writes its thinking inline gets it back the same way.
-    messages: resolved.protocol === "openai-chat" && usesInlineThink(resolved.providerId, model)
-      ? rewrapThinkHistory(history)
-      : history,
+    // A model that writes its thinking inline gets it back the same way. The
+    // rewrap reads turn boundaries, so it runs before images become notes: a
+    // tool-image carrier without its images would read as a new turn.
+    messages: withoutImagesForTextModel(
+      resolved.protocol === "openai-chat" && usesInlineThink(resolved.providerId, model)
+        ? rewrapThinkHistory(history)
+        : history,
+      sees,
+    ),
     model,
     // OpenAI documents prompt_cache_key; other vendors may refuse the field.
     ...(resolved.providerId === "openai"
