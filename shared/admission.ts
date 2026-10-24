@@ -14,26 +14,27 @@ import { exactModelOption } from "./models.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "./policy.ts";
 import { botSelection } from "./session-selection.ts";
 import type { ProviderStore } from "./providers.ts";
-import { DESCRIPTION_MAX, DEFAULT_BOT_ID, orchestratorId, type ShellBot, type ShellStore } from "./shell-store.ts";
-import { groupMembers, speakersFrom } from "./threads.ts";
+import { DESCRIPTION_MAX, DEFAULT_BOT_ID, type ShellBot } from "./shell-store.ts";
 
 /**
  * The system prompt before the bot's own context block: agent/instructions.md
  * plus what eve adds around it (the skills list and the like). Measured on the
  * wire as 7,444 characters (payload probe, evals/results/2026-10-02-ub009-prc/
- * probe-after), with agent and task_cancel switched off. Switching them on adds
- * eve's "Agent messaging" block (1,017 characters, read from eve's prompt
- * composer, eve 0.54): about 8,460, with about 7% headroom. eve's additions
- * around the file (the skills list) are not guarded by a test. A test holds it at or above `wc -c` of the file.
+ * probe-after), with agent and task_cancel switched off, as they are again
+ * since sub-agents were removed. That leaves about 22% headroom for eve's
+ * additions around the file (the skills list), which no test guards. A test
+ * holds it at or above `wc -c` of the file.
  */
 export const SHARED_PROMPT_CHARS = 9_100;
 /**
- * The tools array eve sends, as JSON: 26,434 characters on the wire in the same
- * probe (agent and task_cancel off), plus the two sub-agent tools as eve defines
- * them (agent 1,463, task_cancel 482, measured by scripts/tool-schema-size.mjs):
- * about 28,380, with about 6% headroom.
+ * The tools array eve sends, as JSON. The same probe put it at 26,434 characters
+ * on the wire for 34 authored tools. scripts/tool-schema-size.mjs now weighs the
+ * authored tools and eve's remaining defaults at 14,433 (it was 22,993 with the
+ * eleven multi-bot tools and eve's agent and task_cancel); the same wire
+ * overhead on top (about 5,400) gives about 19,800, so 21,000 leaves about 6%
+ * headroom. Not re-probed on the wire; PR 3 replaces this with a measured value.
  */
-export const TOOL_SCHEMA_CHARS = 30_000;
+export const TOOL_SCHEMA_CHARS = 21_000;
 /** Room kept for the model's own answer. */
 export const OUTPUT_RESERVE_TOKENS = 4096;
 
@@ -46,7 +47,6 @@ export type Envelope = {
 
 export type AdmissionInput = {
   bot: ShellBot;
-  shell: Pick<ShellStore, "bots">;
   store: ProviderStore;
   /** Length of the rendered notes block. */
   notesChars: number;
@@ -109,20 +109,10 @@ function worstCaseTurn(label: string, modelId: string, connection: string): Cont
   };
 }
 
-/** The context block this bot's turn carries, rendered over the roster as it is now. */
-export function contextText(bot: ShellBot, shell: Pick<ShellStore, "bots">, turn: ContextSnapshot["turn"]): string {
-  const orchestrator = orchestratorId(shell);
-  const isGroup = bot.kind === "group";
-  const members = isGroup
-    ? groupMembers(speakersFrom(shell.bots), bot.memberIds).map((member) => ({
-      name: member.name,
-      label: member.title,
-    }))
-    : null;
+/** The context block this bot's turn carries. */
+export function contextText(bot: ShellBot, turn: ContextSnapshot["turn"]): string {
   return renderContext({
-    running: !isGroup && bot.id === orchestrator ? { fallback: bot.id !== DEFAULT_BOT_ID } : null,
     bot: { name: bot.name, label: bot.label, description: bot.description },
-    groupMembers: members,
     turn,
   });
 }
@@ -130,7 +120,7 @@ export function contextText(bot: ShellBot, shell: Pick<ShellStore, "bots">, turn
 export function envelopeFor(input: AdmissionInput): Envelope {
   const selection = botSelection(input.bot, input.store);
   const { windowTokens, modelLabel } = windowFor(selection.connectionId, selection.modelId);
-  const context = contextText(input.bot, input.shell, worstCaseTurn(modelLabel, selection.modelId, selection.connectionId));
+  const context = contextText(input.bot, worstCaseTurn(modelLabel, selection.modelId, selection.connectionId));
   const tokens = estimateTokens(SHARED_PROMPT_CHARS)
     + estimateTokens(context.length)
     + estimateTokens(input.notesChars)

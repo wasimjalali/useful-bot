@@ -4,29 +4,12 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { applyShellAction, DEFAULT_BOT_ID, DESCRIPTION_MAX, seedStore, type ShellStore } from "../shared/shell-store.ts";
+import { applyShellAction, DEFAULT_BOT_ID, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
-import {
-  appendAgentEvent,
-  createProposal,
-  listThreadEvents,
-  parseAgentStore,
-  readAgentStore,
-  readProposal,
-  sweepOrphanThreads,
-} from "../shared/agent-store.ts";
-import {
-  HANDOFF_ATTEMPTS_MAX,
-  HANDOFF_DEPTH_MAX,
-  listHandoffs,
-  markDelivered,
-  markFailed,
-  queueHandoff,
-} from "../shared/handoffs.ts";
+import { withBot } from "./helpers/roster.ts";
 import { UNTRUSTED_PREAMBLE, wrapUntrusted } from "../shared/untrusted.ts";
 import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
 import bash from "../agent/tools/bash.ts";
-import listBots from "../agent/tools/list_bots.ts";
 import memorySearch from "../agent/tools/memory_search.ts";
 import memoryRead from "../agent/tools/memory_read.ts";
 import { seenOutside } from "../agent/lib/outside-content.ts";
@@ -34,15 +17,7 @@ import { forgetRecallCache, recallNotes } from "../agent/memory/notes.ts";
 import memoryUpsert from "../agent/tools/memory_upsert.ts";
 import memoryDelete from "../agent/tools/memory_delete.ts";
 import readFile from "../agent/tools/read_file.ts";
-import proposeBot from "../agent/tools/propose_bot.ts";
-import proposeGroup from "../agent/tools/propose_group.ts";
-import postToGroup from "../agent/tools/post_to_group.ts";
-import sendToBot from "../agent/tools/send_to_bot.ts";
-import updateBotProfile from "../agent/tools/update_bot_profile.ts";
-import deleteBot from "../agent/tools/delete_bot.ts";
-import clearHistory from "../agent/tools/clear_history.ts";
 import deleteRoutine from "../agent/tools/delete_routine.ts";
-import railAction from "../agent/tools/rail_action.ts";
 import listRoutines from "../agent/tools/list_routines.ts";
 import createRoutine from "../agent/tools/create_routine.ts";
 import updateRoutine from "../agent/tools/update_routine.ts";
@@ -84,14 +59,13 @@ function sandbox() {
   process.env.UB_SESSION_OWNERS_PATH = join(dir, "session-owners.json");
   // A tool call that finds no binding must not sit out the production wait.
   process.env.UB_BINDING_WAIT_MS = "100";
-  // The default acting bot is the orchestrator; a test that wants a plain bot
+  // The default acting bot is the Generalist; a test that wants another
   // pins one, or binds a session.
   process.env.UB_ACTIVE_BOT_ID = DEFAULT_BOT_ID;
   process.env.UB_SHELL_PATH = join(dir, "shell.json");
   process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
   process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
   process.env.UB_ROUTINES_PATH = join(dir, "routines.json");
-  // Tool tests do not run the delivery pump, so sendToBot must not wait.
   process.env.UB_HANDOFF_WAIT_MS = "0";
   return {
     dir,
@@ -112,11 +86,10 @@ function sandbox() {
   };
 }
 
+/** The Generalist plus these bots, written the way an earlier build's roster held them (createBot is gone). */
 function seedRoster(names: string[]): ShellStore {
   let store = seedStore();
-  for (const name of names) {
-    store = applyShellAction(store, { type: "createBot", name }).store;
-  }
+  for (const name of names) store = withBot(store, name).store;
   writeShell(store);
   return store;
 }
@@ -138,380 +111,6 @@ function idOf(store: ShellStore, name: string): string {
   return bot.id;
 }
 
-test("proposeBot writes a confirmable card instead of creating the bot", async () => {
-  const box = sandbox();
-  try {
-    seedRoster(["CEO"]);
-    // Proposing a bot is the orchestrator's: the default bot is acting.
-    const ceo = DEFAULT_BOT_ID;
-    const result = await run<{ status: string; proposalId: string }>(proposeBot, {
-      name: "Research Lead",
-      title: "Research",
-      description: "Find sources. Never publish without approval.",
-      brief: "Own pricing research.",
-    });
-    assert.equal(result.status, "awaiting_owner_confirmation");
-    const shell = readShell();
-    assert.equal(shell.bots.some((bot) => bot.name === "Research Lead"), false);
-    const proposal = readProposal(result.proposalId);
-    assert.equal(proposal?.kind, "createBot");
-    assert.equal(listThreadEvents(ceo).length, 1);
-    assert.equal(listThreadEvents(ceo)[0].kind, "proposal");
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot queues a handoff, is idempotent per requestId, and refuses self-sends", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(store, "CEO");
-    const research = idOf(store, "Research");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    const first = await run<{ status: string; handoffId: string }>(sendToBot, {
-      botId: research,
-      message: "Draft the pricing brief.",
-      requestId: "req-1",
-    });
-    assert.equal(first.status, "queued");
-    const duplicate = await run<{ status: string }>(sendToBot, {
-      botId: research,
-      message: "Draft the pricing brief.",
-      requestId: "req-1",
-    });
-    assert.equal(duplicate.status, "duplicate");
-    assert.equal(listHandoffs().length, 1);
-    assert.equal(listThreadEvents(research)[0].kind, "post");
-    assert.equal(listThreadEvents(ceo).some((event) => event.kind === "handoff"), true);
-
-    const self = await run<{ status: string }>(sendToBot, { botId: ceo, message: "hi" });
-    assert.equal(self.status, "invalid");
-    const missing = await run<{ status: string }>(sendToBot, { botId: "nope", message: "hi" });
-    assert.equal(missing.status, "not_found");
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot waits for the teammate reply and returns it", async () => {
-  const box = sandbox();
-  try {
-    process.env.UB_HANDOFF_WAIT_MS = "1000";
-    const store = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(store, "CEO");
-    const research = idOf(store, "Research");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    const pending = run<{ status: string; reply?: string }>(sendToBot, {
-      botId: research,
-      message: "What is the price?",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const queued = listHandoffs()[0];
-    assert.ok(queued);
-    setTimeout(() => {
-      markDelivered(queued.id, "Forty.");
-    }, 30);
-    const result = await pending;
-    assert.equal(result.status, "delivered");
-    assert.match(result.reply ?? "", /Forty/);
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot returns failed when delivery gives up", async () => {
-  const box = sandbox();
-  try {
-    process.env.UB_HANDOFF_WAIT_MS = "1000";
-    const store = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(store, "CEO");
-    const research = idOf(store, "Research");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    const pending = run<{ status: string; error?: string }>(sendToBot, {
-      botId: research,
-      message: "What is the price?",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const queued = listHandoffs()[0];
-    assert.ok(queued);
-    for (let i = 0; i < HANDOFF_ATTEMPTS_MAX; i += 1) {
-      markFailed(queued.id, "boom");
-    }
-    const result = await pending;
-    assert.equal(result.status, "failed");
-    assert.match(result.error ?? "", /boom/);
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot returns queued when the wait budget expires", async () => {
-  const box = sandbox();
-  try {
-    process.env.UB_HANDOFF_WAIT_MS = "50";
-    const store = seedRoster(["CEO", "Research"]);
-    process.env.UB_ACTIVE_BOT_ID = idOf(store, "CEO");
-    const result = await run<{ status: string; note?: string }>(sendToBot, {
-      botId: idOf(store, "Research"),
-      message: "Still working?",
-    });
-    assert.equal(result.status, "queued");
-    assert.match(result.note ?? "", /still working/i);
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot does not wait when the target already has a pending handoff back", async () => {
-  const box = sandbox();
-  try {
-    process.env.UB_HANDOFF_WAIT_MS = "5000";
-    const store = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(store, "CEO");
-    const research = idOf(store, "Research");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    queueHandoff({
-      sourceBotId: research,
-      sourceName: "Research",
-      targetBotId: ceo,
-      targetName: "CEO",
-      message: "already waiting",
-    });
-    const started = Date.now();
-    const result = await run<{ status: string; note?: string }>(sendToBot, {
-      botId: research,
-      message: "ping",
-    });
-    assert.equal(result.status, "queued");
-    assert.match(result.note ?? "", /already waiting/);
-    assert.ok(Date.now() - started < 1000);
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot queues into a one-member group without flipping its thread kind", async () => {
-  const box = sandbox();
-  try {
-    let store = seedRoster(["CEO", "Research", "Writer"]);
-    const group = applyShellAction(store, {
-      type: "createGroup",
-      name: "Pair",
-      memberIds: [idOf(store, "Research"), idOf(store, "Writer")],
-    });
-    const groupId = group.createdId ?? "";
-    // A group shrunk to one member is what a hand-edited or migrated store
-    // arrives in; the tool must still treat it as a group.
-    store = {
-      ...group.store,
-      bots: group.store.bots.map((bot) => (
-        bot.id === groupId ? { ...bot, memberIds: [idOf(group.store, "Research")] } : bot
-      )),
-    };
-    writeShell(store);
-    process.env.UB_ACTIVE_BOT_ID = idOf(store, "CEO");
-
-    const sent = await run<{ status: string }>(sendToBot, { botId: groupId, message: "kickoff" });
-    assert.equal(sent.status, "queued");
-    const handoff = listHandoffs().at(-1);
-    assert.equal(handoff?.groupId, groupId);
-    assert.equal(handoff?.threadKind, "group");
-    const thread = readAgentStore().threads.find((item) => item.botId === groupId);
-    assert.equal(thread?.kind, "group");
-  } finally {
-    box.restore();
-  }
-});
-
-test("postToGroup asks before fanning out and refuses a multi-member direct send", async () => {
-  const box = sandbox();
-  try {
-    let store = seedRoster(["CEO", "Research", "Writer"]);
-    const group = applyShellAction(store, {
-      type: "createGroup",
-      name: "Launch",
-      memberIds: [idOf(store, "Research"), idOf(store, "Writer")],
-    });
-    store = group.store;
-    writeShell(store);
-    const groupId = group.createdId ?? "";
-    process.env.UB_ACTIVE_BOT_ID = idOf(store, "CEO");
-
-    const direct = await run<{ status: string }>(sendToBot, { botId: groupId, message: "kickoff" });
-    assert.equal(direct.status, "needs_post_to_group");
-
-    const posted = await run<{ status: string; proposalId: string }>(postToGroup, {
-      groupId,
-      message: "Kickoff at nine: Research owns sources, Writer owns the brief.",
-    });
-    assert.equal(posted.status, "awaiting_owner_confirmation");
-    const proposal = readProposal(posted.proposalId);
-    assert.equal(proposal?.kind, "fanout");
-    assert.equal(proposal?.kind === "fanout" ? proposal.targetIds.length : 0, 2);
-    assert.equal(listHandoffs().length, 0, "nothing is delivered before the owner confirms");
-  } finally {
-    box.restore();
-  }
-});
-
-test("proposeGroup needs two real member bots and never the orchestrator", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["CEO", "Research"]);
-    // Proposing a group is the orchestrator's: the default bot is acting.
-    const tooFew = await run<{ status: string }>(proposeGroup, {
-      name: "Alone",
-      memberIds: [idOf(store, "Research")],
-    });
-    assert.equal(tooFew.status, "invalid");
-    const withDefault = await run<{ status: string }>(proposeGroup, {
-      name: "Bad",
-      memberIds: [idOf(store, "Research"), "bot-useful"],
-    });
-    assert.equal(withDefault.status, "invalid");
-    // The orchestrator is dropped from the roster and duplicates collapse, so
-    // this leaves a single member and must not become a group.
-    const tooThin = await run<{ status: string; proposalId: string }>(proposeGroup, {
-      name: "Pair",
-      memberIds: [idOf(store, "Research"), "bot-useful", idOf(store, "Research")],
-    });
-    assert.equal(tooThin.status, "invalid");
-
-    const second = applyShellAction(store, { type: "createBot", name: "Writer" }).store;
-    writeShell(second);
-    const good = await run<{ status: string; proposalId: string }>(proposeGroup, {
-      name: "Pair",
-      memberIds: [idOf(second, "Research"), idOf(second, "Writer")],
-    });
-    assert.equal(good.status, "awaiting_owner_confirmation");
-    assert.equal(readProposal(good.proposalId)?.kind, "createGroup");
-  } finally {
-    box.restore();
-  }
-});
-
-test("updateBotProfile proposes the edit and reports no_change honestly", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["CEO", "Research"]);
-    const research = idOf(store, "Research");
-    // The orchestrator may edit any bot's profile; a plain bot only its own.
-    const proposed = await run<{ status: string; proposalId: string }>(updateBotProfile, {
-      botId: research,
-      description: "Own pricing research. Never publish without approval.",
-      title: "Research",
-    });
-    assert.equal(proposed.status, "awaiting_owner_confirmation");
-    const proposal = readProposal(proposed.proposalId);
-    assert.equal(proposal?.kind, "updateBotProfile");
-    // A card that changes the description round-trips it exactly.
-    assert.equal(
-      proposal?.kind === "updateBotProfile" ? proposal.patch.description : null,
-      "Own pricing research. Never publish without approval.",
-    );
-    assert.equal(readShell().bots.find((bot) => bot.id === research)?.description, "");
-
-    const unchanged = await run<{ status: string }>(updateBotProfile, { botId: research });
-    assert.equal(unchanged.status, "no_change");
-    const missing = await run<{ status: string }>(updateBotProfile, { botId: "nope", name: "x" });
-    assert.equal(missing.status, "not_found");
-  } finally {
-    box.restore();
-  }
-});
-
-test("a rename proposal for a bot with an over-cap description leaves the description out", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["CEO", "Research"]);
-    const research = idOf(store, "Research");
-    const long = "x".repeat(9000);
-    writeShell({
-      ...store,
-      bots: store.bots.map((bot) => (bot.id === research ? { ...bot, description: long } : bot)),
-    });
-    const proposed = await run<{ status: string; proposalId: string }>(updateBotProfile, {
-      botId: research,
-      name: "Analyst",
-    });
-    assert.equal(proposed.status, "awaiting_owner_confirmation");
-    const proposal = readProposal(proposed.proposalId);
-    assert.equal(proposal?.kind, "updateBotProfile");
-    assert.equal(proposal?.kind === "updateBotProfile" ? "description" in proposal.patch : true, false);
-    assert.equal(proposal?.kind === "updateBotProfile" ? proposal.patch.name : "", "Analyst");
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot refuses hidden targets and ambiguous names", async () => {
-  const box = sandbox();
-  try {
-    let store = seedRoster(["CEO", "Research", "Writer"]);
-    const ceo = idOf(store, "CEO");
-    const research = idOf(store, "Research");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    store = applyShellAction(store, { type: "hide", botId: research, hidden: true }).store;
-    writeShell(store);
-    const hidden = await run<{ status: string }>(sendToBot, { botId: research, message: "hi" });
-    assert.equal(hidden.status, "invalid");
-
-    store = applyShellAction(store, {
-      type: "nameBot",
-      botId: idOf(store, "Research"),
-      name: "Research",
-      label: "Lead",
-    }).store;
-    store = applyShellAction(store, {
-      type: "nameBot",
-      botId: idOf(store, "Writer"),
-      name: "Writer",
-      label: "Lead",
-    }).store;
-    writeShell(store);
-    const ambiguous = await run<{ status: string; matches?: unknown[] }>(sendToBot, {
-      botId: "Lead",
-      message: "hi",
-    });
-    assert.equal(ambiguous.status, "ambiguous");
-    assert.equal(ambiguous.matches?.length, 2);
-    // An exact id still wins over the duplicate label.
-    const byId = await run<{ status: string }>(sendToBot, { botId: idOf(store, "Writer"), message: "hi" });
-    assert.equal(byId.status, "queued");
-  } finally {
-    box.restore();
-  }
-});
-
-test("sendToBot refuses to forward a handoff past the depth cap", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(store, "CEO");
-    const research = idOf(store, "Research");
-    process.env.UB_ACTIVE_BOT_ID = research;
-    const incoming = queueHandoff({
-      sourceBotId: ceo,
-      sourceName: "CEO",
-      targetBotId: research,
-      targetName: "Research",
-      message: "deep task",
-      depth: HANDOFF_DEPTH_MAX,
-    });
-    appendAgentEvent(research, {
-      kind: "post",
-      text: "deep task",
-      handoffId: incoming.id,
-      authorBotId: ceo,
-    }, process.env.UB_AGENT_STORE_PATH);
-    const bounced = await run<{ status: string }>(sendToBot, { botId: ceo, message: "back at you" });
-    assert.equal(bounced.status, "loop_refused");
-  } finally {
-    box.restore();
-  }
-});
-
 test("bash refuses commands that reference secret stores or parent traversal", async () => {
   const blocked = await run<{ status: string }>(bash, { command: "cat ~/.ssh/id_rsa" });
   assert.equal(blocked.status, "blocked");
@@ -532,41 +131,6 @@ test("bash truncates output past the exec buffer instead of failing the call", a
     assert.equal(result.truncated, true);
     assert.equal(result.stdout.startsWith(UNTRUSTED_PREAMBLE), true);
     assert.equal(result.stdout.includes("END-UNTRUSTED"), true);
-  } finally {
-    box.restore();
-  }
-});
-
-test("listBots reports ids, groups and sections", async () => {
-  const box = sandbox();
-  try {
-    let store = seedRoster(["CEO", "Research", "Writer"]);
-    const section = applyShellAction(store, { type: "createSection", name: "Work" });
-    store = section.store;
-    const group = applyShellAction(store, {
-      type: "createGroup",
-      name: "Launch",
-      memberIds: [idOf(store, "Research"), idOf(store, "Writer")],
-      sectionId: section.createdId ?? null,
-    });
-    store = group.store;
-    writeShell(store);
-    process.env.UB_ACTIVE_BOT_ID = idOf(store, "CEO");
-    const listing = await run<{
-      bots: Array<{ id: string; name: string }>;
-      groups: Array<{ name: string; members: Array<{ name: string }> }>;
-      sections: Array<{ name: string }>;
-      roster: string[];
-    }>(listBots, {});
-    assert.equal(listing.bots.length, 4);
-    assert.equal(listing.bots.some((bot) => bot.id === "bot-useful"), true);
-    assert.equal(listing.groups.length, 1);
-    assert.deepEqual(
-      listing.groups[0].members.map((member) => member.name).sort(),
-      ["Research", "Writer"],
-    );
-    assert.deepEqual(listing.sections.map((item) => item.name), ["Work"]);
-    assert.equal(listing.roster.length, 5);
   } finally {
     box.restore();
   }
@@ -863,21 +427,6 @@ test("an outside-sourced note shows no body in the recalled block and does not m
   }
 });
 
-test("listBots fences bot profile text as untrusted data", async () => {
-  const box = sandbox();
-  try {
-    seedRoster(["CEO"]);
-    const listing = await run<{ bots: Array<{ description: string; title: string }> }>(listBots, {});
-    assert.equal(listing.bots.length > 0, true);
-    for (const bot of listing.bots) {
-      assert.equal(bot.description.startsWith(UNTRUSTED_PREAMBLE), true);
-      assert.equal(bot.title.startsWith(UNTRUSTED_PREAMBLE), true);
-    }
-  } finally {
-    box.restore();
-  }
-});
-
 test("tools resolve the acting bot by session binding, then env, and never the selected bot", async () => {
   const box = sandbox();
   try {
@@ -895,18 +444,18 @@ test("tools resolve the acting bot by session binding, then env, and never the s
     process.env.UB_ACTIVE_BOT_ID = research;
 
     // The session wins even while the env pins another bot.
-    const inSession = await run<{ activeBotId: string }>(listBots, {}, { session: { id: "sess-ceo" } });
-    assert.equal(inSession.activeBotId, ceo);
+    const inSession = await run<{ bot: { id: string } }>(listRoutines, {}, { session: { id: "sess-ceo" } });
+    assert.equal(inSession.bot.id, ceo);
     // Without a session the env still pins one, the way tests do.
-    const byEnv = await run<{ activeBotId: string }>(listBots, {});
-    assert.equal(byEnv.activeBotId, research);
+    const byEnv = await run<{ bot: { id: string } }>(listRoutines, {});
+    assert.equal(byEnv.bot.id, research);
     // With neither, nothing answers: the selected bot is only where the owner
     // last looked, so the call is refused rather than guessed.
     delete process.env.UB_ACTIVE_BOT_ID;
-    const bySelection = await run<{ status: string; error: string }>(listBots, {});
+    const bySelection = await run<{ status: string; error: string }>(listRoutines, {});
     assert.equal(bySelection.status, "blocked");
     assert.equal(bySelection.error, "bot_context_missing");
-    const unbound = await run<{ error: string }>(listBots, {}, { session: { id: "sess-nobody" } });
+    const unbound = await run<{ error: string }>(listRoutines, {}, { session: { id: "sess-nobody" } });
     assert.equal(unbound.error, "bot_context_missing");
   } finally {
     box.restore();
@@ -1308,143 +857,6 @@ test("a symlinked grant root is refused at tool time", async () => {
 
 // MARK: - Rail actions
 
-test("railAction pins, hides, moves and creates sections", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(store, "CEO");
-
-    assert.equal((await run<{ status: string }>(railAction, { action: "pin", botId: ceo })).status, "applied");
-    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.pinned, true);
-    await run(railAction, { action: "unpin", botId: ceo });
-    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.pinned, false);
-
-    await run(railAction, { action: "hide", botId: ceo });
-    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.hidden, true);
-    await run(railAction, { action: "unhide", botId: ceo });
-    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.hidden, false);
-
-    const section = await run<{ status: string; sectionId: string }>(railAction, {
-      action: "createSection",
-      name: "Work",
-    });
-    assert.equal(section.status, "applied");
-    assert.ok(section.sectionId);
-    await run(railAction, { action: "move", botId: ceo, sectionId: section.sectionId });
-    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.sectionId, section.sectionId);
-
-    await run(railAction, { action: "renameSection", sectionId: section.sectionId, name: "Ops" });
-    assert.equal(readShell().sections.find((item) => item.id === section.sectionId)?.name, "Ops");
-
-    // Moving back out is the same action with a null section.
-    await run(railAction, { action: "move", botId: ceo, sectionId: null });
-    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.sectionId, null);
-  } finally {
-    box.restore();
-  }
-});
-
-test("railAction removeSection applies at once in Auto, refuses a non-empty section, and Read only refuses it", async () => {
-  const box = sandbox();
-  const home = homeFixture("auto");
-  try {
-    const approvals = home.approvals;
-    const store = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(store, "CEO");
-    const section = await run<{ status: string; sectionId: string }>(railAction, {
-      action: "createSection",
-      name: "Finance",
-    });
-    await run(railAction, { action: "move", botId: ceo, sectionId: section.sectionId });
-
-    // A section with a bot in it is refused outright, naming the bot, and no
-    // card is raised.
-    const full = await run<{ status: string; memberBotIds: string[] }>(railAction, {
-      action: "removeSection",
-      sectionId: section.sectionId,
-    });
-    assert.equal(full.status, "refused");
-    assert.deepEqual(full.memberBotIds, [ceo]);
-    assert.equal(approvals.listPending().length, 0);
-
-    await run(railAction, { action: "move", botId: ceo, sectionId: null });
-
-    // Read only: nothing on the rail changes.
-    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    const refused = await run<{ status: string; error: string }>(railAction, { action: "removeSection", sectionId: section.sectionId }, home.ctx);
-    assert.equal(refused.status, "blocked");
-    assert.equal(refused.error, "workspace_read_only");
-    const pinned = await run<{ status: string; error: string }>(railAction, { action: "pin", botId: ceo }, home.ctx);
-    assert.equal(pinned.status, "blocked");
-    assert.ok(readShell().sections.some((item) => item.id === section.sectionId));
-
-    // Auto: the empty section goes at once. The approval record is still
-    // written and bound, so the audit trail keeps what was removed.
-    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    const removed = await run<{ status: string; sectionId: string }>(railAction, {
-      action: "removeSection",
-      sectionId: section.sectionId,
-    }, home.ctx);
-    assert.equal(removed.status, "removed");
-    assert.equal(removed.sectionId, section.sectionId);
-    assert.equal(readShell().sections.some((item) => item.id === section.sectionId), false);
-    assert.equal(approvals.listPending().length, 0);
-    const record = [...approvals.records.values()].find((item) => item.tool === "remove_section");
-    assert.equal(record?.preview, `remove section Finance (${section.sectionId})`);
-    const again = await run<{ status: string }>(railAction, { action: "removeSection", sectionId: section.sectionId }, home.ctx);
-    assert.equal(again.status, "not_found");
-  } finally {
-    home.restore();
-    box.restore();
-  }
-});
-
-test("railAction updateSection renames a section by id in one step", async () => {
-  const box = sandbox();
-  try {
-    seedRoster(["CEO"]);
-    const section = await run<{ status: string; sectionId: string }>(railAction, {
-      action: "createSection",
-      name: "Work",
-    });
-    const renamed = await run<{ status: string; sectionId: string | null }>(railAction, {
-      action: "updateSection",
-      sectionId: section.sectionId,
-      name: "Operations",
-    });
-    assert.equal(renamed.status, "applied");
-    assert.equal(renamed.sectionId, section.sectionId);
-    assert.equal(readShell().sections.length, 1);
-    assert.equal(readShell().sections[0].name, "Operations");
-    const missing = await run<{ status: string }>(railAction, { action: "updateSection", sectionId: "nope", name: "X" });
-    assert.equal(missing.status, "not_found");
-  } finally {
-    box.restore();
-  }
-});
-
-test("railAction refuses unknown bots, unknown sections and missing names", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["CEO"]);
-    const ceo = idOf(store, "CEO");
-    assert.equal((await run<{ status: string }>(railAction, { action: "pin", botId: "nope" })).status, "not_found");
-    assert.equal((await run<{ status: string }>(railAction, { action: "pin" })).status, "invalid");
-    assert.equal(
-      (await run<{ status: string }>(railAction, { action: "move", botId: ceo, sectionId: "sec-nope" })).status,
-      "not_found",
-    );
-    assert.equal((await run<{ status: string }>(railAction, { action: "createSection" })).status, "invalid");
-    assert.equal(
-      (await run<{ status: string }>(railAction, { action: "renameSection", sectionId: "nope", name: "X" })).status,
-      "not_found",
-    );
-    assert.equal(readShell().sections.length, 0);
-  } finally {
-    box.restore();
-  }
-});
-
 // MARK: - Routine tools
 
 test("routine tools create, list, update and queue a run", async () => {
@@ -1535,13 +947,6 @@ test("routine tools reject bad schedules, zones and unknown ids", async () => {
       timezone: "Mars/Olympus",
     });
     assert.equal(badZone.status, "invalid");
-    const badBot = await run<{ status: string }>(createRoutine, {
-      name: "Bad",
-      instruction: "x",
-      botId: "nope",
-      schedules: [{ kind: "daily", time: "09:00" }],
-    });
-    assert.equal(badBot.status, "not_found");
     // Nothing malformed reached the store, and no card was raised for the
     // owner to deal with.
     assert.equal(storedRoutines(idOf(store, "SEO")).length, 0);
@@ -1549,7 +954,48 @@ test("routine tools reject bad schedules, zones and unknown ids", async () => {
 
     assert.equal((await run<{ status: string }>(updateRoutine, { routineId: "rtn_nope", name: "x" })).status, "not_found");
     assert.equal((await run<{ status: string }>(runRoutine, { routineId: "rtn_nope" })).status, "not_found");
-    assert.equal((await run<{ status: string }>(listRoutines, { botId: "nope" })).status, "not_found");
+    assert.equal((await run<{ status: string }>(deleteRoutine, { routineId: "rtn_nope" })).status, "not_found");
+
+    // A bot id the model passes is not an argument any more: the routine is the acting bot's.
+    const ignored = await run<{ status: string; bot: { id: string } }>(createRoutine, {
+      name: "Mine",
+      instruction: "x",
+      botId: "nope",
+      schedules: [{ kind: "daily", time: "09:00" }],
+    });
+    assert.equal(ignored.status, "created");
+    assert.equal(ignored.bot.id, idOf(store, "SEO"));
+    assert.equal(storedRoutines(idOf(store, "SEO")).length, 1);
+    const listed = await run<{ bot: { id: string }; routines: unknown[] }>(listRoutines, { botId: "nope" });
+    assert.equal(listed.bot.id, idOf(store, "SEO"));
+    assert.equal(listed.routines.length, 1);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a bot cannot touch another bot's routine: update, delete and run are refused and change nothing", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(store, "CEO");
+    const research = idOf(store, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+    const routineId = createRoutineFixture(research);
+    const before = JSON.stringify(readRoutine(routineId));
+    const refused = { status: "blocked", error: "not_available_for_this_bot" };
+    const pick = (result: { status?: string; error?: string }) => ({ status: result.status, error: result.error });
+    assert.deepEqual(pick(await run(updateRoutine, { routineId, name: "Hijacked" })), refused);
+    assert.deepEqual(pick(await run(updateRoutine, { routineId, instruction: "do something else" })), refused);
+    assert.deepEqual(pick(await run(deleteRoutine, { routineId })), refused);
+    assert.deepEqual(pick(await run(runRoutine, { routineId })), refused);
+    assert.equal(JSON.stringify(readRoutine(routineId)), before);
+    assert.equal(approvals.listPending().length, 0, "refused before any card");
+    // Its own routine list never shows the other bot's.
+    const listed = await run<{ routines: unknown[] }>(listRoutines, {});
+    assert.equal(listed.routines.length, 0);
   } finally {
     box.restore();
   }
@@ -1608,64 +1054,6 @@ test("routine edits apply at once in Auto and are refused in Read only", async (
   }
 });
 
-test("a bot-initiated bot delete cannot bypass the owner gate", async () => {
-  const box = sandbox();
-  try {
-    const shell = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(shell, "CEO");
-    const research = idOf(shell, "Research");
-    createRoutineFixture(research);
-
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-
-    const denied = run<{ status: string }>(deleteBot, { botId: research });
-    const first = await pendingApproval(approvals);
-    assert.equal(first.tool, "delete_bot");
-    // Still pending: nothing may be removed before the owner decides.
-    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
-    approvals.decide(first.id, "deny", first.actionSha256);
-    await assert.rejects(() => denied, /approval_denied/);
-    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
-    assert.equal(storedRoutines(research).length, 1);
-
-    const approved = run<{ status: string; routinesRemoved: number }>(deleteBot, { botId: research });
-    const second = await pendingApproval(approvals);
-    approvals.decide(second.id, "approve", second.actionSha256);
-    const result = await approved;
-    assert.equal(result.status, "deleted");
-    assert.equal(result.routinesRemoved, 1);
-    assert.equal(readShell().bots.some((bot) => bot.id === research), false);
-    // The bot's routines went with it instead of coming due for a ghost.
-    assert.equal(storedRoutines(research).length, 0);
-  } finally {
-    box.restore();
-  }
-});
-
-test("deleteBot refuses the orchestrator, itself and the last bot", async () => {
-  const box = sandbox();
-  try {
-    const shell = seedRoster(["CEO"]);
-    const ceo = idOf(shell, "CEO");
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-
-    // The orchestrator is acting: it cannot delete itself.
-    assert.equal((await run<{ status: string }>(deleteBot, { botId: "bot-useful" })).status, "refused");
-    assert.equal((await run<{ status: string }>(deleteBot, { botId: "nope" })).status, "not_found");
-    // A plain bot deletes nothing, itself included.
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    assert.equal((await run<{ error: string }>(deleteBot, { botId: ceo })).error, "not_available_for_this_bot");
-    assert.equal((await run<{ error: string }>(deleteBot, { botId: "bot-useful" })).error, "not_available_for_this_bot");
-    // A refusal never opens an approval card for the owner to deal with.
-    assert.equal(approvals.listPending().length, 0);
-    assert.equal(readShell().bots.length, 2);
-  } finally {
-    box.restore();
-  }
-});
-
 test("a routine delete runs at once in Auto and is refused in Read only", async () => {
   const box = sandbox();
   const home = homeFixture("read_only");
@@ -1707,14 +1095,6 @@ test("new tool schemas reject the arguments a model gets wrong", () => {
   const parse = (tool: { inputSchema: unknown }, value: unknown) =>
     (tool.inputSchema as Schema).safeParse(value).success;
 
-  assert.equal(parse(deleteBot, { botId: "bot-a" }), true);
-  assert.equal(parse(deleteBot, {}), false);
-  assert.equal(parse(deleteBot, { botId: "" }), false);
-
-  assert.equal(parse(railAction, { action: "pin", botId: "bot-a" }), true);
-  assert.equal(parse(railAction, { action: "move", botId: "bot-a", sectionId: null }), true);
-  assert.equal(parse(railAction, { action: "delete", botId: "bot-a" }), false);
-
   const valid = { name: "n", instruction: "i", schedules: [{ kind: "daily", time: "09:00" }] };
   assert.equal(parse(createRoutine, valid), true);
   assert.equal(parse(createRoutine, { ...valid, schedules: [] }), false);
@@ -1755,92 +1135,6 @@ test("new tool schemas reject the arguments a model gets wrong", () => {
   assert.equal(parse(memoryUpsert, { ...memoryNote, expiresAt: "2026-01-01T00:00:00Z" }), true);
   assert.equal(parse(memoryUpsert, { ...memoryNote, id: "../escape" }), false);
   assert.equal(parse(memoryUpsert, { ...memoryNote, id: "note-1" }), true);
-});
-
-test("deleteBot refuses an ambiguous name instead of guessing which bot", async () => {
-  const box = sandbox();
-  try {
-    seedRoster(["CEO", "Research"]);
-    // `uniqueName` stops the app itself from making two names that differ only
-    // in case, so this is the shape a hand-edited or migrated store arrives in.
-    const withTwin = readShell();
-    const original = withTwin.bots.find((bot) => bot.name === "Research")!;
-    withTwin.bots = [...withTwin.bots, { ...original, id: `${original.id}-twin`, name: "research" }];
-    writeShell(withTwin);
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-
-    const result = await run<{ status: string; hint?: string }>(deleteBot, { botId: "RESEARCH" });
-    assert.equal(result.status, "ambiguous");
-    // The hint has to carry the ids, or the model cannot resolve it.
-    assert.match(result.hint ?? "", /delete_bot again with one of these ids/);
-    // Nothing was proposed, so nothing can be approved by mistake.
-    assert.equal(approvals.listPending().length, 0);
-    assert.equal(readShell().bots.length, 4);
-
-    // An exact id still resolves, even while the names collide.
-    const exact = run<{ status: string }>(deleteBot, { botId: original.id });
-    const card = await pendingApproval(approvals);
-    approvals.decide(card.id, "approve", card.actionSha256);
-    assert.equal((await exact).status, "deleted");
-  } finally {
-    box.restore();
-  }
-});
-
-test("deleteBot takes the bot's transcript with it", async () => {
-  const box = sandbox();
-  try {
-    const shell = seedRoster(["CEO", "Research"]);
-    const research = idOf(shell, "Research");
-    appendAgentEvent(research, { kind: "assistant", text: "something it said" });
-    assert.equal(listThreadEvents(research).length, 1);
-
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-    const approved = run<{ status: string; detachError: string | null }>(deleteBot, { botId: research });
-    const card = await pendingApproval(approvals);
-    approvals.decide(card.id, "approve", card.actionSha256);
-    const result = await approved;
-
-    assert.equal(result.status, "deleted");
-    assert.equal(result.detachError, null);
-    // The card promises the transcript goes too, so the row itself must be
-    // gone. `listThreadEvents` returns [] for an emptied row as well, so it
-    // cannot tell `deleteThread` from `clearThread`: read the store.
-    assert.equal(readAgentStore().threads.some((thread) => thread.botId === research), false);
-    // And nothing is left for the sweep to find afterwards.
-    assert.deepEqual(sweepOrphanThreads(readShell().bots.map((bot) => bot.id)), []);
-  } finally {
-    box.restore();
-  }
-});
-
-test("railAction refuses to hide the bot the owner is talking to", async () => {
-  const box = sandbox();
-  try {
-    const shell = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(shell, "CEO");
-    const research = idOf(shell, "Research");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-
-    const self = await run<{ status: string }>(railAction, { action: "hide", botId: ceo });
-    assert.equal(self.status, "refused");
-    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.hidden, false);
-
-    // A plain bot arranges only its own row, so another bot's is out of reach.
-    const reach = await run<{ status: string; error: string }>(railAction, { action: "hide", botId: research });
-    assert.equal(reach.status, "blocked");
-    assert.equal(reach.error, "not_available_for_this_bot");
-
-    // The orchestrator hiding a different bot is still ordinary, reversible work.
-    process.env.UB_ACTIVE_BOT_ID = DEFAULT_BOT_ID;
-    const other = await run<{ status: string }>(railAction, { action: "hide", botId: research });
-    assert.equal(other.status, "applied");
-    assert.equal(readShell().bots.find((bot) => bot.id === research)?.hidden, true);
-  } finally {
-    box.restore();
-  }
 });
 
 test("keychain material under a granted home folder is not readable", async () => {
@@ -1934,88 +1228,6 @@ test("reads work in every permission, because reading is what a grant is for", a
     } finally {
       box.restore();
     }
-  }
-});
-
-test("clearHistory waits for the owner and then empties the chat", async () => {
-  const box = sandbox();
-  try {
-    const shell = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(shell, "CEO");
-    const research = idOf(shell, "Research");
-    // A session pointer and a durable event, which is what a used chat has.
-    writeShell(applyShellAction(readShell(), {
-      type: "touchChat",
-      botId: research,
-      preview: "hello",
-      sessionId: "wrun_test",
-    }).store);
-    appendAgentEvent(research, { kind: "note", text: "remember this" });
-    assert.equal(listThreadEvents(research).length, 1);
-
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-
-    const denied = run<{ status: string }>(clearHistory, { botId: research });
-    const first = await pendingApproval(approvals);
-    assert.equal(first.tool, "clear_history");
-    // Still pending: nothing may be emptied before the owner decides.
-    assert.equal(readShell().bots.find((bot) => bot.id === research)?.sessionId, "wrun_test");
-    approvals.decide(first.id, "deny", first.actionSha256);
-    await assert.rejects(() => denied, /approval_denied/);
-    assert.equal(listThreadEvents(research).length, 1);
-
-    const approved = run<{ status: string; clearedCount: number }>(clearHistory, { botId: research });
-    const second = await pendingApproval(approvals);
-    approvals.decide(second.id, "approve", second.actionSha256);
-    const result = await approved;
-    assert.equal(result.status, "cleared");
-    assert.equal(result.clearedCount, 1);
-    assert.equal(readShell().bots.find((bot) => bot.id === research)?.sessionId, null);
-    assert.equal(listThreadEvents(research).length, 0);
-    // The bot itself survives: only the conversation went.
-    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
-  } finally {
-    box.restore();
-  }
-});
-
-test("clearHistory clears its own chat by default and every chat on request", async () => {
-  const box = sandbox();
-  try {
-    const shell = seedRoster(["CEO", "Research"]);
-    const ceo = idOf(shell, "CEO");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-
-    // No botId: this bot's own chat, and the card says which one.
-    const own = run<{ status: string; bots: Array<{ id: string }> }>(clearHistory, {});
-    const card = await pendingApproval(approvals);
-    approvals.decide(card.id, "approve", card.actionSha256);
-    const result = await own;
-    assert.equal(result.bots.length, 1);
-    assert.equal(result.bots[0].id, ceo);
-
-    // Every chat is the orchestrator's: a plain bot is refused, with no card.
-    const plainAll = await run<{ status: string; error: string }>(clearHistory, { all: true });
-    assert.equal(plainAll.status, "blocked");
-    assert.equal(plainAll.error, "not_available_for_this_bot");
-    assert.equal(approvals.listPending().length, 0);
-
-    // Every chat, in one card.
-    process.env.UB_ACTIVE_BOT_ID = DEFAULT_BOT_ID;
-    const all = run<{ clearedCount: number }>(clearHistory, { all: true });
-    const second = await pendingApproval(approvals);
-    approvals.decide(second.id, "approve", second.actionSha256);
-    assert.equal((await all).clearedCount, readShell().bots.length);
-
-    // Contradictory arguments are refused without troubling the owner.
-    assert.equal((await run<{ status: string }>(clearHistory, { all: true, botId: ceo })).status, "refused");
-    assert.equal((await run<{ status: string }>(clearHistory, { botId: "nope" })).status, "not_found");
-    assert.equal(approvals.listPending().length, 0);
-  } finally {
-    box.restore();
   }
 });
 
@@ -2146,59 +1358,6 @@ test("a read-only shell line runs with every write refused, whatever the mode", 
   }
 });
 
-test("deleting a bot still asks in Auto, runs in Full access, and is refused in Read only", async () => {
-  const box = sandbox();
-  const home = homeFixture("read_only");
-  try {
-    const shell = seedRoster(["CEO", "Research", "Ops"]);
-    const ceo = idOf(shell, "CEO");
-    const research = idOf(shell, "Research");
-    const ops = idOf(shell, "Ops");
-
-    const refused = await run<{ status: string; error: string }>(deleteBot, { botId: research }, home.ctx);
-    assert.equal(refused.status, "blocked");
-    assert.equal(refused.error, "workspace_read_only");
-    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
-
-    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    const pending = run<{ status: string }>(deleteBot, { botId: research }, home.ctx);
-    const card = await openCard(home.approvals);
-    assert.equal(card.tool, "delete_bot");
-    home.approvals.decide(card.id, "approve", card.actionSha256);
-    assert.equal((await pending).status, "deleted");
-
-    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    assert.equal((await run<{ status: string }>(deleteBot, { botId: ops }, home.ctx)).status, "deleted");
-    assert.equal(home.approvals.listPending().length, 0);
-    assert.equal(readShell().bots.some((bot) => bot.id === ops), false);
-  } finally {
-    home.restore();
-    box.restore();
-  }
-});
-
-test("clearing a chat is refused in Read only and still asks in Auto", async () => {
-  const box = sandbox();
-  const home = homeFixture("read_only");
-  try {
-    const shell = seedRoster(["CEO"]);
-    const ceo = idOf(shell, "CEO");
-    process.env.UB_ACTIVE_BOT_ID = ceo;
-    const refused = await run<{ status: string; error: string }>(clearHistory, {}, home.ctx);
-    assert.equal(refused.status, "blocked");
-    assert.equal(refused.error, "workspace_read_only");
-    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    const pending = run<{ status: string }>(clearHistory, {}, home.ctx);
-    const card = await openCard(home.approvals);
-    assert.equal(card.tool, "clear_history");
-    home.approvals.decide(card.id, "deny", card.actionSha256);
-    await assert.rejects(pending, /approval_denied/);
-  } finally {
-    home.restore();
-    box.restore();
-  }
-});
-
 test("a shell line cannot read the app's own stores in any mode, and a session with no grant is read only", async () => {
   const home = homeFixture("full_access");
   try {
@@ -2236,24 +1395,6 @@ test("shell startup files are never written, even in Full access", async () => {
   }
 });
 
-test("a delete card raised in Auto does not spend after the owner drops to Read only", async () => {
-  const box = sandbox();
-  const home = homeFixture("auto");
-  try {
-    const shell = seedRoster(["CEO", "Research"]);
-    const research = idOf(shell, "Research");
-    const pending = run<{ status: string }>(deleteBot, { botId: research }, home.ctx);
-    const card = await openCard(home.approvals);
-    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    home.approvals.decide(card.id, "approve", card.actionSha256);
-    await assert.rejects(pending, /permission_changed/);
-    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
-  } finally {
-    home.restore();
-    box.restore();
-  }
-});
-
 test("a glob cannot read a credential store through a read-only line", { skip: process.platform !== "darwin" }, async () => {
   const home = homeFixture("full_access");
   try {
@@ -2277,212 +1418,17 @@ test("a glob cannot read a credential store through a read-only line", { skip: p
   }
 });
 
-test("Read only refuses handoffs, group posts and routine runs", async () => {
+test("Read only refuses routine runs", async () => {
   const box = sandbox();
   const home = homeFixture("read_only");
   try {
-    const shell = seedRoster(["CEO", "Research"]);
+    const shell = seedRoster(["CEO"]);
     const ceo = idOf(shell, "CEO");
-    const research = idOf(shell, "Research");
     process.env.UB_ACTIVE_BOT_ID = ceo;
-    const routineId = createRoutineFixture(research);
-    const sent = await run<{ status: string; error: string }>(sendToBot, { botId: research, message: "go" }, home.ctx);
-    assert.equal(sent.status, "blocked");
-    assert.equal(sent.error, "workspace_read_only");
-    assert.equal(listHandoffs().length, 0);
-    const posted = await run<{ status: string }>(postToGroup, { groupId: research, message: "go" }, home.ctx);
-    assert.equal(posted.status, "blocked");
+    const routineId = createRoutineFixture(ceo);
     const ran = await run<{ status: string }>(runRoutine, { routineId }, home.ctx);
     assert.equal(ran.status, "blocked");
     assert.equal(readRoutine(routineId)?.manualRunRequested, false);
-  } finally {
-    home.restore();
-    box.restore();
-  }
-});
-
-// UB-009: description caps on the proposal tools and the stored cards.
-
-/** The description cap a tool's input schema declares, from its JSON schema. */
-function descriptionCap(tool: { inputSchema: unknown }): number {
-  const standard = (tool.inputSchema as { "~standard": { jsonSchema: { input(options: { target: string }): unknown } } })["~standard"];
-  const schema = standard.jsonSchema.input({ target: "draft-07" }) as { properties: { description: { maxLength: number } } };
-  return schema.properties.description.maxLength;
-}
-
-test("propose_bot caps the description at 2,000 characters", () => {
-  assert.equal(descriptionCap(proposeBot), 2000);
-});
-
-test("update_bot_profile and propose_group cap the description at 8,000 characters", () => {
-  assert.equal(descriptionCap(updateBotProfile), 8000);
-  assert.equal(descriptionCap(proposeGroup), 8000);
-});
-
-test("createProposal refuses an over-cap description for each card kind", () => {
-  const box = sandbox();
-  try {
-    const base = { sourceBotId: null, threadId: "t", proposerId: DEFAULT_BOT_ID };
-    assert.throws(
-      () => createProposal({ ...base, kind: "createBot", name: "N", petname: "P", title: "", description: "d".repeat(2001), sectionId: null, brief: "" }),
-      /shell_description_too_long/,
-    );
-    assert.throws(
-      () => createProposal({ ...base, kind: "createGroup", name: "G", memberIds: ["a", "b"], description: "d".repeat(DESCRIPTION_MAX + 1) }),
-      /shell_description_too_long/,
-    );
-    assert.throws(
-      () => createProposal({
-        ...base,
-        kind: "updateBotProfile",
-        botId: "x",
-        baseRevision: 0,
-        patch: { name: "N", petname: "", title: "", description: "d".repeat(DESCRIPTION_MAX + 1), avatarShape: null, avatarColor: null },
-      }),
-      /shell_description_too_long/,
-    );
-    assert.equal(readAgentStore().proposals.length, 0);
-  } finally {
-    box.restore();
-  }
-});
-
-test("a stored card over its cap is dropped on read, never clipped", () => {
-  const card = (kind: string, extra: Record<string, unknown>) => ({
-    id: `p-${kind}`, kind, status: "pending", threadId: "t", sourceBotId: null,
-    createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(), ...extra,
-  });
-  const store = parseAgentStore({
-    schemaVersion: 1,
-    threads: [],
-    proposals: [
-      card("createBot", { name: "N", petname: "P", title: "", description: "d".repeat(2001), brief: "" }),
-      card("createGroup", { name: "G", memberIds: ["a", "b"], description: "d".repeat(8001) }),
-      card("createGroup", { name: "G2", memberIds: ["a", "b"], description: "d".repeat(8000) }),
-      card("createBot", { name: "N2", petname: "P", title: "", description: "d".repeat(2000), brief: "" }),
-    ],
-    reserves: [],
-  });
-  assert.deepEqual(store.proposals.map((item) => item.id), ["p-createGroup", "p-createBot"]);
-  assert.equal((store.proposals[0] as { description: string }).description.length, 8000);
-});
-
-test("propose_group stores the group description on the card", async () => {
-  const box = sandbox();
-  try {
-    const store = seedRoster(["Research", "Writer"]);
-    const result = await run<{ status: string; proposalId: string }>(proposeGroup, {
-      name: "Launch",
-      memberIds: [idOf(store, "Research"), idOf(store, "Writer")],
-      description: "  Ship the launch together. Research owns sources.  ",
-    });
-    assert.equal(result.status, "awaiting_owner_confirmation");
-    const card = readProposal(result.proposalId);
-    assert.equal(card?.kind, "createGroup");
-    assert.equal((card as { description: string }).description, "Ship the launch together. Research owns sources.");
-  } finally {
-    box.restore();
-  }
-});
-
-test("listBots gives a 200-character summary with the length, and the full text for one botId", async () => {
-  const box = sandbox();
-  try {
-    const long = "L".repeat(500);
-    const created = applyShellAction(seedRoster(["Other"]), { type: "createBot", name: "Wordy", description: long });
-    writeShell(created.store);
-    const id = created.createdId ?? "";
-    const listing = await run<{ bots: Array<{ id: string; description: string; descriptionChars: number }> }>(listBots, {});
-    const wordy = listing.bots.find((bot) => bot.id === id);
-    assert.equal(wordy?.descriptionChars, 500);
-    assert.equal(wordy?.description.includes("L".repeat(200) + "..."), true);
-    assert.equal(wordy?.description.includes("L".repeat(201)), false);
-    assert.equal(wordy?.description.startsWith(UNTRUSTED_PREAMBLE), true);
-    const one = await run<{ bots: Array<{ id: string; description: string }> }>(listBots, { botId: id });
-    const full = one.bots.find((bot) => bot.id === id);
-    assert.equal(full?.description.includes(long), true);
-    assert.equal(full?.description.startsWith(UNTRUSTED_PREAMBLE), true);
-    const missing = await run<{ status: string }>(listBots, { botId: "nope" });
-    assert.equal(missing.status, "not_found");
-  } finally {
-    box.restore();
-  }
-});
-
-// A sub-agent's child is the root's hand: what it reads taints the root's notes,
-// and it files no Library page or chat card.
-function childOf(root: string, id: string) {
-  return { session: { id, turn: { id: "kt" }, parent: { callId: "c", rootSessionId: root, sessionId: root, turn: { id: "t0", sequence: 0 } } } };
-}
-
-test("a child's outside reading makes the root's later note model-after-outside-content", async () => {
-  const box = sandbox();
-  const home = homeFixture("auto");
-  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
-  const previousMemory = process.env.UB_MEMORY_ROOT;
-  process.env.UB_MEMORY_ROOT = memoryRoot;
-  resetMemoryDir(memoryRoot);
-  try {
-    bindSession("sess-home", DEFAULT_BOT_ID);
-    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null });
-    const rootTurn = (id: string) => ({ session: { id: "sess-home", turn: { id } } });
-    const before = await run<{ id: string }>(memoryUpsert, note("Before"), rootTurn("kt-before"));
-    await run(listDir, { path: "Desktop" }, childOf("sess-home", "kid-1"));
-    // The root reads nothing itself, in this turn or a later one.
-    const after = await run<{ id: string }>(memoryUpsert, note("From the report"), rootTurn("kt-after"));
-    const store = new MemoryStore(memoryRoot);
-    assert.equal(store.readCard(before.id, "bot-useful").source, "model");
-    assert.equal(store.readCard(after.id, "bot-useful").source, "model-after-outside-content");
-  } finally {
-    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
-    else process.env.UB_MEMORY_ROOT = previousMemory;
-    home.restore();
-    box.restore();
-  }
-});
-
-test("a child writing an .html file files no Library page or chat card and says so", async () => {
-  const box = sandbox();
-  const home = homeFixture("auto");
-  try {
-    bindSession("sess-home", DEFAULT_BOT_ID);
-    const out = await run<{ path: string; note?: string }>(writeFileTool, { path: "report.html", content: "<h1>hi</h1>", expectedSha256: null }, childOf("sess-home", "kid-2"));
-    assert.match(out.note ?? "", /sub-agent adds nothing/);
-    assert.equal(listThreadEvents(DEFAULT_BOT_ID).some((event) => event.kind === "page"), false);
-  } finally {
-    home.restore();
-    box.restore();
-  }
-});
-
-test("a child that cannot be verified gets the structured refusal from read_file, list_dir and write_file", async () => {
-  const box = sandbox();
-  const home = homeFixture("auto");
-  try {
-    const orphan = childOf("no-such-root", "kid-x");
-    for (const [tool, input] of [
-      [readFile, { path: "Desktop/todo.txt" }],
-      [listDir, { path: "Desktop" }],
-      [writeFileTool, { path: "a.txt", content: "x", expectedSha256: null }],
-    ] as const) {
-      assert.deepEqual(await run(tool as Tool, input as Record<string, unknown>, orphan), { status: "blocked", error: "bot_context_missing" });
-    }
-  } finally {
-    home.restore();
-    box.restore();
-  }
-});
-
-test("a sub-agent's bash line that needs a PATH write is refused; a plain one still runs", async () => {
-  const box = sandbox();
-  const home = homeFixture("full_access");
-  try {
-    bindSession("sess-home", DEFAULT_BOT_ID);
-    const kid = childOf("sess-home", "kid-3");
-    const blocked = await run<{ status?: string; error?: string }>(bash, { command: "npm install -g left-pad" }, kid);
-    assert.equal(blocked.error, "not_available_for_sub_agents");
-    const fine = await run<{ status?: string; error?: string }>(bash, { command: "pwd" }, kid);
-    assert.notEqual(fine.error, "not_available_for_sub_agents");
   } finally {
     home.restore();
     box.restore();

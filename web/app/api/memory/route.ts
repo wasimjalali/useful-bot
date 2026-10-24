@@ -32,7 +32,7 @@ export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const botId = params.get("botId")?.trim() ?? "";
   const id = params.get("id")?.trim() ?? "";
-  if (!botId) return NextResponse.json({ ok: true, notes: [] });
+  if (!botId) return NextResponse.json({ ok: true, notes: [], total: 0 });
   if (id) {
     try {
       return NextResponse.json({ ok: true, note: memoryStore().readCard(id, botId) });
@@ -40,8 +40,10 @@ export async function GET(request: Request) {
       return storeFailure(err);
     }
   }
-  const notes = memoryStore().list(botId, 100);
-  return NextResponse.json({ ok: true, notes });
+  const store = memoryStore();
+  const notes = store.list(botId, 100);
+  // The list is a page of at most 100; `total` is how many live notes the bot has.
+  return NextResponse.json({ ok: true, notes, total: store.countLive(botId) });
 }
 
 /** Delete one of a bot's notes. Same owner gate and CSRF check as the other writes. */

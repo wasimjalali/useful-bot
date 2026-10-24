@@ -1,26 +1,18 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { callerOf, mayActOn, notAvailable, SELF_ONLY_HINT } from "../lib/permission.ts";
+import { callerOf } from "../lib/permission.ts";
 import { listRoutines, routineNextRun } from "../../shared/routines-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 export default defineTool({
   description:
-    "List a bot's routines with next run and recent outcomes. Read only. Defaults to this bot. Call before editing or deleting one, for the id.",
-  inputSchema: z.object({
-    botId: z.string().min(1).max(80).optional(),
-  }),
-  async execute(input, ctx) {
-    const shell = readShell();
-    const who = await callerOf(shell, ctx, { readOnly: true });
+    "List this bot's routines with next run and recent outcomes. Read only. Call before editing or deleting one, for the id.",
+  inputSchema: z.object({}),
+  async execute(_input, ctx) {
+    const who = await callerOf(readShell(), ctx);
     if (!who.ok) return who.result;
-    const botId = input.botId?.trim() || who.caller.id;
-    const bot = shell.bots.find((item) => item.id === botId) ?? null;
-    if (!bot) {
-      return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call list_bots for exact ids." };
-    }
-    if (!mayActOn(who.caller, bot.id)) return notAvailable(SELF_ONLY_HINT);
+    const bot = who.caller.bot;
     const now = new Date();
     return {
       status: "ok",

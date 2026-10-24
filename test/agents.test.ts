@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,14 +31,30 @@ import {
   ownsHandoffClaim,
   queueHandoff,
   readHandoff,
-  pendingHandoffCycle,
-  waitForHandoff,
 } from "../shared/handoffs.ts";
-import { sendHandoff, writeHandoffReply } from "../shared/agents-send.ts";
+import { writeHandoffReply } from "../shared/agents-send.ts";
 
 function tempPaths() {
   const dir = mkdtempSync(join(tmpdir(), "ub-agents-"));
   return { dir, storePath: join(dir, "agents.json"), handoffDir: join(dir, "handoffs") };
+}
+
+/** A connect card for an app, the one kind of card a bot can still raise besides a server. */
+function appCard(name: string, threadId = "b1") {
+  return {
+    kind: "connectApp" as const,
+    slug: name.toLowerCase(),
+    name,
+    logo: null,
+    purpose: "Read the last invoice thread",
+    sourceBotId: threadId,
+    threadId,
+    phase: "proposed" as const,
+    accountId: null,
+    waitingSince: null,
+    toolCount: null,
+    handoffId: null,
+  };
 }
 
 test("unknown keys at any level are tolerated instead of dropping data", () => {
@@ -78,21 +94,11 @@ test("thread events dedupe by id and stay capped", () => {
 
 test("proposals are created pending, scoped to a thread, and resolved once", () => {
   const { storePath } = tempPaths();
-  const proposal = createProposal({
-    kind: "createBot",
-    name: "Research Lead",
-    petname: "New Bot 1",
-    title: "Research",
-    description: "Find sources and cite them.",
-    sectionId: null,
-    sourceBotId: null,
-    threadId: "b1",
-    brief: "",
-  }, storePath);
+  const proposal = createProposal(appCard("ResearchLead"), storePath);
   assert.equal(proposal.status, "pending");
   appendAgentEvent("b1", {
     kind: "proposal",
-    text: "Proposed teammate",
+    text: "Proposed connecting an app",
     proposalId: proposal.id,
     id: "ev1",
   }, storePath);
@@ -107,17 +113,7 @@ test("proposals are created pending, scoped to a thread, and resolved once", () 
 
 test("a proposal can only be claimed once", () => {
   const { storePath } = tempPaths();
-  const proposal = createProposal({
-    kind: "createBot",
-    name: "Once",
-    petname: "New Bot 1",
-    title: "",
-    description: "",
-    sectionId: null,
-    sourceBotId: null,
-    threadId: "b1",
-    brief: "",
-  }, storePath);
+  const proposal = createProposal(appCard("Once"), storePath);
   assert.equal(claimProposal(proposal.id, "confirmed", storePath)?.id, proposal.id);
   assert.equal(claimProposal(proposal.id, "confirmed", storePath), null);
   assert.equal(claimProposal(proposal.id, "dismissed", storePath), null);
@@ -125,17 +121,7 @@ test("a proposal can only be claimed once", () => {
 
 test("an expired proposal cannot be claimed", () => {
   const { storePath } = tempPaths();
-  const proposal = createProposal({
-    kind: "createBot",
-    name: "Too Late",
-    petname: "New Bot 1",
-    title: "",
-    description: "",
-    sectionId: null,
-    sourceBotId: null,
-    threadId: "b1",
-    brief: "",
-  }, storePath);
+  const proposal = createProposal(appCard("TooLate"), storePath);
   const store = readAgentStore(storePath);
   store.proposals[0].expiresAt = new Date(Date.now() - 1000).toISOString();
   writeAgentStore(store, storePath);
@@ -144,17 +130,7 @@ test("an expired proposal cannot be claimed", () => {
 
 test("a corrupt expiry is treated as expired, not confirmable", () => {
   const { storePath } = tempPaths();
-  const proposal = createProposal({
-    kind: "createBot",
-    name: "Corrupt",
-    petname: "New Bot 1",
-    title: "",
-    description: "",
-    sectionId: null,
-    sourceBotId: null,
-    threadId: "b1",
-    brief: "",
-  }, storePath);
+  const proposal = createProposal(appCard("Corrupt"), storePath);
   const store = readAgentStore(storePath);
   store.proposals[0].expiresAt = "not-a-date";
   writeAgentStore(store, storePath);
@@ -166,20 +142,64 @@ test("a corrupt expiry is treated as expired, not confirmable", () => {
 
 test("the same side of a handoff lands once per transcript", () => {
   const { storePath } = tempPaths();
-  appendAgentEvent("b1", { kind: "post", text: "task", handoffId: "hnd_x", id: "e1" }, storePath);
-  appendAgentEvent("b1", { kind: "post", text: "task", handoffId: "hnd_x", id: "e2" }, storePath);
-  appendAgentEvent("b1", { kind: "assistant", text: "reply", handoffId: "hnd_x", id: "e3" }, storePath);
+  appendAgentEvent("b1", { kind: "assistant", text: "reply", handoffId: "hnd_x", id: "e1" }, storePath);
+  appendAgentEvent("b1", { kind: "assistant", text: "reply", handoffId: "hnd_x", id: "e2" }, storePath);
+  appendAgentEvent("b1", { kind: "note", text: "no reply", handoffId: "hnd_x", id: "e3" }, storePath);
   assert.equal(listThreadEvents("b1", storePath).length, 2);
 });
 
 test("agent tool sends are idempotent per request id", () => {
   const { storePath } = tempPaths();
-  const key = reserveKey("handoff", "req-1");
+  const key = reserveKey("proposal", "req-1");
   assert.equal(isReserved(key, storePath), false);
-  assert.equal(reserveSend("handoff", "req-1", storePath), true);
-  assert.equal(reserveSend("handoff", "req-1", storePath), false);
+  assert.equal(reserveSend("proposal", "req-1", storePath), true);
+  assert.equal(reserveSend("proposal", "req-1", storePath), false);
   assert.equal(isReserved(key, storePath), true);
-  assert.equal(reserveSend("handoff", "req-2", storePath), true);
+  assert.equal(reserveSend("proposal", "req-2", storePath), true);
+  // The same request id on another kind is its own slot.
+  assert.equal(reserveSend("image", "req-1", storePath), true);
+});
+
+test("handoff and post rows from before handoffs were removed stay in the file but no read returns them", () => {
+  const { storePath } = tempPaths();
+  const row = (id: string, kind: string, text: string) => ({ id, at: "2026-09-01T00:00:00.000Z", kind, text, handoffId: id === "o1" ? "hnd_old" : null });
+  writeAgentStore(parseAgentStore({
+    schemaVersion: 1,
+    threads: [{
+      id: "b1", botId: "b1", kind: "bot", sessionId: "", updatedAt: "2026-09-01T00:00:00.000Z",
+      events: [row("o1", "handoff", "old out"), row("o2", "post", "old in"), row("o3", "assistant", "kept"), row("o4", "note", "kept too")],
+    }],
+    proposals: [],
+    reserves: [],
+  }), storePath);
+  assert.deepEqual(listThreadEvents("b1", storePath).map((event) => event.id), ["o3", "o4"]);
+  assert.deepEqual(threadSnapshot("b1", storePath).events.map((event) => event.id), ["o3", "o4"]);
+  // Nothing is deleted: the rows are still in the file, and a new event lands beside them.
+  assert.equal(readAgentStore(storePath).threads[0].events.length, 4);
+  appendAgentEvent("b1", { kind: "note", text: "new", id: "n1" }, storePath);
+  assert.equal(readAgentStore(storePath).threads[0].events.length, 5);
+  assert.deepEqual(listThreadEvents("b1", storePath).map((event) => event.id), ["o3", "o4", "n1"]);
+});
+
+test("cards of the removed kinds on disk are ignored: never listed, never claimable, never kept", () => {
+  const { storePath } = tempPaths();
+  const base = { createdAt: "2026-09-01T00:00:00.000Z", expiresAt: new Date(Date.now() + 3_600_000).toISOString(), status: "pending", threadId: "b1", sourceBotId: null };
+  const live = createProposal(appCard("Gmail"), storePath);
+  const raw = readAgentStore(storePath) as unknown as { proposals: unknown[] };
+  raw.proposals.push(
+    { ...base, id: "prp_bot", kind: "createBot", name: "Writer", petname: "New Bot 1", title: "", description: "x", sectionId: null, brief: "", proposerId: "bot-useful" },
+    { ...base, id: "prp_group", kind: "createGroup", name: "Desk", memberIds: ["a", "b"], description: "", proposerId: "bot-useful" },
+    { ...base, id: "prp_profile", kind: "updateBotProfile", botId: "b1", baseRevision: 0, patch: {}, proposerId: "bot-useful" },
+    { ...base, id: "prp_fanout", kind: "fanout", message: "hi", targetIds: ["a"], groupId: null },
+  );
+  writeFileSync(storePath, JSON.stringify(raw), "utf8");
+  assert.deepEqual(readAgentStore(storePath).proposals.map((item) => item.id), [live.id]);
+  for (const id of ["prp_bot", "prp_group", "prp_profile", "prp_fanout"]) {
+    assert.equal(readProposal(id, storePath), null, id);
+    assert.equal(claimProposal(id, "confirmed", storePath), null, id);
+  }
+  assert.deepEqual(listPendingProposals("b1", storePath).map((item) => item.id), [live.id]);
+  assert.deepEqual(threadSnapshot("b1", storePath).proposals.map((item) => item.id), [live.id]);
 });
 
 test("handoff queue delivers oldest first, retries twice, then gives up", () => {
@@ -257,183 +277,54 @@ test("a handoff record is claimed by one deliverer at a time", () => {
   assert.ok(claimHandoff(record.id, handoffDir));
 });
 
-test("sendHandoff writes both sides of the transcript and one queue record", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-send-"));
+test("a resume's reply lands on the receiver alone, and nothing is written to the sender", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-reply-"));
   const storePath = join(dir, "agents.json");
   const handoffDir = join(dir, "handoffs");
   const previousStore = process.env.UB_AGENT_STORE_PATH;
-  const previousDir = process.env.UB_HANDOFF_DIR;
-  process.env.UB_AGENT_STORE_PATH = storePath;
-  process.env.UB_HANDOFF_DIR = handoffDir;
-  try {
-    const record = sendHandoff({
-      source: { id: "bot-ceo", name: "CEO" },
-      target: { id: "bot-research", name: "Research" },
-      message: "Draft the pricing page brief.",
-    });
-    assert.equal(record.status, "pending");
-    assert.equal(listHandoffs(handoffDir).length, 1);
-    const sender = listThreadEvents("bot-ceo", storePath);
-    const receiver = listThreadEvents("bot-research", storePath);
-    assert.equal(sender.length, 1);
-    assert.equal(sender[0].kind, "handoff");
-    assert.equal(sender[0].targetBotIds[0], "bot-research");
-    assert.equal(receiver.length, 1);
-    assert.equal(receiver[0].kind, "post");
-    assert.equal(receiver[0].authorName, "CEO");
-    assert.equal(sender[0].handoffId, record.id);
-  } finally {
-    if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
-    else process.env.UB_AGENT_STORE_PATH = previousStore;
-    if (previousDir === undefined) delete process.env.UB_HANDOFF_DIR;
-    else process.env.UB_HANDOFF_DIR = previousDir;
-  }
-});
-
-test("writeHandoffReply records the answer on both transcripts", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-reply-"));
-  const storePath = join(dir, "agents.json");
-  const previousStore = process.env.UB_AGENT_STORE_PATH;
   process.env.UB_AGENT_STORE_PATH = storePath;
   try {
-    const record = sendHandoff({
-      source: { id: "bot-ceo", name: "CEO" },
-      target: { id: "bot-research", name: "Research" },
-      message: "What is the price?",
-    });
-    writeHandoffReply({
-      handoff: record,
-      reply: "Forty.",
-      sessionId: "sess_1",
-      receiverId: "bot-research",
-      threadKind: "bot",
-    });
-    const sender = listThreadEvents("bot-ceo", storePath);
+    const record = queueHandoff({
+      sourceBotId: "bot-useful",
+      sourceName: "Generalist",
+      targetBotId: "bot-research",
+      targetName: "Research",
+      message: "The owner connected the app gmail. Continue the task: read the invoice thread",
+    }, handoffDir);
+    writeHandoffReply({ handoff: record, reply: "Forty.", sessionId: "sess_1", receiverId: "bot-research" });
     const receiver = listThreadEvents("bot-research", storePath);
-    assert.equal(sender.map((event) => event.kind).join(","), "handoff,post");
-    assert.equal(sender[1].text, "Forty.");
-    assert.equal(sender[1].authorName, "Research");
-    assert.equal(receiver.map((event) => event.kind).join(","), "post,assistant");
-    assert.equal(receiver[1].text, "Forty.");
-    assert.equal(sender[1].kind, "post");
+    assert.deepEqual(receiver.map((event) => event.kind), ["assistant"]);
+    assert.equal(receiver[0].text, "Forty.");
+    assert.equal(receiver[0].authorName, "Research");
+    assert.equal(receiver[0].handoffId, record.id);
+    // The sender's thread gets nothing: no handoff row, no post row.
+    assert.deepEqual(listThreadEvents("bot-useful", storePath), []);
+    assert.equal(readAgentStore(storePath).threads.some((thread) => thread.id === "bot-useful"), false);
   } finally {
     if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
     else process.env.UB_AGENT_STORE_PATH = previousStore;
   }
 });
 
-test("waitForHandoff resolves when the record is delivered", async () => {
-  const { handoffDir } = tempPaths();
-  const record = queueHandoff({
-    sourceBotId: "b1",
-    sourceName: "CEO",
-    targetBotId: "b2",
-    targetName: "Research",
-    message: "wait for me",
-  }, handoffDir);
-  setTimeout(() => {
-    markDelivered(record.id, "here", handoffDir);
-  }, 40);
-  const done = await waitForHandoff(record.id, 1000, handoffDir, 10);
-  assert.equal(done?.status, "delivered");
-  assert.equal(done?.response, "here");
-});
-
-test("pendingHandoffCycle sees a three-hop wait loop", () => {
-  const { handoffDir } = tempPaths();
-  queueHandoff({
-    sourceBotId: "a",
-    sourceName: "A",
-    targetBotId: "b",
-    targetName: "B",
-    message: "one",
-  }, handoffDir);
-  queueHandoff({
-    sourceBotId: "b",
-    sourceName: "B",
-    targetBotId: "c",
-    targetName: "C",
-    message: "two",
-  }, handoffDir);
-  assert.equal(pendingHandoffCycle("c", "a", "", handoffDir), true);
-  assert.equal(pendingHandoffCycle("a", "b", "", handoffDir), false);
-});
-
-test("waitForHandoff returns the pending snapshot when the budget expires", async () => {
-  const { handoffDir } = tempPaths();
-  const record = queueHandoff({
-    sourceBotId: "b1",
-    sourceName: "CEO",
-    targetBotId: "b2",
-    targetName: "Research",
-    message: "still going",
-  }, handoffDir);
-  const done = await waitForHandoff(record.id, 40, handoffDir, 10);
-  assert.equal(done?.status, "pending");
-  assert.equal(done?.id, record.id);
-});
-
-test("waitForHandoff gives up as soon as the turn is cancelled", async () => {
-  const { handoffDir } = tempPaths();
-  const record = queueHandoff({
-    sourceBotId: "b1",
-    sourceName: "CEO",
-    targetBotId: "b2",
-    targetName: "Research",
-    message: "stop me",
-  }, handoffDir);
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), 30);
-  const started = Date.now();
-  // A three minute budget the wait must not serve out once nobody is waiting.
-  const done = await waitForHandoff(record.id, 180_000, handoffDir, 10, controller.signal);
-  const waited = Date.now() - started;
-  assert.equal(done?.status, "pending");
-  assert.ok(waited < 5_000, `returned after ${waited}ms`);
-});
-
-test("waitForHandoff still answers a reply that lands before the cancel", async () => {
-  const { handoffDir } = tempPaths();
-  const record = queueHandoff({
-    sourceBotId: "b1",
-    sourceName: "CEO",
-    targetBotId: "b2",
-    targetName: "Research",
-    message: "beat the stop",
-  }, handoffDir);
-  const controller = new AbortController();
-  setTimeout(() => markDelivered(record.id, "done", handoffDir), 20);
-  setTimeout(() => controller.abort(), 400);
-  const done = await waitForHandoff(record.id, 5_000, handoffDir, 10, controller.signal);
-  assert.equal(done?.status, "delivered");
-  assert.equal(done?.response, "done");
-});
-
-test("writeHandoffReply records a note on both sides when the reply is empty", () => {
+test("writeHandoffReply records a note on the receiver when the reply is empty", () => {
   const dir = mkdtempSync(join(tmpdir(), "ub-empty-"));
   const storePath = join(dir, "agents.json");
+  const handoffDir = join(dir, "handoffs");
   const previousStore = process.env.UB_AGENT_STORE_PATH;
   process.env.UB_AGENT_STORE_PATH = storePath;
   try {
-    const record = sendHandoff({
-      source: { id: "bot-ceo", name: "CEO" },
-      target: { id: "bot-research", name: "Research" },
+    const record = queueHandoff({
+      sourceBotId: "bot-useful",
+      sourceName: "Generalist",
+      targetBotId: "bot-research",
+      targetName: "Research",
       message: "Anything?",
-    });
-    writeHandoffReply({
-      handoff: record,
-      reply: "",
-      sessionId: "sess_1",
-      receiverId: "bot-research",
-      threadKind: "bot",
-      sourceThreadKind: "bot",
-    });
-    const sender = listThreadEvents("bot-ceo", storePath);
+    }, handoffDir);
+    writeHandoffReply({ handoff: record, reply: "", sessionId: "sess_1", receiverId: "bot-research" });
     const receiver = listThreadEvents("bot-research", storePath);
-    assert.equal(sender.at(-1)?.kind, "note");
-    assert.match(sender.at(-1)?.text ?? "", /no reply/);
     assert.equal(receiver.at(-1)?.kind, "note");
     assert.match(receiver.at(-1)?.text ?? "", /no reply/);
+    assert.deepEqual(listThreadEvents("bot-useful", storePath), []);
   } finally {
     if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
     else process.env.UB_AGENT_STORE_PATH = previousStore;
@@ -445,47 +336,6 @@ test("a corrupt store reads as empty rather than throwing", () => {
   const store = readAgentStore(join(dir, "missing.json"));
   assert.deepEqual(store.threads, []);
   assert.match(newProposalId(), /^prp_[0-9a-f]{16}$/);
-});
-
-test("group fan-out sends one handoff per member and one card per target thread", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-fanout-"));
-  const storePath = join(dir, "agents.json");
-  const handoffDir = join(dir, "handoffs");
-  const previousStore = process.env.UB_AGENT_STORE_PATH;
-  const previousDir = process.env.UB_HANDOFF_DIR;
-  process.env.UB_AGENT_STORE_PATH = storePath;
-  process.env.UB_HANDOFF_DIR = handoffDir;
-  try {
-    const targets = [
-      { id: "bot-a", name: "Alpha" },
-      { id: "bot-b", name: "Beta" },
-    ];
-    for (const target of targets) {
-      sendHandoff({
-        source: { id: "bot-ceo", name: "CEO" },
-        target,
-        message: "Kickoff at nine.",
-        group: { id: "grp-1", name: "Launch" },
-        receiver: target,
-      });
-    }
-    assert.equal(listHandoffs(handoffDir).length, 2);
-    // One copy in each member thread, and the handoff records the room.
-    for (const id of ["bot-a", "bot-b"]) {
-      const post = listThreadEvents(id, storePath)[0];
-      assert.equal(post.kind, "post");
-      assert.equal(post.text, "Kickoff at nine.");
-      assert.notEqual(post.handoffId, null, `${id} post links to its handoff`);
-    }
-    const queued = listHandoffs(handoffDir);
-    assert.deepEqual(queued.map((row) => row.groupId), ["grp-1", "grp-1"]);
-    assert.deepEqual(queued.map((row) => row.threadKind), ["bot", "bot"]);
-  } finally {
-    if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
-    else process.env.UB_AGENT_STORE_PATH = previousStore;
-    if (previousDir === undefined) delete process.env.UB_HANDOFF_DIR;
-    else process.env.UB_HANDOFF_DIR = previousDir;
-  }
 });
 
 test("a connectApp proposal round-trips its phase fields and can be patched in place", () => {

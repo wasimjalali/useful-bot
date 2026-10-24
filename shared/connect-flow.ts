@@ -10,7 +10,7 @@ import { authorizeConnector, countToolkitTools, forgetConnected, listConnectorTo
 import { connectorsPath as defaultConnectorsPath } from "./connectors-store.ts";
 import { listHandoffs, queueHandoff } from "./handoffs.ts";
 import { readShell } from "./shell-io.ts";
-import { DEFAULT_BOT_ID, orchestratorId } from "./shell-store.ts";
+import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
 /**
  * The connect card's server side. Confirm starts Composio OAuth and parks the
@@ -96,14 +96,14 @@ export async function startConnectAuthorize(
 function queueResume(card: Stored, now: number, storePath: string): boolean {
   const targetId = card.sourceBotId ?? card.threadId;
   let targetName = "Useful Bot";
-  // The resume is sent by the orchestrator under its real name. The roster
-  // not reading falls back to the default bot, as the name always did.
+  // The resume is sent by the default bot under its real name. The roster
+  // not reading falls back to the default name, as it always did.
   let source = { id: DEFAULT_BOT_ID, name: "Useful Bot" };
   try {
     const shell = readShell();
     targetName = shell.bots.find((bot) => bot.id === targetId)?.name ?? targetName;
-    const orchestrator = shell.bots.find((bot) => bot.id === orchestratorId(shell));
-    if (orchestrator) source = { id: orchestrator.id, name: orchestrator.name };
+    const sender = shell.bots.find((bot) => bot.id === DEFAULT_BOT_ID);
+    if (sender) source = { id: sender.id, name: sender.name };
   } catch {
     /* the names are cosmetic */
   }

@@ -14,7 +14,7 @@ const GENERATE_TIMEOUT_MS = 150_000;
 
 export default defineTool({
   description:
-    "Draw an image from a text prompt with the owner's image model, when they ask for a picture, illustration, icon or render. Needs an image provider key in Settings; without one, say so. Pass `model` (an id from list_models, plus `connectionId` if two providers share it) only when asked, since some cost far more. The image appears in the chat and is saved in the Library (path in the result): answer in text, don't link or embed it. Copy or move it elsewhere only when the owner names that place, for this image or as a standing preference (an attached folder, Full access or an earlier file saved elsewhere is not such a request), and keep the Library copy.",
+    "Draw an image from a text prompt with the owner's image model, when they ask for a picture, illustration, icon or render. Needs an image provider key in Settings; without one, say so. Pass `model` (an id the owner named, plus `connectionId` if two providers share it) only when asked, since some cost far more. The image appears in the chat and is saved in the Library (path in the result): answer in text, don't link or embed it. Copy or move it elsewhere only when the owner names that place, for this image or as a standing preference (an attached folder, Full access or an earlier file saved elsewhere is not such a request), and keep the Library copy.",
   inputSchema: z.object({
     prompt: z.string().min(1).max(4000),
     size: z.enum(["square", "wide", "tall"]).optional(),
@@ -75,8 +75,8 @@ export default defineTool({
           status: "failed",
           error: code,
           hint: code === "image_model_ambiguous"
-            ? "Two providers offer that model id. Pass the connectionId from list_models too."
-            : "That is not one of the owner's image models. Call list_models with kind image for the exact ids, or leave model out to use the default.",
+            ? "Two providers offer that model id. Pass the connectionId of the one the owner means, or leave model out to use the default."
+            : "That is not one of the owner's image models. Leave model out to use the default, or ask the owner which one they mean.",
         };
       }
       if (code === "provider_incompatible" || code === "upstream_credential_missing" || code === "provider_disconnected") {

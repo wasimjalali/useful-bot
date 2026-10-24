@@ -33,8 +33,9 @@ export async function measureTools() {
 // eve's own default tools, measured from its definitions (what a turn carries
 // when nothing under agent/tools/ replaces them). connection_search is a dynamic
 // tool whose schemas eve builds at run time, so it cannot be weighed here.
-// agent and task_cancel are eve's sub-agent tools, on in this app.
-export const EVE_DEFAULTS = ["todo", "ask_question", "load_skill", "agent", "task_cancel"];
+// agent and task_cancel (eve's sub-agent tools) are switched off by the
+// disableTool() files under agent/tools, so they are not counted.
+export const EVE_DEFAULTS = ["todo", "ask_question", "load_skill"];
 
 export async function measureEveDefaults() {
   const rows = [];

@@ -409,7 +409,7 @@ test("the resume is sent by the orchestrator under its real name, not by a hard-
   assert.equal(listHandoffs()[0].sourceName, "Generalist");
 });
 
-test("with the default bot deleted, the resume comes from the first visible bot", async () => {
+test("with the default bot gone from the roster, the resume still comes from the default bot id under the default name", async () => {
   const { storePath } = paths();
   const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
   stubComposio([item]);
@@ -421,7 +421,7 @@ test("with the default bot deleted, the resume comes from the first visible bot"
   item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "ca_gmail_1" } };
   resetConnectMemo();
   await pumpConnects({ now: Date.now() + 6_000 });
-  assert.equal(listHandoffs()[0].sourceBotId, "lead");
-  assert.equal(listHandoffs()[0].sourceName, "Lead");
+  assert.equal(listHandoffs()[0].sourceBotId, "bot-useful");
+  assert.equal(listHandoffs()[0].sourceName, "Useful Bot");
   assert.equal(listHandoffs()[0].targetBotId, "b1");
 });

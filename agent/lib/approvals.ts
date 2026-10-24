@@ -15,7 +15,7 @@ import {
 import { dirname } from "node:path";
 import { statePath } from "../../shared/stack.ts";
 import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
-import { authoritySessionId, isBotContextMissing, type ActiveBotContext } from "./active-bot.ts";
+import type { ActiveBotContext } from "./active-bot.ts";
 
 /**
  * One boot epoch per process. Records carry the epoch that requested them, and
@@ -52,16 +52,13 @@ function sleep(ms: number): void {
 
 /**
  * Every tool whose action the owner has to approve before it runs. Deleting a
- * bot or a routine is irreversible, so an agent asks here rather than writing.
+ * routine is irreversible, so an agent asks here rather than writing.
  */
 export type ApprovalTool =
   | "bash"
   | "write_file"
   | "memory.upsert"
   | "memory.delete"
-  | "delete_bot"
-  | "remove_section"
-  | "clear_history"
   | "delete_routine"
   | "create_routine"
   | "update_routine"
@@ -95,15 +92,11 @@ export interface StoredApproval {
   status: ApprovalStatus;
   /** Boot epoch of the process that requested the action. */
   epoch?: string;
-  /** For a sub-agent's card: the root session whose chat the card belongs to. */
-  rootSessionId?: string;
-  /** True when a sub-agent's child session raised the card. */
-  subagent?: boolean;
 }
 
 export type PendingApproval = Pick<
   StoredApproval,
-  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt" | "sessionId" | "rootSessionId" | "subagent"
+  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt" | "sessionId"
 >;
 
 /** The subset of an eve ToolContext an approval record needs for attribution. */
@@ -112,33 +105,17 @@ export type ApprovalActorContext = ActiveBotContext & {
   callId?: string;
 };
 
-/**
- * Who a card is for. A sub-agent's child (eve's `ctx.session.parent`) raises
- * the card from its own session, and the record also names its root session,
- * the chat the card belongs to, and says a sub-agent raised it. A child that
- * cannot be verified keeps its own session as the root (the card still shows,
- * marked as a sub-agent's).
- */
+/** Who a card is for: the session, turn and tool call that raised it. */
 export function approvalActor(ctx?: ApprovalActorContext): {
   sessionId: string;
   turnId: string;
   toolCallId: string;
-  rootSessionId?: string;
-  subagent?: true;
 } {
-  const actor = {
+  return {
     sessionId: ctx?.session?.id ?? "live",
     turnId: ctx?.session?.turn?.id ?? "live",
     toolCallId: ctx?.callId ?? "live",
   };
-  if (!ctx?.session?.parent) return actor;
-  let rootSessionId = actor.sessionId;
-  try {
-    rootSessionId = authoritySessionId(ctx) ?? actor.sessionId;
-  } catch (err) {
-    if (!isBotContextMissing(err)) throw err;
-  }
-  return { ...actor, rootSessionId, subagent: true };
 }
 
 export function defaultApprovalsPath(): string {
@@ -225,8 +202,6 @@ export class ApprovalStore {
     tool: ApprovalTool;
     actionSha256: string;
     preview: string;
-    rootSessionId?: string;
-    subagent?: boolean;
   }): StoredApproval {
     return this.locked(() => {
       this.load();
@@ -246,7 +221,6 @@ export class ApprovalStore {
         expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
         status: "pending",
         epoch: this.epoch,
-        ...(input.subagent ? { rootSessionId: input.rootSessionId ?? input.sessionId, subagent: true } : {}),
       };
       this.records.set(record.id, record);
       this.persist();
@@ -339,7 +313,6 @@ export class ApprovalStore {
             createdAt: record.createdAt,
             expiresAt: record.expiresAt,
             sessionId: record.sessionId,
-            ...(record.subagent ? { rootSessionId: record.rootSessionId, subagent: true } : {}),
           });
         }
       }
@@ -353,22 +326,13 @@ export class ApprovalStore {
    * A stopped session can no longer act on its cards: retire them now, the
    * pending ones and the approved ones not yet consumed (an approval granted
    * just before Stop must not run after it). A consumed card has already run.
-   * A root's cancel also retires its sub-agents' cards unless `children: false`
-   * is passed (the app's automatic cancel of a stopped-report turn).
    */
-  expireSession(sessionId: string, options: { children?: boolean } = {}): number {
-    // Fail closed by default: an owner's Stop on a root also retires the cards
-    // of its sub-agents, so a child whose own cancel never landed cannot act on
-    // an approval granted before the Stop. Only the app's automatic cancel of a
-    // stopped-report turn passes children: false, since it must not expire the
-    // cards of sub-agents the owner did not stop.
-    const children = options.children ?? true;
+  expireSession(sessionId: string): number {
     return this.locked(() => {
       this.load();
       let expired = 0;
       for (const record of this.records.values()) {
-        const inScope = record.sessionId === sessionId || (children && record.rootSessionId === sessionId);
-        if ((record.status === "pending" || record.status === "approved") && inScope) {
+        if ((record.status === "pending" || record.status === "approved") && record.sessionId === sessionId) {
           record.status = "expired";
           expired += 1;
         }

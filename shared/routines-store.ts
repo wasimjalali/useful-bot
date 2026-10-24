@@ -82,6 +82,12 @@ export type Routine = {
    */
   manualRunRequested: boolean;
   /**
+   * The bot this routine belonged to before the archive migration moved it to
+   * the default bot, paused. Null for every other routine. Any edit, and
+   * turning it on, clears it: that is the owner reviewing it.
+   */
+  movedFrom: string | null;
+  /**
    * Fields a newer build wrote that this one does not model. They ride through
    * every read/write untouched, so running an older app for one session does
    * not quietly strip a routine down to the keys it happens to understand.
@@ -140,6 +146,7 @@ const ROUTINE_KEYS = new Set([
   "lastRunAt",
   "runHistory",
   "manualRunRequested",
+  "movedFrom",
 ]);
 
 const STORE_KEYS = new Set(["schemaVersion", "routines"]);
@@ -184,6 +191,8 @@ function plainRoutine(routine: Routine): Record<string, unknown> {
     lastRunAt: routine.lastRunAt,
     runHistory: routine.runHistory,
     manualRunRequested: routine.manualRunRequested,
+    // Written only when set, so a file nothing moved stays byte-identical.
+    ...(routine.movedFrom ? { movedFrom: routine.movedFrom } : {}),
   };
 }
 
@@ -447,6 +456,7 @@ export function parseRoutine(raw: unknown): Routine | null {
     lastRunAt: typeof rec.lastRunAt === "string" ? rec.lastRunAt : null,
     runHistory: history.slice(-RUN_HISTORY_MAX),
     manualRunRequested: rec.manualRunRequested === true,
+    movedFrom: isId(rec.movedFrom) ? rec.movedFrom : null,
     extra: collectExtra(rec, ROUTINE_KEYS),
   };
 }
@@ -610,6 +620,7 @@ export function createRoutine(draft: RoutineDraft, path = routinesStorePath(), a
     lastRunAt: null,
     runHistory: [],
     manualRunRequested: false,
+    movedFrom: null,
   };
   return withRoutinesStore((store) => {
     const owned = store.routines.filter((item) => item.botId === routine.botId).length;
@@ -651,7 +662,56 @@ export function updateRoutine(
       routine.active = patch.active;
     }
     routine.updatedAt = at.toISOString();
+    // Any edit, and turning a routine on, is the owner reviewing a moved one.
+    routine.movedFrom = null;
     return { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() };
+  }, path);
+}
+
+/**
+ * The archive migration's routine move: every routine of an earlier bot goes to
+ * the default bot, paused, remembering where it came from. Written straight
+ * into the store, past the per-bot cap (the cap still holds for new routines).
+ * A name that clashes with one of the receiving bot's routines gets
+ * " (from OLD BOT NAME)", then a number if that clashes too. Idempotent: a
+ * moved routine already belongs to the receiver, so a second run finds nothing
+ * and an interrupted one picks up the rest. A request for a run is dropped, or
+ * a paused routine would still fire. Returns how many moved.
+ */
+export function moveRoutinesToBot(
+  from: Array<{ id: string; name: string }>,
+  to: string,
+  path = routinesStorePath(),
+  at = new Date(),
+): number {
+  if (from.length === 0) return 0;
+  const names = new Map(from.map((bot) => [bot.id, bot.name]));
+  return withRoutinesStore((store) => {
+    const taken = new Set(store.routines.filter((item) => item.botId === to).map((item) => item.name.trim().toLowerCase()));
+    let moved = 0;
+    for (const routine of store.routines) {
+      const oldName = names.get(routine.botId);
+      if (oldName === undefined || routine.botId === to) continue;
+      let name = routine.name;
+      if (taken.has(name.trim().toLowerCase())) {
+        const tag = ` (from ${oldName.replace(/\s+/g, " ").trim() || "an earlier bot"})`;
+        const base = routine.name.slice(0, Math.max(1, NAME_MAX - tag.length - 3));
+        name = `${base}${tag}`.slice(0, NAME_MAX);
+        for (let n = 2; taken.has(name.trim().toLowerCase()); n += 1) {
+          const counted = ` ${n}`;
+          name = `${base}${tag}`.slice(0, NAME_MAX - counted.length) + counted;
+        }
+      }
+      taken.add(name.trim().toLowerCase());
+      routine.movedFrom = routine.botId;
+      routine.botId = to;
+      routine.name = name;
+      routine.active = false;
+      routine.manualRunRequested = false;
+      routine.updatedAt = at.toISOString();
+      moved += 1;
+    }
+    return moved;
   }, path);
 }
 

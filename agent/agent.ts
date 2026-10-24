@@ -177,8 +177,7 @@ export default defineAgent({
   compaction: { thresholdPercent: 0.75 },
   // No per-session input cap. The router's daily budgets are the spend guard.
   // eve's 40M default counts cache reads, so a long-lived bot chat reaches it
-  // in days, and the pause it raises stalls the chat. An uncapped parent also
-  // delegates uncapped sub-agents.
+  // in days, and the pause it raises stalls the chat.
   limits: { maxInputTokensPerSession: false },
   // Resolved at every step, but the selection and its window are frozen on the
   // first step of a turn (agent/lib/session-model.ts): the owner can pick a

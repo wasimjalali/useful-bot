@@ -43,10 +43,13 @@ export function eveDefaultTools(): string[] {
  * request: authored tools plus the defaults they do not override.
  */
 export function shippedToolCount(): number {
-  const authored = readdirSync(join(ROOT, "agent/tools"))
+  const files = readdirSync(join(ROOT, "agent/tools"))
     .filter((name) => name.endsWith(".ts"))
     .map((name) => name.slice(0, -3));
-  const overridden = new Set(authored);
+  // A file that only calls disableTool() removes eve's default of that name and adds no schema.
+  const disabled = new Set(files.filter((name) => readFileSync(join(ROOT, "agent/tools", `${name}.ts`), "utf8").includes("disableTool(")));
+  const authored = files.filter((name) => !disabled.has(name));
+  const overridden = new Set(files);
   const defaults = eveDefaultTools().filter((name) => !overridden.has(name));
   return authored.length + defaults.length;
 }
@@ -54,9 +57,11 @@ export function shippedToolCount(): number {
 test("the tools the agent ships fit under the router's schema cap with headroom", () => {
   // On 2026-09-15 the 26th authored tool took the total to 33 against a cap
   // of 32, and every turn died at the router with `unsupported_parameter`
-  // before the model was called. This is the test that was missing.
+  // before the model was called. This is the test that was missing. The
+  // multi-bot tools and eve's sub-agent tools are gone since, so the floor is
+  // only a check that the walk still finds the tools.
   const count = shippedToolCount();
-  assert.ok(count >= 33, `expected at least the 33 tools shipped on 2026-09-15, counted ${count}`);
+  assert.ok(count >= 20, `expected at least the 20 tools shipped since the multi-bot tools went, counted ${count}`);
   // The connect budget and the per-session limit are what stop a bot walking
   // into the cap, so the arithmetic that says they are enough is checked
   // here rather than asserted in a comment: every connection a connect will
