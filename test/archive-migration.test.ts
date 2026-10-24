@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -464,6 +466,32 @@ test("an ordinary write cannot recreate a dropped marker, so a routine is never 
     assert.equal(moved?.botId, DEFAULT_BOT_ID);
     assert.equal(moved?.active, false);
     assert.equal(moved?.movedFrom, alpha);
+  });
+});
+
+test("a read checks the marker before it reads the roster", async () => {
+  await world(({ shell }) => {
+    readShell();
+    const reads: string[] = [];
+    const real = fs.readFileSync;
+    // Named imports of a built-in follow the exports object once it is synced.
+    (fs as { readFileSync: unknown }).readFileSync = (...args: Parameters<typeof real>) => {
+      reads.push(String(args[0]));
+      return real(...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      readShell();
+    } finally {
+      (fs as { readFileSync: unknown }).readFileSync = real;
+      syncBuiltinESMExports();
+    }
+    const marker = reads.indexOf(archiveMarkerPath(shell));
+    const roster = reads.indexOf(shell);
+    assert.ok(marker >= 0 && roster >= 0, `both files are read: ${JSON.stringify(reads)}`);
+    // A marker seen first means the roster read next is already migrated: a
+    // migration finishing in another process cannot hand back an old one.
+    assert.ok(marker < roster, `marker at ${marker}, roster at ${roster}`);
   });
 });
 
