@@ -504,6 +504,26 @@ test("moved routines keep their names unless they clash, then say where they cam
   });
 });
 
+test("a long old bot name or routine name is clipped without losing the tag's closing parenthesis", async () => {
+  await world(() => {
+    const long = "L".repeat(120);
+    routineFor(DEFAULT_BOT_ID, "J".repeat(80));
+    routineFor("bot-old", "J".repeat(80));
+    routineFor("bot-two", "J".repeat(80));
+    routineFor(DEFAULT_BOT_ID, "Short");
+    routineFor("bot-old", "Short");
+    moveRoutinesToBot([{ id: "bot-old", name: long }, { id: "bot-two", name: long }], DEFAULT_BOT_ID);
+    const names = listRoutines(DEFAULT_BOT_ID).map((item) => item.name);
+    assert.equal(names.length, 5);
+    assert.equal(new Set(names.map((name) => name.toLowerCase())).size, 5, "every name is unique");
+    for (const name of names) assert.ok(name.length <= 80, `${name.length} characters`);
+    const tagged = names.filter((name) => name.includes(" (from "));
+    assert.equal(tagged.length, 3);
+    for (const name of tagged) assert.match(name, /\(from [^)]*\)( \d+)?$/, `the tag closes in "${name}"`);
+    assert.ok(tagged.some((name) => /\) \d+$/.test(name)), "the second clash got a number after the tag");
+  });
+});
+
 test("more routines than the per-bot cap move, and the cap still holds for a new one", async () => {
   await world(() => {
     const store = readRoutinesStore();

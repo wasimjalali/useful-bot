@@ -678,6 +678,11 @@ export function updateRoutine(
  * and an interrupted one picks up the rest. A request for a run is dropped, or
  * a paused routine would still fire. Returns how many moved.
  */
+/** The most of the old bot's name a "(from ...)" tag carries. */
+const TAG_NAME_MAX = 30;
+/** Characters kept free after the tag for " 2", " 10" and so on. */
+const COUNTER_ROOM = 6;
+
 export function moveRoutinesToBot(
   from: Array<{ id: string; name: string }>,
   to: string,
@@ -694,13 +699,13 @@ export function moveRoutinesToBot(
       if (oldName === undefined || routine.botId === to) continue;
       let name = routine.name;
       if (taken.has(name.trim().toLowerCase())) {
-        const tag = ` (from ${oldName.replace(/\s+/g, " ").trim() || "an earlier bot"})`;
-        const base = routine.name.slice(0, Math.max(1, NAME_MAX - tag.length - 3));
-        name = `${base}${tag}`.slice(0, NAME_MAX);
-        for (let n = 2; taken.has(name.trim().toLowerCase()); n += 1) {
-          const counted = ` ${n}`;
-          name = `${base}${tag}`.slice(0, NAME_MAX - counted.length) + counted;
-        }
+        // The tag is whole and short (the old bot's name is clipped inside it);
+        // the routine's own name gives way, leaving room for a number after it.
+        const from = oldName.replace(/\s+/g, " ").trim().slice(0, TAG_NAME_MAX) || "an earlier bot";
+        const tag = ` (from ${from})`;
+        const base = routine.name.slice(0, NAME_MAX - tag.length - COUNTER_ROOM);
+        name = `${base}${tag}`;
+        for (let n = 2; taken.has(name.trim().toLowerCase()); n += 1) name = `${base}${tag} ${n}`;
       }
       taken.add(name.trim().toLowerCase());
       routine.movedFrom = routine.botId;
