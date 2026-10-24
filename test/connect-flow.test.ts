@@ -9,7 +9,7 @@ import { CONNECT_LINGER_MS, CONNECT_WAIT_MS, pumpConnects, resetConnectMemo, sta
 import { forgetConnected, setComposioFactory, type ComposioLike, type ComposioSessionLike } from "../shared/composio.ts";
 import { setConnectorsKey, updateConnectorsStore } from "../shared/connectors-store.ts";
 import { claimHandoff, listHandoffs, markDelivered, queueHandoff } from "../shared/handoffs.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 
 type Item = {
@@ -110,7 +110,7 @@ function seed(storePath: string) {
   const shell = seedStore();
   shell.bots.push({ ...shell.bots[0], id: "b1", name: "Mailer" });
   shell.selectedBotId = "b1";
-  writeShell(shell);
+  writeFixtureShell(shell);
   return createProposal({
     kind: "connectApp",
     slug: "gmail",
@@ -397,7 +397,7 @@ test("the resume is sent by the orchestrator under its real name, not by a hard-
   stubComposio([item]);
   const proposal = seed(storePath);
   const shell = readShell();
-  writeShell({
+  writeFixtureShell({
     ...shell,
     bots: shell.bots.map((bot) => (bot.id === "bot-useful" ? { ...bot, name: "Generalist" } : bot)),
   });
@@ -416,7 +416,7 @@ test("with the default bot gone from the roster, the resume still comes from the
   const proposal = seed(storePath);
   const shell = readShell();
   const lead = { ...shell.bots[0], id: "lead", name: "Lead" };
-  writeShell({ ...shell, bots: [lead, ...shell.bots.filter((bot) => bot.id !== "bot-useful")] });
+  writeFixtureShell({ ...shell, bots: [lead, ...shell.bots.filter((bot) => bot.id !== "bot-useful")] });
   await startConnectAuthorize(proposal.id, CALLBACK);
   item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "ca_gmail_1" } };
   resetConnectMemo();

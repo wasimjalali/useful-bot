@@ -29,7 +29,7 @@ import {
   zonedWallToUtc,
   type Routine,
 } from "../shared/routines-store.ts";
-import { peekShell, readShell, shellWasReseeded, writeShell } from "../shared/shell-io.ts";
+import { peekShell, readShell, shellWasReseeded, writeFixtureShell } from "../shared/shell-io.ts";
 import { SWEEP_INTERVAL_MS, resetSweepClock, sweepOrphanState, sweepOrphanStateIfDue } from "../web/lib/agent-exec.ts";
 
 function sandbox(): { path: string; restore: () => void } {
@@ -601,7 +601,7 @@ test("a reseeded roster is marked, and the mark clears when it is rebuilt", () =
   // Rebuilt or restored, the roster is the owner's again and the mark goes.
   const rebuilt = readShell(path);
   rebuilt.bots = [...rebuilt.bots, { ...rebuilt.bots[0], id: "bot-second", name: "Second" }];
-  writeShell(rebuilt, path);
+  writeFixtureShell(rebuilt, path);
   assert.equal(shellWasReseeded(path), false);
 });
 
@@ -629,7 +629,7 @@ test("the sweep stands down while the roster is a recovery stub", () => {
   try {
     const shell = readShell(shellPath);
     shell.bots = [...shell.bots, { ...shell.bots[0], id: "bot-second", name: "Second" }];
-    writeShell(shell, shellPath);
+    writeFixtureShell(shell, shellPath);
     createRoutine({ botId: "bot-second", name: "Live", instruction: "x", schedules: [] });
     createRoutine({ botId: "bot-gone", name: "Orphan", instruction: "x", schedules: [] });
 
@@ -658,7 +658,7 @@ test("the sweep stands down while the roster is a recovery stub", () => {
     // the sweep picks up where it left off.
     const restored = readShell(shellPath);
     restored.bots = [...restored.bots, { ...restored.bots[0], id: "bot-second", name: "Second" }];
-    writeShell(restored, shellPath);
+    writeFixtureShell(restored, shellPath);
     assert.equal(shellWasReseeded(shellPath), false);
     assert.equal(sweepOrphanState().length, 1);
     assert.deepEqual(readRoutinesStore().routines.map((item) => item.name), ["Live"]);
@@ -684,7 +684,7 @@ test("the reseed mark tells a restored single-bot backup from the stub", () => {
   // backup has, and the shape the stub also has.
   const backup = readShell(path);
   backup.bots = [{ ...backup.bots[0], createdAt: "2020-01-01T00:00:00.000Z" }];
-  writeShell(backup, path);
+  writeFixtureShell(backup, path);
   assert.equal(shellWasReseeded(path), false);
 
   writeFileSync(path, "{ not json");
@@ -693,7 +693,7 @@ test("the reseed mark tells a restored single-bot backup from the stub", () => {
 
   // Restoring it brings back the same bot id, so only the creation stamp can
   // say this is the owner's roster and not the stub.
-  writeShell(backup, path);
+  writeFixtureShell(backup, path);
   assert.equal(shellWasReseeded(path), false);
 });
 

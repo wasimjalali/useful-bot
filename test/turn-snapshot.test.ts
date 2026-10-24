@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyShellAction, DEFAULT_BOT_ID } from "../shared/shell-store.ts";
 import { withBot } from "./helpers/roster.ts";
-import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, updateShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { bindSession, readSessionBot } from "../shared/session-bindings.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { renderContext } from "../shared/context-blocks.ts";
@@ -87,7 +87,7 @@ async function withWorld<T>(fn: (world: { alpha: string; beta: string }) => Prom
   // Alpha and Beta are an earlier build's second and third bots: a roster the app no longer makes but still reads.
   const alpha = withBot(readShell(), "Alpha", { label: "the researcher", description: "Be brief." });
   const beta = withBot(alpha.store, "Beta");
-  writeShell(beta.store);
+  writeFixtureShell(beta.store);
   try {
     return await fn({ alpha: alpha.id, beta: beta.id });
   } finally {
@@ -275,7 +275,7 @@ test("the context resolver records a failure instead of throwing, so the model r
     // The bot vanishes between the claim and the build: the roster no longer has it.
     bindSession("sess-gone", alpha);
     const roster = readShell();
-    writeShell({ ...roster, bots: roster.bots.filter((bot) => bot.id !== alpha) });
+    writeFixtureShell({ ...roster, bots: roster.bots.filter((bot) => bot.id !== alpha) });
     const ctx = ctxFor("sess-gone", alpha);
     const { result } = await silenced(async () => turnStarted(event("turn-x"), ctx));
     assert.equal(result, null, "nothing rendered, nothing thrown");

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProviderStore } from "../shared/providers.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
 import { withBot } from "./helpers/roster.ts";
 import { createRoutine } from "../shared/routines-store.ts";
@@ -89,7 +89,7 @@ function recordingEve() {
 /** The Generalist plus one more bot, a roster an earlier build wrote (the app makes no second bot any more). */
 function twoBots() {
   const made = withBot(readShell(), "Alpha", { description: "Alpha does research." });
-  writeShell(made.store);
+  writeFixtureShell(made.store);
   return { alpha: made.id, useful: DEFAULT_BOT_ID };
 }
 

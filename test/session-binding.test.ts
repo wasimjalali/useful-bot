@@ -17,7 +17,7 @@ import {
 import { bindTurnBody, turnRewriteFailure } from "../shared/eve-proxy.ts";
 import { applyShellAction, DEFAULT_BOT_ID, type ShellStore } from "../shared/shell-store.ts";
 import { withBot } from "./helpers/roster.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
@@ -124,7 +124,7 @@ async function withWorld<T>(fn: (world: { dir: string; alpha: string; beta: stri
   }));
   const alpha = withBot(readShell(), "Alpha");
   const beta = withBot(alpha.store, "Beta");
-  writeShell(beta.store);
+  writeFixtureShell(beta.store);
   try {
     return await fn({ dir, alpha: alpha.id, beta: beta.id, owners });
   } finally {
@@ -136,7 +136,7 @@ async function withWorld<T>(fn: (world: { dir: string; alpha: string; beta: stri
 }
 
 function point(botId: string, sessionId: string): void {
-  writeShell(applyShellAction(readShell(), { type: "touchChat", botId, preview: "hi", sessionId }).store);
+  writeFixtureShell(applyShellAction(readShell(), { type: "touchChat", botId, preview: "hi", sessionId }).store);
 }
 
 // MARK: - The store
@@ -229,7 +229,7 @@ test("resolving an unbound session backfills it from the roster, and the binding
 
     // Beta's pointer now claims Alpha's session: the stored binding stands.
     const shell = readShell();
-    writeShell({ ...shell, bots: shell.bots.map((bot) => (bot.id === beta ? { ...bot, sessionId: "sess-pointer-a" } : bot)) });
+    writeFixtureShell({ ...shell, bots: shell.bots.map((bot) => (bot.id === beta ? { ...bot, sessionId: "sess-pointer-a" } : bot)) });
     assert.equal(resolveSessionBot("sess-pointer-a"), alpha);
     // A session no pointer names stays unbound.
     assert.equal(resolveSessionBot("sess-nobody"), null);
@@ -530,7 +530,7 @@ test("a pointer naming another bot's session is refused before eve sees the turn
 test("a routine on either of two bots naming the same unbound session refuses", async () => {
   await withWorld(async ({ alpha, beta }) => {
     const shell = readShell();
-    writeShell({
+    writeFixtureShell({
       ...shell,
       bots: shell.bots.map((bot) => (bot.id === alpha || bot.id === beta ? { ...bot, sessionId: "sess-shared" } : bot)),
     });

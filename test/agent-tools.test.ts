@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { applyShellAction, DEFAULT_BOT_ID, seedStore, type ShellStore } from "../shared/shell-store.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { withBot } from "./helpers/roster.ts";
 import { UNTRUSTED_PREAMBLE, wrapUntrusted } from "../shared/untrusted.ts";
 import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
@@ -92,7 +92,7 @@ function sandbox() {
 function seedRoster(names: string[]): ShellStore {
   let store = seedStore();
   for (const name of names) store = withBot(store, name).store;
-  writeShell(store);
+  writeFixtureShell(store);
   return store;
 }
 
@@ -437,7 +437,7 @@ test("tools resolve the acting bot by session binding, then env, and never the s
     const research = idOf(store, "Research");
     // A chat the owner opened for CEO: the session pointer is what a turn in
     // that chat must trust, not the bot the owner happens to have selected.
-    writeShell(applyShellAction(store, {
+    writeFixtureShell(applyShellAction(store, {
       type: "touchChat",
       botId: ceo,
       preview: "hello",

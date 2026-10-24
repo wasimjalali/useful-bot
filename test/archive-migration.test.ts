@@ -11,6 +11,7 @@ import {
   readShell,
   shellWasReseeded,
   updateShell,
+  writeFixtureShell,
   writeShell,
 } from "../shared/shell-io.ts";
 import {
@@ -223,7 +224,7 @@ test("a bot an older build adds after the marker is archived by the next read, w
     assert.equal(job?.movedFrom, extra.id);
     // A bot this build itself wrote (a fixture roster) is not archived on the next read.
     const mine = withBot(later, "Fixture bot");
-    writeShell(mine.store);
+    writeFixtureShell(mine.store);
     assert.equal(readShell().bots.find((bot) => bot.id === mine.id)?.archived, false);
   });
 });
@@ -416,6 +417,73 @@ test("a run cut short after the shell write is picked up by the next read: bots 
     const routines = readRoutinesStore().routines;
     assert.deepEqual(routines.map((item) => item.botId), [DEFAULT_BOT_ID, DEFAULT_BOT_ID, DEFAULT_BOT_ID]);
     assert.deepEqual(routines.map((item) => item.name).sort(), ["Backup", "Weekly report", "Weekly report (from Alpha)"]);
+    assert.equal(existsSync(archiveMarkerPath(shell)), true);
+  });
+});
+
+test("a write from a stale roster never makes an earlier bot permanent: the marker is not widened", async () => {
+  await world(({ shell }) => {
+    writeOldRoster(shell, (store) => store);
+    readShell();
+    assert.equal(JSON.parse(readFileSync(archiveMarkerPath(shell), "utf8")).allowed.length, 0);
+    // A roster with an active earlier bot lands in a write (updateShell's change carries it,
+    // the way a stale read from an older build would).
+    const stale = withBot(readShell(), "Alpha");
+    updateShell((current) => ({ ...current, bots: [...current.bots, stale.store.bots[1]] }));
+    assert.deepEqual(JSON.parse(readFileSync(archiveMarkerPath(shell), "utf8")).allowed, [], "still allows nothing");
+    assert.equal(readShell().bots.find((bot) => bot.id === stale.id)?.archived, true, "the next read archives it");
+    // The same for a plain write.
+    const again = withBot(readShell(), "Beta");
+    writeShell(again.store);
+    assert.deepEqual(JSON.parse(readFileSync(archiveMarkerPath(shell), "utf8")).allowed, []);
+    assert.equal(readShell().bots.find((bot) => bot.id === again.id)?.archived, true);
+  });
+});
+
+test("an ordinary write cannot recreate a dropped marker, so a routine is never left under an archived bot", async () => {
+  await world(({ shell }) => {
+    let alpha = "";
+    writeOldRoster(shell, (store) => {
+      const made = withBot(store, "Alpha");
+      alpha = made.id;
+      return made.store;
+    });
+    const job = routineFor(alpha, "Weekly report", { active: true });
+    // The state mid-migration: the archived roster is on disk, the marker is dropped, the routines have not moved.
+    const archived = archiveEarlierBots(JSON.parse(readFileSync(shell, "utf8")) as ShellStore).store;
+    writeFileSync(shell, JSON.stringify(archived), "utf8");
+    assert.equal(existsSync(archiveMarkerPath(shell)), false);
+    // Another writer gets in before the move finishes.
+    writeShell(archived);
+    assert.equal(existsSync(archiveMarkerPath(shell)), false, "writeShell does not create the marker");
+    // An updateShell in that window finishes the migration first, then makes its change.
+    const next = updateShell((current) => applyShellAction(current, { type: "renameBot", botId: DEFAULT_BOT_ID, name: "Helper" }).store);
+    assert.equal(next.bots[0].name, "Helper");
+    assert.equal(existsSync(archiveMarkerPath(shell)), true);
+    const moved = readRoutine(job.id);
+    assert.equal(moved?.botId, DEFAULT_BOT_ID);
+    assert.equal(moved?.active, false);
+    assert.equal(moved?.movedFrom, alpha);
+  });
+});
+
+test("a fresh install and a reseed both end with a marker, once read", async () => {
+  await world(({ shell }) => {
+    readShell();
+    assert.equal(existsSync(archiveMarkerPath(shell)), true);
+    unlinkSync(archiveMarkerPath(shell));
+    writeFileSync(shell, "not json", "utf8");
+    const warn = console.warn;
+    console.warn = () => undefined;
+    try {
+      readShell();
+    } finally {
+      console.warn = warn;
+    }
+    assert.equal(existsSync(archiveMarkerPath(shell)), true);
+    // Written but never read: the first read adds it, with nothing to archive or move.
+    unlinkSync(archiveMarkerPath(shell));
+    updateShell((current) => current);
     assert.equal(existsSync(archiveMarkerPath(shell)), true);
   });
 });

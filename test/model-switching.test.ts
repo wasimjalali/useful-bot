@@ -25,7 +25,7 @@ import {
 } from "../shared/session-selection.ts";
 import { parseShell, withBotSelection } from "../shared/shell-store.ts";
 import { withBot } from "./helpers/roster.ts";
-import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, updateShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { readSessionGrant, removeSessionGrant, upsertSessionGrant } from "../shared/workspace-store.ts";
 import { exactModelOption, snapComposer } from "../shared/models.ts";
 import { catalogFor } from "../shared/live-models.ts";
@@ -149,7 +149,7 @@ const selOa: ModelSelection = { connectionId: OA, modelId: "gpt-4.1", effort: "l
 function twoBots(a: ModelSelection | null, b: ModelSelection | null, path: string): { aId: string; bId: string } {
   const first = withBot(readShell(path), "Alpha", { model: a });
   const second = withBot(first.store, "Beta", { model: b });
-  writeShell(second.store, path);
+  writeFixtureShell(second.store, path);
   return { aId: first.id, bId: second.id };
 }
 

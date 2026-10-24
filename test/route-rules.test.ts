@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "../agent/lib/memory.ts";
 import { createRoutine, listRoutines, moveRoutinesToBot, readRoutinesStore, updateRoutine } from "../shared/routines-store.ts";
-import { writeShell } from "../shared/shell-io.ts";
+import { writeFixtureShell } from "../shared/shell-io.ts";
 import { archiveEarlierBots, DEFAULT_BOT_ID, seedStore } from "../shared/shell-store.ts";
 import { archivedBotRefusal, routineCreateRefusal, routineRunRefusal } from "../web/lib/archived-bots.ts";
 import { memoryListing } from "../web/lib/memory-listing.ts";
@@ -63,7 +63,7 @@ test("PUT /api/providers refuses a per-bot model pick for an archived bot and wr
   process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
   try {
     const made = withBot(seedStore(), "Alpha");
-    writeShell(archiveEarlierBots(made.store).store);
+    writeFixtureShell(archiveEarlierBots(made.store).store);
     for (const pick of [{ modelId: "glm-5" }, { effort: "high" }, { speed: "fast" }]) {
       assert.throws(() => applyProvidersPut({ botId: made.id, ...pick }), /^Error: shell_bot_archived$/, JSON.stringify(pick));
     }

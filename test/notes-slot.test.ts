@@ -9,7 +9,7 @@ import notes from "../agent/memory/notes.ts";
 import { markOutside, seenOutside } from "../agent/lib/outside-content.ts";
 import { ensureTurnSnapshot } from "../agent/lib/turn-snapshot.ts";
 import { withBot } from "./helpers/roster.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { bindSession } from "../shared/session-bindings.ts";
 
 const KEYS = ["UB_SESSION_OWNERS_PATH", "UB_BINDING_WAIT_MS", "UB_SHELL_PATH", "UB_WORKSPACE_STORE_PATH", "UB_PROVIDERS_PATH", "UB_MODELS_CACHE_PATH"] as const;
@@ -33,7 +33,7 @@ async function withWorld<T>(fn: (world: { alpha: string; beta: string }) => Prom
   }));
   const alpha = withBot(readShell(), "Alpha");
   const beta = withBot(alpha.store, "Beta");
-  writeShell(beta.store);
+  writeFixtureShell(beta.store);
   try {
     return await fn({ alpha: alpha.id, beta: beta.id });
   } finally {

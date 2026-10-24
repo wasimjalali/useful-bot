@@ -6,7 +6,7 @@ import { join } from "node:path";
 import proposeConnection from "../agent/tools/propose_connection.ts";
 import { listPendingProposals, readProposal, updateProposal } from "../shared/agent-store.ts";
 import { seedDefaultConnections, upsertConnection, EXCALIDRAW_CONNECTION } from "../shared/connections-store.ts";
-import { writeShell } from "../shared/shell-io.ts";
+import { writeFixtureShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 
 type Tool = { execute: (input: never, context: never) => unknown };
@@ -28,7 +28,7 @@ function box() {
   process.env.UB_CONNECTIONS_PATH = join(dir, "connections.json");
   process.env.UB_ACTIVE_BOT_ID = "bot-useful";
   const shell = seedStore();
-  writeShell(shell);
+  writeFixtureShell(shell);
   return {
     dir,
     restore() {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, sharedMemoryStore } from "../agent/lib/memory.ts";
 import { appendAgentEvent, listThreadEvents } from "../shared/agent-store.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { archiveEarlierBots, DEFAULT_BOT_ID, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { bindSession, readSessionBot } from "../shared/session-bindings.ts";
 import { readSessionGrant, upsertSessionGrant } from "../shared/workspace-store.ts";
@@ -30,7 +30,7 @@ async function world<T>(fn: (w: { dir: string; alpha: string; memory: string }) 
   process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
   delete process.env.UB_STACK;
   const made = withBot(seedStore(), "Alpha", { sessionId: "sess-alpha" });
-  writeShell(archiveEarlierBots(made.store).store);
+  writeFixtureShell(archiveEarlierBots(made.store).store);
   try {
     return await fn({ dir, alpha: made.id, memory: process.env.UB_MEMORY_ROOT });
   } finally {
@@ -61,7 +61,7 @@ test("moveEarlierBotNotes moves the notes, answers how many, and refuses a bot t
     assert.throws(() => moveEarlierBotNotes(DEFAULT_BOT_ID), /shell_bot_forbidden/);
     assert.throws(() => moveEarlierBotNotes("bot-ghost"), /shell_bot_missing/);
     const active = withBot(readShell(), "Beta");
-    writeShell(active.store);
+    writeFixtureShell(active.store);
     note(memory, active.id, "Beta's");
     assert.throws(() => moveEarlierBotNotes(active.id), /shell_bot_not_archived/);
     assert.equal(memory.countLive(active.id), 1);
@@ -93,7 +93,7 @@ test("removeEarlierBot refuses the default bot, an active bot and a missing one,
   await world(({ alpha }) => {
     const memory = sharedMemoryStore();
     const active = withBot(readShell(), "Beta");
-    writeShell(active.store);
+    writeFixtureShell(active.store);
     note(memory, active.id, "Beta's");
     note(memory, DEFAULT_BOT_ID, "Mine");
     bindSession("sess-beta", active.id);

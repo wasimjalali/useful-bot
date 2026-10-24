@@ -15,7 +15,7 @@ import {
 } from "../shared/admission.ts";
 import { estimateTokens } from "../shared/context-blocks.ts";
 import { readProviderStore } from "../shared/providers.ts";
-import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, updateShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { applyShellAction, DEFAULT_BOT_ID, DESCRIPTION_MAX, GENERALIST_SEED_V3 } from "../shared/shell-store.ts";
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
@@ -116,7 +116,7 @@ function teammate(shell: string, description: string, modelId = "small") {
   botSeq += 1;
   const id = `bot-test-${botSeq}`;
   // The description goes in verbatim, as the owner's editor saves it.
-  writeShell({
+  writeFixtureShell({
     ...roster,
     bots: [...roster.bots, { ...roster.bots[0], id, name: `Alpha ${botSeq}`, label: "", description, model: pick(modelId), sessionId: null }],
   }, shell);

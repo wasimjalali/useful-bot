@@ -17,7 +17,7 @@ import {
   selectedBot,
   staleSessionIds,
 } from "../shared/shell-store.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { withBot } from "./helpers/roster.ts";
 
 test("setWorkspace attaches, updates and detaches a conversation folder", () => {
@@ -170,7 +170,7 @@ test("persist roundtrip keeps an earlier build's roster as it is written, withou
   const path = join(dir, "shell.json");
   const made = withBot(seedStore(), "Reviewer", { label: "Rev" });
   // A roster this build writes is not migrated: the write marks it done.
-  writeShell(made.store, path);
+  writeFixtureShell(made.store, path);
   const loaded = readShell(path);
   assert.equal(loaded.bots.length, 2);
   assert.equal(loaded.bots.find((item) => item.id === made.id)?.archived, false);
