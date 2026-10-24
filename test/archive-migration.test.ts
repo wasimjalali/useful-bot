@@ -331,11 +331,12 @@ test("the shell lock is not held while the routine move waits for the routines l
     const child = run(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
       env: { ...process.env, NODE_NO_WARNINGS: "1" },
     });
-    // Well inside the shell lock's stale window (3 s), so the lock cannot have gone stale and been taken: it is simply not held.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Wait for the shell half to land (a slow machine takes longer to start the child), then look at the lock: the
+    // move is stuck behind the routines lock, well inside the shell lock's stale window (3 s), so it is simply not held.
+    const archived = () => (JSON.parse(readFileSync(shell, "utf8")) as ShellStore).bots.find((bot) => bot.id === alpha)?.archived === true;
+    for (let waited = 0; !archived() && waited < 2500; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(archived(), true, "the archived roster is on disk");
     assert.equal(existsSync(`${shell}.lock`), false, "a waiting migration must not sit on the shell lock");
-    // The shell half is already on disk, and another writer is not blocked.
-    assert.equal((JSON.parse(readFileSync(shell, "utf8")) as ShellStore).bots.find((bot) => bot.id === alpha)?.archived, true);
     rmSync(`${routines}.lock`, { recursive: true, force: true });
     assert.equal((await child).stdout, "done");
     assert.equal(readRoutinesStore().routines[0].botId, DEFAULT_BOT_ID);
@@ -672,6 +673,29 @@ test("clipping never splits an emoji or leaves a space before the tag", async ()
     assert.equal(tagged.length, 3);
     for (const name of tagged) assert.doesNotMatch(name, /\s\s\(from /, `a space before the tag in ${JSON.stringify(name)}`);
     assert.ok(tagged.some((name) => name.endsWith(`${"n".repeat(29)})`)), "the tag name stops before the emoji it cannot fit");
+  });
+});
+
+test("clipping never leaves half a grapheme: a joined emoji, a flag, a letter without its accent", async () => {
+  await world(() => {
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+    const flag = "\u{1F1E6}\u{1F1EB}";
+    const accented = "e\u0301";
+    const cases: Array<[string, string]> = [
+      [`${"n".repeat(26)}${family}`, "n".repeat(26)],
+      [`${"m".repeat(28)}${flag}`, "m".repeat(28)],
+      [`${"k".repeat(29)}${accented}`, "k".repeat(29)],
+    ];
+    cases.forEach(([, ], index) => {
+      routineFor(DEFAULT_BOT_ID, "Short");
+      routineFor(`bot-${index}`, "Short");
+    });
+    moveRoutinesToBot(cases.map(([name], index) => ({ id: `bot-${index}`, name })), DEFAULT_BOT_ID);
+    const tags = listRoutines(DEFAULT_BOT_ID).map((item) => item.name).filter((name) => name.includes(" (from "));
+    assert.equal(tags.length, 3);
+    for (const [, kept] of cases) {
+      assert.ok(tags.includes(`Short (from ${kept})`), `a tag naming exactly ${kept.length} letters, got ${JSON.stringify(tags)}`);
+    }
   });
 });
 

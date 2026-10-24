@@ -673,12 +673,14 @@ const TAG_NAME_MAX = 30;
 /** Characters kept free after the tag for " 2", " 10" and so on. */
 const COUNTER_ROOM = 6;
 
-/** The longest start of `value` that fits in `units` UTF-16 units without splitting a character. */
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** The longest start of `value` that fits in `units` UTF-16 units and ends on a whole grapheme (an emoji sequence, a flag, a letter with its accents). */
 function clipUnits(value: string, units: number): string {
   let out = "";
-  for (const char of value) {
-    if (out.length + char.length > units) break;
-    out += char;
+  for (const { segment } of graphemes.segment(value)) {
+    if (out.length + segment.length > units) break;
+    out += segment;
   }
   return out;
 }
