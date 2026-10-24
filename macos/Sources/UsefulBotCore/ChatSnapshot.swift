@@ -18,7 +18,7 @@ public struct ChatSnapshot: Codable, Equatable, Sendable {
     /// of any type stored inside it, changes. A snapshot of another version is
     /// never restored; the chat is replayed from zero instead and written
     /// again. `ChatSnapshotTests` pins the stored names to this number.
-    public static let formatVersion = 11
+    public static let formatVersion = 12
 
     public var version: Int
     public var botId: String
@@ -31,7 +31,7 @@ public struct ChatSnapshot: Codable, Equatable, Sendable {
     /// event carries this id is already caught up and reads nothing.
     public var lastEventId: String?
     public var projection: StreamProjection
-    /// The durable side channel (notes, handoffs, routine rows) the rows were
+    /// The durable side channel (notes, routine rows) the rows were
     /// merged from, so the first paint is the full merge.
     public var durableEvents: [AgentEvent]
     /// Every turn id read off the session, for the send's stale-turn check.

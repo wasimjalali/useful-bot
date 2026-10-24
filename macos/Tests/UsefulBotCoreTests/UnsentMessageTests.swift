@@ -142,9 +142,9 @@ import Testing
     @Test func theQuoteRoundTrips() throws {
         let store = tempStore()
         var original = item("m1")
-        original.quote = UnsentQuote(botId: "bot1", text: "an earlier reply", author: "Ada")
+        original.quote = UnsentQuote(botId: "bot1", text: "an earlier reply")
         try store.save([original], botId: "bot1")
-        #expect(store.load(botId: "bot1")[0].quote == UnsentQuote(botId: "bot1", text: "an earlier reply", author: "Ada"))
+        #expect(store.load(botId: "bot1")[0].quote == UnsentQuote(botId: "bot1", text: "an earlier reply"))
         // Files saved before the field existed still load.
         #expect(store.load(botId: "bot2").isEmpty)
     }

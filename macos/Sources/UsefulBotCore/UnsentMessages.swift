@@ -5,12 +5,10 @@ import Foundation
 public struct UnsentQuote: Codable, Equatable, Sendable {
     public var botId: String
     public var text: String
-    public var author: String?
 
-    public init(botId: String, text: String, author: String?) {
+    public init(botId: String, text: String) {
         self.botId = botId
         self.text = text
-        self.author = author
     }
 }
 

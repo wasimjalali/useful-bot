@@ -1,181 +1,6 @@
 import SwiftUI
 import UsefulBotCore
 
-/// `new-chat-picker.tsx`: the To: picker shown by the rail's New Bot button.
-struct NewChatPickerView: View {
-    @EnvironmentObject private var model: AppModel
-    let store: ShellStore
-    let onClose: () -> Void
-    let onCreateBot: () -> Void
-    let onCreateGroup: () -> Void
-    let onSelectBot: (String) -> Void
-    /// Window frame of the rail's New Bot plus button, tolerated as the
-    /// picker's toggle trigger.
-    var plusTrigger: (() -> CGRect)? = nil
-
-    @State private var query = ""
-    @State private var headerFrame = CGRect.zero
-    @FocusState private var focused: Bool
-
-    private var bots: [ShellBot] {
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        // Hidden bots and the frozen "Perf ..." fixtures only show when searched for.
-        let visible = store.bots.filter { !$0.hidden && !$0.name.hasPrefix("Perf ") }
-        guard !needle.isEmpty else { return visible }
-        return store.bots.filter { bot in
-            "\(bot.name) \(bot.label) \(bot.description) \(bot.lastPreview)"
-                .lowercased()
-                .contains(needle)
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text("To")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.C.inkMuted)
-                ZStack(alignment: .leading) {
-                    if query.isEmpty {
-                        Text("Search or create bots")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Theme.C.inkFaint)
-                    }
-                    TextField("", text: $query)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 15))
-                        .foregroundStyle(Theme.C.ink)
-                        .focused($focused)
-                        .onKeyPress(.escape) {
-                            onClose()
-                            return .handled
-                        }
-                        .onKeyPress(phases: .down) { press in
-                            if press.modifiers.contains(.command), press.key == "1" {
-                                onCreateBot()
-                                return .handled
-                            }
-                            if press.modifiers.contains(.command), press.key == "2" {
-                                onCreateGroup()
-                                return .handled
-                            }
-                            return .ignored
-                        }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 20)
-            .frame(minHeight: DesignTokens.Space.chatHead)
-            .overlay(alignment: .bottom) { Hairline() }
-            .trackWindowFrame($headerFrame)
-
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        MenuRowButton(action: onCreateBot) {
-                            hitRow {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Theme.C.ink)
-                                Text("New Bot")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.ink)
-                                Spacer(minLength: 0)
-                                kbd("⌘1")
-                            }
-                        }
-                        .accessibilityIdentifier("picker-new-bot")
-                        MenuRowButton(action: onCreateGroup) {
-                            hitRow {
-                                Image(systemName: "person.2")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Theme.C.ink)
-                                Text("Create group chat")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.ink)
-                                Spacer(minLength: 0)
-                                kbd("⌘2")
-                            }
-                        }
-                        .accessibilityIdentifier("picker-new-group")
-                        ForEach(bots) { bot in
-                            MenuRowButton(action: { onSelectBot(bot.id) }) {
-                                hitRow {
-                                    BotAvatarView(bot: bot, size: 24)
-                                    Text(bot.name)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(Theme.C.ink)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    if !bot.label.isEmpty, !sameAsName(bot.label, bot.name) {
-                                        BotLabelChip(text: bot.label, fitsFully: true)
-                                    }
-                                }
-                            }
-                            .accessibilityIdentifier("picker-bot-\(bot.id)")
-                        }
-                        if bots.isEmpty {
-                            Text("No matching bots.")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Theme.C.inkMuted)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 12)
-                        }
-                    }
-                    .padding(8)
-                }
-                .uvScroll()
-            }
-            .frame(width: 440, alignment: .leading)
-            .frame(maxHeight: 420)
-            .background(Theme.C.surface)
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-                    .strokeBorder(Theme.C.edge, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
-            .raiseShadow()
-            .dismissOnOutsideClick(triggers: { [headerFrame] + (plusTrigger.map { [$0()] } ?? []) }) {
-                onClose()
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Spacer(minLength: 0)
-        }
-        .onAppear { focused = true }
-        .onExitCommand(perform: onClose)
-        // Picking a bot in the rail while the picker is open closes it.
-        .onChange(of: model.selectTick) { _, _ in onClose() }
-    }
-
-    private func hitRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 10) {
-            content()
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(minHeight: 40)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func kbd(_ value: String) -> some View {
-        Text(value)
-            .font(.system(size: DesignTokens.FontSize.kbd, weight: .semibold))
-            .tracking(0.02 * DesignTokens.FontSize.kbd)
-            .foregroundStyle(Theme.C.inkFaint)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            .background(Theme.C.sunken)
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
-                    .strokeBorder(Theme.C.edge, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
-    }
-}
-
 /// `chat-search-dialog.tsx`: the ⌘K palette with tabs and keyboard navigation.
 struct SearchPaletteView: View {
     @EnvironmentObject private var model: AppModel
@@ -193,14 +18,13 @@ struct SearchPaletteView: View {
     // Only tabs `hits` can actually fill; a tab with no data source would
     // never return a row and would always read "Nothing in X yet."
     enum SearchTab: String, CaseIterable {
-        case all, messages, bots, groups
+        case all, messages, bots
 
         var label: String {
             switch self {
             case .all: return "All"
             case .messages: return "Messages"
             case .bots: return "Bots"
-            case .groups: return "Groups"
             }
         }
     }
@@ -226,7 +50,10 @@ struct SearchPaletteView: View {
         if tab == .all { results.append(.newChat) }
 
         if tab == .all || tab == .messages {
+            // A recent of an archived bot cannot be opened.
+            let activeIds = Set(store.railBots.map(\.id))
             let recents = store.recents.filter { recent in
+                guard activeIds.contains(recent.botId) else { return false }
                 guard !needle.isEmpty else { return true }
                 let bot = store.bots.first { $0.id == recent.botId }
                 return "\(recent.title) \(recent.preview) \(bot?.name ?? "") \(bot?.label ?? "")"
@@ -243,11 +70,9 @@ struct SearchPaletteView: View {
             }
         }
 
-        if tab == .all || tab == .bots || tab == .groups {
-            let bots = store.bots.filter { bot in
-                if tab == .bots && bot.kind != "bot" { return false }
-                if tab == .groups && bot.kind != "group" { return false }
-                guard !needle.isEmpty else { return !bot.hidden }
+        if tab == .all || tab == .bots {
+            let bots = store.railBots.filter { bot in
+                guard !needle.isEmpty else { return true }
                 return "\(bot.name) \(bot.label) \(bot.description) \(bot.lastPreview)"
                     .lowercased()
                     .contains(needle)
@@ -462,15 +287,6 @@ struct SearchPaletteView: View {
                 Spacer(minLength: 0)
                 if !bot.label.isEmpty, !sameAsName(bot.label, bot.name) {
                     BotLabelChip(text: bot.label, fitsFully: true)
-                }
-                if bot.hidden {
-                    Text("HIDDEN")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Theme.C.sunken)
-                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
                 }
             }
             Spacer(minLength: 0)

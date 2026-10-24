@@ -23,74 +23,47 @@ import Testing
         #expect(set["sessionId"] as? String == "wrun_1")
     }
 
-    @Test func moveToUnassignedSendsNull() throws {
-        let action = ShellActions.move(botId: "b1", sectionId: nil)
-        #expect(action["sectionId"] is NSNull)
-        let pinned = ShellActions.pin(botId: "b1", pinned: true)
-        #expect(pinned["pinned"] as? Bool == true)
+    /// The wire names are the contract with the server: a typo here is a
+    /// refused action, not a compile error. Neither carries anything extra,
+    /// so a stray field cannot widen what the server does.
+    @Test func moveNotesAndRemoveArchivedBotCarryOnlyTheBotId() {
+        let move = ShellActions.moveNotes(fromBotId: "bot-old")
+        #expect(move["type"] as? String == "moveNotes")
+        #expect(move["fromBotId"] as? String == "bot-old")
+        #expect(move.count == 2)
+        let remove = ShellActions.removeArchivedBot(botId: "bot-old")
+        #expect(remove["type"] as? String == "removeArchivedBot")
+        #expect(remove["botId"] as? String == "bot-old")
+        #expect(remove.count == 2)
     }
 
-    @Test func createBotProposalConfirmMatchesEveryPayloadField() throws {
-        let proposal = try JSONDecoder().decode(Proposal.self, from: Data("""
-        {"id":"p1","kind":"createBot","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "name":"Scout","petname":"New Bot 2","title":"Research","description":"Find things",
-         "sectionId":"s1"}
-        """.utf8))
-        let action = try #require(ProposalActions.confirm(proposal))
-        #expect(action["type"] as? String == "createBot")
-        #expect(action["name"] as? String == "Scout")
-        #expect(action["petname"] as? String == "New Bot 2")
-        #expect(action["label"] as? String == "Research")
-        #expect(action["description"] as? String == "Find things")
-        #expect(action["sectionId"] as? String == "s1")
+    /// The server refuses these as `invalid`; the app must not be able to
+    /// build them, and `select` stays for the dev-stack perf harness alone.
+    @Test func selectIsTheOnlyBotArrangingPayloadLeft() {
+        let select = ShellActions.select(botId: "perf-1")
+        #expect(select["type"] as? String == "select")
+        #expect(select["botId"] as? String == "perf-1")
+        #expect(select.count == 2)
     }
 
-    @Test func profileConfirmCarriesValidFacesAndDropsPetname() throws {
-        let valid = try JSONDecoder().decode(Proposal.self, from: Data("""
-        {"id":"p2","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Scout","title":"Lead","description":"D","avatarShape":"hex","avatarColor":"blue","petname":"Scout Two"}}
+    /// An old record of a removed kind must decode and then be unconfirmable:
+    /// confirming it would send an action the server now refuses.
+    @Test func removedProposalKindsDecodeAsRetiredAndCannotBeConfirmed() throws {
+        for kind in ["createBot", "createGroup", "updateBotProfile", "fanout"] {
+            let proposal = try JSONDecoder().decode(Proposal.self, from: Data("""
+            {"id":"p1","kind":"\(kind)","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+             "name":"Scout","memberIds":["b1","b2"],"botId":"b1","patch":{"name":"X","title":"Y"},
+             "message":"ship it","targetIds":["b1"],"groupId":"g1","sourceBotId":"b9","sectionId":"s1"}
+            """.utf8))
+            #expect(proposal.kind == .retired)
+            #expect(ProposalActions.confirm(proposal) == nil)
+        }
+        // A kind nobody has heard of is still the visible, unsupported one.
+        let unknown = try JSONDecoder().decode(Proposal.self, from: Data("""
+        {"id":"p2","kind":"somethingNew","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z"}
         """.utf8))
-        let patch = try #require(ProposalActions.confirm(valid)?["patch"] as? [String: Any])
-        #expect(patch["name"] as? String == "Scout")
-        #expect(patch["label"] as? String == "Lead")
-        #expect(patch["avatarShape"] as? String == "hex")
-        #expect(patch["avatarColor"] as? String == "blue")
-        #expect(patch["petname"] == nil)
-
-        let invalid = try JSONDecoder().decode(Proposal.self, from: Data("""
-        {"id":"p3","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Scout","title":"Lead","description":"D","avatarShape":"nope"}}
-        """.utf8))
-        let clean = try #require(ProposalActions.confirm(invalid)?["patch"] as? [String: Any])
-        #expect(clean["avatarShape"] == nil)
-    }
-
-    @Test func profileConfirmSendsNoDescriptionWhenTheCardHasNone() throws {
-        let rename = try JSONDecoder().decode(Proposal.self, from: Data("""
-        {"id":"p5","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Analyst","title":"Lead"}}
-        """.utf8))
-        let patch = try #require(ProposalActions.confirm(rename)?["patch"] as? [String: Any])
-        #expect(patch["name"] as? String == "Analyst")
-        #expect(patch["description"] == nil)
-
-        let withText = try JSONDecoder().decode(Proposal.self, from: Data("""
-        {"id":"p6","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Scout","title":"Lead","description":"Exact text"}}
-        """.utf8))
-        let kept = try #require(ProposalActions.confirm(withText)?["patch"] as? [String: Any])
-        #expect(kept["description"] as? String == "Exact text")
-    }
-
-    @Test func fanoutConfirmTargetsTheGroupWhenThereIsOne() throws {
-        let proposal = try JSONDecoder().decode(Proposal.self, from: Data("""
-        {"id":"p4","kind":"fanout","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "message":"ship it","targetIds":["b1","b2"],"groupId":"g1","sourceBotId":"b9"}
-        """.utf8))
-        let action = try #require(ProposalActions.confirm(proposal))
-        #expect(action["botId"] as? String == "g1")
-        #expect(action["message"] as? String == "ship it")
-        #expect(action["sourceBotId"] as? String == "b9")
+        #expect(unknown.kind == .unknown)
+        #expect(ProposalActions.confirm(unknown) == nil)
     }
 
     @Test func updateBotOmitsNilForFieldsThatDoNotClear() throws {
@@ -122,6 +95,9 @@ import Testing
                 == "That proposal is no longer available."
         )
         #expect(BackendError.shell("custom_thing").errorDescription == "Custom Thing")
+        #expect(BackendError.shell("shell_bot_archived").errorDescription == "That bot is archived and can't be used.")
+        #expect(BackendError.shell("shell_bot_forbidden").errorDescription == "That bot can't be opened.")
+        #expect(BackendError.shell("shell_bot_forbidden").shellCode == "shell_bot_forbidden")
         #expect(BackendError.shell("proposal_missing").shellCode == "proposal_missing")
     }
 

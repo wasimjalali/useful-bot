@@ -202,15 +202,9 @@ final class PerfHarness {
                     mark("create_skipped", ["name": name])
                     continue
                 }
-                model.createBot(name: name, petname: name, label: "",
-                                description: "Performance fixture. Keep it frozen.", sectionId: nil)
-                var made = false
-                for _ in 0..<100 where !made {
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                    made = model.store?.bots.contains(where: { $0.name == name }) == true
-                }
-                guard made else { return abort("step \(index): \(name) was not created") }
-                mark("created", ["name": name])
+                // The app can no longer create a bot (the server drops the
+                // action), so a fixture bot has to exist already.
+                return abort("step \(index): \(name) does not exist and the app cannot create bots")
             case "deny":
                 // Approvals are not tied to a bot here, so only cards whose
                 // preview starts with one of the fixture's own commands (one

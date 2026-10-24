@@ -2,7 +2,7 @@ import Foundation
 
 public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case user, assistant, handoff, post, note, widget, image, page
+        case user, assistant, note, widget, image, page
         /// A failed turn, where its reply would have been.
         case failure
         /// The line under an owner message the server refused before eve took
@@ -13,10 +13,6 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var id: String
     public var kind: Kind
     public var text: String
-    public var author: String?
-    public var authorBotId: String?
-    public var targetBotIds: [String]
-    public var handoffId: String?
     /// Parsed server write time. Live stream rows have none until the durable
     /// event lands, so the transcript renders timestamps only when dated.
     public var at: Date?
@@ -33,10 +29,6 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         id: String,
         kind: Kind,
         text: String,
-        author: String? = nil,
-        authorBotId: String? = nil,
-        targetBotIds: [String] = [],
-        handoffId: String? = nil,
         at: Date? = nil,
         connectedName: String? = nil,
         connectedLogo: String? = nil,
@@ -45,10 +37,6 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         self.id = id
         self.kind = kind
         self.text = text
-        self.author = author
-        self.authorBotId = authorBotId
-        self.targetBotIds = targetBotIds
-        self.handoffId = handoffId
         self.at = at
         self.connectedName = connectedName
         self.connectedLogo = connectedLogo
@@ -61,7 +49,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 /// identical turns both survive while a replayed echo does not duplicate.
 ///
 /// The two sides interleave by time. Concatenating them put every durable row
-/// before every live row, so a handoff or a routine run that landed just now
+/// before every live row, so a routine run that landed just now
 /// rendered at the very top of the chat and auto-scroll jumped with it.
 public enum Transcript {
     /// Text with nothing to see: whitespace, the zero-width space and joiners,
@@ -87,6 +75,9 @@ public enum Transcript {
         var durableIds = Set<String>()
         for event in events {
             durableIds.insert(event.id)
+            // A teammate's handoff or group post, from before those went away:
+            // there is no strip to draw it with.
+            if event.kind == "handoff" || event.kind == "post" { continue }
             let kind = kindFor(event.kind)
             // Strip on both sides of the merge: if a durable row ever stored
             // the proxy-injected prefix, it must still pair with its live echo.
@@ -105,12 +96,6 @@ public enum Transcript {
                 id: event.id,
                 kind: kind,
                 text: kind == .widget ? (event.widgetId ?? text) : shown,
-                // Only a durable author label renders; the web treats an
-                // unattributed stream echo as unlabelled.
-                author: event.authorName,
-                authorBotId: event.authorBotId,
-                targetBotIds: event.targetBotIds,
-                handoffId: event.handoffId,
                 at: TranscriptBlocks.date(fromISO8601: event.at),
                 connectedName: kind == .note ? event.connectedName : nil,
                 connectedLogo: kind == .note ? event.connectedLogo : nil,
@@ -165,7 +150,7 @@ public enum Transcript {
             switch message.role {
             case .user:
                 if consume(&durableUserCounts, message.text) { continue }
-                // A turn the pump sent (handoff, connect resume) is background
+                // A turn the pump sent (a connect resume) is background
                 // plumbing, not something the owner typed.
                 if EveStream.isHandoffEnvelope(message.text) { continue }
                 live.append(TranscriptRow(id: message.id, kind: .user, text: message.text, at: message.at))
@@ -276,31 +261,10 @@ public enum Transcript {
         return keys
     }
 
-    /// Credit an untagged group reply to the orchestrator, whoever the owner
-    /// mentioned: the server answers a group turn as the orchestrator, and the
-    /// member does not speak (`speakerLabel` in `shared/threads.ts`). A reply
-    /// that already names its author keeps it.
-    public static func attributeGroupReplies(
-        _ rows: [TranscriptRow],
-        group: ShellBot,
-        orchestrator: Speaker?
-    ) -> [TranscriptRow] {
-        let label = Threads.speakerLabel(bot: group, orchestrator: orchestrator)
-        guard label.authorName != nil else { return rows }
-        var next = rows
-        for (index, row) in rows.enumerated() where row.kind == .assistant && row.authorBotId == nil && row.author == nil {
-            next[index].authorBotId = label.authorBotId
-            next[index].author = label.authorName
-        }
-        return next
-    }
-
     private static func kindFor(_ raw: String) -> TranscriptRow.Kind {
         switch raw {
         case "user": return .user
         case "assistant": return .assistant
-        case "handoff": return .handoff
-        case "post": return .post
         case "widget": return .widget
         case "image": return .image
         case "page": return .page

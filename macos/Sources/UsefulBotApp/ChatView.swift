@@ -3,7 +3,7 @@ import SwiftUI
 import UsefulBotCore
 
 /// The chat column: header, transcript in a centered
-/// 768pt column, empty state, proposal and onboarding cards, composer.
+/// 768pt column, empty state, proposal cards, composer.
 struct ChatView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.starterBotId) private var starterBotId
@@ -14,7 +14,6 @@ struct ChatView: View {
     /// has sent a message from this app.
     @AppStorage(StarterPrompt.sentKey) private var firstMessageSent = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var onDeleteRequest: (ShellBot) -> Void
 
     /// Measured width of the chat column, so user bubbles cap at 85% of the
     /// column rather than 85% of the wider scroll container.
@@ -181,7 +180,7 @@ struct ChatView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if model.settingsOpen, let bot = model.selectedBot {
-                SettingsPaneView(bot: bot, onDeleteRequest: { onDeleteRequest(bot) })
+                SettingsPaneView(bot: bot)
                     .dismissOnOutsideClick(triggers: { [infoButtonFrame] }) {
                         model.settingsOpen = false
                     }
@@ -200,7 +199,7 @@ struct ChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .replyToMessage)) { note in
             guard let text = note.userInfo?["text"] as? String,
                   let botId = note.userInfo?["botId"] as? String else { return }
-            model.reply(to: text, author: note.userInfo?["author"] as? String, botId: botId)
+            model.reply(to: text, botId: botId)
         }
     }
 
@@ -243,21 +242,18 @@ struct ChatView: View {
                     ) { option in model.answerRequest(request, option: option) }
                     dismiss: { model.dismissRequest(request) }
                 }
-                if let store = model.store {
-                    ForEach(model.openProposals) { proposal in
-                        ProposalCardView(
-                            proposal: proposal,
-                            bots: store.bots,
-                            pending: model.busyProposals.contains(proposal.id),
-                            onDecision: { confirmed in
-                                model.decideProposal(proposal, confirmed: confirmed)
-                            },
-                            onReopen: { model.reopenConnect(proposal) },
-                            onConfirmSecret: { secret in
-                                model.decideProposal(proposal, confirmed: true, secret: secret)
-                            }
-                        )
-                    }
+                ForEach(model.openProposals) { proposal in
+                    ProposalCardView(
+                        proposal: proposal,
+                        pending: model.busyProposals.contains(proposal.id),
+                        onDecision: { confirmed in
+                            model.decideProposal(proposal, confirmed: confirmed)
+                        },
+                        onReopen: { model.reopenConnect(proposal) },
+                        onConfirmSecret: { secret in
+                            model.decideProposal(proposal, confirmed: true, secret: secret)
+                        }
+                    )
                 }
                 if let error = model.approvalError {
                     Text(error)
@@ -293,7 +289,7 @@ struct ChatView: View {
             // approval is the normal way this app works, and a yellow panel
             // over the composer reads as something having gone wrong.
             .foregroundStyle(Theme.C.inkMuted)
-            if let origin = item.originLabel(openBotId: model.selectedBotId, openSessionId: model.selectedBot?.sessionId) {
+            if let origin = item.originLabel(openBotId: model.selectedBotId) {
                 Text(origin)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkFaint)
@@ -424,11 +420,7 @@ struct ChatView: View {
     private func header(_ bot: ShellBot) -> some View {
         ZStack {
             HStack(spacing: 8) {
-                if bot.isGroup, !members(bot).isEmpty {
-                    AvatarStackView(bots: members(bot), size: 22, maxVisible: 3)
-                } else {
-                    BotAvatarView(bot: bot, size: 22)
-                }
+                BotAvatarView(bot: bot, size: 22)
                 Text(bot.name)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Theme.C.ink)
@@ -455,10 +447,6 @@ struct ChatView: View {
         }
         .padding(.horizontal, 16)
         .frame(minHeight: DesignTokens.Space.chatHead)
-    }
-
-    private func members(_ bot: ShellBot) -> [ShellBot] {
-        groupMemberBots(bot, store: model.store)
     }
 
     // MARK: - Transcript
@@ -558,33 +546,12 @@ struct ChatView: View {
         }
     }
 
-    /// A run is still out by what its card shows (working or quiet), not by
-    /// the parent's state alone: one nobody has heard from for hours is not.
-    private func cardIsLive(_ card: SubagentCardData) -> Bool {
-        model.liveCardIds.contains(card.id)
-    }
-
-    private func subagentCard(_ card: SubagentCardData, bot: ShellBot) -> some View {
-        SubagentGroupCard(
-            card: card,
-            chat: model.subagentCards,
-            bot: bot,
-            parentBusy: model.pending || model.backgroundWorking,
-            parked: !model.pendingRequests.isEmpty,
-            idleSince: model.parentIdleSince,
-            maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
-            store: model.subagentProgress
-        )
-    }
-
     private func transcript(_ bot: ShellBot) -> some View {
-        let roster = model.store?.bots ?? []
         // What the rows are handed. A row is skipped while its inputs compare
         // equal, and a bot's session pointer and last preview change every
-        // time any bot says anything, which made every row in this chat
-        // unequal, and rebuilt its markdown, for a reply in another one.
+        // time the bot says anything, which made every row in this chat
+        // unequal, and rebuilt its markdown.
         let rowBot = bot.transcriptFace
-        let rowRoster = roster.map(\.transcriptFace)
         let streaming = model.pending || model.backgroundWorking
         // Built once per transcript change in the model, not once per body.
         // This view re-evaluates on every keystroke in the composer, and
@@ -593,50 +560,9 @@ struct ChatView: View {
         // newest turn, and older ones as the reader asks for them. The stack
         // stays eager on purpose (see `AppModel.transcriptWindow`).
         let window = model.transcriptWindow
-        // A bubble that follows a sub-agent card keeps the full gap: the card
-        // broke its turn's stack, and the tight stacking would sit it 8 pt under.
-        // A card sits under the block that draws its anchor row (a run of
-        // pictures draws several), and goes to the tail when none in the
-        // window does.
-        let cardsByBlock: [String: [SubagentCardData]] = model.subagentCards.reduce(into: [:]) { found, card in
-            guard let anchor = card.anchorRowId,
-                  let block = window.blocks.first(where: { $0.holds(rowId: anchor) }) else { return }
-            found[block.id, default: []].append(card)
-        }
-        // Only a card with no anchor, or whose anchor is nowhere in the chat,
-        // goes to the tail. One whose block is merely above the mounted window
-        // waits for "Show earlier" to mount it.
-        // A settled card with no row to follow is not drawn: at the tail it
-        // would sit under the newest message as if it were new.
-        let tailCards = model.subagentCards.filter { card in
-            if let anchor = card.anchorRowId, model.transcriptBlocks.contains(where: { $0.holds(rowId: anchor) }) {
-                return false
-            }
-            return cardIsLive(card)
-        }
-        // A card covers the sub-agent work only when it sits under its own
-        // reply and has a run still out. One parked at the tail does not, so
-        // a real working row is never hidden by it.
-        let hasActiveCard = cardsByBlock.values.flatMap { $0 }.contains { cardIsLive($0) }
-        var afterCard = Set<String>()
-        for (above, below) in zip(window.blocks, window.blocks.dropFirst()) where cardsByBlock[above.id] != nil {
-            afterCard.insert(below.id)
-        }
         return ScrollViewReader { proxy in
             ScrollView {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.transcriptGap) {
-                        if model.showOnboarding {
-                            OnboardingCardView(
-                                name: bot.name,
-                                onFillForm: {
-                                    model.dismissOnboarding(botId: bot.id)
-                                    model.settingsOpen = true
-                                },
-                                onDismiss: { model.dismissOnboarding(botId: bot.id) }
-                            )
-                            // A host card on the bot side, under the bubble cap.
-                            .frame(maxWidth: DesignTokens.Space.bubbleMax)
-                        }
                         if window.hidden > 0 {
                             ShowEarlierRow { model.showEarlierMessages() }
                         }
@@ -645,7 +571,7 @@ struct ChatView: View {
                             switch block {
                             case .dayDivider(_, let label):
                                 DayDividerRow(label: label)
-                            case .message(let row, _) where row.kind == .failure:
+                            case .message(let row) where row.kind == .failure:
                                 // Only the newest failed turn keeps a live
                                 // Retry; older ones are the record.
                                 let live = row.id == model.retryableFailureRowId
@@ -656,7 +582,7 @@ struct ChatView: View {
                                     until: live ? model.failureRetryUntil : nil,
                                     maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85)
                                 ) { model.retryLastTurn() }
-                            case .message(let row, _) where row.kind == .unsent:
+                            case .message(let row) where row.kind == .unsent:
                                 UnsentRow(
                                     text: row.text,
                                     retryEnabled: !model.pending,
@@ -666,7 +592,7 @@ struct ChatView: View {
                                     edit: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.editUnsent(id) } },
                                     dismiss: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.dismissUnsent(id) } }
                                 )
-                            case .message(let row, let recipients):
+                            case .message(let row):
                                 if row.id == model.continuationRowId {
                                     // The earlier session could not go on, so
                                     // this one opened with a brief of it.
@@ -675,8 +601,6 @@ struct ChatView: View {
                                 TranscriptRowView(
                                     row: row,
                                     bot: rowBot,
-                                    bots: rowRoster,
-                                    recipients: recipients,
                                     maxBubbleWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
                                     queued: model.queuedRowIds.contains(row.id),
                                     // The reply still being written parses
@@ -692,7 +616,6 @@ struct ChatView: View {
                                 // Not the first mounted bubble: the one it
                                 // would stack under is behind the row.
                                 .padding(.top, model.continuationIds.contains(row.id) && row.id != window.startId
-                                    && !afterCard.contains(row.id)
                                     ? DesignTokens.Space.bubbleStackGap - DesignTokens.Space.transcriptGap
                                     : 0)
                                 // Only the newest reply measures itself, and
@@ -728,23 +651,8 @@ struct ChatView: View {
                                     rows: rows,
                                     maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85)
                                 )
-                            case .summary(_, let count, let botIds):
-                                BotMetaRow(
-                                    prefix: "\(count) messages with",
-                                    botIds: botIds,
-                                    roster: roster
-                                )
-                            }
-                            // The sub-agents a turn launched sit under its reply.
-                            ForEach(cardsByBlock[block.id] ?? []) { card in
-                                subagentCard(card, bot: bot)
                             }
                           }
-                        }
-                        // A card with no row to follow, or whose row is gone,
-                        // goes at the tail where the working row would be.
-                        ForEach(tailCards) { card in
-                            subagentCard(card, bot: bot)
                         }
                         // Up for the whole turn, under whichever bubble is
                         // newest, so the owner can see the bot is still going
@@ -753,7 +661,7 @@ struct ChatView: View {
                         // and a row that vanished pulled everything down by
                         // its height.
                         Group {
-                            if model.pending || model.backgroundWorking, !(model.activity.isSubagent && hasActiveCard) {
+                            if model.pending || model.backgroundWorking {
                                 WorkingRow(
                                     bot: bot,
                                     activity: model.activity,
@@ -761,10 +669,6 @@ struct ChatView: View {
                                     toolkits: model.connectorApps,
                                     runningModel: model.runningModelNote(for: bot.id)
                                 )
-                            } else if let since = model.runningTaskSince, !hasActiveCard {
-                                // The turn that started a sub-agent is over,
-                                // and the sub-agent is still at it.
-                                WorkingRow(bot: bot, activity: .subagent(finished: false), since: since, toolkits: [])
                             }
                         }
                         .frame(height: WorkingRow.height, alignment: .leading)
@@ -1042,10 +946,10 @@ struct ChatView: View {
     @ViewBuilder
     private func emptyState(_ bot: ShellBot) -> some View {
         // Not under the no-model bar: a tap would fill a composer that can't send.
-        if bot.id == starterBotId, !bot.isGroup, !firstMessageSent,
+        if bot.id == starterBotId, !firstMessageSent,
            !(model.noModelConnected || noModelPreview) {
             starters(bot)
-        } else if model.noModelConnected || noModelPreview, !bot.isGroup {
+        } else if model.noModelConnected || noModelPreview {
             connectFirst(bot)
         } else {
             plainEmptyState(bot)
@@ -1064,7 +968,7 @@ struct ChatView: View {
                     .font(.system(size: 22, weight: .semibold))
                     .tracking(DesignTokens.Tracking.heading * 22)
                     .foregroundStyle(Theme.C.ink)
-                Text("\(bot.name) can research, write, work with files and set up new bots for you.")
+                Text("\(bot.name) can research, write and work with files for you.")
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.C.inkMuted)
             }
@@ -1130,27 +1034,16 @@ struct ChatView: View {
 
     private func plainEmptyState(_ bot: ShellBot) -> some View {
         VStack(spacing: 8) {
-            if !bot.isGroup {
-                BotFaceView(color: BrandAssets.colorID(for: bot), size: 64)
-                    .frame(width: 64, height: 64)
-                    .padding(.bottom, 8)
-                    .accessibilityHidden(true)
-            }
+            BotFaceView(color: BrandAssets.colorID(for: bot), size: 64)
+                .frame(width: 64, height: 64)
+                .padding(.bottom, 8)
+                .accessibilityHidden(true)
             Text("What can I do for you?")
                 .font(.system(size: DesignTokens.FontSize.emptyTitle, weight: .semibold))
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
-            if bot.isGroup {
-                Text(groupCopy(bot))
-                    .font(.system(size: DesignTokens.FontSize.emptyBody))
-                    .lineSpacing(6)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 448)
-            } else {
-                everydayPrompts
-                    .padding(.top, 20)
-            }
+            everydayPrompts
+                .padding(.top, 20)
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1173,11 +1066,6 @@ struct ChatView: View {
         .animation(Theme.ease(0.2), value: typing)
     }
 
-    private func groupCopy(_ bot: ShellBot) -> String {
-        let names = members(bot).map(\.name)
-        return "Group chat with \(names.isEmpty ? "no members yet" : names.joined(separator: ", ")). Untargeted messages go to the orchestrator; @name directs one bot."
-    }
-
     // MARK: - Composer column
 
     private func composerColumn(_ bot: ShellBot) -> some View {
@@ -1195,7 +1083,7 @@ struct ChatView: View {
             // Setup was skipped, or every provider was removed: nothing to
             // chat with until one is connected.
             // Not over an empty chat: its middle already asks for the same.
-            if noModel, model.hasThreadContent || model.pending || bot.isGroup {
+            if noModel, model.hasThreadContent || model.pending {
                 HStack(spacing: 12) {
                     Text(model.noModelRetiredSentence == nil ? "Connect a model to start chatting." : "Your connection was turned off. See Providers.")
                         .font(.system(size: 14))
@@ -1495,43 +1383,6 @@ private struct DayDividerRow: View {
     }
 }
 
-/// The centered cross-bot strip: "Messaged Growth", "Message from CEO",
-/// "2 messages with 2 Bots". Centered over a bubble too, the way Grok sets
-/// every event line apart from what was said. Avatars come from the live roster; a deleted bot
-/// falls back to a plain count.
-private struct BotMetaRow: View {
-    let prefix: String
-    let botIds: [String]
-    var names: [String] = []
-    let roster: [ShellBot]
-
-    private var bots: [ShellBot] {
-        botIds.compactMap { id in roster.first { $0.id == id } }
-    }
-
-    private var label: String {
-        ChatAttribution.metaLabel(idCount: botIds.count, resolved: bots.map(\.name), names: names)
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                Text(prefix)
-                if !bots.isEmpty {
-                    AvatarStackView(bots: bots, size: 16, maxVisible: 2)
-                }
-                Text(label)
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(Theme.C.inkMuted)
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-    }
-}
-
 private extension ShellBot {
     /// This bot without the fields that move on every turn and that no
     /// transcript row draws: a row shows a name and a face, never a preview.
@@ -1649,8 +1500,6 @@ private struct UserBubbleView: View {
 struct TranscriptRowView: View, Equatable {
     let row: TranscriptRow
     let bot: ShellBot
-    var bots: [ShellBot] = []
-    var recipients: [String] = []
     var maxBubbleWidth: CGFloat = 612
     /// eve is holding this owner message until a waiting card is answered.
     var queued = false
@@ -1662,50 +1511,16 @@ struct TranscriptRowView: View, Equatable {
         switch row.kind {
         case .user:
             userRow
-        case .handoff:
-            VStack(alignment: .leading, spacing: 8) {
-                BotMetaRow(
-                    prefix: "Messaged",
-                    botIds: recipients.isEmpty ? row.targetBotIds : recipients,
-                    names: ["a teammate"],
-                    roster: bots
-                )
-                replyRow(showsSpeaker: false)
-            }
-        case .post:
-            let author = row.author ?? ""
-            VStack(alignment: .leading, spacing: 8) {
-                // Always labelled: an unattributed post on the bot side would
-                // read as the chat's own bot speaking.
-                BotMetaRow(
-                    prefix: "Message from",
-                    botIds: row.authorBotId.map { [$0] } ?? [],
-                    // A deleted bot that stored no name still reads as a
-                    // teammate rather than as "1 Bot".
-                    names: [author.isEmpty ? "a teammate" : author],
-                    roster: bots
-                )
-                // Whatever a teammate posts, a question to this bot or an
-                // answer, is a bot speaking: it sits on the left in the bot
-                // bubble, under the "Message from" line that names it. Only
-                // the owner's words go on the right.
-                replyRow(showsSpeaker: false)
-            }
         case .note where row.connectedName != nil:
             connectedCard(name: row.connectedName ?? "")
         case .note:
             // An event, not something said: one centered line with the
-            // face of whoever did it, like the cross-bot strips.
+            // face of whoever did it.
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    noteAvatar
+                    BotAvatarView(bot: bot, size: 16)
                         .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
-                    // The chat's own bot needs only its face; a teammate's
-                    // note says whose it is.
-                    if let name = noteAuthorName {
-                        Text(name).fontWeight(.semibold)
-                    }
                     Text(row.text)
                         .multilineTextAlignment(.center)
                 }
@@ -1717,9 +1532,9 @@ struct TranscriptRowView: View, Equatable {
             }
             .padding(.vertical, 2)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel([noteAuthorName, row.text].compactMap { $0 }.joined(separator: ": "))
+            .accessibilityLabel(row.text)
         case .assistant:
-            replyRow(showsSpeaker: true)
+            replyRow
         case .widget:
             // A host card on the bot side, under the same width cap as every
             // bubble.
@@ -1775,23 +1590,11 @@ struct TranscriptRowView: View, Equatable {
         }
     }
 
-    /// One message from a bot, in its own bubble. The avatar gutter shows only
-    /// in a room where more than one bot can answer.
-    private func replyRow(showsSpeaker: Bool) -> some View {
-        let attributed = showsSpeaker && row.authorBotId != nil && row.authorBotId != bot.id
-        let showsAvatar = attributed && speaker != nil
-        return HStack(alignment: .top, spacing: 10) {
-            if showsAvatar, let speaker {
-                BotAvatarView(bot: speaker, size: 24)
-            }
+    /// One message from a bot, in its own bubble.
+    private var replyRow: some View {
+        HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                if attributed, let speakerLabel {
-                    Text(speakerLabel)
-                        .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
-                        .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
-                        .foregroundStyle(Theme.C.inkFaint)
-                }
-                MessageHoverActions(text: row.text, botId: bot.id, author: row.authorBotId != nil && row.authorBotId != bot.id ? (speaker?.name ?? row.author) : nil, enabled: !streaming) {
+                MessageHoverActions(text: row.text, botId: bot.id, enabled: !streaming) {
                     ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -1843,47 +1646,6 @@ struct TranscriptRowView: View, Equatable {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(name) added")
-    }
-
-    /// A note's face: the speaker's, the chat owner's for its own note, and
-    /// none at all when the author id names a bot the roster no longer has.
-    @ViewBuilder
-    private var noteAvatar: some View {
-        switch ChatAttribution.face(
-            authorBotId: row.authorBotId,
-            ownerBotId: bot.id,
-            speakerResolved: speaker != nil
-        ) {
-        case .speaker:
-            if let speaker { BotAvatarView(bot: speaker, size: 16) }
-        case .owner:
-            BotAvatarView(bot: bot, size: 16)
-        case .unknown:
-            // Centered, a missing face just leaves the line shorter.
-            EmptyView()
-        }
-    }
-
-    /// The bot that spoke, when the row is attributed and it is not the chat
-    /// owner itself.
-    private var speaker: ShellBot? {
-        guard let id = row.authorBotId, id != bot.id else { return nil }
-        return bots.first { $0.id == id }
-    }
-
-    /// A note's author when it is not the chat's own bot.
-    private var noteAuthorName: String? {
-        // A note with only a stored name still says whose it is, unless the
-        // name is the chat's own bot.
-        guard row.authorBotId != bot.id else { return nil }
-        let name = speaker?.name ?? row.author ?? ""
-        if row.authorBotId == nil, name == bot.name { return nil }
-        return name.isEmpty ? nil : name
-    }
-
-    private var speakerLabel: String? {
-        guard speaker != nil || (row.authorBotId != nil && row.authorBotId != bot.id) else { return nil }
-        return ChatAttribution.label(speakerName: speaker?.name, author: row.author)
     }
 }
 
@@ -2328,9 +2090,8 @@ private enum HoverActionsDebug {
 /// its row. They keep their room when hidden, so the bubble never shifts.
 private struct MessageHoverActions<Content: View>: View {
     let text: String
-    /// The chat the message is in, and who wrote it when that is a member.
+    /// The chat the message is in.
     let botId: String
-    var author: String?
     var enabled = true
     @ViewBuilder var content: Content
 
@@ -2382,9 +2143,7 @@ private struct MessageHoverActions<Content: View>: View {
     }
 
     private func reply() {
-        var info: [String: String] = ["text": text, "botId": botId]
-        if let author { info["author"] = author }
-        NotificationCenter.default.post(name: .replyToMessage, object: nil, userInfo: info)
+        NotificationCenter.default.post(name: .replyToMessage, object: nil, userInfo: ["text": text, "botId": botId])
     }
 
     private func copy() {
@@ -2454,25 +2213,25 @@ struct StarterPrompt: Identifiable {
             prompt: "Research a topic I'll name, then save a short report with sources as a document on my Desktop."
         ),
         StarterPrompt(
-            label: "Create a bot that plans a Downloads tidy-up",
-            prompt: "Create a bot that looks through my Downloads folder, tells me what is in there and proposes a tidy-up plan I can approve before anything moves."
+            label: "Plan a Downloads tidy-up",
+            prompt: "Look through my Downloads folder, tell me what is in there and propose a tidy-up plan I can approve before anything moves."
         ),
         StarterPrompt(
-            label: "Create a copywriter bot for my brand",
-            prompt: "Create a copywriter bot for my brand. Ask me a few questions about my brand and voice first, then set it up."
+            label: "Write copy for my brand",
+            prompt: "Write copy for my brand. Ask me a few questions about my brand and voice first, then draft it."
         ),
     ]
 
-    /// Any empty chat's tiles: two bots worth making, the first step to
+    /// Any empty chat's tiles: two jobs worth handing over, the first step to
     /// connecting apps and a routine, so the owner sees what's possible.
     static let everyday = [
         StarterPrompt(
-            label: "Create an inbox assistant",
-            prompt: "Create a bot that goes through my email every morning, sums up what needs me and shows me draft replies here to review. Ask me what to watch for first."
+            label: "Sum up my inbox every morning",
+            prompt: "Go through my email every morning, sum up what needs me and show me draft replies here to review. Ask me what to watch for first."
         ),
         StarterPrompt(
-            label: "Create a writer for my social posts",
-            prompt: "Create a bot that writes my social media posts in my voice. Ask me about my audience, my topics and a few posts I like first, then set it up."
+            label: "Write my social posts",
+            prompt: "Write my social media posts in my voice. Ask me about my audience, my topics and a few posts I like first, then draft them."
         ),
         StarterPrompt(
             label: "How do I connect my apps?",
@@ -2483,4 +2242,87 @@ struct StarterPrompt: Identifiable {
             prompt: "Every day at 8:00, post a short news brief here with sources on topics I pick. Ask me the topics first, then set it up as a routine."
         ),
     ]
+}
+
+/// What eve is waiting on that is not a question: a session limit, an
+/// approval, a kind this build does not know. Amber, so it reads as needing
+/// the owner rather than as a normal ask.
+struct WaitingCard: View {
+    let request: PendingRequest
+    let botName: String
+    let busy: Bool
+    let answer: (PendingRequest.Option) -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "hourglass")
+                    .font(.system(size: 11, weight: .regular))
+                Text("\(botName) is waiting on you")
+                    .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
+                    .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Theme.C.warning)
+            Text(PendingRequestCopy.body(for: request))
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.C.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if request.options.isEmpty {
+                // Nothing to press: it can only be answered in words, or hidden.
+                HStack(spacing: 8) {
+                    Text("This can't be answered here. Dismiss hides the card.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Spacer(minLength: 0)
+                    NativeButton("Dismiss", small: true, action: dismiss)
+                        .accessibilityIdentifier("request-dismiss")
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(request.options) { option in
+                        NativeButton(
+                            PendingRequestCopy.label(of: option, in: request),
+                            kind: PendingRequestCopy.isPrimary(option, in: request) ? .primary : .secondary,
+                            small: true,
+                            enabled: !busy
+                        ) { answer(option) }
+                        .accessibilityIdentifier("request-option-\(option.id)")
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Theme.C.warningSoft)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                .strokeBorder(Theme.C.warning.opacity(0.5), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .compositingGroup()
+        .popShadow()
+        .opacity(busy ? 0.7 : 1)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("waiting-card")
+    }
+}
+
+/// Under an owner bubble eve is holding until a request is answered.
+struct QueuedTag: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "clock")
+                .font(.system(size: 11))
+            Text("Queued until you answer the card")
+                .font(.system(size: 12))
+        }
+        .foregroundStyle(Theme.C.inkMuted)
+        .accessibilityElement(children: .combine)
+    }
 }
