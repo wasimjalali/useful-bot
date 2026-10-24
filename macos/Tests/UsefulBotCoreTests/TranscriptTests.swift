@@ -19,8 +19,8 @@ import Testing
             ChatMessage(id: "a1", role: .assistant, text: "RESEARCH DONE"),
         ]
         let rows = Transcript.merge(events: [event], messages: messages)
+        // The old attribution fields still decode; nothing reads them.
         #expect(rows.filter { $0.kind == .assistant }.count == 1)
-        #expect(rows.first?.author == "Echo")
     }
 
     @Test func mergePairsPrefixedDurableUserTextWithItsLiveEcho() throws {
@@ -45,54 +45,30 @@ import Testing
         #expect(rows.first?.text == "final text")
     }
 
-    @Test func groupRepliesAreCreditedToTheOrchestratorWhoeverWasMentioned() {
-        let group = ShellBot.sample(id: "g1", kind: "group", name: "Launch")
-        let generalist = Speaker(id: "bot-useful", kind: "bot", name: "Generalist", title: "")
-        let rows = Transcript.attributeGroupReplies(
-            [
-                TranscriptRow(id: "u1", kind: .user, text: "@Writer tighten this"),
-                TranscriptRow(id: "a1", kind: .assistant, text: "done"),
-            ],
-            group: group,
-            orchestrator: generalist
-        )
-        // The default bot answers: its name, no member id.
-        #expect(rows[1].authorBotId == nil)
-        #expect(rows[1].author == "Generalist")
+    /// A chat from before the one-bot change still has handoff and post rows in
+    /// its durable store. There is no strip left to draw them with, and a
+    /// decode that failed on them would empty the whole chat.
+    @Test func oldHandoffAndPostEventsAreDroppedAndTheRestSurvives() throws {
+        let events = try [
+            #"{"id":"e0","kind":"user","text":"hi","targetBotIds":[]}"#,
+            #"{"id":"e1","kind":"handoff","text":"task","authorBotId":"b7","authorName":"Writer","targetBotIds":["b8"],"handoffId":"h1"}"#,
+            #"{"id":"e2","kind":"post","text":"From the group","authorBotId":"b7","authorName":"Writer","targetBotIds":[]}"#,
+            #"{"id":"e3","kind":"assistant","text":"hello","targetBotIds":[]}"#,
+        ].map { try JSONDecoder().decode(AgentEvent.self, from: Data($0.utf8)) }
+        let rows = Transcript.merge(events: events, messages: [])
+        #expect(rows.map(\.id) == ["e0", "e3"])
+        #expect(rows.map(\.kind) == [.user, .assistant])
     }
 
-    @Test func aFallbackOrchestratorIsCreditedByIdAndAnExplicitAuthorIsKept() {
-        let group = ShellBot.sample(id: "g1", kind: "group", name: "Launch")
-        let fallback = Speaker(id: "b9", kind: "bot", name: "Lead", title: "")
-        var tagged = TranscriptRow(id: "a2", kind: .assistant, text: "mine")
-        tagged.authorBotId = "b2"
-        tagged.author = "Research"
-        let rows = Transcript.attributeGroupReplies(
-            [
-                TranscriptRow(id: "u1", kind: .user, text: "@Research check it"),
-                TranscriptRow(id: "a1", kind: .assistant, text: "checked"),
-                tagged,
-                TranscriptRow(id: "n1", kind: .note, text: "a note"),
-            ],
-            group: group,
-            orchestrator: fallback
+    /// A live echo of a dropped durable row must not turn up as a second copy.
+    @Test func aDroppedHandoffDoesNotLetItsLiveEchoThroughAsAnOwnerBubble() throws {
+        let envelope = "Handoff from Writer.\nThis arrives in your own chat.\nDo the work.\n\ntask"
+        let handoff = try JSONDecoder().decode(
+            AgentEvent.self,
+            from: Data(#"{"id":"e1","kind":"handoff","text":"task","authorName":"Writer","targetBotIds":["b8"]}"#.utf8)
         )
-        #expect(rows[1].authorBotId == "b9")
-        #expect(rows[1].author == "Lead")
-        #expect(rows[2].authorBotId == "b2")
-        #expect(rows[3].authorBotId == nil)
-        #expect(rows[3].author == nil)
-    }
-
-    @Test func durableAttributionSurvivesTheMerge() throws {
-        let event = try JSONDecoder().decode(AgentEvent.self, from: Data(#"""
-        {"id":"e1","kind":"handoff","text":"task","authorBotId":"b7","authorName":"Writer",
-         "targetBotIds":["b8"],"handoffId":"h1"}
-        """#.utf8))
-        let rows = Transcript.merge(events: [event], messages: [])
-        #expect(rows.first?.authorBotId == "b7")
-        #expect(rows.first?.targetBotIds == ["b8"])
-        #expect(rows.first?.handoffId == "h1")
+        let rows = Transcript.merge(events: [handoff], messages: [ChatMessage(id: "u1", role: .user, text: envelope)])
+        #expect(rows.isEmpty)
     }
 
     @Test func aConnectedNoteCarriesItsAppIntoTheRow() throws {
@@ -115,17 +91,13 @@ import Testing
         #expect(rows.first?.text == "Q3 report")
     }
 
-    @Test func mergeRendersHandoffsAndNotes() throws {
-        let handoff = try JSONDecoder().decode(
-            AgentEvent.self,
-            from: Data(#"{"id":"h1","kind":"handoff","text":"task","authorName":null,"targetBotIds":["b"],"handoffId":null}"#.utf8)
-        )
+    @Test func mergeRendersNotes() throws {
         let note = try JSONDecoder().decode(
             AgentEvent.self,
-            from: Data(#"{"id":"n1","kind":"note","text":"Confirmed createBot.","authorName":null,"targetBotIds":[],"handoffId":null}"#.utf8)
+            from: Data(#"{"id":"n1","kind":"note","text":"Confirmed connectApp.","authorName":null,"targetBotIds":[],"handoffId":null}"#.utf8)
         )
-        let rows = Transcript.merge(events: [handoff, note], messages: [])
-        #expect(rows.map(\.kind) == [.handoff, .note])
+        let rows = Transcript.merge(events: [note], messages: [])
+        #expect(rows.map(\.kind) == [.note])
     }
 
     @Test func durableEventTimeLandsOnTheRow() throws {
@@ -176,8 +148,8 @@ import Testing
 
     @Test func aDurableRowWrittenNowLandsAtTheBottomNotTheTop() throws {
         // The bug: every durable row was emitted before every live row, so a
-        // handoff or routine run that just landed rendered at the very top.
-        let handoff = try event("evt_new", kind: "post", text: "From SEO", at: "2026-09-14T12:00:00.000Z")
+        // note or routine run that just landed rendered at the very top.
+        let handoff = try event("evt_new", kind: "note", text: "From SEO", at: "2026-09-14T12:00:00.000Z")
         let messages = [
             ChatMessage(id: "u1", role: .user, text: "hello", at: date("2026-09-14T10:00:00.000Z")),
             ChatMessage(id: "a1", role: .assistant, text: "hi", at: date("2026-09-14T10:00:05.000Z")),
@@ -189,7 +161,7 @@ import Testing
     @Test func durableAndLiveRowsInterleaveByTime() throws {
         let events = [
             try event("d1", kind: "user", text: "first", at: "2026-09-14T09:00:00.000Z"),
-            try event("d2", kind: "post", text: "middle", at: "2026-09-14T11:00:00.000Z"),
+            try event("d2", kind: "note", text: "middle", at: "2026-09-14T11:00:00.000Z"),
             try event("d3", kind: "note", text: "last", at: "2026-09-14T13:00:00.000Z"),
         ]
         let messages = [
@@ -220,7 +192,7 @@ import Testing
     }
 
     @Test func rowsWithTheSameStampKeepTheDurableSideFirst() throws {
-        let events = [try event("d1", kind: "post", text: "durable", at: "2026-09-14T10:00:00.000Z")]
+        let events = [try event("d1", kind: "note", text: "durable", at: "2026-09-14T10:00:00.000Z")]
         let messages = [ChatMessage(id: "l1", role: .assistant, text: "live", at: date("2026-09-14T10:00:00.000Z"))]
         #expect(Transcript.merge(events: events, messages: messages).map(\.id) == ["d1", "l1"])
     }

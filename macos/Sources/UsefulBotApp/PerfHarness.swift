@@ -203,7 +203,7 @@ final class PerfHarness {
                     continue
                 }
                 model.createBot(name: name, petname: name, label: "",
-                                description: "Performance fixture. Keep it frozen.", sectionId: nil)
+                                description: "Performance fixture. Keep it frozen.")
                 var made = false
                 for _ in 0..<100 where !made {
                     try? await Task.sleep(nanoseconds: 100_000_000)

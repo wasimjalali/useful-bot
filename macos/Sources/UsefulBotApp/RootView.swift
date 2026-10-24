@@ -2,18 +2,6 @@ import AppKit
 import SwiftUI
 import UsefulBotCore
 
-enum CreateKind: Identifiable {
-    case bot
-    case group
-
-    var id: String {
-        switch self {
-        case .bot: return "bot"
-        case .group: return "group"
-        }
-    }
-}
-
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -29,8 +17,7 @@ struct RootView: View {
     @State private var pickerOpen = false
     @State private var windowFullScreen = false
     @State private var newChatTrigger = CGRect.zero
-    @State private var createKind: CreateKind?
-    @State private var createSectionId: String?
+    @State private var createOpen = false
     @State private var renameBot: ShellBot?
     @State private var deleteBot: ShellBot?
     @State private var connectorsOpen = false
@@ -211,50 +198,30 @@ struct RootView: View {
                     .transition(.opacity)
             }
 
-            if let kind = createKind {
-                switch kind {
-                case .bot:
-                    CreateBotDialog(
-                        sectionName: model.store?.sections.first { $0.id == createSectionId }?.name,
-                        onClose: { createKind = nil },
-                        onSubmit: { input, finish in
-                            model.createBot(
-                                name: input.name,
-                                petname: input.name,
-                                label: input.label,
-                                description: input.description,
-                                sectionId: createSectionId
-                            ) { error in
-                                // The dialog can't be closed while it waits,
-                                // but if it is gone anyway the model shows
-                                // the failure instead.
-                                guard case .bot = createKind else { return false }
-                                finish(error)
-                                if error == nil {
-                                    pickerOpen = false
-                                    createKind = nil
-                                }
-                                return true
+            if createOpen {
+                CreateBotDialog(
+                    onClose: { createOpen = false },
+                    onSubmit: { input, finish in
+                        model.createBot(
+                            name: input.name,
+                            petname: input.name,
+                            label: input.label,
+                            description: input.description
+                        ) { error in
+                            // The dialog can't be closed while it waits,
+                            // but if it is gone anyway the model shows
+                            // the failure instead.
+                            guard createOpen else { return false }
+                            finish(error)
+                            if error == nil {
+                                pickerOpen = false
+                                createOpen = false
                             }
+                            return true
                         }
-                    )
-                    .transition(.opacity)
-                case .group:
-                    CreateGroupDialog(
-                        bots: model.store?.bots ?? [],
-                        onClose: { createKind = nil },
-                        onSubmit: { input in
-                            model.createGroup(
-                                name: input.name,
-                                memberIds: input.memberIds,
-                                sectionId: createSectionId
-                            )
-                            pickerOpen = false
-                            createKind = nil
-                        }
-                    )
-                    .transition(.opacity)
-                }
+                    }
+                )
+                .transition(.opacity)
             }
 
             if let bot = renameBot {
@@ -286,27 +253,10 @@ struct RootView: View {
                 .transition(.opacity)
             }
 
-            if sectionPromptOpen {
-                PromptDialog(
-                    title: "Create section",
-                    label: "Section name",
-                    initial: "",
-                    submitLabel: "Create section",
-                    onClose: { sectionPromptOpen = false },
-                    onSubmit: { name in
-                        model.createSection(name: name)
-                        sectionPromptOpen = false
-                    }
-                )
-                .transition(.opacity)
-            }
         }
     }
 
     private func deleteMessage(_ bot: ShellBot) -> String {
-        if bot.isGroup {
-            return "Delete \(bot.name)? The group and its roster go away. Member bots stay."
-        }
         return "Delete \(bot.name)? This removes the bot, its profile and its transcript. Workspace files stay."
     }
 
@@ -324,10 +274,6 @@ struct RootView: View {
                 },
                 onRenameRequest: { renameBot = $0 },
                 onDeleteRequest: { deleteBot = $0 },
-                onCreateSection: {
-                    createSectionId = nil
-                    promptForSection()
-                },
                 onConnectors: { connectorsOpen = true },
                 onLibrary: { libraryOpen = true },
                 onOpenAppSettings: { model.openAppSettings($0) },
@@ -353,12 +299,6 @@ struct RootView: View {
         .background(Theme.C.canvas)
     }
 
-    @State private var sectionPromptOpen = false
-
-    private func promptForSection() {
-        sectionPromptOpen = true
-    }
-
     private var stage: some View {
         ZStack {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.stage, style: .continuous)
@@ -371,13 +311,7 @@ struct RootView: View {
                     onClose: { pickerOpen = false },
                     onCreateBot: {
                         pickerOpen = false
-                        createSectionId = nil
-                        createKind = .bot
-                    },
-                    onCreateGroup: {
-                        pickerOpen = false
-                        createSectionId = nil
-                        createKind = .group
+                        createOpen = true
                     },
                     onSelectBot: { id in
                         pickerOpen = false
@@ -386,9 +320,7 @@ struct RootView: View {
                     plusTrigger: { newChatTrigger }
                 )
             } else {
-                ChatView(
-                    onDeleteRequest: { deleteBot = $0 }
-                )
+                ChatView()
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.stage, style: .continuous))
@@ -601,13 +533,7 @@ struct CreateBotInput {
     var description: String
 }
 
-struct CreateGroupInput {
-    var name: String
-    var memberIds: [String]
-}
-
 struct CreateBotDialog: View {
-    let sectionName: String?
     let onClose: () -> Void
     /// Calls `finish` with nil once the bot exists, or with the failure copy.
     let onSubmit: (CreateBotInput, @escaping @MainActor (String?) -> Void) -> Void
@@ -625,11 +551,6 @@ struct CreateBotDialog: View {
                 Text("Create bot")
                     .font(.system(size: DesignTokens.FontSize.dialogTitle, weight: .semibold))
                     .foregroundStyle(Theme.C.ink)
-                Text("\(sectionName.map { "Added to \($0). " } ?? "Lands in Unassigned until you move it. ")Leave the name blank-ish if you want the bot to ask what it should be: you can confirm the real name in chat.")
-                    .font(.system(size: DesignTokens.FontSize.dialogBody))
-                    .lineSpacing(4)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .padding(.top, 4)
                 VStack(alignment: .leading, spacing: 12) {
                     FieldShell(label: "Name") {
                         TextField("", text: $name)
@@ -710,114 +631,6 @@ struct CreateBotDialog: View {
 
     private var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-struct CreateGroupDialog: View {
-    let bots: [ShellBot]
-    let onClose: () -> Void
-    let onSubmit: (CreateGroupInput) -> Void
-
-    @State private var name = ""
-    @State private var memberIds: [String] = []
-    @FocusState private var focused: Bool
-
-    private var candidates: [ShellBot] {
-        bots.filter { $0.kind == "bot" && !$0.hidden && $0.id != Threads.defaultBotId }
-    }
-
-    var body: some View {
-        NativeDialog(maxWidth: DesignTokens.Control.dialogFormWidth, ariaLabel: "Create group chat", onClose: onClose) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Create group chat")
-                    .font(.system(size: DesignTokens.FontSize.dialogTitle, weight: .semibold))
-                    .foregroundStyle(Theme.C.ink)
-                Text("Pick 2 to 6 bots. Untargeted messages go to Useful Bot as orchestrator; @name directs one member.")
-                    .font(.system(size: DesignTokens.FontSize.dialogBody))
-                    .lineSpacing(4)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .padding(.top, 4)
-                FieldShell(label: "Name") {
-                    TextField("", text: $name)
-                        .nativeField(focused: focused)
-                        .focused($focused)
-                }
-                .padding(.top, 16)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Members \(memberIds.count)/\(Threads.groupMaxMembers)")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.C.inkMuted)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            if candidates.isEmpty {
-                                Text("Create a second bot first, then this group can hold both.")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.inkMuted)
-                                    .padding(.horizontal, 4)
-                            }
-                            ForEach(candidates) { bot in
-                                let checked = memberIds.contains(bot.id)
-                                let disabled = !checked && memberIds.count >= Threads.groupMaxMembers
-                                Button {
-                                    toggle(bot.id)
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: checked ? "checkmark.square.fill" : "square")
-                                            .font(.system(size: 13))
-                                            .foregroundStyle(checked ? Theme.C.accent : Theme.C.inkFaint)
-                                        Text(bot.name)
-                                            .font(.system(size: 14))
-                                            .foregroundStyle(Theme.C.ink)
-                                            .lineLimit(1)
-                                        Spacer(minLength: 0)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                    .opacity(disabled ? 0.55 : 1)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(disabled)
-                                .pointerOnHover()
-                            }
-                        }
-                    }
-                    .uvScroll()
-                    .frame(maxHeight: 160)
-                }
-                .padding(.top, 16)
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    NativeButton("Cancel", kind: .secondary, small: true, action: onClose)
-                    NativeButton(
-                        "Create group",
-                        kind: .primary,
-                        small: true,
-                        enabled: !trimmedName.isEmpty && memberIds.count >= Threads.groupMinMembers
-                    ) {
-                        onSubmit(CreateGroupInput(name: trimmedName, memberIds: memberIds))
-                    }
-                }
-                .padding(.top, 20)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
-        }
-        .onAppear { focused = true }
-    }
-
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func toggle(_ id: String) {
-        if memberIds.contains(id) {
-            memberIds.removeAll { $0 == id }
-            return
-        }
-        guard memberIds.count < Threads.groupMaxMembers else { return }
-        memberIds.append(id)
     }
 }
 

@@ -60,6 +60,5 @@ import Testing
         let rows = Transcript.merge(events: [event], messages: [ChatMessage(id: "a1", role: .assistant, text: raw)])
         #expect(rows.count == 1)
         #expect(rows.first?.text == "RESEARCH DONE")
-        #expect(rows.first?.author == "Echo")
     }
 }

@@ -3,12 +3,11 @@ import UsefulBotCore
 
 /// The inline right pane: 320pt wide with a left hairline and its own scroll.
 /// A bot reads Profile, Instructions, Routines, Memory, then the notification
-/// row; a group reads Profile, Instructions and Members. Opening a routine
-/// replaces the pane body with its editor, as in the details pane.
+/// row. Opening a routine replaces the pane body with its editor, as in the
+/// details pane.
 struct SettingsPaneView: View {
     @EnvironmentObject private var model: AppModel
     let bot: ShellBot
-    var onDeleteRequest: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,7 +28,7 @@ struct SettingsPaneView: View {
     private var overview: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(bot.isGroup ? "Group" : "Settings")
+                Text("Settings")
                     .font(.system(size: DesignTokens.FontSize.settingsTitle, weight: .semibold))
                     .foregroundStyle(Theme.C.ink)
                 Spacer(minLength: 0)
@@ -46,21 +45,13 @@ struct SettingsPaneView: View {
                 VStack(alignment: .leading, spacing: 28) {
                     ProfileSection(bot: bot)
                     InstructionsSection(bot: bot)
-                    if bot.isGroup {
-                        GroupSettingsFields(
-                            bot: bot,
-                            canDelete: (model.store?.bots.count ?? 0) > 1,
-                            onDeleteRequest: onDeleteRequest
-                        )
-                    } else {
-                        RoutinesSection(bot: bot)
-                        MemorySectionView(bot: bot)
-                        NotifyRow(bot: bot)
-                        if let error = model.saveError {
-                            Text(error)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Theme.C.danger)
-                        }
+                    RoutinesSection(bot: bot)
+                    MemorySectionView(bot: bot)
+                    NotifyRow(bot: bot)
+                    if let error = model.saveError {
+                        Text(error)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.danger)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -134,14 +125,12 @@ private struct ProfileSection: View {
                         .focused($focus, equals: .name)
                         .onSubmit { commitName(bot) }
                         .accessibilityLabel("Name")
-                    if !bot.isGroup {
-                        TextField("Label (optional)", text: $label)
-                            .font(.system(size: 13))
-                            .profileField(focused: focus == .label)
-                            .focused($focus, equals: .label)
-                            .onSubmit { commitLabel(bot) }
-                            .accessibilityLabel("Label")
-                    }
+                    TextField("Label (optional)", text: $label)
+                        .font(.system(size: 13))
+                        .profileField(focused: focus == .label)
+                        .focused($focus, equals: .label)
+                        .onSubmit { commitLabel(bot) }
+                        .accessibilityLabel("Label")
                 }
             }
             AvatarColorPicker(bot: bot)
@@ -198,7 +187,6 @@ private struct ProfileSection: View {
     }
 
     private func commitLabel(_ target: ShellBot) {
-        guard !target.isGroup else { return }
         let next = label.trimmingCharacters(in: .whitespacesAndNewlines)
         if next != target.label { model.patchBot(botId: target.id, ["label": next]) }
     }
@@ -337,9 +325,7 @@ private struct InstructionsSection: View {
                 }
             }
             if isEmpty {
-                Text(bot.isGroup
-                    ? "\(bot.name) has no instructions yet."
-                    : "\(bot.name) works as a general assistant until you tell it its job, its limits and how to report.")
+                Text("\(bot.name) works as a general assistant until you tell it its job, its limits and how to report.")
                     .font(.system(size: 13))
                     .lineSpacing(3)
                     .foregroundStyle(Theme.C.inkMuted)
@@ -454,131 +440,5 @@ private struct NotifyRow: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { denied = await TurnNotifier.shared.isDenied() }
         }
-    }
-}
-
-// MARK: - Group settings fields
-
-private struct GroupSettingsFields: View {
-    @EnvironmentObject private var model: AppModel
-    let bot: ShellBot
-    var canDelete = true
-    var onDeleteRequest: (() -> Void)?
-
-    @State private var notice = ""
-
-    private var candidates: [ShellBot] {
-        (model.store?.bots ?? []).filter { candidate in
-            candidate.kind == "bot"
-                && candidate.id != Threads.defaultBotId
-                && !candidate.hidden
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            membersSection
-            if !notice.isEmpty {
-                Text(notice)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.warning)
-            }
-            if let error = model.saveError {
-                Text(error)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.C.danger)
-            }
-            NativeButton("Delete group", systemImage: "trash", kind: .danger, small: true, enabled: canDelete) {
-                onDeleteRequest?()
-            }
-            if !canDelete {
-                Text("The last bot cannot be deleted.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.inkMuted)
-            }
-        }
-    }
-
-    private var membersSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Members")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.C.inkMuted)
-                Spacer(minLength: 0)
-                Text("\(bot.memberIds.count)/\(Threads.groupMaxMembers)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.C.inkFaint)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(candidates) { candidate in
-                    let active = bot.memberIds.contains(candidate.id)
-                    Button {
-                        toggle(candidate.id, active: active)
-                    } label: {
-                        HStack(spacing: 8) {
-                            BotAvatarView(bot: candidate, size: 24)
-                            Text(candidate.name)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Theme.C.ink)
-                                .lineLimit(1)
-                            Spacer(minLength: 0)
-                            Text(active ? "In group" : "Add")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Theme.C.inkFaint)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .frame(minHeight: 34)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(active ? Theme.C.surface : .clear)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous)
-                                .strokeBorder(active ? Theme.C.borderStrong : .clear, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerOnHover()
-                }
-                if candidates.isEmpty {
-                    Text("Create another bot first. A group needs two member bots.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.C.inkMuted)
-                }
-            }
-            .padding(.top, 8)
-            Text("Use @name in the composer to direct a turn at one member. Untargeted messages go to the orchestrator.")
-                .font(.system(size: 12))
-                .lineSpacing(3)
-                .foregroundStyle(Theme.C.inkMuted)
-                .padding(.top, 8)
-        }
-    }
-
-    private func toggle(_ id: String, active: Bool) {
-        notice = ""
-        // Resolve the live roster: the view's `bot` snapshot can be one echo
-        // behind, and two quick taps must not drop an earlier update.
-        let live = model.store?.bots.first { $0.id == bot.id } ?? bot
-        var members = live.memberIds
-        let isActive = members.contains(id)
-        if isActive {
-            guard members.count > Threads.groupMinMembers else {
-                notice = "A group needs at least \(Threads.groupMinMembers) bots."
-                return
-            }
-            members.removeAll { $0 == id }
-        } else {
-            guard members.count < Threads.groupMaxMembers else {
-                notice = "A group holds at most \(Threads.groupMaxMembers) bots."
-                return
-            }
-            // The roster can be one echo behind a double tap; never add twice.
-            guard !members.contains(id) else { return }
-            members.append(id)
-        }
-        model.patchBot(botId: bot.id, ["memberIds": members])
     }
 }

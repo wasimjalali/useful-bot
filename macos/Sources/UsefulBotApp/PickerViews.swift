@@ -7,7 +7,6 @@ struct NewChatPickerView: View {
     let store: ShellStore
     let onClose: () -> Void
     let onCreateBot: () -> Void
-    let onCreateGroup: () -> Void
     let onSelectBot: (String) -> Void
     /// Window frame of the rail's New Bot plus button, tolerated as the
     /// picker's toggle trigger.
@@ -19,10 +18,10 @@ struct NewChatPickerView: View {
 
     private var bots: [ShellBot] {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        // Hidden bots and the frozen "Perf ..." fixtures only show when searched for.
-        let visible = store.bots.filter { !$0.hidden && !$0.name.hasPrefix("Perf ") }
-        guard !needle.isEmpty else { return visible }
-        return store.bots.filter { bot in
+        // The frozen "Perf ..." fixtures only show when searched for.
+        let active = store.activeBots
+        guard !needle.isEmpty else { return active.filter { !$0.name.hasPrefix("Perf ") } }
+        return active.filter { bot in
             "\(bot.name) \(bot.label) \(bot.description) \(bot.lastPreview)"
                 .lowercased()
                 .contains(needle)
@@ -55,10 +54,6 @@ struct NewChatPickerView: View {
                                 onCreateBot()
                                 return .handled
                             }
-                            if press.modifiers.contains(.command), press.key == "2" {
-                                onCreateGroup()
-                                return .handled
-                            }
                             return .ignored
                         }
                 }
@@ -85,19 +80,6 @@ struct NewChatPickerView: View {
                             }
                         }
                         .accessibilityIdentifier("picker-new-bot")
-                        MenuRowButton(action: onCreateGroup) {
-                            hitRow {
-                                Image(systemName: "person.2")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Theme.C.ink)
-                                Text("Create group chat")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.ink)
-                                Spacer(minLength: 0)
-                                kbd("⌘2")
-                            }
-                        }
-                        .accessibilityIdentifier("picker-new-group")
                         ForEach(bots) { bot in
                             MenuRowButton(action: { onSelectBot(bot.id) }) {
                                 hitRow {
@@ -193,14 +175,13 @@ struct SearchPaletteView: View {
     // Only tabs `hits` can actually fill; a tab with no data source would
     // never return a row and would always read "Nothing in X yet."
     enum SearchTab: String, CaseIterable {
-        case all, messages, bots, groups
+        case all, messages, bots
 
         var label: String {
             switch self {
             case .all: return "All"
             case .messages: return "Messages"
             case .bots: return "Bots"
-            case .groups: return "Groups"
             }
         }
     }
@@ -226,7 +207,10 @@ struct SearchPaletteView: View {
         if tab == .all { results.append(.newChat) }
 
         if tab == .all || tab == .messages {
+            // A recent of an archived bot cannot be opened.
+            let activeIds = Set(store.activeBots.map(\.id))
             let recents = store.recents.filter { recent in
+                guard activeIds.contains(recent.botId) else { return false }
                 guard !needle.isEmpty else { return true }
                 let bot = store.bots.first { $0.id == recent.botId }
                 return "\(recent.title) \(recent.preview) \(bot?.name ?? "") \(bot?.label ?? "")"
@@ -243,11 +227,9 @@ struct SearchPaletteView: View {
             }
         }
 
-        if tab == .all || tab == .bots || tab == .groups {
-            let bots = store.bots.filter { bot in
-                if tab == .bots && bot.kind != "bot" { return false }
-                if tab == .groups && bot.kind != "group" { return false }
-                guard !needle.isEmpty else { return !bot.hidden }
+        if tab == .all || tab == .bots {
+            let bots = store.activeBots.filter { bot in
+                guard !needle.isEmpty else { return true }
                 return "\(bot.name) \(bot.label) \(bot.description) \(bot.lastPreview)"
                     .lowercased()
                     .contains(needle)
@@ -462,15 +444,6 @@ struct SearchPaletteView: View {
                 Spacer(minLength: 0)
                 if !bot.label.isEmpty, !sameAsName(bot.label, bot.name) {
                     BotLabelChip(text: bot.label, fitsFully: true)
-                }
-                if bot.hidden {
-                    Text("HIDDEN")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Theme.C.sunken)
-                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
                 }
             }
             Spacer(minLength: 0)
