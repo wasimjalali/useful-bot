@@ -27,12 +27,13 @@ import { DESCRIPTION_MAX, DEFAULT_BOT_ID, type ShellBot } from "./shell-store.ts
  */
 export const SHARED_PROMPT_CHARS = 9_100;
 /**
- * The tools array eve sends, as JSON. The same probe put it at 26,434 characters
- * on the wire for 34 authored tools. scripts/tool-schema-size.mjs now weighs the
- * authored tools and eve's remaining defaults at 14,433 (it was 22,993 with the
- * eleven multi-bot tools and eve's agent and task_cancel); the same wire
- * overhead on top (about 5,400) gives about 19,800, so 21,000 leaves about 6%
- * headroom. Not re-probed on the wire; PR 3 replaces this with a measured value.
+ * The tools array eve sends, as JSON. Measured offline, not on the wire:
+ * `measureWire` in scripts/tool-schema-size.mjs serializes every tool as a
+ * function entry (name, description, JSON schema) and gets 16,589 characters,
+ * plus about 400 for find_tools, built per step. 21,000 is about 24% above
+ * that, room for the wire's own extras, and a test holds the measurement under
+ * 85% of it. The payload probe's 26,434 was for 34 authored tools with the
+ * eleven multi-bot tools in; PR 3 replaces this constant with a probed value.
  */
 export const TOOL_SCHEMA_CHARS = 21_000;
 /** Room kept for the model's own answer. */
