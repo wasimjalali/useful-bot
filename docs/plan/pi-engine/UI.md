@@ -69,7 +69,7 @@ Library moves out of the account menu. The Connectors footer pill goes (the row 
 | State | Mark | Clears when |
 |---|---|---|
 | working (a turn is running) | the bot face, small, in its working pose | the turn settles |
-| waiting on owner (open question or pending approval in that chat) | amber dot | answered or expired |
+| waiting on owner (open question or pending approval in that chat) | amber dot | the question is answered, or the approval is decided or expires (5 min) |
 | reply ready (a turn settled while the chat was not open) | blue dot | the chat is opened |
 | failed (newest turn failed, not retried) | red mark | Retry succeeds or a new turn starts |
 | idle | relative time ("2m", "Tue") | |
@@ -77,9 +77,15 @@ Library moves out of the account menu. The Connectors footer pill goes (the row 
   Priority when several apply: waiting on owner, working, failed, reply ready.
 - Selected chat: the current selection style.
 - **Row menu** (hover ··· and right-click): **Rename** (inline edit, Enter saves, Escape cancels,
-  60 chars), **Delete** (confirm dialog: "Delete this chat? It moves to the trash and is removed
-  after 30 days."). Deleting the open chat opens the newest remaining chat, or an empty chat.
-- Order: newest `updatedAt` first. A chat moves to the top when a turn starts or a row is added.
+  60 chars), **Delete** (confirm dialog: "Delete this chat? This can't be undone."). Delete is
+  disabled while the chat is working (tooltip "Stop the chat first"). Deleting the open chat opens
+  the chat the engine makes current (the newest remaining one), or an empty chat. The engine keeps
+  deleted files 30 days as a safety net; there is no restore in the app.
+- Order: newest `updatedAt` first. `updatedAt` changes when a turn starts or a row is added, so a
+  routine chat moves to the top each time it runs.
+- **What PR 2 can show on eve data** (until PR 3 moves the list to the engine): the current chat
+  plus up to 40 recents, titles taken from the last message (eve's recents keep no first message),
+  no row menu (rename and delete arrive with PR 3), and the working mark only for the open chat.
 - Long lists: the first 60 rows render, more load on scroll (`GET /api/chats?before=`).
 - Empty list: one quiet line, "No chats yet", under the fixed entries.
 
@@ -91,8 +97,8 @@ Send feedback, Contact us, version and updates. Library leaves this menu (3.2).
 ### 3.5 Background work and notifications
 
 - A routine, connect-card resume or queued turn in a chat that is not open shows only in that
-  chat's row (state mark) and, when the turn finishes, as a macOS notification if
-  "Notify when finished" is on (Bot pane) and the window is not key or the chat is not open.
+  chat's row (state mark) and, when the turn finishes, as a macOS notification if the Bot pane's
+  notify toggle is on and either the window is not key or the chat is not open.
 - Clicking the notification opens that chat.
 - The Dock badge shows the number of chats waiting on the owner.
 
@@ -147,10 +153,15 @@ history views (`ChatDetailsPaneView.swift` 149-786) at full width:
   the selected routine's detail or the create form.
 - **Each routine has its own chat** (SPEC D18), titled with the routine's name and reused for every
   run, so runs never pile into the chat the owner is in. It appears in the sidebar like any chat,
-  with a small clock mark before the title. Run history rows link to it (**Open chat**).
+  with a small clock mark before the title. Run history rows link to the chat the run used
+  (**Open chat**); a run whose chat was deleted shows "Chat deleted" instead. Deleting a routine
+  turns its chat into an ordinary chat (no clock mark). Deleting a routine's chat is allowed; the
+  next run starts a new one.
 - "Test run" runs it now (as today) in that routine chat.
-- A one-time notice when the migration moved routines from earlier bots (section 8): "N routines
-  from your earlier bots are paused. Review them and turn on the ones you want."
+- A notice while any routine still carries `movedFrom` (set by the archive migration, section 8):
+  "N routines from your earlier bots are paused. Review them and turn on the ones you want."
+  Turning a moved routine on or editing it clears its `movedFrom`; a Dismiss on the notice clears
+  them all.
 
 ## 6. Bot pane (right, 320pt)
 
@@ -208,7 +219,9 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Images, pages | `row` events; `/api/agent/image/:id`, `/api/agent/media` | 3 |
 | Search chips | `tool.result.searchResults` | 3 |
 | Routines page | `/api/routines` CRUD, `POST /api/routines/:id/run`, run history with `chatId` | 2 (page move), 3 (`chatId` link) |
-| Routine chats in the list (clock mark) | chat index entry `routineId` | 3 |
+| Routine chats in the list (clock mark) | chat index entry `routineId`; `routine.chatId`, `RoutineRun.chatId` | 3 |
+| Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
+| Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
 | Connectors dialog and its dot | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2 |
 | Bot pane: profile | `PUT /api/shell` `renameBot`, `updateBot` | 2 |
@@ -220,7 +233,7 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Attachments | `POST /api/attachments` | 3 (structured parts) |
 | Search palette chats | chat index + `GET /api/chats/search?q=` | 2 (titles only), 3 (message text) |
 | Notifications, Dock badge | `/api/engine/status` transitions | 3 |
-| Earlier bots (Settings) | `GET /api/shell` (archived bots), `PUT /api/shell` `moveNotes`, `removeArchivedBot`; `/api/memory` counts | 2 |
+| Earlier bots (Settings) | `GET /api/shell` (archived bots), `PUT /api/shell` `moveNotes`, `removeArchivedBot`; note count from `GET /api/memory?botId=` (`total`, from the store's `countLive`) | 2 |
 | Token usage, Providers, Settings | as today | unchanged |
 | First-launch note | engine `migration.json` flag in `GET /api/engine/status` (`cleanSlateNotice`) | 3 |
 
@@ -248,4 +261,4 @@ Screenshots (light and dark) of: sidebar with all five chat states, row menu, re
 confirm, Routines page, Library page, Bot pane, search palette with a message hit, an approval from
 another chat, Earlier bots. A 30 fps recording of: sending a message while another chat's routine
 runs (its row turns to working, then reply ready, then the notification), and of deleting the open
-chat. All in Useful Bot Dev with Test Bot.
+chat. All in Useful Bot Dev with its one bot.

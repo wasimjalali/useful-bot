@@ -20,7 +20,7 @@ PR 4  one-release-later cleanup                  main
 
 Every PR follows the global change loop: worktree, build, self-check (`npx tsc --noEmit` for the
 root, `router/` and `web/` separately; node tests; `macos/test.sh` when Swift changes), live check
-in Useful Bot Dev with Test Bot, artifacts in `verify/<branch>/`, docs updated, PR, review, merge,
+in Useful Bot Dev (with its one bot after PR 2), artifacts in `verify/<branch>/`, docs updated, PR, review, merge,
 then `npm run build:dev-app` and `npm run install:dev-app` from main. Full E2E suites run only
 after a PR's last review round; a newly written spec runs on its own first.
 
@@ -85,8 +85,9 @@ tools or sub-agents. Still on eve. Decisions SPEC D5 to D9, D20, D25 and the "PR
   code; keep `stripThreadPrefix` and the default bot id, which other files still import),
   `shared/context-blocks.ts`, `shared/admission.ts` (group branch), `shared/agent-store.ts`
   (bot, group, profile and fan-out proposal kinds), `shared/bot-face.ts`, `shared/subagent-stops.ts`,
-  `shared/routines-store.ts` (move routines between bots), `agent/lib/memory.ts` (re-key a bot's
-  notes, today immutable, for `moveNotes`);
+  `shared/routines-store.ts` (`movedFrom`, the migration's direct write, `parseRoutine` keeps it),
+  `agent/lib/memory.ts` (`moveBotNotes`), `web/app/api/memory/route.ts` (`total`),
+  `web/app/api/routines/**` (`movedFrom` out, cleared on edit or activate);
 - `web/app/api/shell/route.ts`, `web/lib/agent-exec.ts` (fan-out, first brief, cross-bot
   deliveries; **keep** the handoff pump for connect-card resume, the only remaining handoff use),
   `web/app/api/agent/tick/route.ts`, `web/lib/eve-session-auth.ts` (child-stream verification),
@@ -96,15 +97,22 @@ tools or sub-agents. Still on eve. Decisions SPEC D5 to D9, D20, D25 and the "PR
   `turn-snapshot`, `first-brief`, the group cases of `shell-store` and `context-blocks`.
 
 Rules it builds:
-- One bot: `createBot`, `deleteBot` and `select` shell actions are removed; the app always uses
-  `bot-useful`.
+- One bot: `createBot` and `deleteBot` shell actions are removed; the app always uses
+  `bot-useful`. `select` stays only for the perf harness in the dev stack (it refuses any bot other
+  than `bot-useful` and the perf fixture bots); PR 3 deletes it.
 - Archive (D6): a one-time shell migration (marker `shell.json.archived-v1`) marks every bot except
-  `bot-useful` `archived: true`, moves their routines to `bot-useful` with `active: false` (name
-  kept), keeps their memory notes under their own id, deletes nothing. Shell actions `moveNotes
-  {fromBotId}` (re-keys that bot's notes to `bot-useful`) and `removeArchivedBot {botId}` (deletes
-  the record and its notes). In the dev stack, the perf fixture bots named in
-  `perf/fixtures.dev.lock.json` stay unarchived and selectable by the perf harness only (never in
-  the sidebar) until PR 3 replaces them.
+  `bot-useful` `archived: true` and deletes nothing. Their routines move to `bot-useful` with
+  `active: false` and `movedFrom: <old botId>`, written directly past `ROUTINES_PER_BOT_MAX` (the
+  cap still applies to new routines); a name that clashes gets " (from OLD BOT NAME)". Their memory
+  notes stay under their own id.
+- `moveNotes {fromBotId}`: a new `MemoryStore.moveBotNotes(from, to)` rewrites each note's
+  front-matter `botId`, bumps its revision and sha, updates the index row, and bypasses the
+  immutable-botId guard of `upsert` (`agent/lib/memory.ts:585`); it is the only way a note changes
+  bot. `removeArchivedBot {botId}` deletes the archived record and archives its notes.
+  `GET /api/memory` adds `total` (the store's `countLive`) so Earlier bots shows the real count.
+- Perf (dev stack only): the perf fixture bots named in `perf/fixtures.dev.lock.json` stay
+  unarchived, never appear in the sidebar, and are reached by `PerfHarness` through the dev-only
+  `select`, until PR 3 replaces them with fixture chats.
 - Live checks: the dev app's one bot replaces "Test Bot"; PR 2 updates that line in `AGENTS.md`.
 - Chat list on eve data: current chat (`bot.sessionId`) plus `recents` (title, preview,
   `updatedAt`) of `bot-useful`; New chat and open use the existing `newChat` / `openRecent` actions
@@ -124,8 +132,11 @@ picker out; Chats, Library, Routines tabs), `App/ProposalCardView.swift`,
 `App/ComposerView.swift` (group placeholder), `Core/SubagentRuns.swift` and
 `Core/SubagentCard.swift` (delete), `Core/Threads.swift` (keep `defaultBotId`),
 `Core/ChatAttribution.swift` (delete), `Core/ShellActions.swift`, `Core/Proposal.swift`,
-`Core/TranscriptBlocks.swift`, `Core/Transcript.swift`, `Core/BackendModels.swift`, the sub-agent
-branches of `Core/EveStream.swift` and `App/AppModel.swift`, and the Swift tests that cover these
+`Core/TranscriptBlocks.swift`, `Core/Transcript.swift`, `Core/BackendModels.swift`,
+`Core/Routines.swift` (`movedFrom`), `App/PerfHarness.swift` (fixture bots through the dev-only
+`select`), the sub-agent branches of `Core/EveStream.swift`, `App/AppModel.swift` (sub-agent
+branches, bot selection, create and delete bot, sections, the bot picker, and the chat-first new
+and open flows), and the Swift tests that cover these
 (`SubagentCardTests`, `SubagentRunTests`, `ThreadsTests`, `ChatAttributionTests`, the group and
 fan-out cases of `TranscriptTests`, `TranscriptBlocksTests`, `ProposalTests`, `ShellActionsTests`).
 
@@ -201,7 +212,7 @@ those tests pass and the 16 tools' schemas total under 15,000 chars.
 `shared/{eve-proxy,eve-stream,continuation-brief,session-bindings,admission,workspace-store,
 agent-store,shell-store,shell-io,threads,handoffs,agents-send,subagent-stops,bot-face,
 context-blocks,session-selection,connect-flow,connection-flow,media-store,widgets-store,
-turn-input}.ts`, `router/src/tool-finish.ts` (delete) and its uses in `router/src/index.ts`,
+routines-store,turn-input}.ts` (routines-store: `chatId` and run `chatId`, SPEC 7), `router/src/tool-finish.ts` (delete) and its uses in `router/src/index.ts`,
 `scripts/{service,verify,build-runtime,setup-local,smoke-runtime,patch-eve,ios-contract-fixtures,
 ios-pairing-gate}.*`, `test/fixtures/ios-contract/**`; tests `eve-stream`, `eve-proxy-guard`,
 `channel-auth`, `session-owners`, `session-binding`, `continuation-brief`, `handoff-stream`,

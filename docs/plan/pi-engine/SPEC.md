@@ -168,7 +168,7 @@ The implementing agents follow these defaults. The owner can override any of the
 - Pool: at most 4 idle `AgentSession`s; idle ones (no turn for 15 min and not open in the app) are
   disposed and reopened from file on next use. A session with a running turn is never evicted, so
   the pool can exceed 4 while turns run.
-- Concurrency: one turn per chat; chats of different bots run at the same time.
+- Concurrency: one turn per chat; different chats run at the same time.
 - Contract test: after `createAgentSession`, the declared tool list equals our tool names exactly
   and contains none of Pi's built-ins; a full turn opens no path under `~/.pi`.
 
@@ -213,9 +213,11 @@ The implementing agents follow these defaults. The owner can override any of the
 - A chat is one Pi session file under `<stateRoot>/engine/sessions/<botId>/`.
 - The engine owns the chat index `<stateRoot>/engine/chats.json`:
   `{schemaVersion: 1, chats: [{chatId, botId, sessionFile|null, title, titleSetByOwner, preview,
-  routineId|null, createdAt, updatedAt}]}` (atomic write, single writer). Title = first owner
-  message (60 chars) until the owner renames it; a routine chat's title is the routine's name;
-  preview = last assistant text (120 chars).
+  routineId|null, fixture, createdAt, updatedAt}]}` (atomic write, single writer). Title = first
+  owner message (60 chars) until the owner renames it; a routine chat's title is the routine's
+  name; preview = last assistant text (120 chars); `updatedAt` changes when a turn starts or a row
+  is added; `fixture` marks the dev-stack perf chats (14), which `GET /api/chats` leaves out unless
+  `includeFixtures=1` (the perf harness).
 - `shell.json` keeps per bot only `chatId` (the current chat) and drops `sessionId`, `recents`,
   `previousSessionIds`, `continuedSessionId`, lineage and carry-over fields. The engine writes the
   bot's `chatId`, `lastPreview` and `lastAt` under the shell lock when a turn settles.
@@ -229,8 +231,11 @@ The implementing agents follow these defaults. The owner can override any of the
 - Rename: `PATCH /api/chats/:id {title}` (1 to 60 chars, sets `titleSetByOwner`).
 - Delete: `DELETE /api/chats/:id` refuses while a turn runs (`chat_busy`), else moves the session
   file to `<stateRoot>/engine/trash/` with a `deletedAt` stamp, removes the chat from the index
-  and expires its approval cards. The engine purges trash older than 30 days at boot. A routine's
-  chat can be deleted; the next run creates a new one. Library items the chat produced stay.
+  and expires its approval cards. If it was the bot's current chat, the engine makes the newest
+  remaining chat current (or none) and the response carries `{current}`. The engine purges trash
+  older than 30 days at boot; the app offers no restore. Deleting a routine's chat clears
+  `routine.chatId` (the next run creates a new chat); deleting a routine clears `routineId` on its
+  chat. Library items the chat produced stay.
 - Search: `GET /api/chats/search?q=&limit=50` matches titles and previews from the index, then
   scans row text of chats newest first (case-insensitive substring, stops at `limit` hits or
   2 s), returning `{chatId, rowId, title, snippet, at}`.
@@ -401,8 +406,8 @@ The `tool_call` gate also refuses any tool name not in the registered set (fail 
 
 - Tools keep raising cards in `approvals.json` and waiting in-process. `waitUntilNotPending` gains
   an `AbortSignal` parameter and returns `aborted` when the turn is cancelled.
-- Card records carry `chatId` and `botId`; `GET /api/approvals` returns `botId`, `botName`,
-  `chatId`. The app labels a card whose `chatId` is not the open chat ("From NAME, another chat").
+- Card records carry `chatId` and `botId`; `GET /api/approvals` returns them (no `botName`; there
+  is one bot). The app labels a card whose `chatId` is not the open chat ("From another chat", with Open chat).
   `rootSessionId`, `subagent` and `originLabel` go.
 - At boot the engine calls `invalidateOnRestart` (no production caller today), so no ghost cards.
 - Cancel expires the chat's cards before aborting (5.5.7).
@@ -498,12 +503,13 @@ proxies them to the engine with the engine token and streams NDJSON without buff
 | `GET /api/chats/:chatId/events?after=<seq>&epoch=<epoch>` | | NDJSON, stays open |
 | `POST /api/chats/:chatId/turns` | `{clientId, text, attachments: [{uploadId}], retry?: true}` | 202 `{turnId}` or `{queued: true}`; refusals 6.4 |
 | `POST /api/chats/:chatId/cancel` | | 202 |
-| `GET /api/engine/status` | | `{epoch, cleanSlateNotice, chats: [{chatId, running: {turnId, activity}|null, waitingOnOwner: "question"|"approval"|null, replyReadySince|null, lastTurn: {turnId, outcome, endedAt}|null}]}`: only chats with a non-idle state or a `lastTurn` in the last 24 h |
+| `GET /api/engine/status` | | `{epoch, cleanSlateNotice, chats: [{chatId, running: {turnId, activity}|null, waitingOnOwner: "question"|"approval"|null, replyReadySince|null, lastTurn: {turnId, outcome, endedAt}|null}]}`: every chat that is working, waiting on the owner, reply-ready or whose newest turn failed (until a later turn starts), plus chats with a `lastTurn` in the last 24 h |
 | `GET /api/proposals?botId=` | | open connect-app and connect-server proposals with their phase (replaces the proposals half of `/api/agent/state`) |
 
 - `clientId` is a client UUID echoed on `message.user`, so the optimistic bubble binds by id.
 - The app polls `/api/engine/status` with the approvals poll (1.5 s) and drives the chat-row state
-  marks (`UI.md` 3.3), turn notifications (on `lastTurn` change for a chat that is not open) and
+  marks (`UI.md` 3.3), turn notifications (on a `lastTurn` change while the window is not key or
+  the chat is not open, if the bot's notify setting is on) and
   the Dock badge from it. `cleanSlateNotice` is true until the first-launch note was shown once. `replyReadySince` is set when a turn settles in a chat that is not open in the app
   and cleared by `POST /open`.
 - The app polls `/api/proposals` while a card is in the waiting phase (2.5 s), as it polls
@@ -603,6 +609,8 @@ Same bearer and Host rules as 5.1. Writes are idempotent by the key given.
 | `shared/policy.ts` | drop `POLICY_EVE_VERSION`, rename `EVE_HOST` |
 | `shared/connect-flow.ts`, `connection-flow.ts` | resume through the engine system turn; notes through the engine rows route |
 | `shared/mcp-apps.ts` | widget detection from the tool-call shape |
+| `shared/routines-store.ts` | routine gains `chatId` (its chat) and `movedFrom` (archive migration, PR 2); `RoutineRun` gains `chatId`; `parseRoutine` keeps the new fields |
+| `/api/memory` | GET adds `total` (the store's `countLive`) for Earlier bots (PR 2) |
 
 ## 8. Router changes
 
@@ -670,7 +678,8 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
 
 - **Carried unchanged:** `config.json`, `providers.json`, `models-cache.json`,
   `chatgpt-signin.json`, `limits.json`, `router/usage.sqlite`, `memory/` (minus `recall/`),
-  `routines.json`, `connections*.json`, `connectors.json`, `media.json` (plus `prompt`),
+  `routines.json` (plus `chatId`, `movedFrom`, run `chatId`), `connections*.json`,
+  `connectors.json`, `media.json` (plus `prompt`),
   `widgets/` (plus `chatId`, null for old ones), `web-sessions.json`, Keychain items.
 - **Migrated:** `shell.json` to v2 (5.4), with archive flags (D6) set by PR 2.
 - **Dropped by PR 3:** `agents.json` threads and events (after the image-prompt backfill),
@@ -748,7 +757,7 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
 13. Cancel with a pending approval card returns within 1 s.
 14. Seq survives session eviction; a reconnect with an old `after` gets `resync: true`.
 
-**E2E** (Useful Bot Dev, Test Bot, through the heavy lock, artifacts in `verify/<branch>/`, a
+**E2E** (Useful Bot Dev and its one bot, through the heavy lock, artifacts in `verify/<branch>/`, a
 repeatable script plus mac-app-verify screenshots and 30 fps recordings): in one chat, attach a
 folder and ask for a multi-step job that runs bash (one command needs approval, approve it),
 writes an HTML page, searches the web, draws with Excalidraw (widget), generates an image and saves
