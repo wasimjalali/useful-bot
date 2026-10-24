@@ -996,7 +996,17 @@ test("a routine moved from an earlier bot waits for the owner: the bot can neith
     assert.equal(JSON.stringify(readRoutine(routineId)), before, "nothing changed");
     assert.equal(approvals.listPending().length, 0);
     // Running it is already refused while it is paused; the bot cannot get round that either.
-    assert.equal((await run<{ status: string }>(runRoutine, { routineId })).status, "paused");
+    const paused = await run<{ status: string; hint: string }>(runRoutine, { routineId });
+    assert.equal(paused.status, "paused");
+    assert.doesNotMatch(paused.hint, /update_routine/, "the hint must not send the bot to a call that is refused");
+    assert.match(paused.hint, /earlier bot/i);
+    assert.match(paused.hint, /owner/i);
+    // An ordinary paused routine keeps its hint.
+    const plainId = createRoutineFixture(ceo);
+    storeUpdateRoutine(plainId, { active: false });
+    const plain = await run<{ status: string; hint: string }>(runRoutine, { routineId: plainId });
+    assert.equal(plain.status, "paused");
+    assert.match(plain.hint, /update_routine/);
     // The owner's edit (the routes call updateRoutine) clears the mark, and then the bot may work with it.
     storeUpdateRoutine(routineId, {});
     assert.equal(readRoutine(routineId)?.movedFrom, null);

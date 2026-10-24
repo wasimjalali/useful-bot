@@ -30,7 +30,10 @@ export default defineTool({
         status: "paused",
         routineId: routine.id,
         error: "that routine is paused",
-        hint: "Ask the owner to resume it, or call update_routine with active true once they agree.",
+        // A moved routine cannot be resumed by the bot at all (update_routine refuses it).
+        hint: routine.movedFrom
+          ? "This routine came from an earlier bot and waits for the owner's review. Tell them it is waiting."
+          : "Ask the owner to resume it, or call update_routine with active true once they agree.",
       };
     }
     // The web server owns delivery; this only raises the request flag, which
