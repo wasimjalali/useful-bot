@@ -37,13 +37,25 @@ import Testing
         #expect(remove.count == 2)
     }
 
-    /// The server refuses these as `invalid`; the app must not be able to
-    /// build them, and `select` stays for the dev-stack perf harness alone.
-    @Test func selectIsTheOnlyBotArrangingPayloadLeft() {
-        let select = ShellActions.select(botId: "perf-1")
-        #expect(select["type"] as? String == "select")
-        #expect(select["botId"] as? String == "perf-1")
-        #expect(select.count == 2)
+    /// Every action the app can build must be one the server still takes. This
+    /// reads the builders' own source, so a builder that comes back for a
+    /// removed action fails here instead of as a refused write at run time.
+    @Test func everyActionTypeTheAppBuildsIsOneTheServerStillTakes() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/UsefulBotCore/ShellActions.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        let regex = try NSRegularExpression(pattern: #""type":\s*"([A-Za-z]+)""#)
+        let range = NSRange(text.startIndex..., in: text)
+        let types = Set(regex.matches(in: text, range: range).compactMap { match in
+            Range(match.range(at: 1), in: text).map { String(text[$0]) }
+        })
+        #expect(types == [
+            "select", "renameBot", "clearThread", "setSession", "setWorkspace", "setPermission",
+            "openRecent", "updateBot", "moveNotes", "removeArchivedBot",
+            // The proposal confirms.
+            "connectApp", "connectServer",
+        ])
     }
 
     /// An old record of a removed kind must decode and then be unconfirmable:

@@ -158,18 +158,22 @@ struct LibraryView: View {
 
             Spacer(minLength: 0)
 
-            Menu {
-                Button("All bots") { botFilter = nil }
-                ForEach(botNames, id: \.id) { bot in
-                    Button(bot.name) { botFilter = bot.id }
+            // With one bot there is nothing to tell apart; earlier bots' items
+            // bring the filter back.
+            if botNames.count > 1 {
+                Menu {
+                    Button("All bots") { botFilter = nil }
+                    ForEach(botNames, id: \.id) { bot in
+                        Button(bot.name) { botFilter = bot.id }
+                    }
+                } label: {
+                    Text(botNames.first { $0.id == botFilter }?.name ?? "All bots")
+                        .font(.system(size: 13))
                 }
-            } label: {
-                Text(botNames.first { $0.id == botFilter }?.name ?? "All bots")
-                    .font(.system(size: 13))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Filter by bot")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .accessibilityLabel("Filter by bot")
         }
     }
 
@@ -282,7 +286,7 @@ struct LibraryView: View {
     }
 
     private func botExists(_ id: String) -> Bool {
-        !id.isEmpty && (model.store?.bots.contains { $0.id == id } ?? false)
+        !id.isEmpty && (model.store?.activeBots.contains { $0.id == id } ?? false)
     }
 
     /// Point a moved item at where its file went, then show it from there.

@@ -120,7 +120,7 @@ public enum BackendError: Error, LocalizedError, Equatable {
         case "proposal_mismatch":
             return "That proposal no longer matches this app."
         case "tool_budget_exceeded":
-            return "This would give your bots more tools than a turn can carry, so it was not connected."
+            return "This would give your bot more tools than a turn can carry, so it was not connected."
         case "tool_name_too_long":
             return "That service names its tools longer than a model accepts, so it was not connected."
         case "tool_count_unknown":
@@ -1567,6 +1567,12 @@ public actor BackendClient {
            Self.refusalCode(in: data) == "provider_route_retired",
            let message = Self.refusalMessage(in: data) {
             throw BackendError.providerNotice(code: "provider_route_retired", message: message)
+        }
+        // An archived bot takes no sends. The proxy refuses before eve, and
+        // the owner reads the shell copy, not a session conflict.
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           Self.refusalCode(in: data) == "shell_bot_archived" {
+            throw BackendError.shell("shell_bot_archived")
         }
         // The proxy refuses a picture for a model that cannot look at it
         // before the turn exists, so the draft and its files come back.

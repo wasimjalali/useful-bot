@@ -689,37 +689,6 @@ public enum EveStream {
     /// task's behalf (patched in by scripts/patch-eve.mjs).
     public static let backgroundTaskKind = "execution.background_task"
 
-    /// eve's own wording for a background task reporting back
-    /// (`formatTaskNotification` and the update and authorization wakes in
-    /// eve's `execution/tasks/child/steps.js`, 0.54). Streams from before the
-    /// `kind` mark carry nothing else to tell such a report by.
-    static let taskReportPattern = try! NSRegularExpression(
-        pattern: "^Background task (task_[A-Za-z0-9]+)(?: \\([^\\n]*?\\))? (is completed\\.|failed\\.|is cancelled\\.|needs input\\.|needs authorization\\.|update: )",
-        options: [.anchorsMatchLines]
-    )
-
-    /// The tasks a sub-agent's report is about, and whether each is over.
-    /// eve hands several reports that land together to one turn, joined by a
-    /// blank line, so every report after the first starts a paragraph. Empty
-    /// unless the text opens with a report, the owner's own messages included.
-    /// A result that itself quotes eve's wording for another task, at the start
-    /// of a paragraph, would settle that task early: its working row goes, and
-    /// its real report still arrives and is still hidden. Result text is free
-    /// form, so nothing on the stream tells the two apart.
-    public static func taskReports(_ text: String) -> [(taskId: String, settled: Bool)] {
-        let whole = NSRange(text.startIndex..., in: text)
-        var reports: [(taskId: String, settled: Bool)] = []
-        for match in taskReportPattern.matches(in: text, range: whole) {
-            guard let id = Range(match.range(at: 1), in: text),
-                  let verb = Range(match.range(at: 2), in: text),
-                  let start = Range(match.range, in: text)?.lowerBound else { continue }
-            if reports.isEmpty ? start != text.startIndex : !text[..<start].hasSuffix("\n\n") { continue }
-            let settled = ["is completed.", "failed.", "is cancelled."].contains(String(text[verb]))
-            reports.append((String(text[id]), settled))
-        }
-        return reports
-    }
-
     /// Remove the identity prefix the web proxy injects into a stored user
     /// turn, so the transcript shows the owner's original message.
     public static func stripThreadPrefix(_ text: String) -> String {
@@ -1702,11 +1671,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // A background task reporting back. Sub-agents are gone, but an
             // older session of this chat can still hold such reports. eve
             // marks them (`kind`, scripts/patch-eve.mjs); an owner's own send
-            // never carries the mark. eve drops it when an owner message and a
-            // report are merged into one turn, and such a message then goes by
-            // the wording.
+            // never carries the mark. Only the mark counts: eve's wording is
+            // text the owner can type too.
             let fromTask = event.data?["kind"]?.stringValue == EveStream.backgroundTaskKind
-                || !EveStream.taskReports(text).isEmpty
             if let id = event.id, EveStream.isContinuationTurn(event.message ?? "") {
                 continuationRowId = id
             }

@@ -245,7 +245,7 @@ struct SearchPaletteView: View {
 
     private var emptyCopy: String {
         tab == .all
-            ? "No matching chats or bots."
+            ? "No matching chats."
             : "Nothing in \(tab.label) yet."
     }
 
@@ -257,7 +257,7 @@ struct SearchPaletteView: View {
                 Image(systemName: "plus.bubble")
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.C.ink)
-                Text("New Bot")
+                Text("New chat")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.ink)
             case .recent(let recent, let bot):

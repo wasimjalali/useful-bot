@@ -126,6 +126,27 @@ private func composerJSON(model: String, label: String, available: Bool = true) 
         }
     }
 
+    /// The proxy refuses a send to an archived bot with a 409. It is not a
+    /// session conflict, so the owner reads the shell copy.
+    @Test func aSendToAnArchivedBotSurfacesTheShellCopy() async throws {
+        for body in [#"{"ok":false,"error":"shell_bot_archived"}"#, #"{"error":{"code":"shell_bot_archived"}}"#] {
+            SwitchStub.handler = { [self] request, _ in
+                if request.url?.path == "/api/auth/session" {
+                    return respond(200, #"{"ok":true,"csrfToken":"t"}"#, to: request.url!)
+                }
+                return respond(409, body, to: request.url!)
+            }
+            let client = try makeClient()
+            do {
+                _ = try await client.send(botId: "old", sessionId: nil, message: "hi")
+                Issue.record("expected a refusal")
+            } catch let error as BackendError {
+                #expect(error == .shell("shell_bot_archived"))
+                #expect(error.errorDescription == "That bot is archived and can't be used.")
+            }
+        }
+    }
+
     @Test func aSendOnATurnedOffRouteSurfacesThatRoutesOwnSentence() async throws {
         let sentence = "Alibaba only allows the Qwen Coding Plan in interactive coding tools, so Useful Bot can't use it. Connect a Qwen (DashScope) API key instead, then disconnect this one."
         SwitchStub.handler = { [self] request, _ in

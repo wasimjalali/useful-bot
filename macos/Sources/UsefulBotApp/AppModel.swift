@@ -110,7 +110,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var pending = false {
         didSet {
             if pending, !oldValue { activitySince = Date() }
-            noteParentIdle()
         }
     }
     /// A turn is running in this bot's session that this app did not send (a
@@ -119,18 +118,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var backgroundWorking = false {
         didSet {
             if backgroundWorking, !oldValue, !pending { activitySince = Date() }
-            noteParentIdle()
-        }
-    }
-    /// When the open chat's bot last went idle; nil while it is busy, or
-    /// before it has been seen busy. "Not delivered" waits out the whole
-    /// window from here, so a long turn ending is not mistaken for a lost report.
-    private(set) var parentIdleSince: Date?
-    private func noteParentIdle() {
-        if pending || backgroundWorking || !pendingRequests.isEmpty {
-            parentIdleSince = nil
-        } else if parentIdleSince == nil {
-            parentIdleSince = Date()
         }
     }
     /// Failures with no turn to put them under (a send that never reached
@@ -181,10 +168,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var openQuestions: [OwnerQuestion] = []
     /// Requests from eve that are not questions (a session limit, an
     /// approval), shown as the waiting card until eve resolves them.
-    @Published private(set) var pendingRequests: [PendingRequest] = [] {
-        // A parked request holds the parent: its idle window starts when it clears.
-        didSet { noteParentIdle() }
-    }
+    @Published private(set) var pendingRequests: [PendingRequest] = []
     /// Requests whose answer is on its way; their buttons wait.
     @Published private(set) var busyRequests: Set<String> = []
     /// Owner rows eve is holding until a request is answered.
@@ -658,7 +642,7 @@ final class AppModel: ObservableObject {
 
     var selectedBot: ShellBot? {
         guard let store else { return nil }
-        return store.bots.first { $0.id == selectedBotId } ?? store.bots.first
+        return store.activeBots.first { $0.id == selectedBotId } ?? store.activeBots.first
     }
 
     /// The live row behind a rendered snapshot. A menu that toggles a flag has
@@ -830,7 +814,7 @@ final class AppModel: ObservableObject {
             let loaded = try await client.shell()
             guard !Task.isCancelled, attempt == startAttempt else { return }
             store = loaded
-            selectedBotId = loaded.selectedBotId ?? loaded.bots.first?.id
+            selectedBotId = loaded.activeBots.first { $0.id == loaded.selectedBotId }?.id ?? loaded.activeBots.first?.id
             PerfHarness.shared?.mark("initial_selection", ["bot": selectedBotId ?? ""])
             // The chat the app opens on is painted from its snapshot in the
             // same pass that shows the window, not after the reads below.
@@ -976,7 +960,7 @@ final class AppModel: ObservableObject {
         guard botId != selectedBotId else {
             guard persist else { return }
             guard let store else { return }
-            if store.bots.contains(where: { $0.id == botId }) {
+            if store.activeBots.contains(where: { $0.id == botId }) {
                 if store.selectedBotId != botId {
                     self.store?.selectedBotId = botId
                     persistSelection(botId)
@@ -1483,7 +1467,7 @@ final class AppModel: ObservableObject {
                         recordSendError(
                             current.id,
                             projection.failure?.message ?? "The turn failed.",
-                            // A sub-agent's report turn has no owner message to resend.
+                            // A background report's turn has no owner message to resend.
                             resendable: projection.retryableMarkId != nil,
                             retryAfter: projection.failure?.coolDownSeconds
                         )
@@ -1751,9 +1735,9 @@ final class AppModel: ObservableObject {
 
     // MARK: - Send
 
-    /// A message the owner's click wrote (Retry, Stop or Send on a sub-agent
-    /// card). It is an ordinary owner message, and leaves the composer's
-    /// draft and files alone.
+    /// A message the owner's click wrote (Send again on a dropped message).
+    /// It is an ordinary owner message, and leaves the composer's draft and
+    /// files alone.
     func sendFromCard(_ text: String) {
         send(text, retrying: false, keepsComposer: true)
     }
@@ -2033,7 +2017,7 @@ final class AppModel: ObservableObject {
         // draft alone. Keep the draft and say why the tap did nothing rather
         // than swallowing it silently.
         guard bot.id == selectedBotId else {
-            threadError = "That chat is gone. Pick another bot."
+            threadError = "That chat is gone. Open another one."
             return
         }
         // Only this bot's previous send. A teammate still working in the
@@ -4190,7 +4174,7 @@ final class AppModel: ObservableObject {
     /// and the action echoes all funnel here so a server-side delete or a
     /// server-driven switch can never strand `selectedBotId`.
     private func reconcileSelection(_ next: ShellStore) {
-        if let selected = next.selectedBotId, next.bots.contains(where: { $0.id == selected }) {
+        if let selected = next.selectedBotId, next.activeBots.contains(where: { $0.id == selected }) {
             if selected == pendingSelectionBotId {
                 // The store caught up with the locally chosen bot, so the
                 // fence can go.
@@ -4208,8 +4192,8 @@ final class AppModel: ObservableObject {
                 switchToBot(selected)
                 if let selectFailure { saveError = selectFailure }
             }
-        } else if let current = selectedBotId, !next.bots.contains(where: { $0.id == current }) {
-            if let first = next.bots.first?.id {
+        } else if let current = selectedBotId, !next.activeBots.contains(where: { $0.id == current }) {
+            if let first = next.activeBots.first?.id {
                 switchToBot(first)
             } else {
                 selectedBotId = nil
@@ -4593,7 +4577,7 @@ final class AppModel: ObservableObject {
             PerfHarness.shared?.mark("prewarm_start")
             defer { PerfHarness.shared?.mark("prewarm_end") }
             self.pruneSnapshots()
-            for bot in self.store?.bots ?? [] {
+            for bot in self.store?.activeBots ?? [] {
                 guard !Task.isCancelled else { return }
                 await self.prewarm(botId: bot.id)
             }
