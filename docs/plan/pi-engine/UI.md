@@ -173,7 +173,7 @@ history views (`ChatDetailsPaneView.swift` 149-786) at full width:
   turns its chat into an ordinary chat (no clock mark). Deleting a routine's chat is allowed; the
   next run starts a new one.
 - "Test run" runs it now (as today) in that routine chat.
-- A notice while any routine still carries `movedFrom` (set by the archive migration, section 8):
+- A notice while any routine still carries `movedFrom` (set by the archive migration, SPEC D6 and D18):
   "N routines from your earlier bots are paused. Review them and turn on the ones you want."
   Turning a moved routine on or editing it clears its `movedFrom`; Dismiss on the notice clears
   them all (one `PATCH` per moved routine).
@@ -259,11 +259,13 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
-| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2 |
+| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2 for connections; Composio tiles need item 14.3 |
+| App page Reconnect and Disconnect (Refresh for a direct MCP server) | `/api/connectors` (Composio), `/api/connections` (MCP), the same calls as today | 2 |
+| Account row owner name | `GET /api/status` (operator name) | 2 |
 | App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read` or `write`) from `connector-risk.ts` | 3 |
 | Settings > Instructions and memory: instructions and counter | `PUT /api/shell` `updateBot`, `GET /api/bots/context` | 2, 3 (engine-measured) |
 | Settings > Instructions and memory: memory | `/api/memory` | 2 |
-| Settings > General: notify when a chat finishes | `PUT /api/shell` `updateBot {notify}` on the one bot | 2 |
+| Settings > General: notify when a chat finishes | `PUT /api/shell` `updateBot {notify}` on the one bot; the "only in the background or when closed" rule is today's app-side check, not a setting | 2 |
 | Composer model chip | `/api/providers` composer state | 2 |
 | Composer folder and permission | `PUT /api/shell` `setWorkspace`, `setPermission`; `/api/workspace` | 2 |
 | Attachments | `POST /api/attachments` | 3 (structured parts) |
@@ -333,5 +335,16 @@ Not changed here (this file only); each needs a decision or a SPEC edit by the o
    same).
 4. **Notify toggle** moves from the Bot pane to Settings > General; with one bot it keeps writing
    `updateBot {notify}` on that bot, so no backend change.
-5. **PR 2 held UI** (sidebar, Routines page, Settings tab, Earlier bots) can now be built to the
+5. **SPEC 10 and PLAN** still describe a Bot pane: SPEC 10 ("the Bot pane without routines or group
+   fields") and PLAN W4 (`App/SettingsPaneView.swift` "becomes the Bot pane"). Both should become
+   the Settings tab of section 6, with notify in General; PLAN should name the Swift file that owns
+   the new tab.
+6. **SPEC 5.6 and the `/api/shell` row** keep "You are NAME." and `renameBot` / avatar edits. With no
+   name editing, NAME is always "Useful Bot"; the shell fields can stay unused.
+7. **Earlier bots location:** SPEC D6, SPEC 10 and PLAN say "Settings > Earlier bots"; the approved
+   board puts it inside Settings > General. Align the wording.
+8. **Connectors polish has no owner in PLAN:** `ConnectorsDialog` and `ConnectorDetailPage` (Swift)
+   plus items 2 and 3 (backend) need a PR. Until then the chips show Connected only and the tools
+   page lists tools without the reads and writes split.
+9. **PR 2 held UI** (sidebar, Routines page, Settings tab, Earlier bots) can now be built to the
    After artboards, except what this file marks PR 3.
