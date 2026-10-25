@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
 import { autoApproved, effectiveRoot, resolveWorkspacePath } from "./workspace.ts";
 import { WRITE_MAX_BYTES, isPlantedConfigPath } from "../../shared/policy.ts";
+import { flatLine } from "../../shared/untrusted.ts";
 
 let store: ApprovalStore | null = null;
 
@@ -22,7 +23,7 @@ const PREVIEW_MAX = 500;
 
 /** Fit the content onto the approval card without hiding that it was cut. */
 function clipPreview(value: string): string {
-  const flat = value.replace(/\s+/g, " ").trim();
+  const flat = flatLine(value).replace(/\s+/g, " ");
   const bytes = Buffer.byteLength(value, "utf8");
   return flat.length > PREVIEW_MAX
     ? `${flat.slice(0, PREVIEW_MAX)} ... (${bytes} bytes)`
@@ -42,9 +43,12 @@ export async function approvedWrite(input: {
   path: string;
   content: string;
   expectedSha256: string | null;
-  sessionId: string;
+  chatId: string;
+  botId: string;
   turnId: string;
   toolCallId: string;
+  /** The turn's signal: a Stop while the card waits ends the write. */
+  signal?: AbortSignal;
   autoDecision?: "approve" | "deny";
 }): Promise<{ bytes: number; path: string; approvalId: string; actionSha256: string }> {
   if (Buffer.byteLength(input.content, "utf8") > WRITE_MAX_BYTES) {
@@ -52,7 +56,7 @@ export async function approvedWrite(input: {
   }
   // One grant read for root AND permission: two reads could pair a root from
   // before a permission change with the permission after it.
-  const { root, permission, scope } = effectiveRoot(input.sessionId || undefined);
+  const { root, permission, scope } = effectiveRoot(input.chatId || undefined);
   if (permission === "read_only") {
     throw new Error("workspace_read_only");
   }
@@ -72,12 +76,13 @@ export async function approvedWrite(input: {
     canonicalArgs: JSON.stringify({ path: input.path, content: input.content, expectedSha256: input.expectedSha256 }),
     cwd: root,
     targetRevision: input.expectedSha256,
-    backend: "just-bash",
+    backend: "fs",
     toolVersion: "1",
   });
   const approvals = getApprovalStore();
   const rec = approvals.request({
-    sessionId: input.sessionId,
+    chatId: input.chatId,
+    botId: input.botId,
     turnId: input.turnId,
     toolCallId: input.toolCallId,
     tool: "write_file",
@@ -85,14 +90,16 @@ export async function approvedWrite(input: {
     // The content is what the owner is actually authorising, so it goes on
     // the card after the path; without it they would be approving a bare
     // filename. The hash still binds the full text.
-    preview: `write ${input.path}: ${clipPreview(input.content)}`,
+    preview: `write ${flatLine(input.path)}: ${clipPreview(input.content)}`,
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);
   } else if (autoApproved(permission, scope, targetExists)) {
     approvals.decide(rec.id, "approve", hash);
   } else {
-    await waitUntilNotPending(approvals, rec.id);
+    if (await waitUntilNotPending(approvals, rec.id, input.signal) === "aborted") {
+      throw new Error("approval_aborted");
+    }
     // The owner may have changed the folder or its permission while the card
     // sat open. The approval was granted against the root at request time,
     // so a changed workspace must not consume it: refuse and let the turn
@@ -100,7 +107,7 @@ export async function approvedWrite(input: {
     // configured leaves nothing to write into, which is the same answer.
     let refreshed;
     try {
-      refreshed = effectiveRoot(input.sessionId || undefined);
+      refreshed = effectiveRoot(input.chatId || undefined);
     } catch {
       throw new Error("workspace_changed");
     }

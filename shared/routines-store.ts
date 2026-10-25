@@ -16,7 +16,7 @@ import { statePath } from "./stack.ts";
 
 /**
  * Routines: recurring instructions one bot runs on a schedule. Both the Next
- * server (owner actions, the tick scheduler) and the eve agent process (agent
+ * server (owner actions) and the engine (the scheduler, agent
  * tools) write here, so every mutation is a locked read/merge/write onto one
  * atomically replaced JSON document.
  *
@@ -57,7 +57,8 @@ export type RoutineRunStatus = "ok" | "failed";
 export type RoutineRun = {
   at: string;
   status: RoutineRunStatus;
-  sessionId: string | null;
+  /** The routine's chat the run happened in, when it got that far. */
+  chatId?: string;
   error: string;
 };
 
@@ -82,11 +83,11 @@ export type Routine = {
    */
   manualRunRequested: boolean;
   /**
-   * The bot this routine belonged to before the archive migration moved it to
-   * the default bot, paused. Null for every other routine. Any edit, and
-   * turning it on, clears it: that is the owner reviewing it.
+   * The chat this routine runs in (SPEC D18): created by the engine on the
+   * first run and reused. Null until then, and again after the owner deletes
+   * that chat.
    */
-  movedFrom: string | null;
+  chatId: string | null;
   /**
    * Fields a newer build wrote that this one does not model. They ride through
    * every read/write untouched, so running an older app for one session does
@@ -146,7 +147,7 @@ const ROUTINE_KEYS = new Set([
   "lastRunAt",
   "runHistory",
   "manualRunRequested",
-  "movedFrom",
+  "chatId",
 ]);
 
 const STORE_KEYS = new Set(["schemaVersion", "routines"]);
@@ -191,8 +192,7 @@ function plainRoutine(routine: Routine): Record<string, unknown> {
     lastRunAt: routine.lastRunAt,
     runHistory: routine.runHistory,
     manualRunRequested: routine.manualRunRequested,
-    // Written only when set, so a file nothing moved stays byte-identical.
-    ...(routine.movedFrom ? { movedFrom: routine.movedFrom } : {}),
+    ...(routine.chatId ? { chatId: routine.chatId } : {}),
   };
 }
 
@@ -426,7 +426,7 @@ function parseRun(raw: unknown): RoutineRun | null {
   return {
     at: rec.at,
     status: rec.status === "failed" ? "failed" : "ok",
-    sessionId: isId(rec.sessionId, 200) ? rec.sessionId : null,
+    ...(isId(rec.chatId, 200) ? { chatId: rec.chatId } : {}),
     error: clip(rec.error, ERROR_MAX),
   };
 }
@@ -456,7 +456,7 @@ export function parseRoutine(raw: unknown): Routine | null {
     lastRunAt: typeof rec.lastRunAt === "string" ? rec.lastRunAt : null,
     runHistory: history.slice(-RUN_HISTORY_MAX),
     manualRunRequested: rec.manualRunRequested === true,
-    movedFrom: isId(rec.movedFrom) ? rec.movedFrom : null,
+    chatId: isId(rec.chatId, 200) ? rec.chatId : null,
     extra: collectExtra(rec, ROUTINE_KEYS),
   };
 }
@@ -488,6 +488,23 @@ export function readRoutinesStore(path = routinesStorePath()): RoutinesStore {
 }
 
 /**
+ * The store as `readRoutinesStore` sees it, but null when the file exists and
+ * cannot be read. `readRoutinesStore` answers "empty" for both, which is right
+ * for a screen and wrong for anything that deletes or unlinks by absence.
+ */
+export function tryReadRoutinesStore(path = routinesStorePath()): RoutinesStore | null {
+  if (!existsSync(path)) return emptyStore();
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> | null;
+    // Another schema version reads as empty everywhere else; here it is "cannot read", not "no routines".
+    if (!raw || typeof raw !== "object" || raw.schemaVersion !== ROUTINES_SCHEMA) return null;
+    return parseRoutinesStore(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Move a file this build cannot read aside before the next write, so a schema
  * change never silently destroys the only copy of the owner's routines.
  */
@@ -502,10 +519,6 @@ function backupIncompatible(path: string): void {
   try {
     renameSync(path, `${path}.invalid.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}`);
   } catch { /* ignore */ }
-}
-
-export function writeRoutinesStore(store: RoutinesStore, path = routinesStorePath()): void {
-  writeSerialized(JSON.stringify(plainRoutinesStore(parseRoutinesStore(store))), path);
 }
 
 function writeSerialized(json: string, path: string): void {
@@ -542,10 +555,10 @@ function sleep(ms: number): void {
  * due run inside this lock, which is what makes a routine fire once when two
  * ticks race.
  */
-export function withRoutinesStore<T>(fn: (store: RoutinesStore) => T, path = routinesStorePath()): T {
+export function withRoutinesStore<T>(fn: (store: RoutinesStore) => T, path = routinesStorePath(), timeoutMs = LOCK_TIMEOUT_MS): T {
   const lock = `${path}.lock`;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   let held = false;
   while (!held) {
     try {
@@ -620,7 +633,7 @@ export function createRoutine(draft: RoutineDraft, path = routinesStorePath(), a
     lastRunAt: null,
     runHistory: [],
     manualRunRequested: false,
-    movedFrom: null,
+    chatId: null,
   };
   return withRoutinesStore((store) => {
     const owned = store.routines.filter((item) => item.botId === routine.botId).length;
@@ -662,73 +675,7 @@ export function updateRoutine(
       routine.active = patch.active;
     }
     routine.updatedAt = at.toISOString();
-    // Any edit, and turning a routine on, is the owner reviewing a moved one.
-    routine.movedFrom = null;
     return { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() };
-  }, path);
-}
-
-/** The most of the old bot's name a "(from ...)" tag carries. */
-const TAG_NAME_MAX = 30;
-/** Characters kept free after the tag for " 2", " 10" and so on. */
-const COUNTER_ROOM = 6;
-
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-/** The longest start of `value` that fits in `units` UTF-16 units and ends on a whole grapheme (an emoji sequence, a flag, a letter with its accents). */
-function clipUnits(value: string, units: number): string {
-  let out = "";
-  for (const { segment } of graphemes.segment(value)) {
-    if (out.length + segment.length > units) break;
-    out += segment;
-  }
-  return out;
-}
-
-/**
- * The archive migration's routine move: every routine of an earlier bot goes to
- * the default bot, paused, remembering where it came from. Written straight
- * into the store, past the per-bot cap (the cap still holds for new routines).
- * A name that clashes with one of the receiving bot's routines gets
- * " (from OLD BOT NAME)", then a number if that clashes too. Idempotent: a
- * moved routine already belongs to the receiver, so a second run finds nothing
- * and an interrupted one picks up the rest. A request for a run is dropped, or
- * a paused routine would still fire. Returns how many moved.
- */
-export function moveRoutinesToBot(
-  from: Array<{ id: string; name: string }>,
-  to: string,
-  path = routinesStorePath(),
-  at = new Date(),
-): number {
-  if (from.length === 0) return 0;
-  const names = new Map(from.map((bot) => [bot.id, bot.name]));
-  return withRoutinesStore((store) => {
-    const taken = new Set(store.routines.filter((item) => item.botId === to).map((item) => item.name.trim().toLowerCase()));
-    let moved = 0;
-    for (const routine of store.routines) {
-      const oldName = names.get(routine.botId);
-      if (oldName === undefined || routine.botId === to) continue;
-      let name = routine.name;
-      if (taken.has(name.trim().toLowerCase())) {
-        // The tag is whole and short (the old bot's name is clipped inside it);
-        // the routine's own name gives way, leaving room for a number after it.
-        const from = clipUnits(oldName.replace(/\s+/g, " ").trim(), TAG_NAME_MAX).trimEnd() || "an earlier bot";
-        const tag = ` (from ${from})`;
-        const base = clipUnits(routine.name, NAME_MAX - tag.length - COUNTER_ROOM).trimEnd();
-        name = `${base}${tag}`;
-        for (let n = 2; taken.has(name.trim().toLowerCase()); n += 1) name = `${base}${tag} ${n}`;
-      }
-      taken.add(name.trim().toLowerCase());
-      routine.movedFrom = routine.botId;
-      routine.botId = to;
-      routine.name = name;
-      routine.active = false;
-      routine.manualRunRequested = false;
-      routine.updatedAt = at.toISOString();
-      moved += 1;
-    }
-    return moved;
   }, path);
 }
 
@@ -737,15 +684,6 @@ export function deleteRoutine(id: string, path = routinesStorePath()): boolean {
     const before = store.routines.length;
     store.routines = store.routines.filter((routine) => routine.id !== id);
     return store.routines.length !== before;
-  }, path);
-}
-
-/** Drop every routine a deleted bot owned, so nothing keeps firing for it. */
-export function deleteRoutinesForBot(botId: string, path = routinesStorePath()): number {
-  return withRoutinesStore((store) => {
-    const before = store.routines.length;
-    store.routines = store.routines.filter((routine) => routine.botId !== botId);
-    return before - store.routines.length;
   }, path);
 }
 
@@ -770,11 +708,27 @@ export function sweepOrphanRoutines(liveBotIds: Iterable<string>, path = routine
   }, path);
 }
 
+/**
+ * Point a routine at its chat (or clear it when that chat is gone). The engine
+ * calls it when it creates the chat on the first run. Returns the routine, or
+ * null when it was deleted meanwhile. Not an owner edit: `updatedAt` stays as it is.
+ */
+export function setRoutineChat(id: string, chatId: string | null, path = routinesStorePath(), timeoutMs = LOCK_TIMEOUT_MS): Routine | null {
+  if (chatId !== null && !isId(chatId, 200)) throw new Error("routine_chat_invalid");
+  return withRoutinesStore((store) => {
+    const routine = store.routines.find((item) => item.id === id);
+    if (!routine) return null;
+    routine.chatId = chatId;
+    return { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() };
+  }, path, timeoutMs);
+}
+
 export function appendRoutineRun(
   id: string,
-  run: { status: RoutineRunStatus; sessionId?: string | null; error?: string },
+  run: { status: RoutineRunStatus; chatId?: string | null; error?: string },
   path = routinesStorePath(),
   at = new Date(),
+  timeoutMs = LOCK_TIMEOUT_MS,
 ): RoutineRun | null {
   return withRoutinesStore((store) => {
     const routine = store.routines.find((item) => item.id === id);
@@ -782,7 +736,7 @@ export function appendRoutineRun(
     const entry: RoutineRun = {
       at: at.toISOString(),
       status: run.status,
-      sessionId: run.sessionId && isId(run.sessionId, 200) ? run.sessionId : null,
+      ...(run.chatId && isId(run.chatId, 200) ? { chatId: run.chatId } : {}),
       error: clip(run.error, ERROR_MAX),
     };
     routine.runHistory.push(entry);
@@ -791,7 +745,7 @@ export function appendRoutineRun(
     }
     routine.updatedAt = entry.at;
     return entry;
-  }, path);
+  }, path, timeoutMs);
 }
 
 /**
@@ -803,6 +757,7 @@ export function claimDueRoutine(
   id: string,
   now = new Date(),
   path = routinesStorePath(),
+  timeoutMs = LOCK_TIMEOUT_MS,
 ): { routine: Routine; dueAt: string } | null {
   return withRoutinesStore((store) => {
     const routine = store.routines.find((item) => item.id === id);
@@ -817,7 +772,7 @@ export function claimDueRoutine(
       routine: { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() },
       dueAt: dueAt.toISOString(),
     };
-  }, path);
+  }, path, timeoutMs);
 }
 
 /**
@@ -838,7 +793,7 @@ export function requestRoutineRun(id: string, path = routinesStorePath()): boole
  * Take ownership of a requested run. Clearing the flag inside the lock is what
  * makes the run happen once when two ticks race.
  */
-export function claimManualRun(id: string, path = routinesStorePath()): { routine: Routine } | null {
+export function claimManualRun(id: string, path = routinesStorePath(), timeoutMs = LOCK_TIMEOUT_MS): { routine: Routine } | null {
   return withRoutinesStore((store) => {
     const routine = store.routines.find((item) => item.id === id);
     if (!routine || !routine.manualRunRequested) return null;
@@ -847,7 +802,7 @@ export function claimManualRun(id: string, path = routinesStorePath()): { routin
     return {
       routine: { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() },
     };
-  }, path);
+  }, path, timeoutMs);
 }
 
 /**
@@ -857,7 +812,7 @@ export function claimManualRun(id: string, path = routinesStorePath()): { routin
  * runs twice. Taking the ticket inside the store lock is what serialises the
  * two paths, since their in-flight sets live in different processes.
  */
-export function claimRunNow(id: string, path = routinesStorePath()): { routine: Routine } | null {
+export function claimRunNow(id: string, path = routinesStorePath(), timeoutMs = LOCK_TIMEOUT_MS): { routine: Routine } | null {
   return withRoutinesStore((store) => {
     const routine = store.routines.find((item) => item.id === id);
     if (!routine) return null;
@@ -868,7 +823,7 @@ export function claimRunNow(id: string, path = routinesStorePath()): { routine: 
     return {
       routine: { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() },
     };
-  }, path);
+  }, path, timeoutMs);
 }
 
 /** Every routine the next tick owes work for: requested runs and due ones. */

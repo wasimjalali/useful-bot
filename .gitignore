@@ -9,7 +9,7 @@ router/.env
 secrets/
 *.pem
 
-# eve runtime state and build output
+# build output (.eve/ is what an older checkout may still hold)
 .eve/
 dist/
 router/dist/

@@ -866,7 +866,9 @@ export async function executeConnectorTool(
   toolSlug: string,
   args: Record<string, unknown>,
   path = connectorsPath(),
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  signal?.throwIfAborted();
   const store = readConnectorsStore(path);
   if (store.connectedToolkits.length === 0) throw new Error("no_connectors");
   const toolkit = toolkitOf(toolSlug, store.connectedToolkits);
@@ -880,5 +882,19 @@ export async function executeConnectorTool(
   // Never replay an execute: a write that the owner approved once must not
   // run twice on a recreated session. The caller sees session_expired and the
   // model asks again, which mints a fresh card.
-  return withSession(path, (session) => session.execute(toolSlug, args), false);
+  return withSession(path, async (session) => {
+    // The session may have taken a while to open: stop before the call goes out.
+    signal?.throwIfAborted();
+    const call = session.execute(toolSlug, args);
+    if (!signal) return call;
+    // The SDK takes no signal, so a Stop gives up waiting; the request itself may still finish.
+    return new Promise<unknown>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      call.then(
+        (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+        (err) => { signal.removeEventListener("abort", onAbort); reject(err); },
+      );
+    });
+  }, false);
 }

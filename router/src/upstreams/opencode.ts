@@ -340,10 +340,10 @@ function timedFetch(timing: { firstByteAt: number | null }, onSend?: () => void)
 }
 
 /**
- * The most output one call to the resolved model may ask for. eve compacts at
- * 75% of the model's window (agent/lib/model-window.ts reads the same
- * catalog), so the cap keeps to the last tenth: a prompt at the threshold plus
- * a full answer still fits a small model's window. `modelOption` falls back to
+ * The most output one call to the resolved model may ask for. The engine
+ * compacts at 75% of the model's window (it reads the same catalog), so the
+ * cap keeps to the last tenth: a prompt at the threshold plus a full answer
+ * still fits a small model's window. `modelOption` falls back to
  * the list's first model; only the picked model's own window may size its
  * cap. A model with no catalog window is sized from the same unknown window
  * the agent compacts at.
@@ -625,7 +625,7 @@ export async function completeUpstream(input: {
     status: 502,
     type: "upstream_error",
     code: "upstream_protocol_error",
-    // eve folds this message into the failed turn's text. Only the status and
+    // The client folds this message into the failed turn's text. Only the status and
     // the provider's error type and code travel: its free-text message can
     // quote a masked key or the request, so that stays in the local log.
     message: `upstream_protocol_error (${refusal.kind})`,

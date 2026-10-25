@@ -92,18 +92,19 @@ struct TolerantSchedule: Decodable {
 public struct RoutineRun: Codable, Identifiable, Equatable, Sendable {
     public let at: String
     public let status: String
-    public let sessionId: String?
+    /// The routine's chat this run used; nil for a run with none to open.
+    public let chatId: String?
     public let error: String
 
     public var id: String { "\(at)-\(status)" }
     public var succeeded: Bool { status != "failed" }
 
-    enum CodingKeys: String, CodingKey { case at, status, sessionId, error }
+    enum CodingKeys: String, CodingKey { case at, status, chatId, error }
 
-    public init(at: String, status: String, sessionId: String?, error: String) {
+    public init(at: String, status: String, chatId: String?, error: String) {
         self.at = at
         self.status = status
-        self.sessionId = sessionId
+        self.chatId = chatId
         self.error = error
     }
 
@@ -111,7 +112,7 @@ public struct RoutineRun: Codable, Identifiable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         at = (try? c.decode(String.self, forKey: .at)) ?? ""
         status = (try? c.decode(String.self, forKey: .status)) ?? "ok"
-        sessionId = try? c.decodeIfPresent(String.self, forKey: .sessionId)
+        chatId = try? c.decodeIfPresent(String.self, forKey: .chatId)
         error = (try? c.decode(String.self, forKey: .error)) ?? ""
     }
 }
@@ -126,12 +127,11 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
     public var active: Bool
     public var lastRunAt: String?
     public var runHistory: [RoutineRun]
-    /// The bot this routine ran under before the one-bot migration moved it to
-    /// the default bot, paused. Any edit or turning it on clears it.
-    public var movedFrom: String?
+    /// The chat the routine runs in: created on its first run, reused after.
+    public var chatId: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, botId, name, instruction, schedules, timezone, active, lastRunAt, runHistory, movedFrom
+        case id, botId, name, instruction, schedules, timezone, active, lastRunAt, runHistory, chatId
     }
 
     public init(
@@ -144,7 +144,7 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
         active: Bool,
         lastRunAt: String?,
         runHistory: [RoutineRun],
-        movedFrom: String? = nil
+        chatId: String? = nil
     ) {
         self.id = id
         self.botId = botId
@@ -155,7 +155,7 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
         self.active = active
         self.lastRunAt = lastRunAt
         self.runHistory = runHistory
-        self.movedFrom = movedFrom
+        self.chatId = chatId
     }
 
     public init(from decoder: Decoder) throws {
@@ -171,7 +171,7 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
         active = (try? c.decode(Bool.self, forKey: .active)) ?? true
         lastRunAt = try? c.decodeIfPresent(String.self, forKey: .lastRunAt)
         runHistory = (try? c.decode([RoutineRun].self, forKey: .runHistory)) ?? []
-        movedFrom = try? c.decodeIfPresent(String.self, forKey: .movedFrom)
+        chatId = try? c.decodeIfPresent(String.self, forKey: .chatId)
     }
 }
 

@@ -19,13 +19,10 @@ struct ComposerTextView: NSViewRepresentable {
     /// `AppModel.draftWriteToken`: this is what separates a real write from a
     /// re-render carrying a stale value.
     var writeToken: UInt64
-    /// False while a turn is in flight: Return then falls through to a
-    /// newline, matching the key handler it replaces.
     var returnSends: Bool
     /// Live reads of the composer state, so a command issued mid-turn sees
     /// the values of that moment rather than of the last render.
     var canSend: () -> Bool
-    var pending: () -> Bool
     var onSend: () -> Void
     var onFocusChange: (Bool) -> Void
     /// Fires when an over-cap paste is cut to the cap, so the composer can
@@ -107,7 +104,6 @@ struct ComposerTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         textView.delegate = context.coordinator
         context.coordinator.canSend = canSend
-        context.coordinator.pending = pending
         context.coordinator.onSend = onSend
         context.coordinator.onFocusChange = onFocusChange
         context.coordinator.onClip = onClip
@@ -148,7 +144,6 @@ struct ComposerTextView: NSViewRepresentable {
         @Binding var text: String
         var returnSends = true
         var canSend: () -> Bool = { false }
-        var pending: () -> Bool = { false }
         var onSend: () -> Void = {}
         var onFocusChange: (Bool) -> Void = { _ in }
         var onClip: () -> Void = {}
@@ -207,7 +202,6 @@ struct ComposerTextView: NSViewRepresentable {
             }
             if returnSends {
                 if !canSend() { return true }
-                if pending() { return false }
                 onSend()
                 return true
             }
