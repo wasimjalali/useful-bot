@@ -51,10 +51,16 @@ export type ToolOutput = {
   content: (TextPart | ImagePart)[];
   /** Kept on the session entry for rows and the UI (for example `searchResults`). */
   details: unknown;
+  /** Ends the turn after this batch (`ask`, which always runs alone). */
+  terminate?: boolean;
 };
 
-export function toolOutput(content: (TextPart | ImagePart)[], details: unknown = undefined): ToolOutput {
-  return { [OUTPUT]: true, content, details };
+export function toolOutput(
+  content: (TextPart | ImagePart)[],
+  details: unknown = undefined,
+  options: { terminate?: boolean } = {},
+): ToolOutput {
+  return { [OUTPUT]: true, content, details, ...(options.terminate ? { terminate: true } : {}) };
 }
 
 function isToolOutput(value: unknown): value is ToolOutput {
@@ -81,8 +87,10 @@ export type UsefulTool<S extends z.ZodType = z.ZodType> = ToolSpec<S> & {
 };
 
 /** A string result goes to the model as is; anything else as JSON, kept in `details`. */
-export function toPiResult(value: unknown): { content: (TextPart | ImagePart)[]; details: unknown } {
-  if (isToolOutput(value)) return { content: value.content, details: value.details };
+export function toPiResult(value: unknown): { content: (TextPart | ImagePart)[]; details: unknown; terminate?: boolean } {
+  if (isToolOutput(value)) {
+    return { content: value.content, details: value.details, ...(value.terminate ? { terminate: true } : {}) };
+  }
   if (typeof value === "string") return { content: [{ type: "text", text: value }], details: undefined };
   return { content: [{ type: "text", text: JSON.stringify(value ?? null) }], details: value };
 }
