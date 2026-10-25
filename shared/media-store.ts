@@ -85,7 +85,8 @@ const DRAWING_MIME = "application/vnd.excalidraw+json";
 const LOCK_TIMEOUT_MS = 2_000;
 const LOCK_STALE_MS = 10_000;
 const TITLE_MAX = 60;
-const PROMPT_MAX = 2_000;
+/** The most of an image prompt the index keeps: the whole of one a bot can send. */
+const PROMPT_MAX = 4_000;
 
 /** Under the test runner a write must name temp folders: a default here is the owner's real Documents. */
 function assertNotRealUnderTest(value: string | undefined, name: string): void {
@@ -180,7 +181,7 @@ function lockOwner(lock: string): string | null {
 }
 
 /**
- * Cross-process read/merge/write: eve saves images, the web service saves
+ * Cross-process read/merge/write: the engine saves images, the web service saves
  * drawings. The lock is a directory holding its owner's token. A lock left by
  * a process that died is moved aside whole (a rename, so two waiters cannot
  * both take it) and removed. A holder checks the token is still its own just

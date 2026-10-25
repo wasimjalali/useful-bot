@@ -15,8 +15,8 @@ export const THINK_TAGS = [
 export type ThinkTag = (typeof THINK_TAGS)[number];
 
 /**
- * The fields an assistant message carries its reasoning back in. eve used
- * `reasoning_content`; Pi echoes thinking under the field its delta came in
+ * The fields an assistant message carries its reasoning back in. Pi echoes
+ * thinking under the field its delta came in
  * (`reasoning_content`, `reasoning` or `reasoning_text`), or as OpenRouter's
  * structured `reasoning_details` (an array of objects).
  */

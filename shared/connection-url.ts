@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
 /**
- * SSRF-facing URL rules for owner-approved MCP and OpenAPI servers, and for
+ * SSRF-facing URL rules for owner-approved MCP servers, and for
  * every URL fetched while talking to them (OAuth discovery, token, widget
  * HTML). https anywhere public; http only on 127.0.0.1.
  */
@@ -208,9 +208,9 @@ function isBlockedAddress(address: string): boolean {
  * Not closed: the fetch that follows resolves the name again, so a record that
  * changes between this check and that connection is not caught. Closing it
  * means connecting to the address checked here (a dispatcher whose lookup
- * returns only it). `undici` is not a dependency of this repo, only of eve
- * (8.x) and a few packages (7.x), and every fetch site would have to carry the
- * dispatcher, so the window stays until that is wired.
+ * returns only it). `undici` is not a dependency of this repo, only of a few
+ * packages (7.x), and every fetch site would have to carry the dispatcher, so
+ * the window stays until that is wired.
  */
 export async function assertResolvedPublic(raw: string): Promise<string> {
   const href = assertConnectionUrl(raw);

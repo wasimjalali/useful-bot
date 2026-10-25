@@ -16,14 +16,14 @@ import { statePath } from "./stack.ts";
 import type { ConnectionAuthKind, ConnectionKind } from "./connections-store.ts";
 
 /**
- * Local agent state: per-thread event transcripts and pending
- * confirmations. Both the Next server (UI actions) and the eve agent process
+ * Local agent state: the open connect cards (proposals) and the idempotency
+ * keys of agent tool calls. Both the Next server (UI actions) and the engine
  * (agent tools) write here, so every mutation is a locked read/merge/write.
- * The log is append-only and deduplicated by event id.
+ * The transcript does not live here: chat rows are in the engine's session
+ * files.
  */
 
 export const AGENT_SCHEMA = 1;
-export const EVENT_CAP_PER_THREAD = 300;
 export const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
 /**
  * Stale below timeout, or one crashed holder makes every writer fail for the
@@ -33,51 +33,6 @@ export const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
 const LOCK_TIMEOUT_MS = 8000;
 const LOCK_STALE_MS = 3000;
 const TEXT_MAX = 4000;
-
-export type ThreadKind = "bot" | "group";
-
-/**
- * Rows from before bot-to-bot handoffs were removed. They stay in the file so
- * nothing is lost, but nothing writes them and every read leaves them out.
- */
-export type LegacyEventKind = "handoff" | "post";
-
-export type LiveEventKind =
-  | "user"
-  | "assistant"
-  | "note"
-  | "proposal"
-  | "widget"
-  | "image"
-  | "page";
-
-export type AgentEventKind = LiveEventKind | LegacyEventKind;
-
-export type AgentEvent = {
-  id: string;
-  at: string;
-  kind: AgentEventKind;
-  text: string;
-  authorBotId: string | null;
-  authorName: string | null;
-  targetBotIds: string[];
-  proposalId: string | null;
-  handoffId: string | null;
-  widgetId: string | null;
-  /**
-   * The media item the row renders: a generated image, or on a "page" row
-   * the Library entry of an HTML file the bot wrote.
-   */
-  imageId: string | null;
-  /**
-   * Set on the host's "connected" note: the app or server that was just
-   * added, so the chat can draw it as a card with its logo instead of a line
-   * of text. The note keeps its text, so a reader that ignores these still
-   * says the same thing.
-   */
-  connectedName: string | null;
-  connectedLogo: string | null;
-};
 
 export type ConnectPhase = "proposed" | "waiting" | "connected" | "expired";
 /**
@@ -102,8 +57,8 @@ export type ConnectAppProposal = {
   waitingSince: string | null;
   /** Filled when connected; null when the count call failed. */
   toolCount: number | null;
-  /** The resume handoff, once queued; the card leaves the dock when it lands. */
-  handoffId: string | null;
+  /** The key of the resume system turn, once it is accepted; the card leaves the dock then. */
+  resumeKey?: string | null;
 };
 
 export type ConnectServerProposal = {
@@ -128,7 +83,7 @@ export type ConnectServerProposal = {
   redirectHost: string | null;
   waitingSince: string | null;
   toolCount: number | null;
-  handoffId: string | null;
+  resumeKey?: string | null;
 };
 
 export type ProposalPayload = ConnectAppProposal | ConnectServerProposal;
@@ -141,18 +96,8 @@ export type Proposal = ProposalPayload & {
   status: "pending" | "confirmed" | "dismissed";
 };
 
-export type AgentThread = {
-  id: string;
-  kind: ThreadKind;
-  botId: string;
-  sessionId: string;
-  updatedAt: string;
-  events: AgentEvent[];
-};
-
 export type AgentStore = {
   schemaVersion: 1;
-  threads: AgentThread[];
   proposals: Proposal[];
   /** Idempotency keys for agent tool calls, newest last. */
   reserves: string[];
@@ -160,25 +105,9 @@ export type AgentStore = {
 
 export type ReserveKind = "proposal" | "image";
 
-const EVENT_KINDS = new Set<AgentEventKind>([
-  "user",
-  "assistant",
-  "handoff",
-  "post",
-  "note",
-  "proposal",
-  "widget",
-  "image",
-  "page",
-]);
-
 export function agentStorePath(): string {
   if (process.env.UB_AGENT_STORE_PATH) return process.env.UB_AGENT_STORE_PATH;
   return statePath("agents.json");
-}
-
-export function newEventId(prefix = "evt"): string {
-  return `${prefix}_${crypto.randomUUID()}`;
 }
 
 export function newProposalId(): string {
@@ -186,9 +115,9 @@ export function newProposalId(): string {
 }
 
 /**
- * Threads are keyed by bot, not by eve session: a session id can be created by
- * the UI mid-turn, so grouping by the current session would strand the earlier
- * messages of the same conversation.
+ * The id a proposal is filed under: the bot's id. A connect card belongs to the
+ * bot that raised it, not to one chat, so it follows the owner to any chat.
+ * (The field is still called `threadId`; it is the bot id.)
  */
 export function threadIdFor(botId: string): string {
   return botId;
@@ -203,61 +132,10 @@ function isId(value: unknown, max = 80): value is string {
 }
 
 function emptyStore(): AgentStore {
-  return { schemaVersion: 1, threads: [], proposals: [], reserves: [] };
+  return { schemaVersion: 1, proposals: [], reserves: [] };
 }
 
-function parseEvent(raw: unknown): AgentEvent | null {
-  if (!raw || typeof raw !== "object") return null;
-  const rec = raw as Record<string, unknown>;
-  // Unknown fields are ignored, never fatal: a newer build may add one and an
-  // older build must not drop the event (and then prune it on the next write).
-  if (!isId(rec.id, 120)) return null;
-  if (typeof rec.kind !== "string" || !EVENT_KINDS.has(rec.kind as AgentEventKind)) return null;
-  const at = typeof rec.at === "string" ? rec.at : new Date(0).toISOString();
-  const targets = Array.isArray(rec.targetBotIds)
-    ? rec.targetBotIds.filter((id): id is string => isId(id)).slice(0, 8)
-    : [];
-  return {
-    id: rec.id,
-    at,
-    kind: rec.kind as AgentEventKind,
-    text: clip(rec.text),
-    authorBotId: isId(rec.authorBotId) ? rec.authorBotId : null,
-    authorName: clip(rec.authorName, 80) || null,
-    targetBotIds: targets,
-    proposalId: isId(rec.proposalId, 120) ? rec.proposalId : null,
-    handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
-    widgetId: isId(rec.widgetId, 120) ? rec.widgetId : null,
-    imageId: isId(rec.imageId, 120) ? rec.imageId : null,
-    connectedName: clip(rec.connectedName, 80) || null,
-    connectedLogo: typeof rec.connectedLogo === "string" && rec.connectedLogo.length <= 500 ? rec.connectedLogo : null,
-  };
-}
-
-function parseThread(raw: unknown): AgentThread | null {
-  if (!raw || typeof raw !== "object") return null;
-  const rec = raw as Record<string, unknown>;
-  if (!isId(rec.id) || !isId(rec.botId)) return null;
-  if (rec.kind !== "bot" && rec.kind !== "group") return null;
-  const events: AgentEvent[] = [];
-  const seen = new Set<string>();
-  for (const item of Array.isArray(rec.events) ? rec.events : []) {
-    const event = parseEvent(item);
-    if (!event || seen.has(event.id)) continue;
-    seen.add(event.id);
-    events.push(event);
-  }
-  return {
-    id: rec.id,
-    kind: rec.kind,
-    botId: rec.botId,
-    sessionId: typeof rec.sessionId === "string" ? rec.sessionId : "",
-    updatedAt: typeof rec.updatedAt === "string" ? rec.updatedAt : new Date(0).toISOString(),
-    events: events.slice(-EVENT_CAP_PER_THREAD),
-  };
-}
-
-/** Cards of any other kind (bot, group, profile, fan-out) are from before they were removed: ignored, never rendered or confirmable. */
+/** A card of any other kind is ignored: never listed, never confirmable. */
 function isProposalKind(value: unknown): value is ProposalKind {
   return value === "connectApp" || value === "connectServer";
 }
@@ -295,7 +173,7 @@ function parseProposal(raw: unknown): Proposal | null {
       toolCount: typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount)
         ? Math.max(0, Math.trunc(rec.toolCount))
         : null,
-      handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
+      resumeKey: isId(rec.resumeKey, 200) ? rec.resumeKey : null,
     };
   }
   if (rec.kind === "connectServer") {
@@ -306,11 +184,10 @@ function parseProposal(raw: unknown): Proposal | null {
     const authKind: ConnectionAuthKind = rec.authKind === "apiKey" || rec.authKind === "bearer" || rec.authKind === "oauth"
       ? rec.authKind
       : "none";
-    const connectionKind: ConnectionKind = rec.connectionKind === "openapi" ? "openapi" : "mcp";
     return {
       ...base,
       kind: "connectServer",
-      connectionKind,
+      connectionKind: "mcp",
       connectionId: clip(rec.connectionId, 80),
       name: clip(rec.name, 80),
       description: clip(rec.description, 400),
@@ -328,7 +205,7 @@ function parseProposal(raw: unknown): Proposal | null {
       toolCount: typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount)
         ? Math.max(0, Math.trunc(rec.toolCount))
         : null,
-      handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
+      resumeKey: isId(rec.resumeKey, 200) ? rec.resumeKey : null,
     };
   }
   return null;
@@ -340,11 +217,6 @@ export function parseAgentStore(raw: unknown): AgentStore {
   // Unknown top-level keys are ignored, not fatal: a newer build may add one,
   // and losing every transcript over a forward-compatible field is worse.
   if (rec.schemaVersion !== AGENT_SCHEMA) return emptyStore();
-  const threads: AgentThread[] = [];
-  for (const item of Array.isArray(rec.threads) ? rec.threads : []) {
-    const thread = parseThread(item);
-    if (thread) threads.push(thread);
-  }
   const proposals: Proposal[] = [];
   const seen = new Set<string>();
   for (const item of Array.isArray(rec.proposals) ? rec.proposals : []) {
@@ -354,7 +226,7 @@ export function parseAgentStore(raw: unknown): AgentStore {
       proposals.push(proposal);
     }
   }
-  return { schemaVersion: 1, threads, proposals, reserves: Array.isArray(rec.reserves) ? rec.reserves.filter((key): key is string => isId(key, 200)).slice(-1000) : [] };
+  return { schemaVersion: 1, proposals, reserves: Array.isArray(rec.reserves) ? rec.reserves.filter((key): key is string => isId(key, 200)).slice(-1000) : [] };
 }
 
 export function readAgentStore(path = agentStorePath()): AgentStore {
@@ -367,24 +239,9 @@ export function readAgentStore(path = agentStorePath()): AgentStore {
 }
 
 /**
- * Whether the file on disk is there but cannot be read as the current schema.
- * readAgentStore answers an empty store for those, which is right for a reader
- * that only lists things, and wrong for one that acts on what is missing.
- */
-export function agentStoreUnreadable(path = agentStorePath()): boolean {
-  if (!existsSync(path)) return false;
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> | null;
-    return !raw || typeof raw !== "object" || raw.schemaVersion !== AGENT_SCHEMA;
-  } catch {
-    return true;
-  }
-}
-
-/**
  * If the file on disk cannot be parsed as the current schema, move it aside
- * before the next write. A crash during migration must never destroy the only
- * copy of every transcript.
+ * before the next write, so a crash never destroys the only copy of every open
+ * card.
  */
 function backupIncompatible(path: string): void {
   if (!existsSync(path)) return;
@@ -465,133 +322,6 @@ export function withAgentStore<T>(fn: (store: AgentStore) => T, path = agentStor
       try { rmdirSync(lock); } catch { /* ignore */ }
     }
   }
-}
-
-function upsertThread(store: AgentStore, botId: string, kind: ThreadKind, sessionId: string): AgentThread {
-  let thread = store.threads.find((item) => item.id === threadIdFor(botId));
-  if (!thread) {
-    thread = {
-      id: threadIdFor(botId),
-      kind,
-      botId,
-      sessionId,
-      updatedAt: new Date(0).toISOString(),
-      events: [],
-    };
-    store.threads.push(thread);
-  }
-  thread.kind = kind;
-  if (sessionId && sessionId !== thread.sessionId) thread.sessionId = sessionId;
-  return thread;
-}
-
-function isLegacyEvent(event: AgentEvent): boolean {
-  return event.kind === "handoff" || event.kind === "post";
-}
-
-export function listThreadEvents(botId: string, path = agentStorePath()): AgentEvent[] {
-  const thread = readAgentStore(path).threads.find((item) => item.id === threadIdFor(botId));
-  return thread ? thread.events.filter((event) => !isLegacyEvent(event)) : [];
-}
-
-/**
- * Every widget id a stored thread event still names, across every thread, or
- * null when the store cannot be read.
- *
- * The sweep needs the whole set, not one bot's: a record is an orphan only
- * when nothing anywhere points at it. It also needs to know the difference
- * between "nothing references a widget" and "this file would not parse".
- * `readAgentStore` answers both with an empty store, and a sweep run on that
- * would delete every drawing on the machine. This is the same reason
- * `sweepOrphanState` reads the roster with `peekShell` rather than
- * `readShell`.
- */
-export function referencedWidgetIds(path = agentStorePath()): Set<string> | null {
-  // A store that is not there yet references nothing, which is true rather
-  // than unknown: there are no threads, so there is nothing to keep.
-  if (!existsSync(path)) return new Set();
-  let store: AgentStore;
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    // `parseAgentStore` answers a wrong shape or a schema it does not know
-    // with an empty store rather than throwing, on purpose: losing every
-    // transcript over a forward-compatible field would be worse. Here that
-    // same empty store would read as "nothing references a widget", so the
-    // shape is checked before it is parsed.
-    if (!raw || typeof raw !== "object") return null;
-    const rec = raw as Record<string, unknown>;
-    if (rec.schemaVersion !== AGENT_SCHEMA) return null;
-    // `threads: []` is a real empty store and every widget is then genuinely
-    // an orphan. A missing or non-array `threads` is a file this build cannot
-    // read, and `parseAgentStore` would answer it with the same empty list.
-    if (!Array.isArray(rec.threads)) return null;
-    store = parseAgentStore(raw);
-  } catch {
-    return null;
-  }
-  const ids = new Set<string>();
-  for (const thread of store.threads) {
-    for (const event of thread.events) {
-      if (event.widgetId) ids.add(event.widgetId);
-    }
-  }
-  return ids;
-}
-
-export function appendAgentEvent(
-  botId: string,
-  input: {
-    kind: LiveEventKind;
-    text: string;
-    threadKind?: ThreadKind;
-    sessionId?: string;
-    authorBotId?: string | null;
-    authorName?: string | null;
-    targetBotIds?: string[];
-    proposalId?: string | null;
-    handoffId?: string | null;
-    widgetId?: string | null;
-    imageId?: string | null;
-    connectedName?: string | null;
-    connectedLogo?: string | null;
-    id?: string;
-  },
-  path = agentStorePath(),
-): AgentEvent {
-  return withAgentStore((store) => {
-    const thread = upsertThread(store, botId, input.threadKind ?? "bot", input.sessionId ?? "");
-    const event: AgentEvent = {
-      id: input.id ?? newEventId(),
-      at: new Date().toISOString(),
-      kind: input.kind,
-      text: clip(input.text),
-      authorBotId: input.authorBotId ?? null,
-      authorName: input.authorName ? clip(input.authorName, 80) : null,
-      targetBotIds: (input.targetBotIds ?? []).slice(0, 8),
-      proposalId: input.proposalId ?? null,
-      handoffId: input.handoffId ?? null,
-      widgetId: input.widgetId ?? null,
-      imageId: input.imageId ?? null,
-      connectedName: input.connectedName ? clip(input.connectedName, 80) : null,
-      connectedLogo: input.connectedLogo ?? null,
-    };
-    const existing = thread.events.findIndex((item) => item.id === event.id);
-    if (existing >= 0) return thread.events[existing];
-    // A handoff can be delivered more than once after a crash; the same side
-    // of the same handoff must never land twice in one transcript.
-    if (event.handoffId) {
-      const duplicate = thread.events.find((item) => (
-        item.handoffId === event.handoffId && item.kind === event.kind
-      ));
-      if (duplicate) return duplicate;
-    }
-    thread.events.push(event);
-    if (thread.events.length > EVENT_CAP_PER_THREAD) {
-      thread.events.splice(0, thread.events.length - EVENT_CAP_PER_THREAD);
-    }
-    thread.updatedAt = event.at;
-    return event;
-  }, path);
 }
 
 export function createProposal<P extends ProposalPayload>(
@@ -720,74 +450,7 @@ export function releaseSend(kind: ReserveKind, requestId: string, path = agentSt
   }, path);
 }
 
-export function clearThread(botId: string, path = agentStorePath()): void {  withAgentStore((store) => {
-    const thread = store.threads.find((item) => item.id === threadIdFor(botId));
-    if (thread) {
-      thread.events = [];
-      thread.sessionId = "";
-      thread.updatedAt = new Date().toISOString();
-    }
-  }, path);
-}
-
-/**
- * Drop a deleted bot's thread outright. `clearThread` is for a bot that stays:
- * it empties the log and keeps the row. Nothing ever reads the row of a bot
- * that no longer exists, so leaving one behind only grows the file.
- */
-export function deleteThread(botId: string, path = agentStorePath()): boolean {
-  return withAgentStore((store) => {
-    const id = threadIdFor(botId);
-    const before = store.threads.length;
-    // Keyed on `id`, like every other lookup here. `sweepOrphanThreads` keeps a
-    // row when either field is live, and the asymmetry is on purpose: in a
-    // hand-edited store where the two diverge, `{id: live, botId: deleted}` is
-    // operationally the live bot's thread, so deleting the other bot must not
-    // take it. A row both of whose bots are gone is the sweep's to collect.
-    store.threads = store.threads.filter((item) => item.id !== id);
-    return store.threads.length !== before;
-  }, path);
-}
-
-/**
- * Drop every thread whose bot is gone from the roster. Same reason as
- * `sweepOrphanRoutines`: the roster and this store have separate locks, so a
- * delete that fails between them would otherwise leave the transcript behind
- * for good, and the delete dialog promises it is gone.
- */
-export function sweepOrphanThreads(liveBotIds: Iterable<string>, path = agentStorePath()): string[] {
-  const live = new Set<string>();
-  for (const botId of liveBotIds) {
-    live.add(botId);
-    live.add(threadIdFor(botId));
-  }
-  // An empty roster reads as a failed shell load, not as an empty app.
-  if (live.size === 0) return [];
-  // Either field is enough, which is looser than `deleteThread` on purpose: a
-  // sweep deletes rows nobody asked it to, so it errs towards keeping, and a
-  // hand-edited row that still names one live bot is not an orphan.
-  const owned = (thread: AgentThread) => live.has(thread.id) || live.has(thread.botId);
-  return withAgentStore((store) => {
-    const orphans = store.threads.filter((thread) => !owned(thread));
-    if (orphans.length === 0) return [];
-    store.threads = store.threads.filter(owned);
-    return orphans.map((thread) => thread.id);
-  }, path);
-}
-
-export function threadSnapshot(botId: string, path = agentStorePath()): {
-  events: AgentEvent[];
-  proposals: Proposal[];
-} {
-  const store = readAgentStore(path);
-  const thread = store.threads.find((item) => item.id === threadIdFor(botId));
-  const now = Date.now();
-  return {
-    events: thread ? thread.events.filter((event) => !isLegacyEvent(event)) : [],
-    proposals: store.proposals.filter((item) => (
-      item.threadId === threadIdFor(botId)
-      && item.status === "pending"
-      && Date.parse(item.expiresAt) > now
-    )),
-  };
+/** The open (pending, unexpired) cards the bot raised, for GET /api/proposals. */
+export function openProposals(botId: string, path = agentStorePath()): Proposal[] {
+  return listPendingProposals(threadIdFor(botId), path);
 }

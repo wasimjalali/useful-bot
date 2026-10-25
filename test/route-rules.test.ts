@@ -1,152 +1,76 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "../agent/lib/memory.ts";
-import { createRoutine, listRoutines, moveRoutinesToBot, readRoutinesStore, updateRoutine } from "../shared/routines-store.ts";
-import { readShell, writeFixtureShell, writeShell } from "../shared/shell-io.ts";
-import { archiveEarlierBots, DEFAULT_BOT_ID, seedStore } from "../shared/shell-store.ts";
-import { approvalDecisionRefusal, archivedBotRefusal, routineCreateRefusal, routineRunRefusal } from "../web/lib/archived-bots.ts";
-import { ApprovalStore } from "../agent/lib/approvals.ts";
-import { bindSession } from "../shared/session-bindings.ts";
+import { createRoutine, listRoutines, readRoutinesStore, updateRoutine } from "../shared/routines-store.ts";
+import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
 import { memoryListing } from "../web/lib/memory-listing.ts";
-import { applyProvidersPut } from "../web/lib/providers-write.ts";
-import { withBot } from "./helpers/roster.ts";
 
 // The Next route handlers cannot be imported by node (they sit behind the cookie
 // gate and extensionless imports), so the rules they apply live in web/lib and
-// are tested here; the source checks below hold the routes to calling them.
+// are tested here; the source checks below hold the routes to calling them. The
+// chat routes are tested through web/lib/engine-proxy.ts in test/web.
 
-const roster = [
-  { id: DEFAULT_BOT_ID, archived: false },
-  { id: "bot-old", archived: true },
-];
+const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("an archived bot is refused with 409 shell_bot_archived; the default bot, an unknown bot and no bot are not", () => {
-  assert.deepEqual(archivedBotRefusal(roster, "bot-old"), { error: "shell_bot_archived", status: 409 });
-  assert.equal(archivedBotRefusal(roster, DEFAULT_BOT_ID), null);
-  assert.equal(archivedBotRefusal(roster, "bot-ghost"), null, "an unknown bot is the caller's other error, not this one");
-  assert.equal(archivedBotRefusal(roster, null), null);
-  assert.equal(archivedBotRefusal(roster, undefined), null);
-});
-
-test("POST /api/routines refuses an unknown bot (400) and an archived one (409), and takes the default bot", () => {
-  assert.deepEqual(routineCreateRefusal(roster, "bot-ghost"), { error: "bot_missing", status: 400 });
-  assert.deepEqual(routineCreateRefusal(roster, "bot-old"), { error: "shell_bot_archived", status: 409 });
-  assert.equal(routineCreateRefusal(roster, DEFAULT_BOT_ID), null);
-});
-
-test("POST /api/routines/:id/run refuses a routine whose bot is archived, and runs the default bot's", () => {
-  assert.deepEqual(routineRunRefusal(roster, { botId: "bot-old" }), { error: "shell_bot_archived", status: 409 });
-  assert.equal(routineRunRefusal(roster, { botId: DEFAULT_BOT_ID }), null);
-});
-
-test("each route calls its rule, and the eve proxy checks the sender, the routed bot and an input answer before it resumes anything", () => {
-  const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
-  const eve = read("web/app/eve/v1/[...path]/route.ts");
-  assert.equal((eve.match(/archivedBotRefusal\(/g) ?? []).length, 3);
-  assert.ok(eve.indexOf("archivedBotRefusal(readShell().bots, auth.bound)") !== -1, "the input answer path uses the bot the session is bound to");
-  assert.ok(
-    eve.indexOf("archivedBotRefusal(readShell().bots, auth.bound)") < eve.indexOf("inputAnswer = true"),
-    "the answer is refused before it is marked as forwarded",
-  );
-  assert.ok(eve.indexOf("archivedBotRefusal(readShell().bots, sender?.id)") !== -1);
-  assert.ok(eve.indexOf("archivedBotRefusal(shell.bots, bot.id)") !== -1);
-  assert.match(read("web/app/api/routines/route.ts"), /routineCreateRefusal\(readShell\(\)\.bots, body\.botId\)/);
-  assert.match(read("web/app/api/routines/[id]/run/route.ts"), /routineRunRefusal\(readShell\(\)\.bots, routine\)/);
+test("the routes call their helpers", () => {
   assert.match(read("web/app/api/memory/route.ts"), /memoryListing\(memoryStore\(\), botId\)/);
+  assert.match(read("web/app/api/agent/tick/route.ts"), /pumpConnects\(\)/);
+  assert.match(read("web/app/api/agent/tick/route.ts"), /sweepOrphanStateIfDue\(\)/);
 });
 
-test("approving a card raised by an archived bot's parked turn is refused; denying it is not", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-route-"));
-  const saved = { shell: process.env.UB_SHELL_PATH, owners: process.env.UB_SESSION_OWNERS_PATH };
-  process.env.UB_SHELL_PATH = join(dir, "shell.json");
-  process.env.UB_SESSION_OWNERS_PATH = join(dir, "session-owners.json");
-  try {
-    const made = withBot(seedStore(), "Alpha");
-    writeFixtureShell(made.store);
-    bindSession("sess-alpha", made.id);
-    bindSession("sess-useful", DEFAULT_BOT_ID);
-    // Alpha has a card open, then the archive pass runs.
-    const store = new ApprovalStore(Date.now, join(dir, "approvals.json"));
-    const ask = (sessionId: string) => store.request({ sessionId, turnId: "t", toolCallId: "c", tool: "bash", actionSha256: "h".repeat(64), preview: "p" });
-    const alphaCard = ask("sess-alpha");
-    const usefulCard = ask("sess-useful");
-    const ghostCard = ask("sess-unbound");
-    writeShell(archiveEarlierBots(readShell()).store);
-    assert.deepEqual(approvalDecisionRefusal(store, alphaCard.id, "approve"), { error: "shell_bot_archived", status: 409 });
-    assert.equal(approvalDecisionRefusal(store, alphaCard.id, "deny"), null, "a deny only closes the card");
-    assert.equal(approvalDecisionRefusal(store, usefulCard.id, "approve"), null);
-    assert.equal(approvalDecisionRefusal(store, ghostCard.id, "approve"), null, "a session nobody owns is the store's business");
-    assert.equal(approvalDecisionRefusal(store, "apr_missing", "approve"), null, "an unknown card is the store's 404");
-    assert.match(readFileSync(new URL("../web/app/api/approvals/[id]/route.ts", import.meta.url), "utf8"), /approvalDecisionRefusal\(/);
-  } finally {
-    for (const [key, value] of [["UB_SHELL_PATH", saved.shell], ["UB_SESSION_OWNERS_PATH", saved.owners]] as const) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+test("the removed routes and libraries are gone", () => {
+  for (const path of [
+    "web/app/eve/v1/[...path]/route.ts",
+    "web/app/api/agent/state/route.ts",
+    "web/lib/eve-session-auth.ts",
+    "web/lib/earlier-bots.ts",
+    "web/lib/archived-bots.ts",
+    "web/lib/media-migrate.ts",
+  ]) {
+    assert.throws(() => read(path), /ENOENT/, path);
   }
 });
 
-test("PUT /api/providers refuses a per-bot model pick for an archived bot and writes nothing", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-route-"));
-  const saved = { shell: process.env.UB_SHELL_PATH, providers: process.env.UB_PROVIDERS_PATH };
-  process.env.UB_SHELL_PATH = join(dir, "shell.json");
-  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
-  try {
-    const made = withBot(seedStore(), "Alpha");
-    writeFixtureShell(archiveEarlierBots(made.store).store);
-    for (const pick of [{ modelId: "glm-5" }, { effort: "high" }, { speed: "fast" }]) {
-      assert.throws(() => applyProvidersPut({ botId: made.id, ...pick }), /^Error: shell_bot_archived$/, JSON.stringify(pick));
-    }
-    assert.equal(existsSync(process.env.UB_PROVIDERS_PATH), false, "nothing was written");
-    assert.throws(() => applyProvidersPut({ botId: "bot-ghost", modelId: "glm-5" }), /^Error: shell_bot_missing$/);
-  } finally {
-    for (const [key, value] of [["UB_SHELL_PATH", saved.shell], ["UB_PROVIDERS_PATH", saved.providers]] as const) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
+test("the tick answers no one but the owner's own session: it takes no agent key", () => {
+  const source = read("web/app/api/agent/tick/route.ts");
+  assert.doesNotMatch(source, /x-ub-agent-key|UB_CHANNEL_JWT/);
+  assert.match(source, /requireOwner\(request\)/);
 });
 
-test("GET /api/memory answers a page of 100 and the real total, and nothing for no bot", () => {
+test("GET /api/memory answers a page of 100, and nothing for no bot", () => {
   const dir = mkdtempSync(join(tmpdir(), "ub-route-"));
   const store = new MemoryStore(join(dir, "memory"));
   try {
     for (let index = 0; index < 130; index += 1) {
-      store.upsert({ expectedRevision: null, title: `Note ${index}`, tags: [], body: "b", botId: "bot-old", source: "owner", expiresAt: null, sessionId: "s1" });
+      store.upsert({ expectedRevision: null, title: `Note ${index}`, tags: [], body: "b", botId: "bot-useful", source: "owner", expiresAt: null, sessionId: "s1" });
     }
-    const listing = memoryListing(store, "bot-old");
+    const listing = memoryListing(store, "bot-useful");
     assert.equal(listing.notes.length, 100);
-    assert.equal(listing.total, 130);
-    assert.deepEqual(memoryListing(store, "bot-nobody"), { notes: [], total: 0 });
-    assert.deepEqual(memoryListing(store, ""), { notes: [], total: 0 });
-    assert.deepEqual(memoryListing(null, "bot-old"), { notes: [], total: 0 });
+    assert.deepEqual(memoryListing(store, "bot-nobody"), { notes: [] });
+    assert.deepEqual(memoryListing(store, ""), { notes: [] });
+    assert.deepEqual(memoryListing(null, "bot-useful"), { notes: [] });
   } finally {
     store.close();
   }
 });
 
-test("on the wire a moved routine carries movedFrom, and an empty PATCH (Dismiss) or an activation clears it", () => {
+test("on the wire a routine carries its chat once the engine has made it, and an edit keeps it", () => {
   const dir = mkdtempSync(join(tmpdir(), "ub-route-"));
   const saved = process.env.UB_ROUTINES_PATH;
   process.env.UB_ROUTINES_PATH = join(dir, "routines.json");
   try {
     const wire = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-    const plain = createRoutine({ botId: DEFAULT_BOT_ID, name: "Mine", instruction: "x", schedules: [] });
-    const a = createRoutine({ botId: "bot-old", name: "One", instruction: "x", schedules: [] });
-    const b = createRoutine({ botId: "bot-old", name: "Two", instruction: "x", schedules: [] });
-    moveRoutinesToBot([{ id: "bot-old", name: "Old" }], DEFAULT_BOT_ID);
+    const routine = createRoutine({ botId: DEFAULT_BOT_ID, name: "Mine", instruction: "x", schedules: [] });
     // GET /api/routines?botId= returns the stored routines as they are.
-    const listed = listRoutines(DEFAULT_BOT_ID).map(wire);
-    assert.deepEqual(listed.map((item) => [item.name, item.movedFrom]).sort(), [["Mine", null], ["One", "bot-old"], ["Two", "bot-old"]]);
-    assert.equal(listed.find((item) => item.id === a.id)?.active, false);
+    assert.equal(wire(listRoutines(DEFAULT_BOT_ID)[0]).chatId, null);
+    assert.equal("movedFrom" in wire(listRoutines(DEFAULT_BOT_ID)[0]), false);
+    assert.ok(routine.id);
     // PATCH /api/routines/:id returns the updated routine.
-    assert.equal(wire(updateRoutine(a.id, {})).movedFrom, null, "Dismiss is an empty PATCH");
-    assert.equal(wire(updateRoutine(b.id, { active: true })).movedFrom, null);
-    assert.equal(wire(updateRoutine(plain.id, { name: "Still mine" })).movedFrom, null);
-    assert.ok(readRoutinesStore().routines.every((item) => item.movedFrom === null));
+    assert.equal(wire(updateRoutine(routine.id, { name: "Still mine" })).name, "Still mine");
+    assert.equal(readRoutinesStore().routines.length, 1);
   } finally {
     if (saved === undefined) delete process.env.UB_ROUTINES_PATH;
     else process.env.UB_ROUTINES_PATH = saved;
