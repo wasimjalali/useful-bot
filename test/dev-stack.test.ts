@@ -1317,7 +1317,7 @@ test("read_file, write and list paths into a runtime install folder are refused,
         assert.throws(() => (readFile as unknown as Tool).execute({ path } as never, {} as never), /path_forbidden|path_symlink/, `read ${path}`);
         assert.throws(() => (listDir as unknown as Tool).execute({ path } as never, {} as never), /path_forbidden|path_symlink/, `list ${path}`);
         await assert.rejects(
-          approvedWrite({ path, content: "x", expectedSha256: null, chatId: "chat-1", botId: "bot-1", turnId: "t", toolCallId: "c", autoDecision: "approve" }),
+          approvedWrite({ path, content: "x", expectedSha256: null, chatId: "", botId: "bot-1", turnId: "t", toolCallId: "c", autoDecision: "approve" }),
           /path_forbidden|path_symlink/,
           `write ${path}`,
         );

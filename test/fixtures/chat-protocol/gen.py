@@ -219,7 +219,7 @@ s.emit("turn.started", T4, origin="owner", clientId="c1c1c1c1-0000-4000-8000-000
 s.emit("message.user", T4, rowId=f"{T4}:u", clientId="c1c1c1c1-0000-4000-8000-0000000000c6",
        text="Keep going with the report", attachments=[])
 s.emit("activity", T4, kind="compacting", detail="Compacting the conversation")
-note = {"rowId": "compaction:e-0099", "kind": "note", "turnId": T4, "at": at(4),
+note = {"rowId": "compaction:e-0099", "kind": "note", "turnId": None, "at": at(4),
         "text": "Conversation compacted to fit the model's window", "source": "compaction"}
 s.emit("row", T4, row=note)
 s.emit("compaction.done", T4, rowId="compaction:e-0099")
@@ -248,7 +248,6 @@ s.write("events-routine.ndjson")
 
 write_json("engine-status.json", {
     "epoch": EPOCH,
-    "cleanSlateNotice": True,
     "chats": [
         {"chatId": CHAT, "running": {"turnId": T3, "activity": {"kind": "tool", "tool": "bash", "detail": "Running a command"}},
          "waitingOnOwner": "approval", "replyReadySince": None, "lastTurn": {"turnId": T2, "outcome": "failed", "endedAt": at(14)}},

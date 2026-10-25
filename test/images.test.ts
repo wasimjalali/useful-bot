@@ -184,7 +184,7 @@ test("the turn context names the bot's model and the image model", async () => {
     process.env.UB_SHELL_PATH = join(dir, "shell.json");
     readShell();
     try {
-      const snapshot = buildSnapshot("bot-useful", { session: { id: "sess-img" } }, "turn-1");
+      const snapshot = buildSnapshot("bot-useful", "sess-img", "turn-1");
       assert.equal(snapshot.status, "ok");
       const context = renderContext(snapshot.context);
       assert.match(context, /Model: .*\(openai\/gpt-4\.1-mini\) via OpenRouter/);
