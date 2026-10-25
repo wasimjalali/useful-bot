@@ -9,7 +9,7 @@
 // --push it stops there, so the result can be read first; with it, the branch
 // is pushed and a PR opened, to merge like any other change.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,8 +79,10 @@ try {
   for (const entry of readdirSync(clone)) {
     if (entry === ".git") continue;
     if (entry === ".github") {
+      if (!lstatSync(path.join(clone, entry)).isDirectory()) throw new Error(`${clone}/.github is not a plain folder`);
       for (const inner of readdirSync(path.join(clone, entry))) {
-        if (path.join(entry, inner) !== PUBLIC_ONLY) rmSync(path.join(clone, entry, inner), { recursive: true, force: true });
+        // APFS ignores case, so compare the way it does.
+        if (path.join(entry, inner).toLowerCase() !== PUBLIC_ONLY) rmSync(path.join(clone, entry, inner), { recursive: true, force: true });
       }
       continue;
     }
