@@ -51,7 +51,11 @@ import Testing
         #expect(!runner.signalProcess(reusedCommand, force: true))
         #expect(child.isRunning, "a look-alike identity must not signal the real process")
         for process in found.reversed() { _ = runner.signalProcess(process, force: true) }
-        child.waitUntilExit()
+        // Not waitUntilExit: the awaits above can resume this test on another
+        // thread than the one that ran the child, and Foundation's
+        // waitUntilExit can then wait forever for a notification queued on the
+        // launching thread's run loop. isRunning is cleared by the exit itself.
+        #expect(await waitUntil { !child.isRunning }, "the launcher exits once it and its child are killed")
         #expect(!runner.isStillRunning(shell))
         #expect(runner.ownServiceProcesses(owns: owns).isEmpty)
     }
