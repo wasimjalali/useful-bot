@@ -63,10 +63,9 @@ The accessibility tree lists a text value across several lines when it has newli
 bash command in an approval card), and after a streamed turn it can list a bubble's paragraphs out of
 screen order or cut short. The harness joins multi-line values, orders the reply by element frames
 (a code block, which has no frame, takes the place of its "Copy code" button), renders code blocks as
-fenced text, then reads the transcript only after redrawing the chat (it shows the chat above the
-current one for a moment and comes back: two sidebar clicks, nothing sent) and until two reads in a row
-agree. `reply_before_redraw` is kept in a turn's record when the redraw changed the text, and
-`reply_stable` says whether the reads settled. Approval cards keep the whole preview after the tool name.
+fenced text, and reads until two reads 1.5 s apart agree. It never navigates to another chat to force
+a redraw: on eve that swaps the bot's live session, which wrecked run `2026-10-25-eve-r2` (kept as a
+record of that harness bug). `reply_stable` says whether the reads settled. Approval cards keep the whole preview after the tool name.
 
 ### Idle detection
 

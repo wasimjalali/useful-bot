@@ -582,52 +582,24 @@ def chat_rows(snap):
                         if n["id"] == "chat-row" and n["idx"] is not None) if e]
 
 
-def reopen_chat(drv):
-    """Show another chat for a moment and come back, so the app redraws this one from its store.
-    Pure navigation: two sidebar clicks, nothing sent. The chat that just had a turn is the first row."""
-    snap = drv.snapshot()
-    rows = chat_rows(snap)
-    if len(rows) < 2:
-        return "skipped: fewer than two chats in the sidebar"
-    mine = rows[0].get("label")
-    for pick in (1, 0):
-        snap = drv.snapshot()
-        rows = chat_rows(snap)
-        if len(rows) < 2 or (pick == 0 and rows[0].get("label") != mine):
-            return f"failed: sidebar rows changed (wanted {mine!r} first)"
-        r = drv.click(snap, rows[pick])
-        if r.get("refusal") or r.get("status") == "refused":
-            return f"failed: click refused: {r}"
-        time.sleep(1.0)
-    return "ok"
-
-
 def read_turn(drv, prompt, before_bot, shot):
-    """Read the finished turn off the window. The tree read right after a streamed turn has come back with
-    paragraphs out of order and cut short (t02, t04, t07 of the first baseline), so: read once, redraw the
-    chat (reopen_chat), then read until two reads in a row give the same reply. Items are ordered by their
-    frames in split_turn. Returns (snapshot, tail, found, info)."""
-    first = drv.snapshot()
-    tail0, _ = split_turn(first.texts(), prompt, before_bot)
-    info = {"reply_before_redraw": render_lines(tail0)}
-    try:
-        info["redraw"] = reopen_chat(drv)
-    except Exception as e:  # the redraw is a repair step: a failure is recorded, the read still happens
-        info["redraw"] = f"error: {e}"
+    """Read the finished turn off the window. A tree read right after a streamed turn has come back cut
+    short (t02, t04, t07 of the first baseline), so read until two reads 1.5 s apart give the same reply.
+    Never navigate away to force a redraw: on eve, opening another chat swaps the bot's live session, and
+    that broke run 2026-10-25-eve-r2 (wrong chat read, multi-turn context lost). Items are ordered by
+    their frames in split_turn. Returns (snapshot, tail, found, info)."""
     prev = None
-    for n in range(1, 7):
-        time.sleep(1.0)
+    for n in range(1, 9):
+        time.sleep(1.5)
         final = drv.snapshot(shot=shot)
         tail, found = split_turn(final.texts(), prompt, before_bot)
         cur = render_lines(tail)
-        if cur == prev:
-            info.update({"reply_reads": n, "reply_stable": True})
+        if cur == prev and cur:
+            info = {"reply_reads": n, "reply_stable": True}
             break
         prev = cur
     else:
-        info.update({"reply_reads": 6, "reply_stable": False})
-    if info["reply_before_redraw"] == prev:
-        del info["reply_before_redraw"]  # kept only when the redraw changed something
+        info = {"reply_reads": 8, "reply_stable": False}
     return final, tail, found, info
 
 
