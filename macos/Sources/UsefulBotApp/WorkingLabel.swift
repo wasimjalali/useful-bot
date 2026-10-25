@@ -92,7 +92,9 @@ struct ShimmerLabel: View {
                 }
             )
             .overlay(alignment: .leading) {
-                if !reduceMotion {
+                // Only once the width is measured, so the first sweep is timed
+                // for this label and not for a zero-width one.
+                if !reduceMotion, width > 0 {
                     TimelineView(ShimmerSchedule(origin: born, width: Double(width))) { timeline in
                         let centre = AgentShimmer.bandCentre(
                             elapsed: timeline.date.timeIntervalSince(born),

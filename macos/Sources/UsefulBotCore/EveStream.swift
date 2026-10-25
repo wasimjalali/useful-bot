@@ -105,7 +105,9 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     /// read as a hang.
     case compacting
 
-    /// A shell command is running: the working mark shows its four-dot figure.
+    /// A shell command is running (the `bash` tool): the working mark shows
+    /// its four-dot figure. Only `bash` counts. `install_cli` also runs a
+    /// command, but it reads as "Setting up a tool", a step of its own.
     public var runsCommand: Bool {
         if case .tool("bash", _) = self { return true }
         return false

@@ -1546,6 +1546,12 @@ private struct WorkingSlot: View {
     var runningModel: String?
 
     @State private var finishing = false
+    @State private var wasWorking = false
+
+    /// The label settles on the muted ink over 150 ms (WorkingLabel), and the
+    /// dots take 50 ms to vanish: the row stays up for the longer of the two,
+    /// plus a frame.
+    private static let linger = max(AgentMarkFrames.completionDuration, 0.15) + 1.0 / 60
 
     var body: some View {
         Group {
@@ -1560,16 +1566,19 @@ private struct WorkingSlot: View {
                 )
             }
         }
-        .onChange(of: working) { was, now in
-            if now {
+        // Restarts on every change of `working`, so a new turn cancels a
+        // linger that is still counting.
+        .task(id: working) {
+            if working {
+                wasWorking = true
                 finishing = false
-            } else if was {
-                finishing = true
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: UInt64(AgentMarkFrames.completionDuration * 1.6 * 1e9))
-                    if !working { finishing = false }
-                }
+                return
             }
+            guard wasWorking else { return }
+            wasWorking = false
+            finishing = true
+            try? await Task.sleep(nanoseconds: UInt64(Self.linger * 1e9))
+            if !Task.isCancelled { finishing = false }
         }
     }
 }
@@ -1614,8 +1623,14 @@ private struct WorkingRow: View {
         // The label starts 16 pt from the mark's 24 pt box: 28 pt from the
         // centre of the dots.
         HStack(alignment: .center, spacing: 16) {
-            AgentMark(phase: done ? .done : (activity.runsCommand ? .command : .thinking))
-                .frame(width: Self.height, height: Self.height)
+            // A row that opens on a turn already past the arrival cuts in at
+            // the loop instead of replaying it.
+            AgentMark(
+                phase: done ? .done : (activity.runsCommand ? .command : .thinking),
+                arrives: Date().timeIntervalSince(since) < AgentMarkFrames.arrivalDuration,
+                step: commandStep
+            )
+            .frame(width: Self.height, height: Self.height)
             HStack(spacing: 8) {
                 if let connector {
                     AppLogo(name: connector.name, url: connector.logo, size: 16)
@@ -1653,6 +1668,12 @@ private struct WorkingRow: View {
             try? await Task.sleep(nanoseconds: UInt64(AgentShimmer.firstLabelDelay * 1e9))
             labelShown = true
         }
+    }
+
+    /// The command being run, so the mark can tell one command step from the next.
+    private var commandStep: String? {
+        if case .tool("bash", let detail?) = activity { return detail }
+        return nil
     }
 
     static func elapsedSeconds(from start: Date, to now: Date) -> Int {

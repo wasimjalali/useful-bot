@@ -49,6 +49,10 @@ public enum AgentMarkFrames {
     /// a command: the one 3.5 pt dot, then the fan.
     public static let fanEntry = 0.48
     public static let completionDuration = 0.05
+    /// The loop opens with the fan from one dot and reaches its row here. An
+    /// arrival or a return from a command has already fanned, so it joins the
+    /// loop at this point.
+    public static let thinkingFanEnd = 0.30
 
     /// Three still dots, for Reduce Motion.
     public static let reducedMotion = [MarkDot(-8, 0, 4.5), MarkDot(0, 0, 3), MarkDot(8, 0, 5.5)]
@@ -85,23 +89,27 @@ public enum AgentMarkFrames {
         let converge = collapseDuration * 0.6
         if t < converge {
             let p = Ease.inOut(t / converge)
-            return snapshot.map { MarkDot($0.x * (1 - p), $0.y * (1 - p), $0.d + (8 - $0.d) * p) }
+            return snapshot.map { MarkDot($0.x * (1 - p), $0.y * (1 - p), $0.d + (fuseSize($0.d) - $0.d) * p) }
         }
         let p = Ease.shrink((t - converge) / (collapseDuration - converge))
-        return snapshot.map { _ in MarkDot(0, 0, 8 * (1 - p)) }
+        return snapshot.map { MarkDot(0, 0, fuseSize($0.d) * (1 - p)) }
     }
+
+    /// What a dot swells to as the figure fuses: up to the spec's 8 pt, but a
+    /// dot that is already small (one on its way out) does not balloon.
+    static func fuseSize(_ d: Double) -> Double { min(8, d * 1.7) }
 
     /// The turn ended: shrink to 2 pt and vanish within 50 ms. Nothing is left.
     public static func completion(from snapshot: [MarkDot], at t: Double) -> [MarkDot] {
         guard t.isFinite, t >= 0, t < completionDuration else { return [] }
         let p = Ease.shrink(min(1, t / (completionDuration * 0.8)))
-        return snapshot.map { MarkDot($0.x, $0.y, $0.d + (2 - $0.d) * p) }
+        // Toward 2 pt, never growing a dot that is already smaller.
+        return snapshot.map { MarkDot($0.x, $0.y, $0.d + (min($0.d, 2) - $0.d) * p) }
     }
 
     // MARK: Keyframe tables (spec section 4)
 
-    private static let row0 = [MarkDot(-8, 0, 4.5), MarkDot(0, 0, 3), MarkDot(8, 0, 5.5)]
-    private static let row1 = [MarkDot(-8, 0, 4.5), MarkDot(0, 0, 3), MarkDot(8, 0, 5)]
+    private static let row = [MarkDot(-8, 0, 4.5), MarkDot(0, 0, 3), MarkDot(8, 0, 5)]
     /// The four-dot square, top-left, top-right, bottom-left, bottom-right.
     private static let square = [MarkDot(-6, -6, 5), MarkDot(6, -6, 5), MarkDot(-6, 6, 5), MarkDot(6, 6, 5)]
 
@@ -119,43 +127,82 @@ public enum AgentMarkFrames {
         MarkKey(0.66, .out, [MarkDot(-8, 0, 4.5), MarkDot(0, 0, 2.75), MarkDot(8, 0, 5)]),
     ])
 
-    /// 4.2: dots 1, 2, 3 are small, big and middle in the rotating triangle,
-    /// so identity follows the dot, not the slot, from 0.85 to 1.71.
+    /// 4.2, re-measured from the capture (rec-02, 3.87 s is t = 0). The spec's
+    /// table was read off every third frame and disagrees with the frames in
+    /// three places, so these keys follow the frames: the loop opens with the
+    /// fan from one dot, the fused pair slides before it splits, and the
+    /// triangle is three dots circling counter-clockwise on a flat ellipse
+    /// (x +-8.4, y -3.7 to +5.8), small at the top and large at the bottom,
+    /// that lands with the first dot on the right. Dots 1, 2, 3 keep their
+    /// identity throughout, so no dot crosses another except inside a fuse.
     private static let threeTrack = MarkTrack([
-        // Phrase 1, juggle.
-        MarkKey(0.00, .linear, row0),
-        MarkKey(0.50, .linear, row0),
-        MarkKey(0.63, .smooth, [MarkDot(-6, 0, 4.5), MarkDot(-2, 0, 3), MarkDot(8, 0, 5.5)]),
-        MarkKey(0.74, .smooth, [MarkDot(0, 0, 4.5), MarkDot(1.5, 0, 4.5), MarkDot(8, 0, 5.5)]),
-        MarkKey(0.85, .out, [MarkDot(-5, -3, 3), MarkDot(1, 3, 6.5), MarkDot(7, -3, 4)]),
-        MarkKey(1.10, .smooth, [MarkDot(-1, -5, 3), MarkDot(-4, 3, 6.5), MarkDot(6, 0, 4)]),
-        MarkKey(1.35, .smooth, [MarkDot(4, -5, 3), MarkDot(-6, 2, 6.5), MarkDot(1, 3, 4)]),
-        MarkKey(1.60, .smooth, [MarkDot(7, -2, 3), MarkDot(-8, 1, 6.5), MarkDot(-1, 0, 4)]),
-        // Landed: the big dot is now on the left.
-        MarkKey(1.71, .smooth, [MarkDot(0, 0, 3), MarkDot(-8, 0, 6), MarkDot(8, 0, 4)]),
-        MarkKey(1.78, .linear, [MarkDot(0, 0, 3), MarkDot(-8, 0, 6), MarkDot(8, 0, 4)]),
-        // Quick swap: dots 1 and 2 fuse and split, order swapped.
-        MarkKey(1.93, .inOut, [MarkDot(-2, 0, 4.5), MarkDot(-3, 0, 4.5), MarkDot(8, 0, 4)]),
-        MarkKey(2.03, .out, [MarkDot(-8, 0, 3), MarkDot(0, 0, 6), MarkDot(8, 0, 4)]),
-        MarkKey(2.33, .linear, [MarkDot(-8, 0, 3), MarkDot(0, 0, 6), MarkDot(8, 0, 4)]),
-        // Second swap: the pair fuses and goes on into the gather.
-        MarkKey(2.45, .inOut, [MarkDot(-3, 0, 4.5), MarkDot(-2, 0, 4.5), MarkDot(8, 0, 4)]),
-        MarkKey(2.59, .inOut, [MarkDot(0, 0, 8.5)]),
-        MarkKey(2.78, .easeIn, []),
-        MarkKey(2.83, .linear, [MarkDot(0, 0, 2.5)]),
-        // Phrase 2, breathe.
-        MarkKey(3.08, .out, row1),
-        MarkKey(3.50, .linear, row1),
-        MarkKey(3.58, .inOut, [MarkDot(-2, 0, 5), MarkDot(2, 0, 5.5), MarkDot(9, 0, 4)]),
-        MarkKey(3.72, .linear, [MarkDot(-2, 0, 5), MarkDot(2, 0, 5.5), MarkDot(9, 0, 4)]),
-        MarkKey(3.84, .out, row1),
-        MarkKey(4.20, .linear, row1),
-        MarkKey(4.29, .smooth, [MarkDot(-3, 0, 4.5), MarkDot(0, 0, 3), MarkDot(3, 0, 5)]),
-        MarkKey(4.32, .smooth, [MarkDot(0, 0, 8)]),
-        MarkKey(4.35, .linear, [MarkDot(0, 0, 8)]),
-        MarkKey(4.54, .easeIn, []),
-        MarkKey(4.58, .linear, [MarkDot(0, 0, 2.5)]),
-        MarkKey(4.62, .out, row0),
+        // The loop starts where the arrival and the restart both leave off: a
+        // 4.8 pt dot that fans into the row (the capture's 4.65 to 4.92 s).
+        MarkKey(0.00, .linear, [MarkDot(0, 0, 4.8)]),
+        MarkKey(0.03, .linear, [MarkDot(0, 0, 4.8)]),
+        MarkKey(0.30, .out, row),
+        MarkKey(0.42, .linear, row),
+        // Phrase 1, juggle. Dot 2 runs left into dot 1, and the blob slides right.
+        MarkKey(0.63, .inOut, [MarkDot(-5.8, 0, 4.5), MarkDot(-4.8, 0, 4.5), MarkDot(8.3, 0, 4.3)]),
+        MarkKey(0.78, .smooth, [MarkDot(-3.4, 0.5, 4.6), MarkDot(-2.4, 0.6, 4.6), MarkDot(7.4, -0.2, 3.5)]),
+        // Split: small, big, small.
+        MarkKey(0.81, .inOut, [MarkDot(-5.6, -0.2, 3.3), MarkDot(-1.1, 1.0, 5.2), MarkDot(6.8, -0.4, 3.4)]),
+        MarkKey(0.88, .smooth, [MarkDot(-6.2, -0.4, 3.2), MarkDot(0.1, 1.3, 5.2), MarkDot(6.4, -0.4, 3.3)]),
+        // The big dot runs into the right one and they separate sideways.
+        MarkKey(0.95, .smooth, [MarkDot(-7.2, -0.3, 3.4), MarkDot(3.2, 1.2, 5.2), MarkDot(5.2, 0.6, 3.4)]),
+        MarkKey(1.00, .smooth, [MarkDot(-7.9, 0.1, 3.7), MarkDot(4.5, 1.3, 5.2), MarkDot(5.0, 1.0, 3.4)]),
+        // The rotating triangle.
+        MarkKey(1.07, .smooth, [MarkDot(-8.2, 1.2, 4.3), MarkDot(7.6, 2.4, 4.7), MarkDot(1.3, -2.5, 3.1)]),
+        MarkKey(1.14, .smooth, [MarkDot(-7.6, 2.8, 4.5), MarkDot(8.3, 1.8, 4.3), MarkDot(-0.5, -3.1, 2.8)]),
+        MarkKey(1.21, .smooth, [MarkDot(-6.0, 4.4, 4.7), MarkDot(8.4, 0.8, 3.9), MarkDot(-2.3, -3.7, 3.1)]),
+        MarkKey(1.28, .smooth, [MarkDot(-4.4, 5.4, 4.8), MarkDot(8.4, 0.1, 3.8), MarkDot(-3.2, -3.7, 3.2)]),
+        MarkKey(1.35, .smooth, [MarkDot(-1.1, 5.6, 5.0), MarkDot(7.2, -1.6, 3.4), MarkDot(-5.5, -2.4, 3.3)]),
+        MarkKey(1.42, .smooth, [MarkDot(0.2, 5.1, 5.0), MarkDot(6.6, -1.8, 3.4), MarkDot(-6.3, -1.7, 3.4)]),
+        MarkKey(1.49, .smooth, [MarkDot(4.5, 3.3, 5.2), MarkDot(4.1, -1.9, 2.9), MarkDot(-7.8, -0.2, 3.6)]),
+        MarkKey(1.55, .smooth, [MarkDot(6.8, 2.0, 4.9), MarkDot(2.3, -1.6, 2.9), MarkDot(-8.3, 0.4, 4.0)]),
+        MarkKey(1.62, .smooth, [MarkDot(8.0, 1.1, 4.6), MarkDot(0.4, -1.1, 2.9), MarkDot(-8.1, 0.8, 4.4)]),
+        MarkKey(1.69, .smooth, [MarkDot(8.4, 0.4, 4.0), MarkDot(-1.3, -0.8, 2.9), MarkDot(-7.1, 0.8, 4.7)]),
+        // Landed: dot 1 right, dot 2 middle, dot 3 left. Dots 2 and 3 meet at once.
+        MarkKey(1.73, .smooth, [MarkDot(8.4, 0.2, 3.9), MarkDot(-2.2, -0.6, 2.9), MarkDot(-6.3, 0.8, 5.0)]),
+        MarkKey(1.76, .smooth, [MarkDot(8.2, 0.1, 3.8), MarkDot(-4.4, 0.4, 4.6), MarkDot(-5.1, 0.4, 4.6)]),
+        MarkKey(1.87, .smooth, [MarkDot(7.1, 0.1, 3.3), MarkDot(-2.4, 0.2, 5.0), MarkDot(-3.0, 0.2, 5.0)]),
+        // Swap: dots 2 and 3 trade places through the fuse, then dot 3 runs
+        // into dot 1 and they trade the same way.
+        MarkKey(1.91, .inOut, [MarkDot(6.6, 0.1, 3.3), MarkDot(-5.9, -0.1, 3.2), MarkDot(-0.4, 0.2, 5.4)]),
+        MarkKey(1.97, .smooth, [MarkDot(5.0, 0.1, 3.4), MarkDot(-7.4, 0.1, 3.5), MarkDot(3.0, 0.1, 5.4)]),
+        MarkKey(2.08, .smooth, [MarkDot(6.2, 0.1, 3.5), MarkDot(-8.2, 0, 3.9), MarkDot(4.6, 0.1, 5.2)]),
+        MarkKey(2.13, .smooth, [MarkDot(6.0, 0, 3.5), MarkDot(-8.3, 0, 4.0), MarkDot(4.8, 0, 5.3)]),
+        MarkKey(2.17, .inOut, [MarkDot(1.9, 0.1, 2.8), MarkDot(-8.3, 0, 4.1), MarkDot(7.1, 0, 4.8)]),
+        MarkKey(2.24, .inOut, [MarkDot(0.7, 0.1, 2.9), MarkDot(-8.2, 0, 4.4), MarkDot(8.0, 0, 4.6)]),
+        MarkKey(2.30, .linear, [MarkDot(0.7, 0.1, 2.9), MarkDot(-8.2, 0, 4.4), MarkDot(8.0, 0, 4.6)]),
+        // The gather: all three slide in, fuse at 6.7 pt and shrink away.
+        MarkKey(2.41, .inOut, [MarkDot(-1.5, 0.8, 2.8), MarkDot(-5.8, -0.8, 4.3), MarkDot(7.4, -0.2, 3.8)]),
+        MarkKey(2.45, .smooth, [MarkDot(-3.4, -0.6, 4.4), MarkDot(-4.4, -0.6, 4.4), MarkDot(6.8, -0.2, 3.5)]),
+        MarkKey(2.59, .smooth, [MarkDot(-0.9, -0.6, 4.4), MarkDot(-1.3, -0.6, 4.4), MarkDot(3.1, 0.4, 3.5)]),
+        MarkKey(2.62, .inOut, [MarkDot(0.2, -0.1, 6.7)]),
+        MarkKey(2.78, .linear, []),
+        MarkKey(2.83, .linear, [MarkDot(0, 0, 2.6)]),
+        MarkKey(2.90, .linear, [MarkDot(0, 0, 2.6)]),
+        // Phrase 2, breathe: the dot grows, then fans into the row.
+        MarkKey(3.06, .inOut, [MarkDot(0, 0, 5.3)]),
+        MarkKey(3.32, .out, row),
+        MarkKey(3.39, .linear, row),
+        // Dots 1 and 2 meet, dot 3 comes in, all three fuse (6.4 pt) and split.
+        MarkKey(3.60, .inOut, [MarkDot(-3.9, 0, 4.6), MarkDot(-3.2, 0, 4.6), MarkDot(6.1, 0, 4.1)]),
+        MarkKey(3.67, .smooth, [MarkDot(-2.0, 0, 4.8), MarkDot(-1.2, 0, 4.8), MarkDot(4.7, 0, 3.6)]),
+        MarkKey(3.70, .inOut, [MarkDot(0.1, 0, 6.4)]),
+        MarkKey(3.74, .inOut, [MarkDot(-5.4, 0.1, 3.7), MarkDot(2.7, 0, 4.6), MarkDot(3.5, 0, 4.6)]),
+        MarkKey(3.77, .smooth, [MarkDot(-6.0, 0, 4.1), MarkDot(3.4, 0, 4.6), MarkDot(4.4, 0, 4.6)]),
+        MarkKey(3.84, .inOut, [MarkDot(-6.9, 0, 4.3), MarkDot(1.0, -0.1, 2.8), MarkDot(6.2, 0, 4.6)]),
+        MarkKey(3.94, .out, row),
+        MarkKey(4.05, .linear, row),
+        // All three slide to the centre, fuse and shrink; the dot that is left
+        // grows and fans out again, which is the next loop's first 0.30 s.
+        MarkKey(4.29, .inOut, [MarkDot(-4.4, 0, 4.0), MarkDot(0.1, 0, 3), MarkDot(4.6, 0, 4.2)]),
+        MarkKey(4.37, .inOut, [MarkDot(0.1, 0, 4.7)]),
+        MarkKey(4.54, .linear, [MarkDot(0, 0, 1.2)]),
+        MarkKey(4.58, .linear, [MarkDot(0, 0, 3.2)]),
+        MarkKey(4.62, .linear, [MarkDot(0, 0, 4.8)]),
     ])
 
     /// 4.3 burst in: one dot, a tight 2 x 2 cluster, then the square.
@@ -227,25 +274,40 @@ public struct AgentMarkSequencer: Equatable, Sendable {
         }
     }
 
-    /// The phase changed at `now`.
-    public mutating func set(_ next: AgentMarkPhase, at now: Double) {
-        guard next != phase else { return }
+    /// The phase changed at `now`. `restart` re-triggers the collapse and
+    /// burst when a command step is followed by another command step: the
+    /// phase stays `.command`, but consecutive steps must not read as one
+    /// long loop (spec 4.3).
+    public mutating func set(_ next: AgentMarkPhase, at now: Double, restart: Bool = false) {
+        guard next != phase || (restart && next == .command) else { return }
         let showing = dots(at: now)
+        let previous = phase
         phase = next
         stageStart = now
         switch next {
-        case .done: stage = .done(from: showing)
-        case .thinking, .command: stage = .collapse(from: showing, to: next)
+        case .done:
+            stage = .done(from: showing)
+        case .thinking, .command:
+            if previous == .done {
+                // A new turn on the same mark: arrive afresh.
+                stage = next == .thinking ? .arrival : .burst
+            } else if showing.isEmpty {
+                // Nothing on screen (a gap, or a figure that has just gone):
+                // there is nothing to fold, so go straight into the entry.
+                stage = next == .command ? .burst : .fan
+            } else {
+                stage = .collapse(from: showing, to: next)
+            }
         }
     }
 
     public func dots(at now: Double) -> [MarkDot] {
-        let t = now - stageStart
-        guard t.isFinite, t >= 0 else { return [] }
+        let t = max(0, now - stageStart)
+        guard t.isFinite else { return [] }
         switch stage {
         case .arrival:
             if t < AgentMarkFrames.arrivalDuration { return AgentMarkFrames.arrival(at: t) }
-            return AgentMarkFrames.thinkingLoop(at: t - AgentMarkFrames.arrivalDuration)
+            return Self.loop(after: t - AgentMarkFrames.arrivalDuration)
         case .fan:
             return Self.fan(t)
         case .burst:
@@ -271,7 +333,12 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     private static func fan(_ s: Double) -> [MarkDot] {
         let at = AgentMarkFrames.fanEntry + s
         if at < AgentMarkFrames.arrivalDuration { return AgentMarkFrames.arrival(at: at) }
-        return AgentMarkFrames.thinkingLoop(at: at - AgentMarkFrames.arrivalDuration)
+        return loop(after: at - AgentMarkFrames.arrivalDuration)
+    }
+
+    /// The three-dot loop, joined after the arrival's own fan: it starts at its row.
+    private static func loop(after s: Double) -> [MarkDot] {
+        AgentMarkFrames.thinkingLoop(at: AgentMarkFrames.thinkingFanEnd + s)
     }
 }
 
