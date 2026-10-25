@@ -1,0 +1,684 @@
+import { randomUUID } from "node:crypto";
+import type { AgentSession, AgentSessionEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { descriptionTooLong, CONTEXT_TOO_LARGE_TEXT, DESCRIPTION_TOO_LONG_TEXT } from "../../shared/admission.ts";
+import { readProviderStore, selectionAvailability } from "../../shared/providers.ts";
+import { botSelection } from "../../shared/session-selection.ts";
+import { peekShell } from "../../shared/shell-io.ts";
+import type { ShellBot } from "../../shared/shell-store.ts";
+import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
+import { forgetRouterError, lastRouterError } from "../lib/router-fetch.ts";
+import { routerIds } from "../lib/router-identity.ts";
+import { buildSnapshot } from "../lib/turn-snapshot.ts";
+import { clip, PREVIEW_MAX, TITLE_MAX } from "./chats.ts";
+import { measureEnvelope, systemPromptFor, turnContextText } from "./context.ts";
+import type { TurnBody } from "./deps.ts";
+import { type ChatRuntime, type EngineHost, type QueuedTurn, type RunningTurn, type TurnResult, type TurnSpec } from "./pi-host.ts";
+import { factsFor, turnBindings } from "./provider.ts";
+import {
+  EngineError,
+  UB,
+  type Activity,
+  type Attachment,
+  type AttachmentsData,
+  type FailureData,
+  type QueuedDropData,
+  type QueuedData,
+  type TurnEndData,
+  type TurnOrigin,
+  type TurnStartData,
+} from "./protocol.ts";
+import { toolDetail } from "./tool-labels.ts";
+
+/**
+ * Turns (SPEC 5.5): admission, the host queue, the running turn, cancel,
+ * retry and the settle that closes a turn. One `session.prompt()` is exactly
+ * one turn because the host never uses Pi's follow-up queue.
+ */
+
+export type SubmitResult = { turnId: string; queued: boolean; done: Promise<TurnResult> };
+
+type Prepared = {
+  bot: ShellBot;
+  snapshot: ReturnType<typeof buildSnapshot>;
+  systemPrompt: string;
+  contextText: string;
+};
+
+type Deferred = { done: Promise<TurnResult>; finish: (result: TurnResult) => void };
+
+function deferred(): Deferred {
+  let finish!: (result: TurnResult) => void;
+  const done = new Promise<TurnResult>((resolve) => { finish = resolve; });
+  return { done, finish };
+}
+
+const DATA_URL = /^data:([^;,]+);base64,(.*)$/s;
+
+/** The prompt text and image parts for a request body (SPEC 5.5.4). */
+export function specFromBody(body: TurnBody): TurnSpec {
+  const attachments: Attachment[] = [];
+  const images: TurnSpec["images"] = [];
+  const parts = [body.text.trim()];
+  for (const item of body.attachments) {
+    attachments.push({ name: item.name, mediaType: item.mediaType, size: item.size });
+    if (item.dataUrl) {
+      const match = DATA_URL.exec(item.dataUrl);
+      if (!match) throw new EngineError(400, "attachment_invalid");
+      images.push({ type: "image", mimeType: match[1], data: match[2] });
+      parts.push(`Attached image: ${item.name.replace(/[\r\n\t]+/g, " ").slice(0, 120)}`);
+    } else if (item.text !== undefined) {
+      parts.push(`Attached file: ${item.name.replace(/[\r\n\t]+/g, " ").slice(0, 120)}\n${wrapUntrusted(item.name, item.text)}`);
+    } else {
+      parts.push(`Attached file: ${item.name.replace(/[\r\n\t]+/g, " ").slice(0, 120)} (${item.size} bytes). Contents are not readable as text.`);
+    }
+  }
+  return { text: body.text, promptText: parts.filter((part) => part !== "").join("\n\n"), images, attachments };
+}
+
+function textOfBlocks(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return (content as { type?: string; text?: string }[])
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string)
+    .join("");
+}
+
+type RetryTarget = {
+  turnId: string;
+  clientId: string;
+  userEntry: SessionEntry & { type: "message" };
+  attachments: AttachmentsData | null;
+  failure: FailureData;
+  failedAt: number;
+};
+
+/** The chat's newest turn, when it failed and nothing came after it (SPEC 5.5.9). */
+export function findRetryTarget(branch: readonly SessionEntry[]): RetryTarget | null {
+  let startAt = -1;
+  for (let at = branch.length - 1; at >= 0; at -= 1) {
+    const entry = branch[at];
+    if (entry.type === "custom" && entry.customType === UB.turnStart) {
+      startAt = at;
+      break;
+    }
+  }
+  if (startAt === -1) return null;
+  const start = (branch[startAt] as Extract<SessionEntry, { type: "custom" }>).data as TurnStartData;
+  if (start.origin !== "owner" || !start.clientId) return null;
+  let failure: RetryTarget["failure"] | null = null;
+  let failedAt = 0;
+  let attachments: AttachmentsData | null = null;
+  let userEntry: RetryTarget["userEntry"] | null = null;
+  for (let at = startAt + 1; at < branch.length; at += 1) {
+    const entry = branch[at];
+    if (entry.type === "custom" && entry.customType === UB.failure) {
+      const data = entry.data as FailureData;
+      if (data.turnId === start.turnId) {
+        failure = data;
+        failedAt = Date.parse(entry.timestamp);
+      }
+    } else if (entry.type === "custom" && entry.customType === UB.attachments) {
+      const data = entry.data as AttachmentsData;
+      if (data.turnId === start.turnId) attachments = data;
+    } else if (entry.type === "message" && userEntry === null && (entry.message as unknown as { role?: string }).role === "user") {
+      userEntry = entry;
+    }
+  }
+  if (!failure || !userEntry) return null;
+  return { turnId: start.turnId, clientId: start.clientId, userEntry, attachments, failure, failedAt };
+}
+
+export class TurnRunner {
+  private readonly host: EngineHost;
+
+  constructor(host: EngineHost) {
+    this.host = host;
+    host.onSessionEvent = (chat, event) => this.onEvent(chat, event);
+  }
+
+  // --- admission --------------------------------------------------------------
+
+  /**
+   * Everything that can refuse a send before Pi sees it (SPEC 5.5.1). Throws a
+   * typed EngineError. `stampGrant` writes the chat's workspace grant first, so
+   * the snapshot shows what the tools will enforce: only a turn that is about
+   * to start stamps, never a send that will wait behind a running one.
+   */
+  prepare(chat: ChatRuntime, spec: TurnSpec, options: { stampGrant: boolean }): Prepared {
+    const store = readProviderStore();
+    const shell = peekShell();
+    if (!shell) throw new EngineError(503, "shell_unreadable");
+    const bot = shell.bots.find((item) => item.id === chat.botId);
+    if (!bot) throw new EngineError(409, "bot_missing");
+    const selection = botSelection(bot, store);
+    const available = selectionAvailability(store, selection);
+    if (!available.available) {
+      if (available.reason === "route_retired") throw new EngineError(409, "provider_route_retired", { message: available.message });
+      throw new EngineError(409, "model_selection_unavailable", {
+        message: "This bot's model or its connection is no longer available. Pick a model for it again.",
+      });
+    }
+    const facts = factsFor(selection);
+    if (spec.images.length > 0 && facts.vision === false) throw new EngineError(400, "model_no_vision");
+    if (descriptionTooLong(bot)) throw new EngineError(409, "description_too_long", { message: DESCRIPTION_TOO_LONG_TEXT });
+    if (options.stampGrant) {
+      upsertSessionGrant({ sessionId: chat.chatId, path: bot.workspace?.path ?? null, permission: bot.permission, selection });
+    }
+    const firstChat = !this.host.index.all().some((meta) => meta.botId === bot.id && meta.lastTurn !== null);
+    const snapshot = buildSnapshot(bot.id, chat.chatId, undefined, { firstChat });
+    const systemPrompt = systemPromptFor(snapshot.context.bot, this.host.deps.listSkills());
+    const contextText = turnContextText(snapshot.context.turn, this.host.deps.notesBlockFor(bot.id));
+    const declarations = [...this.host.deps.allTools(), ...this.host.deps.pickedTools(chat.chatId)]
+      .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
+    const envelope = measureEnvelope({ systemPrompt, contextMessage: contextText, toolDeclarations: declarations, windowTokens: facts.windowTokens });
+    if (envelope.tokens > envelope.windowTokens) throw new EngineError(409, "context_too_large", { message: CONTEXT_TOO_LARGE_TEXT });
+    return { bot, snapshot, systemPrompt, contextText };
+  }
+
+  // --- submitting -------------------------------------------------------------
+
+  /** An owner message: refused, queued behind a running turn, or started. */
+  submitOwner(chatId: string, body: TurnBody): SubmitResult {
+    const chat = this.host.chat(chatId);
+    chat.ensureLive();
+    if (body.retry) return this.retry(chat, body);
+    const existing = this.existing(chat, body.clientId);
+    if (existing) return existing;
+    const spec = specFromBody(body);
+    this.prepare(chat, spec, { stampGrant: false });
+    return this.accept(chat, { origin: "owner", clientId: body.clientId, spec, persisted: true });
+  }
+
+  /** A routine run or a system turn. Same admission; the prompt is not an owner bubble. */
+  submitInternal(chatId: string, origin: Exclude<TurnOrigin, "owner">, clientId: string, text: string): SubmitResult {
+    const chat = this.host.chat(chatId);
+    chat.ensureLive();
+    const existing = this.existing(chat, clientId);
+    if (existing) return existing;
+    const spec: TurnSpec = { text, promptText: text, images: [], attachments: [] };
+    this.prepare(chat, spec, { stampGrant: false });
+    return this.accept(chat, { origin, clientId, spec, persisted: false });
+  }
+
+  /** The original answer for a clientId this chat already knows (SPEC 5.5.1). */
+  private existing(chat: ChatRuntime, clientId: string): SubmitResult | null {
+    if (chat.turn?.clientId === clientId) return { turnId: chat.turn.turnId, queued: false, done: chat.turn.done };
+    const waiting = chat.queue.find((item) => item.clientId === clientId);
+    if (waiting) return { turnId: waiting.turnId, queued: true, done: waiting.done };
+    const known = chat.live?.rows.clients.get(clientId);
+    if (known) {
+      return {
+        turnId: known.turnId,
+        queued: known.queued,
+        done: Promise.resolve({ turnId: known.turnId, outcome: "completed" }),
+      };
+    }
+    return null;
+  }
+
+  private accept(chat: ChatRuntime, input: { origin: TurnOrigin; clientId: string; spec: TurnSpec; persisted: boolean }): SubmitResult {
+    const turnId = randomUUID();
+    if (chat.turn) return this.enqueue(chat, { turnId, ...input, ...deferred() });
+    return this.start(chat, { turnId, ...input, ...deferred() });
+  }
+
+  private enqueue(chat: ChatRuntime, queued: QueuedTurn): SubmitResult {
+    chat.queue.push(queued);
+    if (queued.persisted) {
+      const data: QueuedData = { turnId: queued.turnId, clientId: queued.clientId, text: queued.spec.text, attachments: queued.spec.attachments };
+      chat.appendCustom(UB.queued, data);
+      this.host.ledger.messageQueued({ chatId: chat.chatId, turnId: queued.turnId, clientId: queued.clientId });
+      chat.bus.emit({ type: "message.queued", clientId: queued.clientId, text: queued.spec.text }, chat.turn?.turnId);
+    }
+    return { turnId: queued.turnId, queued: true, done: queued.done };
+  }
+
+  private start(chat: ChatRuntime, input: QueuedTurn, retryTarget?: RetryTarget): SubmitResult {
+    const prepared = this.prepare(chat, input.spec, { stampGrant: true });
+    const turn: RunningTurn = {
+      turnId: input.turnId,
+      origin: input.origin,
+      clientId: input.clientId,
+      retry: retryTarget !== undefined,
+      spec: input.spec,
+      snapshot: { ...prepared.snapshot, turnId: input.turnId },
+      contextText: prepared.contextText,
+      systemPrompt: prepared.systemPrompt,
+      abort: new AbortController(),
+      cancelRequested: false,
+      abortReason: null,
+      startedAt: Date.now(),
+      partialText: "",
+      streamRowId: null,
+      activity: null,
+      assistantCount: 0,
+      lastEventAt: Date.now(),
+      thinkingEmittedAt: 0,
+      lastAssistant: null,
+      userEmitted: false,
+      done: input.done,
+      finish: input.finish,
+    };
+    chat.turn = turn;
+    chat.touch();
+    void this.run(chat, turn, retryTarget).catch((error) => {
+      console.error(JSON.stringify({ event: "turn_crashed", chatId: chat.chatId, turnId: turn.turnId, error: error instanceof Error ? error.message : String(error) }));
+    });
+    return { turnId: turn.turnId, queued: false, done: turn.done };
+  }
+
+  // --- the run ------------------------------------------------------------------
+
+  private async run(chat: ChatRuntime, turn: RunningTurn, retryTarget?: RetryTarget): Promise<void> {
+    let runError: unknown = null;
+    let runStarted = false;
+    try {
+      this.host.ledger.turnStarted({ chatId: chat.chatId, turnId: turn.turnId, startedAt: new Date().toISOString() });
+      if (turn.clientId) this.host.ledger.messageDequeued(chat.chatId, turn.clientId);
+      const session = await chat.ensureSession(turn);
+      if (retryTarget) {
+        // The failed attempt stays in the file on an abandoned branch (SPEC 5.5.9).
+        const moved = await session.navigateTree(retryTarget.userEntry.id, { summarize: false });
+        if (moved.cancelled) throw new EngineError(409, "retry_not_available");
+        chat.syncRows();
+      }
+      const startData: TurnStartData = {
+        turnId: turn.turnId,
+        origin: turn.origin,
+        ...(turn.clientId ? { clientId: turn.clientId } : {}),
+        ...(retryTarget ? { retry: true as const } : {}),
+      };
+      chat.appendCustom(UB.turnStart, startData);
+      if (turn.origin === "owner" && (turn.spec.attachments.length > 0 || retryTarget)) {
+        const attached: AttachmentsData = { turnId: turn.turnId, items: turn.spec.attachments, text: turn.spec.text };
+        if (turn.spec.attachments.length > 0) chat.appendCustom(UB.attachments, attached);
+      }
+      this.titleFrom(chat, turn);
+      const question = chat.openQuestion;
+      if (question && turn.origin === "owner") {
+        chat.openQuestion = null;
+        chat.bus.emit({ type: "input.resolved", requestId: question.requestId }, turn.turnId);
+      }
+      chat.bus.emit({
+        type: "turn.started",
+        origin: turn.origin,
+        ...(turn.clientId && turn.origin === "owner" ? { clientId: turn.clientId } : {}),
+        ...(retryTarget ? { retry: true } : {}),
+      }, turn.turnId);
+      if (turn.cancelRequested) return;
+      const binding = { chatId: chat.chatId, turnId: turn.turnId, selection: turn.snapshot.selection };
+      await turnBindings.run(binding, async () => {
+        runStarted = true;
+        await session.prompt(turn.spec.promptText, { images: turn.spec.images, expandPromptTemplates: false });
+        await session.waitForIdle();
+      });
+    } catch (error) {
+      runError = { error, runStarted };
+    } finally {
+      await this.settle(chat, turn, runError as { error: unknown; runStarted: boolean } | null);
+    }
+  }
+
+  private titleFrom(chat: ChatRuntime, turn: RunningTurn): void {
+    const meta = chat.meta;
+    if (turn.origin !== "owner" || meta.titleSetByOwner || meta.routineId !== null) return;
+    if (meta.title !== "New chat") return;
+    const title = clip(turn.spec.text, TITLE_MAX);
+    if (title !== "") this.host.index.update(chat.chatId, { title }, { touch: false });
+  }
+
+  // --- settle -------------------------------------------------------------------
+
+  private async settle(chat: ChatRuntime, turn: RunningTurn, thrown: { error: unknown; runStarted: boolean } | null): Promise<void> {
+    const ids = routerIds(chat.chatId, turn.turnId);
+    let result: TurnResult;
+    let failure: FailureData | null = null;
+    const last = turn.lastAssistant;
+    if (turn.cancelRequested) {
+      result = { turnId: turn.turnId, outcome: "cancelled" };
+    } else if (turn.abortReason === "budget" || turn.abortReason === "idle") {
+      const detail = turn.abortReason === "budget" ? "This run took longer than an hour and was stopped." : "This run stopped answering for ten minutes and was stopped.";
+      failure = { turnId: turn.turnId, code: "routine_timeout", detail };
+      result = { turnId: turn.turnId, outcome: "failed", failure: { code: failure.code, detail } };
+    } else if (thrown || last?.stopReason === "error" || last?.stopReason === "aborted") {
+      const record = lastRouterError(ids.turnId);
+      const piMessage = thrown
+        ? (thrown.error instanceof Error ? thrown.error.message : String(thrown.error))
+        : last?.errorMessage ?? "The turn failed.";
+      const code = thrown && thrown.error instanceof EngineError
+        ? thrown.error.code
+        : record?.code ?? (thrown && !thrown.runStarted ? "refused" : "engine_error");
+      const detail = clip(record?.message ?? piMessage, 500) || "The turn failed.";
+      failure = {
+        turnId: turn.turnId,
+        code,
+        detail,
+        ...(record?.retryAfterMs != null ? { retryAfterMs: record.retryAfterMs } : {}),
+        ...(record?.resetsAt != null ? { resetsAt: record.resetsAt } : {}),
+      };
+      result = { turnId: turn.turnId, outcome: "failed", failure: { code, detail } };
+    } else {
+      result = { turnId: turn.turnId, outcome: "completed" };
+    }
+    forgetRouterError(ids.turnId);
+
+    try {
+      chat.syncRows();
+      if (failure) chat.appendCustom(UB.failure, failure);
+      const outcome: TurnEndData["outcome"] = result.outcome === "failed" && thrown && !thrown.runStarted ? "refused" : result.outcome;
+      chat.appendCustom(UB.turnEnd, { turnId: turn.turnId, outcome } satisfies TurnEndData);
+    } catch (error) {
+      console.error(JSON.stringify({ event: "settle_write_failed", chatId: chat.chatId, turnId: turn.turnId, error: error instanceof Error ? error.message : String(error) }));
+    }
+    this.host.ledger.turnEnded(chat.chatId, turn.turnId);
+    chat.turn = null;
+    chat.touch();
+    this.recordLastTurn(chat, turn.turnId, result.outcome);
+    this.updateShellPreview(chat);
+    if (result.outcome !== "cancelled" && this.host.openChatId !== chat.chatId) {
+      chat.replyReadySince = this.host.now().toISOString();
+    }
+    if (result.outcome === "completed") chat.bus.emit({ type: "turn.completed" }, turn.turnId);
+    else if (result.outcome === "cancelled") chat.bus.emit({ type: "turn.cancelled" }, turn.turnId);
+    else if (failure) {
+      chat.bus.emit({
+        type: "turn.failed",
+        code: failure.code,
+        detail: failure.detail,
+        ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
+        ...(failure.resetsAt !== undefined ? { resetsAt: failure.resetsAt } : {}),
+        messageKept: true,
+        rowId: `${turn.turnId}:f`,
+      }, turn.turnId);
+    }
+    turn.finish(result);
+    this.host.sweep();
+    this.startNext(chat);
+  }
+
+  private recordLastTurn(chat: ChatRuntime, turnId: string, outcome: "completed" | "cancelled" | "failed"): void {
+    this.host.index.update(chat.chatId, { lastTurn: { turnId, outcome, endedAt: this.host.now().toISOString() } });
+  }
+
+  /** Keeps the bot's preview line fresh when the chat is its current one (SPEC 5.4). */
+  private updateShellPreview(chat: ChatRuntime): void {
+    const meta = chat.meta;
+    try {
+      if (this.host.deps.currentChat(meta.botId) !== chat.chatId) return;
+      this.host.deps.setCurrentChat(meta.botId, chat.chatId, meta.preview);
+    } catch (error) {
+      console.error(JSON.stringify({ event: "shell_preview_failed", chatId: chat.chatId, error: error instanceof Error ? error.message : String(error) }));
+    }
+  }
+
+  /** Starts the next queued message, in order, once the running turn has settled. */
+  private startNext(chat: ChatRuntime): void {
+    if (chat.turn) return;
+    const next = chat.queue.shift();
+    if (!next) return;
+    try {
+      this.start(chat, next);
+    } catch (error) {
+      // A message that waited and can no longer run (its model went away, say)
+      // comes back as an unsent bubble with Send again.
+      const message = error instanceof EngineError && typeof error.fields.message === "string" ? error.fields.message : error instanceof Error ? error.message : String(error);
+      this.dropQueued(chat, next, "cancelled", { code: error instanceof EngineError ? error.code : "refused", detail: message });
+      this.startNext(chat);
+    }
+  }
+
+  // --- cancel and retry -----------------------------------------------------------
+
+  /** Stop: drop the queue, expire the cards, abort. The `turn.cancelled` event comes on settle. */
+  cancel(chatId: string): void {
+    const chat = this.host.chat(chatId);
+    for (const queued of chat.queue.splice(0)) this.dropQueued(chat, queued, "cancelled");
+    const turn = chat.turn;
+    if (!turn) return;
+    turn.cancelRequested = true;
+    turn.abortReason = "cancelled";
+    // Cards first: a pending card must not hold the cancel.
+    this.host.approvals.expireSession(chatId);
+    turn.abort.abort();
+    const session = chat.live?.session;
+    if (session) {
+      void session.abort().catch((error: unknown) => {
+        console.error(JSON.stringify({ event: "abort_failed", chatId, error: error instanceof Error ? error.message : String(error) }));
+      });
+    }
+  }
+
+  private dropQueued(chat: ChatRuntime, queued: QueuedTurn, reason: QueuedDropData["reason"], failure?: { code: string; detail: string }): void {
+    if (queued.persisted) {
+      const data: QueuedDropData = { turnId: queued.turnId, clientId: queued.clientId, reason };
+      chat.appendCustom(UB.queuedDrop, data);
+      this.host.ledger.messageDequeued(chat.chatId, queued.clientId);
+      chat.bus.emit({ type: "message.dropped", clientId: queued.clientId });
+    }
+    queued.finish(failure ? { turnId: queued.turnId, outcome: "failed", failure } : { turnId: queued.turnId, outcome: "cancelled" });
+  }
+
+  /** Stops a routine run that overran its budget (SPEC 5.11). */
+  abortTurn(chat: ChatRuntime, reason: "budget" | "idle"): void {
+    const turn = chat.turn;
+    if (!turn || turn.abortReason) return;
+    turn.abortReason = reason;
+    this.host.approvals.expireSession(chat.chatId);
+    turn.abort.abort();
+    void chat.live?.session?.abort().catch(() => undefined);
+  }
+
+  private retry(chat: ChatRuntime, body: TurnBody): SubmitResult {
+    if (chat.turn || chat.queue.length > 0) throw new EngineError(409, "chat_busy");
+    const live = chat.ensureLive();
+    const target = findRetryTarget(live.sm.getBranch());
+    if (!target || target.clientId !== body.clientId) throw new EngineError(409, "retry_not_available");
+    const remaining = (target.failure.retryAfterMs ?? 0) - (this.host.now().getTime() - target.failedAt);
+    if (remaining > 0) throw new EngineError(429, "retry_too_soon", { retryAfterMs: Math.ceil(remaining) });
+    // The exact message again: text and images as the model saw them, the owner text as the row shows it.
+    const content = (target.userEntry.message as unknown as { content: unknown }).content;
+    const images = Array.isArray(content)
+      ? (content as { type?: string; data?: string; mimeType?: string }[])
+        .filter((block) => block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string")
+        .map((block) => ({ type: "image" as const, data: block.data as string, mimeType: block.mimeType as string }))
+      : [];
+    const spec: TurnSpec = {
+      text: target.attachments ? target.attachments.text : textOfBlocks(content),
+      promptText: textOfBlocks(content),
+      images,
+      attachments: target.attachments ? target.attachments.items : [],
+    };
+    this.prepare(chat, spec, { stampGrant: false });
+    return this.start(chat, { turnId: randomUUID(), origin: "owner", clientId: target.clientId, spec, persisted: false, ...deferred() }, target);
+  }
+
+  // --- Pi events -------------------------------------------------------------------
+
+  private onEvent(chat: ChatRuntime, event: AgentSessionEvent): void {
+    const turn = chat.turn;
+    if (!turn) return;
+    turn.lastEventAt = Date.now();
+    switch (event.type) {
+      case "turn_start":
+        this.activity(chat, turn, { kind: "thinking" }, true);
+        return;
+      case "message_start": {
+        const message = event.message as unknown as { role?: string };
+        if (message.role === "user" && turn.origin === "owner" && !turn.userEmitted) {
+          turn.userEmitted = true;
+          chat.bus.emit({
+            type: "message.user",
+            rowId: `${turn.turnId}:u`,
+            ...(turn.clientId ? { clientId: turn.clientId } : {}),
+            text: turn.spec.text,
+            attachments: turn.spec.attachments,
+          }, turn.turnId);
+        }
+        return;
+      }
+      case "message_update": {
+        const inner = event.assistantMessageEvent as { type?: string; delta?: string };
+        if (inner.type === "text_delta" && typeof inner.delta === "string" && inner.delta !== "") {
+          if (!turn.streamRowId) turn.streamRowId = `${turn.turnId}:a${turn.assistantCount}`;
+          turn.partialText += inner.delta;
+          chat.bus.emit({ type: "message.delta", rowId: turn.streamRowId, delta: inner.delta }, turn.turnId);
+        } else if (inner.type === "thinking_delta") {
+          this.activity(chat, turn, { kind: "thinking" }, true);
+        }
+        return;
+      }
+      case "message_end": {
+        const message = event.message as unknown as { role?: string; content?: unknown; stopReason?: string; errorMessage?: string };
+        if (message.role === "assistant") {
+          turn.lastAssistant = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+          const text = textOfBlocks(message.content);
+          if (text.trim() !== "") {
+            const rowId = turn.streamRowId ?? `${turn.turnId}:a${turn.assistantCount}`;
+            chat.bus.emit({ type: "message.final", rowId, text }, turn.turnId);
+            turn.assistantCount += 1;
+            this.host.index.update(chat.chatId, { preview: clip(text, PREVIEW_MAX) });
+          }
+          turn.streamRowId = null;
+          turn.partialText = "";
+        }
+        chat.syncRows();
+        return;
+      }
+      case "tool_execution_start": {
+        const widget = this.host.deps.widgetForCall(event.toolName, (event.args ?? {}) as Record<string, unknown>);
+        this.activity(chat, turn, { kind: "tool", tool: event.toolName, detail: toolDetail(event.toolName) }, false);
+        chat.bus.emit({ type: "tool.call", callId: event.toolCallId, name: event.toolName, ...(widget ? { widget } : {}) }, turn.turnId);
+        return;
+      }
+      case "tool_execution_end": {
+        this.toolEnded(chat, turn, event);
+        return;
+      }
+      case "compaction_start":
+        this.activity(chat, turn, { kind: "compacting", detail: "Compacting the conversation" }, false);
+        return;
+      case "compaction_end": {
+        const changes = chat.syncRows();
+        const note = changes.find((change) => change.row.kind === "note" && change.row.rowId.startsWith("compaction:"));
+        if (note) chat.bus.emit({ type: "compaction.done", rowId: note.row.rowId }, turn.turnId);
+        return;
+      }
+      case "auto_retry_start":
+        this.activity(chat, turn, { kind: "retrying", detail: "Retrying" }, false);
+        return;
+      default:
+        return;
+    }
+  }
+
+  private activity(chat: ChatRuntime, turn: RunningTurn, activity: Activity, quiet: boolean): void {
+    turn.activity = activity;
+    if (quiet && Date.now() - turn.thinkingEmittedAt < 500 && turn.thinkingEmittedAt !== 0) return;
+    if (activity.kind === "thinking") turn.thinkingEmittedAt = Date.now();
+    chat.bus.emit({ type: "activity", ...activity }, turn.turnId);
+  }
+
+  private toolEnded(chat: ChatRuntime, turn: RunningTurn, event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>): void {
+    const details = (event.result as { details?: unknown } | undefined)?.details as Record<string, unknown> | undefined;
+    const searchResults = Array.isArray(details?.searchResults) ? details?.searchResults : undefined;
+    chat.syncRows();
+    chat.bus.emit({
+      type: "tool.result",
+      callId: event.toolCallId,
+      name: event.toolName,
+      isError: event.isError === true,
+      ...(searchResults ? { searchResults } : {}),
+    }, turn.turnId);
+    if (event.toolName === "find_tools") chat.registerPicked();
+    const question = details?.question as { requestId?: string; prompt?: string; options?: unknown; allowFreeform?: boolean } | undefined;
+    if (event.toolName === "ask" && !event.isError && question && typeof question.requestId === "string" && typeof question.prompt === "string") {
+      const data = {
+        turnId: turn.turnId,
+        requestId: question.requestId,
+        prompt: question.prompt,
+        options: Array.isArray(question.options) ? question.options : [],
+        allowFreeform: question.allowFreeform === true,
+      };
+      chat.appendCustom(UB.question, data);
+      chat.openQuestion = { requestId: data.requestId, prompt: data.prompt, options: data.options as never, allowFreeform: data.allowFreeform };
+      chat.bus.emit({ type: "input.requested", requestId: data.requestId, kind: "question", prompt: data.prompt, options: data.options, allowFreeform: data.allowFreeform }, turn.turnId);
+    }
+  }
+
+  // --- boot --------------------------------------------------------------------------
+
+  /**
+   * Closes what the previous process left (SPEC 5.5.10): a turn that was cut
+   * off gets an `interrupted` failure and, when it died in a tool, the tool
+   * results the model's next request needs; a message that was waiting behind
+   * it becomes an unsent row. Nothing here throws on one bad chat.
+   */
+  recoverInterrupted(): void {
+    const left = this.host.ledger.leftovers();
+    for (const record of left.turns) {
+      try {
+        if (!this.host.index.get(record.chatId)) continue;
+        const chat = this.host.chat(record.chatId);
+        const live = chat.ensureLive();
+        this.repairDanglingToolCalls(live.sm);
+        chat.appendCustom(UB.failure, { turnId: record.turnId, code: "interrupted", detail: "The app stopped while this was running." } satisfies FailureData);
+        chat.appendCustom(UB.turnEnd, { turnId: record.turnId, outcome: "interrupted" } satisfies TurnEndData);
+        this.recordLastTurn(chat, record.turnId, "failed");
+        removeSessionGrant(record.chatId);
+      } catch (error) {
+        console.error(JSON.stringify({ event: "recover_failed", chatId: record.chatId, turnId: record.turnId, error: error instanceof Error ? error.message : String(error) }));
+      }
+    }
+    for (const record of left.queued) {
+      try {
+        if (!this.host.index.get(record.chatId)) continue;
+        const chat = this.host.chat(record.chatId);
+        chat.appendCustom(UB.queuedDrop, { turnId: record.turnId, clientId: record.clientId, reason: "interrupted" } satisfies QueuedDropData);
+      } catch (error) {
+        console.error(JSON.stringify({ event: "recover_failed", chatId: record.chatId, clientId: record.clientId, error: error instanceof Error ? error.message : String(error) }));
+      }
+    }
+    this.host.ledger.clear();
+    for (const chat of this.host.runtimes()) chat.evict();
+  }
+
+  /** A tool call with no result would make the router refuse the next request. */
+  private repairDanglingToolCalls(sm: { getBranch(): SessionEntry[]; appendMessage(message: never): string }): void {
+    const branch = sm.getBranch();
+    let assistantAt = -1;
+    for (let at = branch.length - 1; at >= 0; at -= 1) {
+      const entry = branch[at];
+      if (entry.type === "message" && (entry.message as unknown as { role?: string }).role === "assistant") {
+        assistantAt = at;
+        break;
+      }
+    }
+    if (assistantAt === -1) return;
+    const assistant = (branch[assistantAt] as Extract<SessionEntry, { type: "message" }>).message as unknown as { content?: unknown };
+    if (!Array.isArray(assistant.content)) return;
+    const calls = (assistant.content as { type?: string; id?: string; name?: string }[]).filter((block) => block.type === "toolCall" && block.id);
+    if (calls.length === 0) return;
+    const answered = new Set<string>();
+    for (const entry of branch.slice(assistantAt + 1)) {
+      if (entry.type === "message") {
+        const message = entry.message as unknown as { role?: string; toolCallId?: string };
+        if (message.role === "toolResult" && message.toolCallId) answered.add(message.toolCallId);
+      }
+    }
+    for (const call of calls) {
+      if (answered.has(call.id as string)) continue;
+      sm.appendMessage({
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name ?? "tool",
+        content: [{ type: "text", text: "The app stopped before this finished. Check what happened before you continue." }],
+        isError: true,
+        timestamp: Date.now(),
+      } as never);
+    }
+  }
+}
+
+export type { AgentSession };

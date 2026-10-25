@@ -1,0 +1,338 @@
+import { botSelection } from "../../shared/session-selection.ts";
+import { readProviderStore } from "../../shared/providers.ts";
+import { peekShell } from "../../shared/shell-io.ts";
+import { removeSessionGrant } from "../../shared/workspace-store.ts";
+import type { RowInput } from "../lib/tool.ts";
+import { installEngineApi } from "./api.ts";
+import { clip, PREVIEW_MAX, type ChatMeta } from "./chats.ts";
+import { measureEnvelope, systemPromptFor, turnContextText } from "./context.ts";
+import type { Subscription } from "./events.ts";
+import { EngineHost, PI_VERSION_STRING, type HostOptions } from "./pi-host.ts";
+import { factsFor } from "./provider.ts";
+import { EngineError, type Activity, type EngineEvent, type Row } from "./protocol.ts";
+import { buildSnapshot } from "../lib/turn-snapshot.ts";
+import { RoutineScheduler, type RoutineOptions } from "./routines.ts";
+import { TurnRunner } from "./turns.ts";
+
+/**
+ * The engine: one host, the turn runner, the routine scheduler, and the
+ * operations the HTTP routes call (SPEC 6). http.ts only translates requests
+ * into these methods.
+ */
+
+export type EngineOptions = HostOptions & { routines?: RoutineOptions };
+
+export type ChatListItem = { chatId: string; title: string; preview: string; routineId: string | null; updatedAt: string };
+
+export type RowsPage = {
+  rows: Row[];
+  nextBefore: string | null;
+  tailSeq?: number;
+  epoch?: string;
+  running?: { turnId: string; partialText: string; activity: Activity } | null;
+  queued?: { clientId: string; text: string }[];
+  openQuestion?: { requestId: string; prompt: string; options: unknown[]; allowFreeform: boolean } | null;
+};
+
+export type StatusChat = {
+  chatId: string;
+  running: { turnId: string; activity: Activity } | null;
+  waitingOnOwner: "question" | "approval" | null;
+  replyReadySince: string | null;
+  lastTurn: { turnId: string; outcome: string; endedAt: string } | null;
+};
+
+const DAY_MS = 86_400_000;
+const SEARCH_BUDGET_MS = 2_000;
+
+export class Engine {
+  readonly host: EngineHost;
+  readonly turns: TurnRunner;
+  readonly routines: RoutineScheduler;
+
+  private constructor(host: EngineHost, options: EngineOptions) {
+    this.host = host;
+    this.turns = new TurnRunner(host);
+    this.routines = new RoutineScheduler(this, options.routines);
+  }
+
+  /**
+   * Boots (SPEC 5.1): stale approval cards expire, turns the last process
+   * left running are closed, old trash is purged, the routine timer starts.
+   */
+  static async boot(options: EngineOptions): Promise<Engine> {
+    const host = await EngineHost.create(options);
+    const engine = new Engine(host, options);
+    host.approvals.invalidateOnRestart();
+    host.index.purgeTrash();
+    engine.turns.recoverInterrupted();
+    installEngineApi({
+      appendRow: async (botId, chatId, row) => engine.fileRow(botId, chatId, row),
+      systemTurn: async (botId, key, text, note) => engine.systemTurn(botId, key, text, note),
+      runRoutine: async (routineId) => engine.routines.runNow(routineId),
+      botContext: async (botId) => engine.botContext(botId),
+    });
+    host.startSweeper();
+    engine.routines.start();
+    return engine;
+  }
+
+  get epoch(): string {
+    return this.host.epoch;
+  }
+
+  health(): { epoch: string; pi: string } {
+    return { epoch: this.host.epoch, pi: PI_VERSION_STRING };
+  }
+
+  async close(): Promise<void> {
+    this.routines.stop();
+    for (const chat of this.host.runtimes()) {
+      if (chat.turn) this.turns.cancel(chat.chatId);
+    }
+    // Give the aborted turns a moment to write their last entries.
+    const deadline = Date.now() + 5_000;
+    while (this.host.runtimes().some((chat) => chat.turn) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    await this.host.close();
+  }
+
+  // --- bots and the current chat -------------------------------------------------
+
+  private requireBot(botId: string) {
+    const bot = peekShell()?.bots.find((item) => item.id === botId);
+    if (!bot) throw new EngineError(404, "bot_not_found");
+    return bot;
+  }
+
+  private currentChatId(botId: string): string | null {
+    return this.host.deps.currentChat(botId);
+  }
+
+  private makeCurrent(botId: string, chatId: string | null, preview: string): void {
+    this.host.deps.setCurrentChat(botId, chatId, preview);
+  }
+
+  /** The chat a row or a system turn without a chat id belongs to: the bot's current one, else a fresh one. */
+  currentOrNewChat(botId: string): string {
+    this.requireBot(botId);
+    const current = this.currentChatId(botId);
+    if (current && this.host.index.get(current)) return current;
+    const meta = this.host.index.create({ botId });
+    this.makeCurrent(botId, meta.chatId, "");
+    return meta.chatId;
+  }
+
+  // --- chats -----------------------------------------------------------------------
+
+  listChats(query: { botId?: string; before?: string; limit?: number; includeFixtures?: boolean }): { current: string | null; chats: ChatListItem[]; nextBefore: string | null } {
+    const page = this.host.index.list(query);
+    return {
+      current: query.botId ? this.currentChatId(query.botId) : null,
+      chats: page.chats.map((meta) => ({ chatId: meta.chatId, title: meta.title, preview: meta.preview, routineId: meta.routineId, updatedAt: meta.updatedAt })),
+      nextBefore: page.nextBefore,
+    };
+  }
+
+  createChat(botId: string): { chatId: string } {
+    this.requireBot(botId);
+    const meta = this.host.index.create({ botId });
+    this.makeCurrent(botId, meta.chatId, "");
+    return { chatId: meta.chatId };
+  }
+
+  renameChat(chatId: string, title: string): void {
+    this.host.index.rename(chatId, title);
+  }
+
+  deleteChat(chatId: string): { current: string | null } {
+    const meta = this.host.index.require(chatId);
+    const chat = this.host.chat(chatId);
+    if (chat.turn || chat.queue.length > 0) throw new EngineError(409, "chat_busy");
+    this.host.approvals.expireSession(chatId);
+    removeSessionGrant(chatId);
+    this.host.forget(chatId);
+    this.host.index.remove(chatId);
+    if (meta.routineId) this.host.deps.setRoutineChat(meta.routineId, null);
+    if (this.host.openChatId === chatId) this.host.openChatId = null;
+    let current = this.currentChatId(meta.botId);
+    if (current === chatId) {
+      const next = this.host.index.newest(meta.botId);
+      current = next?.chatId ?? null;
+      this.makeCurrent(meta.botId, current, next?.preview ?? "");
+    }
+    return { current };
+  }
+
+  openChat(chatId: string): void {
+    const meta = this.host.index.require(chatId);
+    this.host.openChatId = chatId;
+    this.host.chat(chatId).replyReadySince = null;
+    if (this.currentChatId(meta.botId) !== chatId) this.makeCurrent(meta.botId, chatId, meta.preview);
+  }
+
+  /** Titles and previews first, then the text of each chat's rows, newest chats first, within a time budget. */
+  searchChats(query: string, limit = 50): { hits: { chatId: string; rowId: string | null; title: string; snippet: string; at: string }[] } {
+    const needle = query.trim().toLowerCase();
+    if (needle === "") return { hits: [] };
+    const cap = Math.min(Math.max(limit, 1), 200);
+    const hits: { chatId: string; rowId: string | null; title: string; snippet: string; at: string }[] = [];
+    const chats = this.host.index.all().filter((meta) => !meta.fixture).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    for (const meta of chats) {
+      if (hits.length >= cap) break;
+      if (meta.title.toLowerCase().includes(needle)) {
+        hits.push({ chatId: meta.chatId, rowId: null, title: meta.title, snippet: clip(meta.preview || meta.title, PREVIEW_MAX), at: meta.updatedAt });
+      } else if (meta.preview.toLowerCase().includes(needle)) {
+        hits.push({ chatId: meta.chatId, rowId: null, title: meta.title, snippet: clip(meta.preview, PREVIEW_MAX), at: meta.updatedAt });
+      }
+    }
+    const deadline = Date.now() + SEARCH_BUDGET_MS;
+    const seen = new Set(hits.map((hit) => hit.chatId));
+    for (const meta of chats) {
+      if (hits.length >= cap || Date.now() > deadline) break;
+      if (seen.has(meta.chatId)) continue;
+      try {
+        const chat = this.host.chat(meta.chatId);
+        const wasLive = chat.live !== null;
+        const live = chat.ensureLive();
+        let row: Row | undefined;
+        for (let at = live.rows.rows.length - 1; at >= 0 && !row; at -= 1) {
+          const candidate = live.rows.rows[at];
+          if ((candidate.kind === "user" || candidate.kind === "assistant") && candidate.text.toLowerCase().includes(needle)) row = candidate;
+        }
+        if (row && (row.kind === "user" || row.kind === "assistant")) {
+          const at = row.text.toLowerCase().indexOf(needle);
+          const start = Math.max(0, at - 40);
+          hits.push({ chatId: meta.chatId, rowId: row.rowId, title: meta.title, snippet: clip(row.text.slice(start, start + PREVIEW_MAX), PREVIEW_MAX), at: row.at });
+        }
+        if (!wasLive && !chat.turn) chat.evict();
+      } catch {
+        // A chat that cannot be read has nothing to search; it shows as unreadable when opened.
+      }
+    }
+    return { hits };
+  }
+
+  // --- rows and events ---------------------------------------------------------------
+
+  rows(chatId: string, query: { before?: string; limit?: number }): RowsPage {
+    const chat = this.host.chat(chatId);
+    const limit = Math.min(Math.max(query.limit ?? 60, 1), 200);
+    let all: Row[];
+    try {
+      all = chat.ensureLive().rows.rows;
+    } catch (error) {
+      if (!(error instanceof EngineError) || error.code !== "chat_unreadable") throw error;
+      all = [{
+        rowId: `unreadable:${chatId}`,
+        kind: "failure",
+        turnId: null,
+        at: chat.meta.updatedAt,
+        code: "unreadable",
+        detail: "This chat's file can't be read.",
+        messageKept: true,
+      }];
+    }
+    let end = all.length;
+    if (query.before) {
+      const at = all.findIndex((row) => row.rowId === query.before);
+      if (at === -1) throw new EngineError(400, "before_unknown");
+      end = at;
+    }
+    const start = Math.max(0, end - limit);
+    const rows = all.slice(start, end);
+    const nextBefore = start > 0 ? rows[0].rowId : null;
+    if (query.before) return { rows, nextBefore };
+    const turn = chat.turn;
+    return {
+      rows,
+      tailSeq: chat.bus.tailSeq,
+      epoch: this.host.epoch,
+      running: turn ? { turnId: turn.turnId, partialText: turn.partialText, activity: turn.activity ?? { kind: "thinking" } } : null,
+      queued: chat.queue.filter((item) => item.persisted).map((item) => ({ clientId: item.clientId, text: item.spec.text })),
+      openQuestion: chat.openQuestion,
+      nextBefore,
+    };
+  }
+
+  subscribe(chatId: string, send: (event: EngineEvent) => void, options: { after?: number; epoch?: string }): Subscription {
+    const chat = this.host.chat(chatId);
+    chat.touch();
+    // Open (not just known): a stream means the app has this chat on screen, so its rows stay cached.
+    try { chat.ensureLive(); } catch { /* an unreadable chat still streams its (empty) events */ }
+    return chat.bus.subscribe(send, { ...options, running: chat.turn ? { turnId: chat.turn.turnId } : null });
+  }
+
+  // --- status --------------------------------------------------------------------------
+
+  status(): { epoch: string; chats: StatusChat[] } {
+    const pending = new Map<string, number>();
+    for (const card of this.host.approvals.listPending()) pending.set(card.sessionId, (pending.get(card.sessionId) ?? 0) + 1);
+    const now = this.host.now().getTime();
+    const chats: StatusChat[] = [];
+    for (const meta of this.host.index.all()) {
+      if (meta.fixture) continue;
+      const runtime = this.host.runtimes().find((item) => item.chatId === meta.chatId);
+      const running = runtime?.turn ? { turnId: runtime.turn.turnId, activity: runtime.turn.activity ?? { kind: "thinking" as const } } : null;
+      const waitingOnOwner = runtime?.openQuestion ? "question" : pending.has(meta.chatId) ? "approval" : null;
+      const replyReadySince = runtime?.replyReadySince ?? null;
+      const lastTurn = meta.lastTurn;
+      const recent = lastTurn !== null && now - Date.parse(lastTurn.endedAt) <= DAY_MS;
+      if (running || waitingOnOwner || replyReadySince || lastTurn?.outcome === "failed" || recent) {
+        chats.push({ chatId: meta.chatId, running, waitingOnOwner, replyReadySince, lastTurn });
+      }
+    }
+    return { epoch: this.host.epoch, chats };
+  }
+
+  // --- turns -----------------------------------------------------------------------------
+
+  submitTurn(chatId: string, raw: unknown): { turnId?: string; queued?: true } {
+    const body = this.host.deps.parseTurnBody(raw);
+    const result = this.turns.submitOwner(chatId, body);
+    return result.queued ? { queued: true } : { turnId: result.turnId };
+  }
+
+  cancel(chatId: string): void {
+    this.host.index.require(chatId);
+    this.turns.cancel(chatId);
+  }
+
+  // --- the internal routes (SPEC 6.5) ------------------------------------------------------------
+
+  /** Files a row in a chat (default: the bot's current one), idempotent by `row.key`. */
+  fileRow(botId: string, chatId: string | null, row: RowInput & { source?: string }): { chatId: string; rowId: string } {
+    const target = chatId ?? this.currentOrNewChat(botId);
+    const meta = this.host.index.require(target);
+    if (meta.botId !== botId) throw new EngineError(404, "chat_not_found");
+    this.host.chat(target).appendRow(row);
+    return { chatId: target, rowId: row.key };
+  }
+
+  /** Connect-card resume and the like: a turn the app did not type (D19). Idempotent by `key`. */
+  systemTurn(botId: string, key: string, text: string, note?: string): { chatId: string; turnId: string | null; queued: boolean } {
+    const chatId = this.currentOrNewChat(botId);
+    if (note) this.host.chat(chatId).appendRow({ key: `note:system-turn-${key}`, kind: "note", text: note });
+    const result = this.turns.submitInternal(chatId, "system", `system:${key}`, text);
+    return { chatId, turnId: result.turnId, queued: result.queued };
+  }
+
+  /** What `/api/bots/context` shows: the bot's instructions against its model's window. */
+  botContext(botId: string): { windowTokens: number; instructionTokens: number; envelopeTokens: number } {
+    const bot = this.requireBot(botId);
+    const selection = botSelection(bot, readProviderStore());
+    const facts = factsFor(selection);
+    const snapshot = buildSnapshot(botId, `context:${botId}`, undefined);
+    const systemPrompt = systemPromptFor(snapshot.context.bot, this.host.deps.listSkills());
+    const contextText = turnContextText(snapshot.context.turn, this.host.deps.notesBlockFor(botId));
+    const declarations = this.host.deps.allTools().map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
+    const envelope = measureEnvelope({ systemPrompt, contextMessage: contextText, toolDeclarations: declarations, windowTokens: facts.windowTokens });
+    return { windowTokens: envelope.windowTokens, instructionTokens: envelope.instructionTokens, envelopeTokens: envelope.tokens };
+  }
+
+  /** The index entry for a chat, for the routine scheduler. */
+  meta(chatId: string): ChatMeta | undefined {
+    return this.host.index.get(chatId);
+  }
+}
