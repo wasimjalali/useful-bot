@@ -57,9 +57,6 @@ final class FirstRunController: ObservableObject {
     let forced: Bool
     private let freshMac: Bool
     private let harnessRun: Bool
-    /// Verification only: `--first-run-land <bot name>` lands in that bot
-    /// instead of Useful Bot, so a forced run can end in "Test Bot".
-    private let landOverride: String?
     /// Verification only: `--first-run-preview signin-done|signin-expired`
     /// plays the sign-in step's end states without a real device flow;
     /// `no-model` shows the skipped-setup bar on a Mac that has providers.
@@ -72,7 +69,6 @@ final class FirstRunController: ObservableObject {
     init(arguments: [String] = ProcessInfo.processInfo.arguments, defaults: UserDefaults = .standard) {
         self.defaults = defaults
         forced = arguments.contains(FirstRunGate.forceArgument)
-        landOverride = Self.value(after: "--first-run-land", in: arguments)
         preview = Self.value(after: "--first-run-preview", in: arguments)
         // The provider store, not the service config: a Mac can have a config
         // with no store, but never a connection without one.
@@ -158,10 +154,8 @@ final class FirstRunController: ObservableObject {
             defaults.set(true, forKey: FirstRunGate.completedKey)
         }
         let lands = landsOnFinish
-        if lands, let id = landingBotId(model.store), id != model.selectedBotId {
-            // A forced run shows the chat without storing it as selected.
-            model.select(id, persist: FirstRunGate.persistsFinish(forced: forced))
-        }
+        // The first chat is the empty one a New chat opens.
+        if lands { model.openChat(nil) }
         decision = .skip
         landsOnFinish = false
         // Either way the chat is laid out under the flow before it leaves.
@@ -176,17 +170,6 @@ final class FirstRunController: ObservableObject {
         active = false
     }
 
-    /// Where the first chat opens: the one bot (`Threads.defaultBotId`), else
-    /// the first bot on the rail.
-    func landingBotId(_ store: ShellStore?) -> String? {
-        guard let store else { return nil }
-        if let landOverride, let bot = store.bots.first(where: { $0.kind == "bot" && ($0.name == landOverride || $0.id == landOverride) }) {
-            return bot.id
-        }
-        let bots = store.activeBots
-        return bots.first { $0.id == Threads.defaultBotId }?.id
-            ?? bots.first?.id
-    }
 }
 
 /// The subscriptions and API-key providers the Connect step leads with. The

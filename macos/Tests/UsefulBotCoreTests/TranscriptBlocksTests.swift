@@ -94,18 +94,27 @@ import Testing
         #expect(TranscriptBlocks.latestReplyRunIds(blocks) == ["a4"])
     }
 
-    @Test func theAddedCardStacksWithTheTurnAroundIt() {
+    @Test func aNoteBreaksTheStackOfBotBubbles() {
         let rows = [
             TranscriptRow(id: "u1", kind: .user, text: "Connect Gmail"),
             TranscriptRow(id: "a1", kind: .assistant, text: "Adding Gmail now."),
-            TranscriptRow(id: "n1", kind: .note, text: "Gmail connected", connectedName: "Gmail"),
+            TranscriptRow(id: "n1", kind: .note, text: "Connected Gmail."),
             TranscriptRow(id: "a2", kind: .assistant, text: "Gmail is ready."),
-            TranscriptRow(id: "n2", kind: .note, text: "Confirmed."),
             TranscriptRow(id: "a3", kind: .assistant, text: "Done."),
         ]
         let blocks = TranscriptBlocks.build(rows: rows)
-        #expect(TranscriptBlocks.continuationIds(blocks) == ["n1", "a2"])
+        #expect(TranscriptBlocks.continuationIds(blocks) == ["a3"])
         #expect(TranscriptBlocks.latestReplyRunIds(blocks) == ["a1", "a2", "a3"])
+    }
+
+    @Test func aBlockKnowsTheRowsItDraws() {
+        let pictures = [
+            TranscriptRow(id: "i1", kind: .image, text: "one", imageId: "x"),
+            TranscriptRow(id: "i2", kind: .image, text: "two", imageId: "y"),
+        ]
+        let blocks = TranscriptBlocks.build(rows: pictures)
+        #expect(blocks.contains { $0.holds(rowId: "i2") })
+        #expect(!blocks.contains { $0.holds(rowId: "missing") })
     }
 
     // MARK: - Stamps

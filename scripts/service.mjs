@@ -3,11 +3,10 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHmac } from "node:crypto";
 import { createServer } from "node:net";
 import { webLaunch } from "./web-mode.mjs";
 import { ownerPath } from "../shared/user-path.ts";
-import { LOOPBACK, enforceStack, evePort, keychainName, routerConfigPath, routerPort, webOrigin, webPort } from "../shared/stack.ts";
+import { LOOPBACK, enforceStack, enginePort, keychainName, routerConfigPath, routerPort, stateRoot, webPort } from "../shared/stack.ts";
 
 // The interpreter running this script, not a fixed path: the supervisor
 // accepts more than one install location and launches this file with it.
@@ -21,10 +20,9 @@ if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1
   process.exit(2);
 }
 
-// eve's CLI and Next both report usage to their vendors by default. The app
-// promises no analytics (bot.usefulbuild.com/privacy), so every service and
-// anything it spawns (eve flushes from a detached child) runs with both off.
-process.env.EVE_TELEMETRY_DISABLED = "1";
+// Next reports usage to its vendor by default. The app promises no analytics
+// (bot.usefulbuild.com/privacy), so every service and anything it spawns runs
+// with it off. The engine sets Pi's own switches (SPEC 5.1).
 process.env.NEXT_TELEMETRY_DISABLED = "1";
 
 const KEYCHAIN_TIMEOUT_MS = 15_000;
@@ -33,7 +31,7 @@ const KEYCHAIN_TIMEOUT_MS = 15_000;
 // there, not thrown while the module loads.
 const servicePorts = () => ({
   router: { host: LOOPBACK, port: routerPort() },
-  eve: { host: LOOPBACK, port: evePort() },
+  engine: { host: LOOPBACK, port: enginePort() },
   web: { host: LOOPBACK, port: webPort() },
 });
 
@@ -88,18 +86,32 @@ function keychain(service) {
   });
 }
 
-function signChannelJwt(secret, sub) {
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const now = Math.floor(Date.now() / 1000);
-  const payload = Buffer.from(JSON.stringify({
-    sub,
-    iss: "useful-bot",
-    aud: "useful-bot",
-    iat: now,
-    exp: now + 12 * 60 * 60,
-  })).toString("base64url");
-  const sig = createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url");
-  return `${header}.${payload}.${sig}`;
+/**
+ * The environment the engine runs with, built key by key (SPEC 5.1): it holds
+ * the owner's tools and credentials, so it never inherits `process.env`. The
+ * two tokens come from the Keychain; Pi's switches keep it from reading `~/.pi`,
+ * checking for updates or reporting usage, and `PI_CODING_AGENT_DIR` is the
+ * backstop for the one path Pi would otherwise default to the home folder.
+ */
+const ENGINE_ENV_KEYS = [
+  "HOME", "TMPDIR", "LANG", "TZ",
+  "UB_STACK", "UB_STATE_ROOT", "UB_KEYCHAIN_PREFIX", "UB_MEDIA_DIR",
+  "UB_ROUTER_PORT", "UB_WEB_PORT", "UB_ENGINE_PORT",
+];
+
+function engineEnv(tokens) {
+  const env = { PATH: ownerPath() };
+  for (const key of ENGINE_ENV_KEYS) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  return {
+    ...env,
+    ...tokens,
+    PI_OFFLINE: "1",
+    PI_SKIP_VERSION_CHECK: "1",
+    PI_TELEMETRY: "0",
+    PI_CODING_AGENT_DIR: path.join(stateRoot(), "engine", "pi"),
+  };
 }
 
 async function childEnv() {
@@ -187,27 +199,20 @@ async function main() {
     run(["--experimental-strip-types", path.join(ROOT, "router/src/index.ts")], env);
     return;
   }
-  if (mode === "eve") {
+  if (mode === "engine") {
     await waitReady(`http://${LOOPBACK}:${routerPort()}/health/live`, 60_000);
-    const env = {
-      ...process.env,
-      PATH: ownerPath(),
-      NODE_ENV: process.env.NODE_ENV || "production",
-    };
+    const tokens = {};
     try {
-      env.UB_CHANNEL_JWT_SECRET = await keychain(keychainName("channel.desktop"));
+      tokens.UB_ENGINE_TOKEN = await keychain(keychainName("channel.desktop"));
     } catch {
       fail("credential_store_locked_or_missing", keychainName("channel.desktop"));
     }
     try {
-      env.UB_ROUTER_DESKTOP_TOKEN = await keychain(keychainName("router.desktop"));
+      tokens.UB_ROUTER_DESKTOP_TOKEN = await keychain(keychainName("router.desktop"));
     } catch {
       fail("credential_store_locked_or_missing", keychainName("router.desktop"));
     }
-    // Lets an agent tool wake the handoff pump at once instead of waiting for
-    // the next web poll. Best effort: the poll drains the same queue.
-    env.UB_WEB_BASE_URL = webOrigin();
-    run([path.join(ROOT, "node_modules/eve/bin/eve.js"), "dev", "--no-ui", "--host", LOOPBACK, "--port", String(evePort())], env);
+    run(["--experimental-strip-types", path.join(ROOT, "agent/server.ts")], engineEnv(tokens));
     return;
   }
   if (mode === "web") {
@@ -217,14 +222,9 @@ async function main() {
       UB_ROUTER_CONFIG: routerConfigPath(),
     };
     try {
-      const secret = await keychain(keychainName("channel.desktop"));
-      // The tick route's key only. It carries no bot claim, so eve refuses it:
-      // the web service signs its own per-bot tokens from the secret below.
-      env.UB_CHANNEL_JWT = signChannelJwt(secret, "desktop-app");
-      // The agent tool wakes the handoff pump with the raw secret as its key
-      // (see shared/agents-send.ts). Without it here every wake-up would 403
-      // and only the UI poll would drain the queue.
-      env.UB_CHANNEL_JWT_SECRET = secret;
+      // The bearer the web service presents to the engine (the same item the
+      // engine reads), for the chat routes and the internal calls.
+      env.UB_ENGINE_TOKEN = await keychain(keychainName("channel.desktop"));
     } catch {
       fail("credential_store_locked_or_missing", keychainName("channel.desktop"));
     }
@@ -263,7 +263,7 @@ async function main() {
     ], env);
     return;
   }
-  process.stderr.write("usage: service.mjs router|eve|web\n");
+  process.stderr.write("usage: service.mjs router|engine|web\n");
   process.exit(2);
 }
 

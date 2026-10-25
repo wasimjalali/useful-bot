@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
-import { approvalDecisionRefusal } from "../../../../lib/archived-bots";
 
 export const runtime = "nodejs";
 
@@ -34,9 +33,6 @@ export async function POST(
   const { id } = await context.params;
   try {
     const store = new ApprovalStore(Date.now, defaultApprovalsPath());
-    // An archived bot's parked turn must not run on an approval.
-    const refusal = approvalDecisionRefusal(store, id, body.decision);
-    if (refusal) return NextResponse.json({ ok: false, error: refusal.error }, { status: refusal.status });
     const record = store.decide(id, body.decision, body.actionSha256);
     return NextResponse.json({ ok: true, id: record.id, decision: body.decision, status: record.status });
   } catch (err) {

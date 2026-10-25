@@ -1,4 +1,4 @@
-import { defineTool } from "eve/tools";
+import { defineTool } from "../lib/tool.ts";
 import { z } from "zod";
 import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -9,20 +9,21 @@ import { markOutside } from "../lib/outside-content.ts";
 const LIST_MAX_ENTRIES = 500;
 
 /**
- * Read-only listing of the workspace this conversation works in. Bounded the
+ * Read-only listing of the workspace this chat works in. Bounded the
  * same way read_file is: a cap on entries, no recursion here (the agent asks
  * per directory), no symlink following (a link reports as `link`, it is never
  * entered or sized), and every row goes out wrapped as untrusted data.
  */
 export default defineTool({
-  description: "List a folder in the workspace this conversation works in.",
+  name: "list_dir",
+  description: "List a folder in the workspace this chat works in.",
   inputSchema: z.object({
     path: z.string().optional(),
     limit: z.number().int().min(1).max(LIST_MAX_ENTRIES).optional(),
   }),
   execute(input, ctx) {
     markOutside(ctx);
-    const { root } = effectiveRoot(ctx?.session?.id);
+    const { root } = effectiveRoot(ctx.chatId);
     const target = resolveWorkspacePath(input.path || ".", root);
     let stat;
     try {

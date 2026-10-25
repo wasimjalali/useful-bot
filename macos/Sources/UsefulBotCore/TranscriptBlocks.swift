@@ -35,6 +35,16 @@ public enum TranscriptBlock: Equatable, Sendable, Identifiable {
     }
 }
 
+extension TranscriptBlock {
+    /// Whether this block draws the row: an image run holds every picture in it.
+    public func holds(rowId: String) -> Bool {
+        switch self {
+        case .images(let rows): return rows.contains { $0.id == rowId }
+        default: return id == rowId
+        }
+    }
+}
+
 public enum TranscriptBlocks {
     /// Build the render list: a day divider whenever the date changes, one
     /// block per row, and pictures posted one after another joined in a run.
@@ -186,10 +196,7 @@ public enum TranscriptBlocks {
         var ids = Set<String>()
         var previous: TranscriptRow?
         for block in blocks {
-            // The host's "added" card is a bubble of the same turn: it stacks
-            // with the bot's messages on either side of it.
-            guard case .message(let row) = block,
-                  row.kind == .assistant || row.connectedName != nil else {
+            guard case .message(let row) = block, row.kind == .assistant else {
                 previous = nil
                 continue
             }
@@ -211,7 +218,7 @@ public enum TranscriptBlocks {
                 run = []
             case .assistant:
                 run.insert(row.id)
-            case .note, .widget, .image, .page, .failure, .unsent: continue
+            case .note, .widget, .image, .page, .failure, .unsent, .card: continue
             }
         }
         return run

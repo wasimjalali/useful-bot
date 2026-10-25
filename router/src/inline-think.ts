@@ -1,8 +1,8 @@
 // Some models write their thinking into the answer as `<think>…</think>`
 // instead of the reasoning field: MiniMax M3 through OpenCode does, and so
-// does MiniMax's own API unless asked otherwise. The AI SDK only reads the
-// field, so the thinking reached eve as answer text and both apps showed it
-// in the bubble. A think block that opens a message is moved into the
+// does MiniMax's own API unless asked otherwise. A client only reads the
+// field, so the thinking reached the app as answer text and showed in the
+// bubble. A think block that opens a message is moved into the
 // reasoning field here, for any model, so it lands where every other model's
 // thinking does. A tag further into the answer is left alone: that is the
 // model writing about tags.
@@ -183,7 +183,7 @@ export function flushThinkStream(stream: ThinkStream): string | null {
  * moved into the reasoning field. Held text is released on the choice's
  * finish reason, or before `[DONE]` when none came. A choice that first
  * appears after every earlier one reached its answer passes through as it
- * is; eve never asks for more than one.
+ * is; the engine never asks for more than one.
  */
 export function splitThinkBlock(block: string, stream: ThinkStream): string {
   // Once the answer is under way, blocks pass straight through unparsed.
