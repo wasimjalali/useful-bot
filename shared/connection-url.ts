@@ -178,7 +178,7 @@ function v4OfGroups(high: number, low: number): string {
  * v6 form that carries a v4 address (mapped, compatible, NAT64, 6to4), judged
  * by the v4 inside. An address that is not an address is refused.
  */
-function isBlockedAddress(address: string): boolean {
+export function isBlockedAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) return address === "127.0.0.1" || isBlockedV4(address);
   if (family !== 6) return true;
