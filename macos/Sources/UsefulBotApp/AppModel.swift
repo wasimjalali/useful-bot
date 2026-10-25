@@ -1797,6 +1797,9 @@ final class AppModel: ObservableObject {
     /// Stop (⌘.): the turn ends when the engine says so, on the stream.
     func cancel() {
         guard pending, let chatId = currentChatId else { return }
+        // The engine expires this chat's cards before it aborts (SPEC 5.5.7),
+        // so they go now rather than on the next 1.5 s approvals poll.
+        approvals.removeAll { $0.chatId == chatId }
         let client = client
         Task { try? await client.cancelTurn(chatId: chatId) }
     }

@@ -28,7 +28,7 @@ Every row: `{rowId, kind, turnId: string|null, at}` plus its kind's fields.
 
 `turnId` is null for rows written outside a turn (a connect note, a card).
 
-Rows page (`rows-page.json`): `{rows, tailSeq, epoch, running: {turnId, partialText, activity}|null,
+Rows page (`rows-page.json`): `{rows, tailSeq, epoch, running: {turnId, startedAt, partialText, activity}|null,
 queued: [{clientId, text}], openQuestion: {requestId, prompt, options, allowFreeform}|null,
 nextBefore: rowId|null}`. Only the newest page carries `running`, `queued` and `openQuestion`;
 older pages (`?before=`) carry `{rows, nextBefore}`. Rows are oldest first within a page.

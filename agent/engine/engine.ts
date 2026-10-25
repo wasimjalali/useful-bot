@@ -31,7 +31,7 @@ export type RowsPage = {
   nextBefore: string | null;
   tailSeq?: number;
   epoch?: string;
-  running?: { turnId: string; partialText: string; activity: Activity } | null;
+  running?: { turnId: string; startedAt: string; partialText: string; activity: Activity } | null;
   queued?: { clientId: string; text: string }[];
   openQuestion?: { requestId: string; prompt: string; options: unknown[]; allowFreeform: boolean } | null;
 };
@@ -282,7 +282,7 @@ export class Engine {
       rows,
       tailSeq: chat.bus.tailSeq,
       epoch: this.host.epoch,
-      running: turn ? { turnId: turn.turnId, partialText: turn.partialText, activity: turn.activity ?? { kind: "thinking" } } : null,
+      running: turn ? { turnId: turn.turnId, startedAt: new Date(turn.startedAt).toISOString(), partialText: turn.partialText, activity: turn.activity ?? { kind: "thinking" } } : null,
       queued: chat.queue.filter((item) => item.persisted).map((item) => ({ clientId: item.clientId, text: item.spec.text })),
       openQuestion: chat.openQuestion,
       nextBefore,

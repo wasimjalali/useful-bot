@@ -145,17 +145,20 @@ public enum ChatClock {
 /// What a running turn was doing when the page was cut.
 public struct RunningTurn: Decodable, Equatable, Sendable {
     public var turnId: String
+    /// When this attempt started (a Retry is a new attempt of the same owner message).
+    public var startedAt: String?
     public var partialText: String
     public var activity: TurnActivity?
     /// The row the partial text belongs to, when the engine says. Otherwise
     /// it is the turn's next assistant row.
     public var rowId: String?
 
-    enum CodingKeys: String, CodingKey { case turnId, partialText, activity, rowId }
+    enum CodingKeys: String, CodingKey { case turnId, startedAt, partialText, activity, rowId }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         turnId = try c.decode(String.self, forKey: .turnId)
+        startedAt = try? c.decodeIfPresent(String.self, forKey: .startedAt)
         partialText = (try? c.decode(String.self, forKey: .partialText)) ?? ""
         activity = (try? c.decodeIfPresent(ActivityWire.self, forKey: .activity))?.activity
         rowId = try? c.decodeIfPresent(String.self, forKey: .rowId)

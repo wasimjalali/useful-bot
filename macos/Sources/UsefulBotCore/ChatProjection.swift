@@ -84,8 +84,9 @@ public struct ChatProjection: Equatable, Sendable {
         if let running = page.running {
             pending = true
             turnId = running.turnId
-            turnStartedAt = rows.last { $0.turnId == running.turnId && $0.kind == .user }
-                .flatMap { ChatClock.date(from: $0.at) } ?? turnStartedAt ?? Date()
+            turnStartedAt = ChatClock.date(from: running.startedAt)
+                ?? rows.last { $0.turnId == running.turnId && $0.kind == .user }.flatMap { ChatClock.date(from: $0.at) }
+                ?? turnStartedAt ?? Date()
             activity = running.activity ?? .thinking
             if !running.partialText.isEmpty, !rows.contains(where: { $0.turnId == running.turnId && $0.kind == .assistant }) {
                 var partial = ChatRow(rowId: running.rowId ?? "\(running.turnId):a0", kind: .assistant, turnId: running.turnId)
