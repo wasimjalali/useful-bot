@@ -16,7 +16,7 @@ export type TurnOrigin = "owner" | "routine" | "system";
 
 /** A transcript row a tool adds beside its result (SPEC 5.12). */
 export type RowInput =
-  | { key: string; kind: "note"; text: string }
+  | { key: string; kind: "note"; text: string; source?: "routine" | "connect" | "system" }
   | { key: string; kind: "image"; imageId: string; prompt?: string }
   | { key: string; kind: "page"; mediaId: string; title: string; path: string }
   | { key: string; kind: "widget"; widgetId: string; callId: string }
