@@ -45,7 +45,8 @@ this file fixes structure, states and the contract with the backend.
 +-----------------+----------------------------------------------+
 ```
 
-The stage shows one of: a chat, the Routines page, the Library page. Connectors stays a dialog.
+The stage shows one of: a chat, the Routines page, the Library page, the Connectors page (owner,
+2026-10-25: a page like the others, not a dialog).
 There is no right-hand pane: what the Bot pane held moves to Settings (section 6).
 
 ## 3. Sidebar
@@ -66,7 +67,7 @@ Three rows above the chat list, icon plus label, the active one highlighted:
 |---|---|---|
 | Routines | Routines page on the stage (section 5) | count of routines whose last run failed, if any |
 | Library | Library page on the stage (today's `LibraryView`) | none |
-| Connectors | Connectors dialog (today's) | a dot when a connection needs sign-in again |
+| Connectors | Connectors page on the stage (today's dialog layout, section 8b) | a dot when a connection needs sign-in again |
 
 Library moves out of the account menu. The Connectors footer pill goes (the row replaces it).
 
@@ -217,13 +218,14 @@ Tabs **All**, **Chats**, **Library**, **Routines**:
 
 ## 8b. Connectors
 
-The Connectors dialog keeps today's layout (`ConnectorsDialog`, 760pt): title and "N added" with
+The Connectors page opens on the stage like Routines and Library, and keeps the dialog's layout and
+design (`ConnectorsDialog`, a 760pt column): title and "N added" with
 the first logos, "Search 1,500 apps", the **Added** grid, the **All apps** grid with Add, Show more,
 the Composio key line. Polish only:
 
 - Added tiles show a state chip instead of "Added": **Connected**, or **Sign in again** (warning) when
   a sign-in expired; the whole tile opens the app's page (chevron on the right, hover tone).
-- **App page** (today's `ConnectorDetailPage`, same dialog): back to Connectors; logo, name and a
+- **App page** (today's `ConnectorDetailPage`, inside the Connectors page): back to Connectors; logo, name and a
   line "App · Composio · connected as ACCOUNT"; **Reconnect** and **Disconnect** beside the name.
   Below: the state chip, "48 tools · 31 read · 17 write", a segmented **All / Reads / Writes** and
   a **Filter tools** field, then the tools grouped under **Reads** ("Run without asking") and
@@ -260,7 +262,7 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
-| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b: direct MCP servers already carry it (connection state `authFailed` or `expired`); Composio apps gain `needsSignIn` on `/api/connectors` |
+| Connectors page, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b: direct MCP servers already carry it (connection state `authFailed` or `expired`); Composio apps gain `needsSignIn` on `/api/connectors` |
 | App page Reconnect and Disconnect (Refresh for a direct MCP server) | `/api/connectors` (Composio), `/api/connections` (MCP), the same calls as today | 2 |
 | Account row owner name | `GET /api/status` (operator name) | 2 |
 | App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read`, `write` or `destructive`, the last two under Writes) from `connector-risk.ts` | 2b |
@@ -294,7 +296,8 @@ cards; group avatar stack; reviewer role row; Bots and Groups in search; the rai
 ## 11. Keyboard
 
 ⌘N new chat, ⌘K search, ⌘R reload chat, ⌘. stop the running turn, ⌘⌫ delete the selected chat
-(with the confirm dialog), ⌘↑ / ⌘↓ previous and next chat in the list.
+(with the confirm dialog), ⌘↑ / ⌘↓ previous and next chat in the list while the composer is empty
+(with text in it they move the caret, as macOS does).
 
 ## 12. Verification
 
@@ -319,5 +322,5 @@ chat. All in Useful Bot Dev with its one bot.
 | Search | Bots, Groups, New Bot | Chats, Library, Routines, message hits |
 | New chat | "To: Search or create bots" picker | empty chat with the logo and the first-launch note |
 | Your other bots | sidebar rows | Settings > General > Earlier bots |
-| Connectors | dialog with "Added" | same dialog, Connected / Sign in again |
+| Connectors | dialog with "Added" | the same layout as a stage page, Connected / Sign in again |
 | An app's tools | plain list | Reconnect, Disconnect, reads and writes, filter |
