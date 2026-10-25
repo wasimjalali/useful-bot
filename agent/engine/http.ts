@@ -55,20 +55,36 @@ function fail(res: ServerResponse, error: unknown): void {
   send(res, 500, { ok: false, error: "engine_error" });
 }
 
-async function readBody(req: IncomingMessage, max: number): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > max) throw new EngineError(413, "body_too_large");
-    chunks.push(chunk as Buffer);
-  }
-  if (size === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new EngineError(400, "invalid_json");
-  }
+/**
+ * Reads a JSON body up to `max` bytes. A body over the cap is read to its end
+ * and thrown away, so the client can finish sending and read the 413 instead of
+ * meeting a reset.
+ */
+function readBody(req: IncomingMessage, max: number): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= max) chunks.push(chunk);
+    });
+    req.on("error", reject);
+    req.on("end", () => {
+      if (size > max) {
+        reject(new EngineError(413, "body_too_large"));
+        return;
+      }
+      if (size === 0) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        reject(new EngineError(400, "invalid_json"));
+      }
+    });
+  });
 }
 
 function int(value: string | null): number | undefined {
@@ -234,6 +250,8 @@ export function createEngineServer(options: HttpOptions): Server {
     const afterRaw = url.searchParams.get("after");
     const after = afterRaw === null || afterRaw === "" ? undefined : int(afterRaw);
     const epoch = url.searchParams.get("epoch") ?? undefined;
+    // An unknown chat is a 404 before any stream starts.
+    const chat = engine.host.chat(chatId);
     res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store", "x-accel-buffering": "no" });
     res.flushHeaders();
     const write = (event: EngineEvent): void => {
@@ -241,7 +259,6 @@ export function createEngineServer(options: HttpOptions): Server {
       res.write(`${JSON.stringify(event)}\n`);
       if (res.writableLength > STREAM_BACKLOG_MAX) res.destroy();
     };
-    const chat = engine.host.chat(chatId);
     const subscription = engine.subscribe(chatId, write, { after, epoch });
     for (const event of subscription.initial) write(event);
     const ping = setInterval(() => write(chat.bus.ping()), options.pingMs ?? PING_MS);

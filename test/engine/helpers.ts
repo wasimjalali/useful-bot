@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { ApprovalStore } from "../../agent/lib/approvals.ts";
-import { defineTool, toolOutput, type UsefulTool } from "../../agent/lib/tool.ts";
+import { defineTool, toolOutput, type RowInput, type UsefulTool } from "../../agent/lib/tool.ts";
 import type { Deps, TurnBody } from "../../agent/engine/deps.ts";
 import { Engine, type EngineOptions } from "../../agent/engine/engine.ts";
 import type { EngineEvent } from "../../agent/engine/protocol.ts";
@@ -56,11 +56,14 @@ export function fakeTools(state: FakeToolState): UsefulTool[] {
     defineTool({
       name: "ask",
       description: "Ask the owner a question and stop.",
-      inputSchema: z.object({ prompt: z.string() }),
+      inputSchema: z.object({
+        prompt: z.string(),
+        options: z.array(z.object({ id: z.string(), label: z.string(), detail: z.string().optional() })).optional(),
+      }),
       sequential: true,
-      execute: ({ prompt }, ctx) => toolOutput(
+      execute: ({ prompt, options }, ctx) => toolOutput(
         [{ type: "text", text: "Question shown." }],
-        { question: { requestId: `q-${ctx.callId}`, prompt, options: [{ id: "a", label: "A" }], allowFreeform: true } },
+        { question: { requestId: `q-${ctx.callId}`, prompt, options: options ?? [{ id: "a", label: "A" }], allowFreeform: true } },
         { terminate: true },
       ),
     }),
@@ -100,10 +103,10 @@ export function fakeTools(state: FakeToolState): UsefulTool[] {
     }),
     defineTool({
       name: "file_row",
-      description: "File a note row.",
-      inputSchema: z.object({ key: z.string(), text: z.string() }),
-      execute: async ({ key, text }, ctx) => {
-        await ctx.appendRow({ key, kind: "note", text });
+      description: "File a row beside the reply.",
+      inputSchema: z.object({ row: z.record(z.string(), z.unknown()) }),
+      execute: async ({ row }, ctx) => {
+        await ctx.appendRow(row as unknown as RowInput);
         return "filed";
       },
     }),

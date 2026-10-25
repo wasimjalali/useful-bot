@@ -97,9 +97,13 @@ export class RoutineScheduler {
 
   private begin(routine: Routine): { chatId: string; turnId: string | null; queued: boolean } {
     const index = this.engine.host.index;
-    let chatId = chatOf(routine);
-    if (!chatId || !index.get(chatId)) {
+    // The index is the truth: a routine's chat is the one that names it, created on its first run.
+    const known = index.all().find((meta) => meta.routineId === routine.id) ?? (chatOf(routine) ? index.get(chatOf(routine) as string) : undefined);
+    let chatId = known?.chatId;
+    if (!chatId) {
       chatId = index.create({ botId: routine.botId, title: routine.name, routineId: routine.id }).chatId;
+      this.engine.host.deps.setRoutineChat(routine.id, chatId);
+    } else if (chatOf(routine) !== chatId) {
       this.engine.host.deps.setRoutineChat(routine.id, chatId);
     }
     const chat = this.engine.host.chat(chatId);

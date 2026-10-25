@@ -150,6 +150,8 @@ export class ChatRuntime {
   live: Live | null = null;
   replyReadySince: string | null = null;
   lastActive: number;
+  /** Which turn made a tool call, for the widget row the app files after the turn is over. */
+  readonly callTurns = new Map<string, string>();
   /** The question waiting for the owner's next message, from the rows or `ask`. */
   openQuestion: OpenQuestion | null = null;
 
@@ -269,7 +271,8 @@ export class ChatRuntime {
   appendRow(row: RowInput): boolean {
     const live = this.ensureLive();
     if (live.rows.keys.has(row.key)) return false;
-    this.appendCustom(UB.row, { ...row, turnId: this.turn?.turnId ?? null });
+    const filedIn = this.turn?.turnId ?? (row.kind === "widget" ? this.callTurns.get(row.callId) : undefined) ?? null;
+    this.appendCustom(UB.row, { ...row, turnId: filedIn });
     this.host.index.update(this.chatId, {});
     return true;
   }

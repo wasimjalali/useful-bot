@@ -557,6 +557,8 @@ export class TurnRunner {
       }
       case "tool_execution_start": {
         const widget = this.host.deps.widgetForCall(event.toolName, (event.args ?? {}) as Record<string, unknown>);
+        chat.callTurns.set(event.toolCallId, turn.turnId);
+        if (chat.callTurns.size > 200) chat.callTurns.delete(chat.callTurns.keys().next().value as string);
         this.activity(chat, turn, { kind: "tool", tool: event.toolName, detail: toolDetail(event.toolName) }, false);
         chat.bus.emit({ type: "tool.call", callId: event.toolCallId, name: event.toolName, ...(widget ? { widget } : {}) }, turn.turnId);
         return;

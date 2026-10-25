@@ -172,23 +172,39 @@ export class Engine {
     if (this.currentChatId(meta.botId) !== chatId) this.makeCurrent(meta.botId, chatId, meta.preview);
   }
 
-  /** Titles and previews first, then the text of each chat's rows, newest chats first, within a time budget. */
-  searchChats(query: string, limit = 50): { hits: { chatId: string; rowId: string | null; title: string; snippet: string; at: string }[] } {
+  /**
+   * Titles and previews first, then the text of each chat's rows, newest chats
+   * first, within a time budget. Every hit names a row: the matching one, or the
+   * chat's last row when only the title or preview matched.
+   */
+  searchChats(query: string, limit = 50): { hits: { chatId: string; rowId: string; title: string; snippet: string; at: string }[] } {
     const needle = query.trim().toLowerCase();
     if (needle === "") return { hits: [] };
     const cap = Math.min(Math.max(limit, 1), 200);
-    const hits: { chatId: string; rowId: string | null; title: string; snippet: string; at: string }[] = [];
+    const hits: { chatId: string; rowId: string; title: string; snippet: string; at: string }[] = [];
     const chats = this.host.index.all().filter((meta) => !meta.fixture).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const deadline = Date.now() + SEARCH_BUDGET_MS;
+    const lastRowOf = (chatId: string): Row | undefined => {
+      const rows = this.host.chat(chatId).ensureLive().rows.rows;
+      return rows[rows.length - 1];
+    };
+    const seen = new Set<string>();
     for (const meta of chats) {
       if (hits.length >= cap) break;
-      if (meta.title.toLowerCase().includes(needle)) {
-        hits.push({ chatId: meta.chatId, rowId: null, title: meta.title, snippet: clip(meta.preview || meta.title, PREVIEW_MAX), at: meta.updatedAt });
-      } else if (meta.preview.toLowerCase().includes(needle)) {
-        hits.push({ chatId: meta.chatId, rowId: null, title: meta.title, snippet: clip(meta.preview, PREVIEW_MAX), at: meta.updatedAt });
+      const inTitle = meta.title.toLowerCase().includes(needle);
+      if (!inTitle && !meta.preview.toLowerCase().includes(needle)) continue;
+      try {
+        const chat = this.host.chat(meta.chatId);
+        const wasLive = chat.live !== null;
+        const last = lastRowOf(meta.chatId);
+        if (!last) continue;
+        hits.push({ chatId: meta.chatId, rowId: last.rowId, title: meta.title, snippet: clip(inTitle ? meta.title : meta.preview, PREVIEW_MAX), at: meta.updatedAt });
+        seen.add(meta.chatId);
+        if (!wasLive && !chat.turn) chat.evict();
+      } catch {
+        // A chat that cannot be read has nothing to search; it shows as unreadable when opened.
       }
     }
-    const deadline = Date.now() + SEARCH_BUDGET_MS;
-    const seen = new Set(hits.map((hit) => hit.chatId));
     for (const meta of chats) {
       if (hits.length >= cap || Date.now() > deadline) break;
       if (seen.has(meta.chatId)) continue;
@@ -208,7 +224,7 @@ export class Engine {
         }
         if (!wasLive && !chat.turn) chat.evict();
       } catch {
-        // A chat that cannot be read has nothing to search; it shows as unreadable when opened.
+        // As above.
       }
     }
     return { hits };
@@ -313,7 +329,7 @@ export class Engine {
   /** Connect-card resume and the like: a turn the app did not type (D19). Idempotent by `key`. */
   systemTurn(botId: string, key: string, text: string, note?: string): { chatId: string; turnId: string | null; queued: boolean } {
     const chatId = this.currentOrNewChat(botId);
-    if (note) this.host.chat(chatId).appendRow({ key: `note:system-turn-${key}`, kind: "note", text: note });
+    if (note) this.host.chat(chatId).appendRow({ key: `note:system-turn-${key}`, kind: "note", text: note, source: "connect" } as RowInput);
     const result = this.turns.submitInternal(chatId, "system", `system:${key}`, text);
     return { chatId, turnId: result.turnId, queued: result.queued };
   }
