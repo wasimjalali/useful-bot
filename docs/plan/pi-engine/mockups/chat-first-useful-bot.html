@@ -1,0 +1,1147 @@
+<meta charset="utf-8">
+<title>Chat-first Useful Bot</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a review page (left-aligned column of captioned boards); each board is a
+   pixel-true mock of the macOS window at its real point size, scaled down to fit. */
+:root {
+  /* Page chrome: Useful tokens, follows the viewer theme. */
+  --canvas: #f3f3f3;
+  --surface: #ffffff;
+  --sunken: #f0f0f0;
+  --ink: #171717;
+  --ink-muted: #5c5c5c;
+  --ink-faint: #a3a3a3;
+  --ink-faint-text: #6b6b6b;
+  --border: #ebebeb;
+  --border-strong: #e0e0e0;
+  --edge: rgb(0 0 0 / 0.05);
+  --desk: #e6e6e6;
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #0f0f0f; --surface: #171717; --sunken: #2c2c2c;
+    --ink: #ededed; --ink-muted: #a3a3a3; --ink-faint: #6e6e6e; --ink-faint-text: #949494;
+    --border: #262626; --border-strong: #333333; --edge: rgb(255 255 255 / 0.07); --desk: #1d1d1d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --canvas: #0f0f0f; --surface: #171717; --sunken: #2c2c2c;
+  --ink: #ededed; --ink-muted: #a3a3a3; --ink-faint: #6e6e6e; --ink-faint-text: #949494;
+  --border: #262626; --border-strong: #333333; --edge: rgb(255 255 255 / 0.07); --desk: #1d1d1d;
+  color-scheme: dark;
+}
+
+/* App tokens: the mocked app, switched by the App theme control, independent of the page. */
+.app {
+  --a-canvas: #f3f3f3; --a-rail: #f3f3f3; --a-surface: #ffffff; --a-sunken: #f0f0f0;
+  --a-bubble: #ffffff; --a-owner: #f0f0f0;
+  --a-ink: #171717; --a-ink-muted: #5c5c5c; --a-ink-faint: #a3a3a3; --a-ink-faint-text: #6b6b6b;
+  --a-brand: #171717; --a-brand-ink: #fafafa; --a-accent-soft: #f0f0f0;
+  --a-border: #ebebeb; --a-border-strong: #e0e0e0; --a-edge: rgb(0 0 0 / 0.05);
+  --a-success: #0f6f56; --a-success-soft: #e4f4ee;
+  --a-warning: #8a5300; --a-warning-soft: #fbf1de;
+  --a-danger: #b23c22; --a-danger-soft: #fbeae5;
+  --a-shadow-sm: 0 1px 2px rgb(23 23 23 / 0.04);
+  --a-shadow-card: 0 1px 0 rgb(23 23 23 / 0.03), 0 18px 40px -24px rgb(23 23 23 / 0.18);
+  --a-shadow-lift: 0 0.5px 1px rgb(23 23 23 / 0.04), 0 3px 16px rgb(23 23 23 / 0.08);
+  --a-shadow-raise: 0 1px 0 rgb(23 23 23 / 0.04), 0 22px 44px -22px rgb(23 23 23 / 0.22);
+  --a-shadow-pop: 0 24px 56px -28px rgb(23 23 23 / 0.28);
+  --a-shadow-select: 0 1px 2px rgb(23 23 23 / 0.06);
+  --a-scrim: rgb(23 23 23 / 0.18);
+  --face-head: #ffffff;
+  --face-edge: 0.1;
+  color: var(--a-ink);
+  font-family: var(--font-ui);
+}
+.app.dark {
+  --a-canvas: #0f0f0f; --a-rail: #0f0f0f; --a-surface: #171717; --a-sunken: #2c2c2c;
+  --a-bubble: #202020; --a-owner: #2c2c2c;
+  --a-ink: #ededed; --a-ink-muted: #a3a3a3; --a-ink-faint: #6e6e6e; --a-ink-faint-text: #949494;
+  --a-brand: #ededed; --a-brand-ink: #141414; --a-accent-soft: #262626;
+  --a-border: #262626; --a-border-strong: #333333; --a-edge: rgb(255 255 255 / 0.07);
+  --a-success: #4cc39b; --a-success-soft: #13302a;
+  --a-warning: #e3a64a; --a-warning-soft: #33260f;
+  --a-danger: #f0795c; --a-danger-soft: #3a1b14;
+  --a-shadow-select: 0 1px 2px rgb(0 0 0 / 0.5);
+  --a-scrim: rgb(0 0 0 / 0.48);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.page { max-width: 1240px; margin: 0 auto; padding-block: 40px 96px; display: grid; gap: 56px; }
+
+/* Page header */
+.intro { display: grid; gap: 14px; max-width: 760px; }
+.intro h1 { margin: 0; font-size: 34px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.1; text-wrap: balance; }
+.intro p { margin: 0; font-size: 16px; line-height: 1.55; color: var(--ink-muted); max-width: 64ch; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin-top: 6px; }
+.seg-label { font-size: 13px; color: var(--ink-muted); }
+.seg { display: inline-flex; background: var(--border); padding: 2px; border-radius: 10px; gap: 2px; }
+.seg button {
+  font: 500 13px var(--font-sans); color: var(--ink-muted); background: transparent; border: 0;
+  padding: 5px 14px; border-radius: 6px; cursor: pointer; transition: background 150ms var(--ease-out);
+}
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 1.5px rgb(23 23 23 / 0.1); }
+.seg button:focus-visible, .toc a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }
+.toc a { color: var(--ink-muted); text-decoration: none; }
+.toc a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
+
+/* Board sections */
+.board { display: grid; gap: 16px; scroll-margin-top: 24px; }
+.board-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; max-width: 900px; }
+.board-head h2 { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; text-wrap: balance; }
+.board-head ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14.5px; line-height: 1.5; color: var(--ink-muted); }
+.backend { font: 12px/1.6 var(--font-mono); color: var(--ink-faint-text); }
+.backend b { font-weight: 500; color: var(--ink-muted); }
+.changes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px 32px; }
+.changes h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint-text); }
+.pr2 { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--ink-muted); background: var(--sunken); border-radius: 12px; padding: 10px 14px; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; align-items: start; }
+.pair figure { margin: 0; display: grid; gap: 8px; min-width: 0; }
+.pair figcaption { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); }
+.stacked .pair { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+@media (max-width: 720px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+
+/* Artboard canvas */
+.canvas { display: grid; gap: 48px; }
+.screen { display: grid; gap: 14px; scroll-margin-top: 24px; }
+.screen-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.screen-head h2 { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
+.screen-head .backend { margin-left: auto; }
+.boards { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+.board-card { display: grid; gap: 8px; padding: 0; border: 0; background: none; text-align: left; cursor: zoom-in; color: inherit; font: inherit; max-width: 100%; }
+.board-card .cap { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); }
+.board-card .desk { background: var(--desk); border-radius: 16px; padding: 18px; transition: box-shadow 150ms var(--ease-out); max-width: 100%; }
+.board-card:hover .desk { box-shadow: 0 0 0 1.5px var(--ink-faint); }
+.board-card:focus-visible { outline: none; }
+.board-card:focus-visible .desk { box-shadow: 0 0 0 2px var(--ink); }
+.thumb { overflow: hidden; }
+.thumb > .app { transform-origin: top left; pointer-events: none; }
+.changes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px 32px; max-width: 1160px; }
+.changes h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint-text); }
+.changes ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; line-height: 1.5; color: var(--ink-muted); }
+.pr2 { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--ink-muted); background: var(--sunken); border-radius: 12px; padding: 10px 14px; max-width: 1160px; }
+
+/* Viewer */
+[hidden] { display: none !important; }
+.viewer { position: fixed; inset: 0; z-index: 50; background: var(--canvas); display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); }
+.v-bar { display: flex; align-items: center; gap: 14px; padding: 12px max(16px, env(safe-area-inset-right, 0px)) 12px max(16px, env(safe-area-inset-left, 0px)); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.v-bar b { font-size: 15px; font-weight: 600; }
+.v-grow { flex: 1; }
+.v-count { font-size: 12.5px; color: var(--ink-faint-text); font-variant-numeric: tabular-nums; }
+.v-btn { width: 32px; height: 32px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer; font-size: 14px; }
+.v-btn:hover { background: var(--sunken); }
+.v-btn:focus-visible, .v-bar .seg button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.v-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
+.v-stage { min-width: 0; min-height: 0; overflow: auto; background: var(--desk); display: grid; place-items: center; padding: 24px; }
+.v-box { position: relative; flex: none; }
+.v-board { position: absolute; left: 0; top: 0; transform-origin: top left; }
+.v-notes { border-left: 1px solid var(--border); padding: 20px; overflow: auto; display: grid; align-content: start; gap: 16px; background: var(--surface); }
+.v-notes h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-faint-text); }
+.v-notes ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13.5px; line-height: 1.5; color: var(--ink-muted); }
+@media (max-width: 900px) { .v-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; } .v-notes { border-left: 0; border-top: 1px solid var(--border); max-height: 34vh; } }
+
+.fit { width: 100%; overflow: hidden; }
+.fit > .scaled { transform-origin: top left; }
+.row-of-crops { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.crop-cap { font-size: 13px; color: var(--ink-muted); margin-top: 8px; }
+.gaps { border-top: 1px solid var(--border); padding-top: 24px; display: grid; gap: 10px; max-width: 900px; }
+.gaps h2 { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
+.gaps ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14.5px; line-height: 1.5; color: var(--ink-muted); }
+code { font-family: var(--font-mono); font-size: 0.92em; }
+
+/* ---------- The mocked app ---------- */
+.win {
+  position: relative; border-radius: 12px; overflow: hidden;
+  background: var(--a-canvas);
+  box-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.18), 0 22px 60px -20px rgb(0 0 0 / 0.35);
+  display: flex;
+}
+.app.dark .win { box-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.12), 0 22px 60px -20px rgb(0 0 0 / 0.7); }
+.ico { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* Sidebar */
+.side { width: 248px; flex: none; display: flex; flex-direction: column; background: var(--a-rail); }
+.band { height: 56px; display: flex; align-items: center; padding: 0 12px 0 20px; gap: 8px; flex: none; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.band .spacer { flex: 1; }
+.round-btn {
+  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--a-surface); color: var(--a-ink); box-shadow: var(--a-shadow-sm), 0 0 0 1px var(--a-edge);
+}
+.round-btn .ico { width: 17px; height: 17px; }
+.logo-row { display: flex; align-items: center; gap: 10px; padding: 4px 18px 14px; }
+.logo-tile { width: 30px; height: 30px; border-radius: 8px; background: #000; display: grid; place-items: center; }
+.logo-row b { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.nav { display: grid; gap: 1px; padding: 0 10px 10px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 10px;
+  font-size: 13px; font-weight: 500; color: var(--a-ink);
+}
+.nav-item .ico { color: var(--a-ink-muted); }
+.nav-item.on { background: var(--a-surface); box-shadow: var(--a-shadow-select); font-weight: 600; }
+.nav-item .badge { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--a-danger); font-variant-numeric: tabular-nums; }
+.nav-item .dot { margin-left: auto; }
+.divider { height: 1px; background: var(--a-border); margin: 2px 20px 8px; }
+.chats { flex: 1; overflow: hidden; padding: 0 10px; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 1px; }
+.group-label { font-size: 12px; font-weight: 500; color: var(--a-ink-faint-text); padding: 12px 10px 4px; }
+.group-label:first-child { padding-top: 4px; }
+.chat {
+  display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 10px; border-radius: 10px;
+  font-size: 13px; color: var(--a-ink); position: relative;
+}
+.chat .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat .clock { width: 13px; height: 13px; color: var(--a-ink-faint-text); margin-right: -2px; }
+.chat.on { background: var(--a-surface); box-shadow: var(--a-shadow-select); font-weight: 600; }
+.chat.hover { background: var(--a-sunken); }
+.chat .time { font-size: 12px; color: var(--a-ink-faint-text); font-variant-numeric: tabular-nums; flex: none; }
+.chat .more { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; color: var(--a-ink-muted); background: var(--a-surface); box-shadow: 0 0 0 1px var(--a-edge); flex: none; }
+.chat .more .ico { width: 14px; height: 14px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-right: 4px; }
+.dot.wait { background: var(--a-warning); }
+.dot.ready { background: var(--a-ink); }
+.mark-fail { width: 15px; height: 15px; color: var(--a-danger); flex: none; margin-right: 1px; }
+.face-sm { width: 18px; height: 18px; flex: none; margin-right: 1px; }
+.foot { border-top: 1px solid var(--a-border); padding: 12px 16px 14px; display: flex; align-items: center; gap: 10px; flex: none; }
+.me { width: 30px; height: 30px; border-radius: 50%; background: #3b3b3b; color: #fafafa; display: grid; place-items: center; font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; }
+.app.dark .me { background: #d4d4d4; color: #171717; }
+.foot .name { font-size: 13px; font-weight: 600; flex: 1; }
+.foot .ico { color: var(--a-ink-faint-text); }
+
+/* Today's rail, recreated from the owner's screenshots */
+.bot-row { display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 10px; border-radius: 12px; }
+.bot-row.on { background: var(--a-surface); box-shadow: var(--a-shadow-select); }
+.bot-row .nm { display: grid; gap: 1px; min-width: 0; }
+.bot-row .nm b { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bot-row .nm span { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--a-ink-faint-text); white-space: nowrap; }
+.bot-row.pinned { height: 64px; }
+.sec-title { font-size: 13px; font-weight: 500; color: var(--a-ink-faint-text); padding: 10px 10px 2px; display: flex; gap: 6px; align-items: center; }
+.sec-title .ico { width: 12px; height: 12px; }
+.foot-pill { flex: 1; height: 36px; border-radius: 999px; display: grid; place-items: center; font-size: 13.5px; font-weight: 550; background: var(--a-surface); box-shadow: var(--a-shadow-sm), 0 0 0 1px var(--a-edge); }
+.unsent { align-self: flex-end; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--a-ink-muted); }
+.unsent .ico { color: var(--a-ink-muted); }
+
+.tagchip { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--a-ink-muted); background: var(--a-sunken); padding: 3px 8px; border-radius: 6px; flex: none; }
+.eyebrow .ico { width: 12px; height: 12px; vertical-align: -2px; }
+
+/* Working loader: four dots chasing round a ring (replaces the mascot) */
+.dots { position: relative; width: 14px; height: 14px; flex: none; display: inline-block; animation: dots-spin 1s linear infinite; }
+.dots i { position: absolute; width: 3.6px; height: 3.6px; border-radius: 50%; background: var(--a-ink); }
+.dots i:nth-child(1) { left: 50%; top: 0; transform: translateX(-50%); opacity: 1; }
+.dots i:nth-child(2) { right: 0; top: 50%; transform: translateY(-50%); opacity: 0.72; }
+.dots i:nth-child(3) { left: 50%; bottom: 0; transform: translateX(-50%); opacity: 0.45; }
+.dots i:nth-child(4) { left: 0; top: 50%; transform: translateY(-50%); opacity: 0.22; }
+.dots-sm { width: 14px; height: 14px; margin-right: 2px; }
+.dots-md { width: 18px; height: 18px; }
+.dots-md i { width: 4.4px; height: 4.4px; }
+@keyframes dots-spin { to { transform: rotate(360deg); } }
+.logo-tile { flex: none; display: inline-grid; place-items: center; background: #000; }
+.app.dark .logo-tile { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14); }
+.pill-title { padding: 0 16px; }
+.pill .field { gap: 0; }
+.caret-in { display: inline-block; width: 1.5px; height: 16px; background: var(--a-ink); margin-left: 1px; }
+
+/* Settings content */
+.s-sec { display: grid; gap: 10px; }
+.s-sec-h { display: flex; align-items: baseline; justify-content: space-between; }
+.s-sec-h b { font-size: 13.5px; font-weight: 600; }
+.s-sec-h span { font-size: 12px; color: var(--a-ink-faint-text); font-variant-numeric: tabular-nums; }
+.s-text { border: 1px solid var(--a-border-strong); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; line-height: 1.55; min-height: 104px; background: var(--a-surface); }
+.s-hint { font-size: 12.5px; color: var(--a-ink-muted); }
+.s-row small { font-size: 12px; color: var(--a-ink-faint-text); font-variant-numeric: tabular-nums; flex: none; }
+.s-more { justify-content: center; font-size: 13px; font-weight: 550; color: var(--a-ink-muted); }
+.mini-seg { display: inline-flex; background: var(--a-border); padding: 2px; border-radius: 10px; gap: 2px; }
+.mini-seg span { font-size: 12.5px; color: var(--a-ink-muted); padding: 4px 12px; border-radius: 6px; }
+.mini-seg span.on { background: var(--a-surface); color: var(--a-ink); font-weight: 600; box-shadow: 0 1px 1.5px rgb(23 23 23 / 0.1); }
+.app.dark .mini-seg span.on { background: #3a3a3a; }
+.s-row .btn { height: 28px; }
+
+/* Connectors dialog */
+.cx { width: 760px; border-radius: 16px; background: var(--a-surface); box-shadow: var(--a-shadow-pop), 0 0 0 1px var(--a-border); overflow: hidden; display: flex; flex-direction: column; }
+.cx-head { display: flex; align-items: center; gap: 12px; padding: 22px 28px 0; }
+.cx-head h4 { margin: 0; font-size: 20px; font-weight: 600; flex: 1; }
+.cx-added { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--a-ink-muted); }
+.cx-stack { display: flex; }
+.cx-stack .lg { margin-left: -6px; box-shadow: 0 0 0 2px var(--a-surface); }
+.cx-stack .lg:first-child { margin-left: 0; }
+.cx-search { margin: 16px 28px 0; height: 38px; border-radius: 12px; border: 1px solid var(--a-border-strong); display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 14px; color: var(--a-ink-faint-text); }
+.cx-body { padding: 6px 28px 8px; display: grid; gap: 4px; }
+.cx-sec { font-size: 12px; font-weight: 500; color: var(--a-ink-faint-text); padding: 14px 0 6px; }
+.cx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 32px; }
+.cx-tile { display: flex; align-items: center; gap: 12px; min-height: 52px; }
+.cx-tile .meta { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.cx-tile .meta b { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx-tile .meta span { font-size: 12px; color: var(--a-ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx-tile .mark { font-size: 13px; color: var(--a-ink-muted); display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.cx-tile .mark .ico { width: 13px; height: 13px; }
+.cx-tile .mark.warn { color: var(--a-warning); }
+.add-pill { height: 28px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--a-border-strong); font-size: 13px; font-weight: 550; display: inline-flex; align-items: center; flex: none; }
+.cx-foot { display: flex; align-items: center; justify-content: space-between; padding: 12px 28px 18px; font-size: 12.5px; color: var(--a-ink-muted); }
+.cx-foot .more { font-weight: 550; color: var(--a-ink); }
+.lg { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; font-size: 13px; font-weight: 700; color: var(--a-ink); background: var(--a-sunken); border: 1px solid var(--a-edge); flex: none; }
+.lg.sm { width: 22px; height: 22px; border-radius: 6px; font-size: 10px; }
+.lg.lgx { width: 44px; height: 44px; border-radius: 12px; font-size: 17px; }
+/* After: polished tiles */
+.cx.v2 .cx-tile { padding: 8px 10px; margin: 0 -10px; border-radius: 12px; }
+.cx.v2 .cx-tile.hover { background: var(--a-sunken); }
+.cx.v2 .chev { color: var(--a-ink-faint-text); width: 14px; height: 14px; }
+.chipst { font-size: 11.5px; font-weight: 600; padding: 3px 8px; border-radius: 999px; flex: none; }
+.chipst.ok { color: var(--a-success); background: var(--a-success-soft); }
+.chipst.warn { color: var(--a-warning); background: var(--a-warning-soft); }
+.chipst.n { color: var(--a-ink-muted); background: var(--a-sunken); }
+/* Tool detail */
+.cx-back { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 550; color: var(--a-ink-muted); padding: 20px 28px 0; }
+.cx-back .ico { width: 14px; height: 14px; }
+.cx-id { display: flex; align-items: center; gap: 14px; padding: 14px 28px 0; }
+.cx-id .meta { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.cx-id .meta b { font-size: 18px; font-weight: 600; }
+.cx-id .meta span { font-size: 12.5px; color: var(--a-ink-muted); }
+.cx-acts { display: flex; gap: 8px; flex: none; }
+.cx-tools { padding: 16px 28px 20px; display: grid; gap: 12px; }
+.cx-tools-bar { display: flex; align-items: center; gap: 10px; }
+.cx-tools-bar .grow { flex: 1; }
+.cx-tsearch { height: 32px; width: 220px; border-radius: 10px; border: 1px solid var(--a-border-strong); display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: 13px; color: var(--a-ink-faint-text); }
+.cx-tsearch .ico { width: 14px; height: 14px; }
+.tool-list { border: 1px solid var(--a-border); border-radius: 14px; overflow: hidden; }
+.tool-group { font-size: 12px; font-weight: 500; color: var(--a-ink-faint-text); padding: 10px 14px 6px; background: var(--a-canvas); border-bottom: 1px solid var(--a-border); display: flex; justify-content: space-between; }
+.tool { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 10px 14px; border-bottom: 1px solid var(--a-border); }
+.tool:last-child { border-bottom: 0; }
+.tool code { font: 12.5px var(--font-mono); color: var(--a-ink); }
+.tool span { font-size: 12.5px; color: var(--a-ink-muted); grid-column: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool .chipst { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
+.plain-tools { display: grid; gap: 10px; }
+.plain-tools div { display: grid; gap: 1px; }
+.plain-tools b { font-size: 13px; font-weight: 600; }
+.plain-tools span { font-size: 12px; color: var(--a-ink-muted); }
+
+/* Stage */
+.stage-wrap { flex: 1; min-width: 0; padding: 10px 10px 10px 0; display: flex; }
+.stage {
+  flex: 1; min-width: 0; background: var(--a-surface); border-radius: 24px; box-shadow: var(--a-shadow-card);
+  display: flex; overflow: hidden; position: relative;
+}
+.app.dark .stage { box-shadow: 0 0 0 1px var(--a-edge); }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.head { height: 52px; display: flex; align-items: center; justify-content: center; position: relative; flex: none; }
+.pill {
+  display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px 0 6px; border-radius: 999px;
+  background: var(--a-surface); box-shadow: var(--a-shadow-sm), 0 0 0 1px var(--a-edge);
+  font-size: 14px; font-weight: 500; max-width: 420px;
+}
+.pill span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pill.editing { padding-right: 6px; }
+.pill .field { height: 24px; border-radius: 6px; padding: 0 8px; display: flex; align-items: center; box-shadow: 0 0 0 1.5px var(--a-ink); background: var(--a-surface); }
+.pill .field span { background: color-mix(in srgb, var(--a-ink) 14%, transparent); border-radius: 2px; }
+.head .side-btn { position: absolute; right: 16px; top: 10px; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; color: var(--a-ink-muted); }
+.head .side-btn.on { background: var(--a-sunken); color: var(--a-ink); }
+.page-head { height: 64px; display: flex; align-items: center; padding: 0 28px; gap: 12px; flex: none; }
+.page-head h3 { margin: 0; font-size: 20px; font-weight: 600; flex: 1; letter-spacing: -0.01em; }
+
+.transcript { flex: 1; min-height: 0; overflow: hidden; padding: 8px 32px 16px; display: flex; flex-direction: column; justify-content: flex-end; gap: 22px; }
+.transcript > * { flex: none; }
+.msg { display: flex; }
+.msg.me-msg { justify-content: flex-end; }
+.bubble { max-width: 560px; padding: 11px 15px; border-radius: 14px; font-size: 14.5px; line-height: 1.55; }
+.bubble.bot { background: var(--a-bubble); border: 1px solid var(--a-edge); box-shadow: var(--a-shadow-lift); }
+.bubble.own { background: var(--a-owner); }
+.bubble p { margin: 0; }
+.bubble p + p { margin-top: 8px; }
+.bubble code { font: 13px var(--font-mono); background: var(--a-sunken); padding: 1px 5px; border-radius: 5px; }
+.stack { display: grid; gap: 6px; justify-items: start; }
+.me-col { display: grid; justify-items: end; gap: 6px; }
+.queued { font-size: 12px; color: var(--a-ink-faint-text); display: inline-flex; align-items: center; gap: 5px; }
+.queued .ico { width: 13px; height: 13px; }
+.day { align-self: center; font-size: 12px; color: var(--a-ink-faint-text); }
+.card-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; width: 420px;
+  background: var(--a-bubble); border: 1px solid var(--a-edge); box-shadow: var(--a-shadow-lift);
+}
+.card-row .doc { width: 34px; height: 40px; border-radius: 6px; background: var(--a-sunken); display: grid; place-items: center; color: var(--a-ink-muted); flex: none; }
+.card-row .meta { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.card-row .meta b { font-size: 13.5px; font-weight: 600; }
+.card-row .meta span { font-size: 12px; color: var(--a-ink-faint-text); }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 10px;
+  font: 550 13px var(--font-ui); color: var(--a-ink); background: var(--a-sunken); border: 1px solid var(--a-edge); white-space: nowrap;
+}
+.btn .ico { width: 14px; height: 14px; }
+.btn.primary { background: var(--a-brand); color: var(--a-brand-ink); border-color: transparent; box-shadow: var(--a-shadow-sm); background-image: linear-gradient(rgb(255 255 255 / 0.1), transparent); }
+.btn.danger { background: var(--a-danger); color: #fff; border-color: transparent; }
+.app.dark .btn.danger { color: #1a0d09; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--a-ink-muted); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px;
+  font-size: 12.5px; color: var(--a-ink-muted); border: 1px solid var(--a-edge); background: var(--a-surface);
+}
+.chip i { font-style: normal; font-weight: 600; color: var(--a-ink); }
+.working { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--a-ink-muted); }
+.working .face-md { width: 26px; height: 26px; }
+.working b { color: var(--a-ink); font-weight: 500; }
+.working .elapsed { font-variant-numeric: tabular-nums; color: var(--a-ink-faint-text); }
+.working code { font: 12.5px var(--font-mono); color: var(--a-ink-muted); }
+
+/* Ask column and composer */
+.ask { padding: 0 32px 10px; display: grid; justify-items: center; gap: 10px; flex: none; }
+.approval {
+  width: 100%; max-width: 760px; border-radius: 16px; background: var(--a-bubble); border: 1px solid var(--a-edge);
+  box-shadow: var(--a-shadow-lift); padding: 14px 16px; display: grid; gap: 10px;
+}
+.approval .top { display: flex; align-items: center; gap: 10px; }
+.approval .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--a-warning); }
+.approval .from { font-size: 12.5px; color: var(--a-ink-muted); display: inline-flex; gap: 6px; align-items: center; }
+.approval .from a { color: var(--a-ink); font-weight: 550; text-decoration: underline; text-underline-offset: 3px; }
+.approval .tool { font-size: 14px; font-weight: 600; }
+.approval pre { margin: 0; font: 12.5px/1.6 var(--font-mono); background: var(--a-sunken); border-radius: 10px; padding: 10px 12px; color: var(--a-ink); white-space: pre-wrap; }
+.approval .acts { display: flex; justify-content: flex-end; gap: 8px; }
+.composer-area { padding: 0 32px 18px; display: grid; justify-items: center; gap: 8px; flex: none; }
+.composer {
+  width: 100%; max-width: 760px; height: 52px; border-radius: 999px; display: flex; align-items: center; gap: 10px; padding: 0 8px;
+  background: var(--a-bubble); border: 1px solid var(--a-edge); box-shadow: var(--a-shadow-raise);
+}
+.composer .plus { width: 36px; height: 36px; border-radius: 50%; background: var(--a-sunken); display: grid; place-items: center; color: var(--a-ink); }
+.composer .ph { flex: 1; font-size: 14.5px; color: var(--a-ink-faint-text); }
+.composer .send { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--a-sunken); color: var(--a-ink-faint); }
+.composer .send.stop { background: var(--a-brand); color: var(--a-brand-ink); }
+.composer .send.stop i { width: 10px; height: 10px; border-radius: 2px; background: currentColor; display: block; }
+.under { width: 100%; max-width: 760px; display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--a-ink-muted); padding: 0 8px; }
+.under .grow { flex: 1; }
+.under span { display: inline-flex; align-items: center; gap: 5px; }
+.under b { font-weight: 600; color: var(--a-ink); }
+.under .ico { width: 13px; height: 13px; }
+.note-card {
+  width: 100%; max-width: 760px; display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-radius: 14px;
+  background: var(--a-sunken); font-size: 13.5px; line-height: 1.45; color: var(--a-ink);
+}
+.note-card .ico { color: var(--a-ink-muted); }
+.note-card p { margin: 0; flex: 1; }
+
+/* Empty chat */
+.empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: 14px; padding-bottom: 40px; }
+.empty .face-xl { width: 64px; height: 64px; }
+.empty h4 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+.empty p { margin: 0; font-size: 14px; color: var(--a-ink-muted); }
+.starters { display: flex; gap: 8px; margin-top: 6px; }
+.starter { font-size: 13px; padding: 9px 14px; border-radius: 12px; border: 1px solid var(--a-edge); background: var(--a-surface); box-shadow: var(--a-shadow-sm); color: var(--a-ink); }
+
+/* Bot pane */
+.pane { width: 320px; flex: none; border-left: 1px solid var(--a-border); display: flex; flex-direction: column; overflow: hidden; }
+.pane-head { height: 52px; display: flex; align-items: center; padding: 0 12px 0 20px; flex: none; }
+.pane-head b { font-size: 15px; font-weight: 600; flex: 1; }
+.icon-btn { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; color: var(--a-ink-muted); }
+.pane-body { padding: 4px 20px 20px; display: grid; gap: 22px; overflow: hidden; }
+.sec { display: grid; gap: 10px; }
+.sec-h { display: flex; align-items: center; justify-content: space-between; font-size: 13.5px; font-weight: 600; }
+.sec-h span { font-weight: 400; font-size: 12px; color: var(--a-ink-faint-text); font-variant-numeric: tabular-nums; }
+.profile { display: flex; gap: 14px; align-items: center; }
+.profile .face-lg { width: 64px; height: 64px; flex: none; }
+.input { height: 36px; border-radius: 12px; border: 1px solid var(--a-border-strong); display: flex; align-items: center; padding: 0 12px; font-size: 14px; font-weight: 600; flex: 1; background: var(--a-surface); }
+.swatches { display: grid; grid-template-columns: repeat(10, 1fr); gap: 7px; }
+.swatches i { aspect-ratio: 1; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.06); }
+.swatches i.pick { box-shadow: 0 0 0 2px var(--a-surface), 0 0 0 3.5px var(--a-ink); }
+.well { border-radius: 14px; background: var(--a-sunken); padding: 12px 14px; font-size: 13px; line-height: 1.5; color: var(--a-ink); }
+.well.clamp p { margin: 0; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.mem { border-radius: 14px; border: 1px solid var(--a-border); overflow: hidden; }
+.mem div { display: flex; align-items: center; gap: 8px; padding: 9px 12px; font-size: 13px; border-bottom: 1px solid var(--a-border); }
+.mem div:last-child { border-bottom: 0; }
+.mem div span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem div small { font-size: 11.5px; color: var(--a-ink-faint-text); font-variant-numeric: tabular-nums; }
+.toggle-row { border-radius: 14px; background: var(--a-sunken); padding: 11px 14px; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 500; }
+.toggle-row > span:first-child { flex: 1; }
+.switch { width: 38px; height: 22px; border-radius: 999px; background: var(--a-ink); position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--a-surface); box-shadow: 0 1px 2px rgb(0 0 0 / 0.2); }
+.switch.off { background: var(--a-border-strong); }
+.switch.off::after { right: auto; left: 2px; }
+
+/* Routines page */
+.r-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 340px 1fr; gap: 0; border-top: 1px solid var(--a-border); }
+.r-list { border-right: 1px solid var(--a-border); padding: 12px; display: grid; align-content: start; gap: 2px; }
+.r-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 10px 12px; border-radius: 12px; }
+.r-item.on { background: var(--a-sunken); }
+.r-item b { font-size: 13.5px; font-weight: 600; }
+.r-item small { font-size: 12px; color: var(--a-ink-faint-text); grid-column: 1; }
+.r-item .st { grid-row: 1 / span 2; grid-column: 2; align-self: center; font-size: 11.5px; font-weight: 600; padding: 3px 8px; border-radius: 999px; }
+.st.ok { color: var(--a-success); background: var(--a-success-soft); }
+.st.fail { color: var(--a-danger); background: var(--a-danger-soft); }
+.st.paused { color: var(--a-ink-muted); background: var(--a-sunken); }
+.r-item.on .st.paused { background: var(--a-surface); }
+.r-detail { padding: 20px 28px; display: grid; align-content: start; gap: 18px; overflow: hidden; }
+.r-detail h4 { margin: 0; font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+.r-detail h4 .grow { flex: 1; }
+.label { font-size: 12px; font-weight: 500; color: var(--a-ink-faint-text); margin-bottom: 6px; }
+.hist { border: 1px solid var(--a-border); border-radius: 14px; overflow: hidden; }
+.hist div { display: grid; grid-template-columns: 110px 1fr auto; align-items: center; gap: 12px; padding: 9px 14px; font-size: 13px; border-bottom: 1px solid var(--a-border); }
+.hist div:last-child { border-bottom: 0; }
+.hist .when { color: var(--a-ink-muted); font-variant-numeric: tabular-nums; }
+.hist a { font-size: 12.5px; color: var(--a-ink); font-weight: 550; text-decoration: underline; text-underline-offset: 3px; }
+.notice { margin: 0 28px 14px; display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 14px; background: var(--a-warning-soft); color: var(--a-ink); font-size: 13px; }
+.notice .ico { color: var(--a-warning); }
+.notice p { margin: 0; flex: 1; }
+
+/* Overlays */
+.scrim { position: absolute; inset: 0; background: var(--a-scrim); display: grid; place-items: center; }
+.scrim.top { place-items: start center; padding-top: 72px; }
+.menu {
+  position: absolute; width: 200px; border-radius: 16px; background: var(--a-surface); box-shadow: var(--a-shadow-pop), 0 0 0 1px var(--a-edge);
+  padding: 6px; display: grid; gap: 1px; z-index: 3;
+}
+.menu div { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 10px; font-size: 13px; }
+.menu div.hl { background: var(--a-sunken); }
+.menu div.danger { color: var(--a-danger); }
+.menu kbd { margin-left: auto; font: 11.5px var(--font-ui); color: var(--a-ink-faint-text); }
+.dialog {
+  width: 380px; border-radius: 16px; background: var(--a-surface); box-shadow: var(--a-shadow-pop), 0 0 0 1px var(--a-border);
+  padding: 22px; display: grid; gap: 10px;
+}
+.dialog h4 { margin: 0; font-size: 16px; font-weight: 600; }
+.dialog p { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--a-ink-muted); }
+.dialog .acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.palette {
+  width: 720px; border-radius: 16px; background: var(--a-surface); box-shadow: var(--a-shadow-pop), 0 0 0 1px var(--a-edge); overflow: hidden;
+}
+.palette .q { height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 18px; font-size: 17px; border-bottom: 1px solid var(--a-border); }
+.palette .q .ico { width: 19px; height: 19px; color: var(--a-ink-muted); }
+.palette .caret { width: 1.5px; height: 20px; background: var(--a-ink); margin-left: -10px; }
+.tabs { display: flex; gap: 20px; padding: 0 18px; border-bottom: 1px solid var(--a-border); font-size: 13.5px; color: var(--a-ink-muted); }
+.tabs span { padding: 11px 0; }
+.tabs span.on { color: var(--a-ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--a-ink); }
+.results { padding: 8px; display: grid; gap: 1px; }
+.res-label { font-size: 12px; font-weight: 500; color: var(--a-ink-faint-text); padding: 10px 10px 4px; }
+.res { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 10px; }
+.res.hl { background: var(--a-sunken); }
+.res .ic { width: 30px; height: 30px; border-radius: 8px; background: var(--a-sunken); display: grid; place-items: center; color: var(--a-ink-muted); flex: none; }
+.res.hl .ic { background: var(--a-surface); }
+.res .txt { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.res .txt b { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res .txt span { font-size: 12.5px; color: var(--a-ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res mark { background: color-mix(in srgb, var(--a-warning) 22%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.res kbd, .res small { font: 12px var(--font-ui); color: var(--a-ink-faint-text); flex: none; font-variant-numeric: tabular-nums; }
+
+/* App settings dialog */
+.settings { width: 860px; height: 640px; border-radius: 16px; background: var(--a-surface); box-shadow: var(--a-shadow-pop), 0 0 0 1px var(--a-border); display: flex; overflow: hidden; }
+.s-nav { width: 220px; background: var(--a-canvas); border-right: 1px solid var(--a-border); padding: 16px 12px; display: grid; align-content: start; gap: 4px; }
+.s-nav div { white-space: nowrap; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; font-size: 13px; color: var(--a-ink-muted); }
+.s-nav div.on { background: var(--a-sunken); color: var(--a-ink); }
+.s-main { flex: 1; padding: 22px 28px; display: grid; align-content: start; gap: 22px; overflow: hidden; }
+.s-main h3 { margin: 0; font-size: 20px; font-weight: 600; display: flex; align-items: center; }
+.s-main h3 > span:first-child { flex: 1; }
+.s-group { border: 1px solid var(--a-border); border-radius: 14px; overflow: hidden; }
+.s-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--a-border); font-size: 13.5px; }
+.s-row:last-child { border-bottom: 0; }
+.s-row .grow { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.s-row .grow b { font-weight: 600; }
+.s-row .grow span { font-size: 12.5px; color: var(--a-ink-muted); }
+.s-row .face-row { width: 32px; height: 32px; flex: none; }
+.s-head { font-size: 13.5px; font-weight: 600; margin-bottom: -12px; }
+
+/* Working face motion: eyes glance while a turn runs. */
+@keyframes glance { 0%, 40% { transform: translate(0, 0); } 50%, 90% { transform: translate(-26px, -18px); } 100% { transform: translate(0, 0); } }
+.working-face { --eye-anim: glance 2.4s var(--ease-out) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="bot-face" viewBox="128 36 768 768"><g><circle cx="512" cy="420" r="352" stroke="#141413" stroke-width="8" style="fill:var(--face-head,#fff);stroke-opacity:var(--face-edge,0.1)"/></g><g><path fill="#141413" fill-rule="evenodd" d="M225.024 363.52c18.432-1.536 26.88-13.056 49.92-23.04 27.648-10.752 56.064-13.056 81.408-13.056 58.368-.768 92.16 9.216 112.128 31.488 9.216 10.752 10.752 19.2 17.664 21.504 7.68 2.304 14.592-.768 26.112-.768s18.432 3.072 26.112.768c6.912-2.304 8.448-10.752 17.664-21.504 19.968-22.272 53.76-32.256 112.128-31.488 25.344 0 53.76 2.304 81.408 13.056 23.04 9.984 31.488 21.504 49.92 23.04 6.144 1.536 6.144 6.912 6.144 16.128 0 10.752-1.536 12.288-9.984 15.36-11.52 4.608-11.52 13.824-13.824 29.952-3.84 41.472-11.52 72.96-31.488 91.392-16.896 16.128-46.08 23.04-81.408 23.04-46.848 0-80.64-9.984-99.072-30.72-19.2-19.968-25.344-49.92-29.952-79.104-2.304-16.128-6.912-25.344-27.648-25.344s-25.344 9.216-27.648 25.344c-4.608 29.184-10.752 59.136-29.952 79.104-18.432 20.736-52.224 30.72-99.072 30.72-35.328 0-64.512-6.912-81.408-23.04-19.968-18.432-27.648-49.92-31.488-91.392-2.304-16.128-2.304-25.344-13.824-29.952-8.448-3.072-9.984-4.608-9.984-15.36 0-9.216 0-14.592 6.144-16.128m131.328-14.592c-42.24 0-69.888 6.144-84.48 23.808-16.896 19.968-13.824 49.152-9.216 79.104 3.84 27.648 11.52 46.848 28.416 57.6 15.36 9.984 36.864 13.824 64.512 13.824 40.704 0 67.584-8.448 84.48-26.88 14.592-16.128 22.272-41.472 26.112-68.352 3.072-24.576-.768-43.776-12.288-56.832-16.896-17.664-48.384-22.272-97.536-22.272m311.808 0c-49.152 0-80.64 4.608-97.536 22.272-11.52 13.056-15.36 32.256-12.288 56.832 3.84 26.88 11.52 52.224 26.112 68.352 16.896 18.432 43.776 26.88 84.48 26.88 27.648 0 49.152-3.84 64.512-13.824 16.896-10.752 24.576-29.952 28.416-57.6 4.608-29.952 7.68-59.136-9.216-79.104-14.592-17.664-42.24-23.808-84.48-23.808"/></g><g><path d="M436 596 Q512 626 588 596 C586 646 552 672 512 672 C472 672 438 646 436 596 Z" fill="#141413" stroke="#141413" stroke-width="22" stroke-linejoin="round"/><path d="M474 656 C490 636 534 636 550 656 C540 668 527 672 512 672 C497 672 484 668 474 656 Z" fill="#FF8FA3"/></g><g style="animation:var(--eye-anim,none)"><ellipse cx="370.944" cy="441.088" fill="#141413" rx="50.688" ry="70.656"/><g><path fill="none" stroke="#fff" stroke-linecap="round" stroke-width="15.36" d="M365.568 404.224c-9.984 2.304-17.664 10.752-21.504 23.808"/></g></g><g style="animation:var(--eye-anim,none)"><ellipse cx="653.568" cy="441.088" fill="#141413" rx="50.688" ry="70.656"/><g><path fill="none" stroke="#fff" stroke-linecap="round" stroke-width="15.36" d="M648.192 404.224c-9.984 2.304-17.664 10.752-21.504 23.808"/></g></g>
+</symbol>
+  </defs>
+</svg>
+
+<div class="page">
+  <header class="intro">
+    <h1>Useful Bot with one bot and a chat-first sidebar</h1>
+    <p>Every screen that changes, as a pair of artboards: Before is today's app, redrawn from your screenshots; After is the app once the Pi engine change lands. Click any board to open it large, switch between Before and After, and step through the screens with the arrow keys.</p>
+    <div class="toolbar">
+      <span class="seg-label" id="theme-label">App theme</span>
+      <div class="seg" role="group" aria-labelledby="theme-label">
+        <button type="button" id="theme-light" aria-pressed="true">Light</button>
+        <button type="button" id="theme-dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+    <nav class="toc" id="toc" aria-label="Screens"></nav>
+  </header>
+  <div id="canvas" class="canvas"></div>
+  <section class="gaps" id="b-gaps">
+    <h2>Notes for the orchestrator and UI.md</h2>
+    <ul>
+      <li>There is no Bot pane any more. Instructions and Memory move to Settings, in a new "Instructions and memory" tab; the notify toggle moves to Settings &gt; General. The bot has no editable name or face: it is Useful Bot, shown with the logo.</li>
+      <li>No mascot face in the new app. The logo is the only bot mark (sidebar, empty chat); work in progress shows a ring of four dots.</li>
+      <li>Reply-ready is a dark dot, not blue: the Useful palette has no blue.</li>
+      <li>Connectors keep today's dialog. Added apps show Connected or Sign in again. The tools view splits reads and writes using today's connector risk rules (reads run, writes ask first in Auto).</li>
+      <li>New chat uses a pencil icon so it reads as "new chat", not "add".</li>
+    </ul>
+  </section>
+</div>
+
+<div class="viewer" id="viewer" hidden>
+  <div class="v-bar">
+    <b id="v-title"></b>
+    <div class="seg" role="group" aria-label="Before or after"><button type="button" id="v-before" aria-pressed="false">Before</button><button type="button" id="v-after" aria-pressed="true">After</button></div>
+    <span class="v-grow"></span>
+    <span class="v-count" id="v-count"></span>
+    <button type="button" class="v-btn" id="v-prev" aria-label="Previous screen">&#8592;</button>
+    <button type="button" class="v-btn" id="v-next" aria-label="Next screen">&#8594;</button>
+    <button type="button" class="v-btn" id="v-close" aria-label="Close">&#10005;</button>
+  </div>
+  <div class="v-body">
+    <div class="v-stage" id="v-stage"><div class="v-box" id="v-box"><div class="v-board app" id="v-board"></div></div></div>
+    <aside class="v-notes" id="v-notes"></aside>
+  </div>
+</div>
+
+<script>
+(function () {
+  const I = {
+    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+    newchat: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2 2 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+    plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
+    panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>',
+    more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+    pencil: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+    trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+    shield: '<path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1Z"/><path d="m9 12 2 2 4-4"/>',
+    chev: '<path d="m6 9 6 6 6-6"/>',
+    up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    alert: '<path d="m21.7 18-8-14a2 2 0 0 0-3.5 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    doc: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
+    ext: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+    play: '<path d="M7 4v16l13-8Z"/>',
+    chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+    corner: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+    copy: '<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+    sliders: '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
+    server: '<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+    monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
+    gauge: '<path d="m12 14 4-4"/><path d="M3.3 19a10 10 0 1 1 17.4 0"/>',
+    info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    arrowin: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+    hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"/>',
+    pin: '<path d="M12 17v5"/><path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8a2 2 0 0 0-1.1-1.8l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1Z"/>',
+    eye: '<path d="M10.7 5.1A10.7 10.7 0 0 1 22 12a10.8 10.8 0 0 1-1.4 2.2"/><path d="M14.1 14.2a3 3 0 0 1-4.2-4.2"/><path d="M17.5 17.5A10.8 10.8 0 0 1 2 12a10.7 10.7 0 0 1 4.4-5.1"/><path d="m2 2 20 20"/>',
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
+    note: '<path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M9 13h6"/><path d="M9 17h4"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+    refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/>',
+    chevr: '<path d="m9 18 6-6-6-6"/>',
+    chevl: '<path d="m15 18-6-6 6-6"/>',
+    chevr2: '<path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/>'
+  };
+  const ico = (n, cls) => '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">' + I[n] + '</svg>';
+  const face = (cls, color, working, size, edge) =>
+    '<svg class="' + cls + (working ? ' working-face' : '') + '" viewBox="128 36 768 768" style="--face-head:' + (color || '#ffffff') +
+    (size ? ';width:' + size + 'px;height:' + size + 'px' : '') + (edge === 0 ? ';--face-edge:0' : '') + '" aria-hidden="true"><use href="#bot-face"/></svg>';
+  const BOT = 'Useful Bot';
+  const BOTCOLOR = '#ffffff';
+  const dots = (size) => '<span class="dots' + (size ? ' dots-' + size : '') + '" role="img" aria-label="Working"><i></i><i></i><i></i><i></i></span>';
+  const logo = (px) => '<span class="logo-tile" style="width:' + px + 'px;height:' + px + 'px;border-radius:' + Math.round(px * 0.27) + 'px">' + face('', '#ffffff', false, Math.round(px * 0.74), 0) + '</span>';
+
+  // ----- Sidebar -----
+  const CHATS = [
+    { g: 'Today', items: [
+      { t: 'Aurelith landing page', on: true, s: 'work' },
+      { t: 'Morning email digest', clock: true, s: 'wait' },
+      { t: 'Q4 content calendar', s: 'ready' },
+      { t: 'Rename my screenshots', s: 'fail' },
+      { t: 'Drive cleanup plan', time: '9:12' }
+    ] },
+    { g: 'Yesterday', items: [
+      { t: 'Weekly growth report', clock: true, time: '18:02' },
+      { t: 'Pricing page copy', time: '16:40' }
+    ] },
+    { g: 'Previous 7 days', items: [
+      { t: 'LinkedIn job scan', clock: true, time: 'Tue' },
+      { t: 'Onboarding flow in Excalidraw', time: 'Mon' },
+      { t: 'Thumbnail ideas for the YT video', time: 'Sun' }
+    ] },
+    { g: 'October', items: [
+      { t: 'Invoice spreadsheet for Q3', time: 'Oct 9' },
+      { t: 'Product feedback triage', time: 'Oct 6' }
+    ] }
+  ];
+  function chatRow(c, opts) {
+    opts = opts || {};
+    let trail = '';
+    if (opts.more && c.t === opts.more) trail = '<span class="more">' + ico('more') + '</span>';
+    else if (c.s === 'work') trail = dots('sm');
+    else if (c.s === 'wait') trail = '<span class="dot wait" title="Waiting on you"></span>';
+    else if (c.s === 'ready') trail = '<span class="dot ready" title="Reply ready"></span>';
+    else if (c.s === 'fail') trail = ico('alert', 'mark-fail');
+    else trail = '<span class="time">' + c.time + '</span>';
+    const on = opts.select === undefined ? c.on : c.t === opts.select;
+    const cls = 'chat' + (on ? ' on' : '') + (opts.hover === c.t ? ' hover' : '');
+    return '<div class="' + cls + '">' + (c.clock ? ico('clock', 'clock') : '') + '<span class="t">' + c.t + '</span>' + trail + '</div>';
+  }
+  function sidebar(opts) {
+    opts = opts || {};
+    const nav = [
+      ['clock', 'Routines', opts.nav === 'routines', '<span class="badge">1</span>'],
+      ['image', 'Library', opts.nav === 'library', ''],
+      ['plug', 'Connectors', false, '<span class="dot wait" title="A connection needs sign-in"></span>']
+    ].map(n => '<div class="nav-item' + (n[2] ? ' on' : '') + '">' + ico(n[0]) + n[1] + n[3] + '</div>').join('');
+    const groups = CHATS.map(g => '<div class="group-label">' + g.g + '</div>' + g.items.map(c => chatRow(c, opts)).join('')).join('');
+    return '<aside class="side">' +
+      '<div class="band"><div class="lights"><i></i><i></i><i></i></div><div class="spacer"></div>' +
+      '<div class="round-btn" title="Search (⌘K)">' + ico('search') + '</div><div class="round-btn" title="New chat (⌘N)">' + ico('newchat') + '</div></div>' +
+      '<div class="logo-row">' + logo(30) + '<b>Useful Bot</b></div>' +
+      '<nav class="nav">' + nav + '</nav><div class="divider"></div>' +
+      '<div class="chats">' + groups + '</div>' +
+      '<div class="foot"><div class="me">WJ</div><span class="name">Wasim Jalali</span>' + ico('chev') + '</div>' +
+      '</aside>';
+  }
+  function composer(o) {
+    o = o || {};
+    return '<div class="composer-area">' + (o.note || '') +
+      '<div class="composer"><div class="plus">' + ico('plus') + '</div><div class="ph">Message ' + BOT + '</div>' +
+      '<div class="send' + (o.stop ? ' stop' : '') + '">' + (o.stop ? '<i></i>' : ico('up')) + '</div></div>' +
+      '<div class="under"><span>' + ico('folder') + 'aurelith-site ' + ico('chev') + '</span><span>' + ico('shield') + '<b>Full access</b> ' + ico('chev') + '</span><span class="grow"></span><span><b>Claude Sonnet 5.5</b> Medium ' + ico('chev') + '</span></div></div>';
+  }
+  function chatHead(title) {
+    return '<div class="head"><div class="pill pill-title"><span>' + title + '</span></div></div>';
+  }
+  function transcript() {
+    return '<div class="transcript">' +
+      '<div class="stack"><div class="bubble bot"><p>I built it as a single <code>index.html</code> with HTML, CSS, inline SVG and plain JavaScript. The hero shows the watch with turning gears and a ticking second hand.</p><p>I checked it at 1440×900 and 400×800 in headless Chrome. No console errors at either size.</p></div>' +
+      '<div class="card-row"><div class="doc">' + ico('doc') + '</div><div class="meta"><b>index.html</b><span>Page · saved to your Library</span></div><span class="btn">' + ico('ext') + 'Open in browser</span></div></div>' +
+      '<div class="day">Today</div>' +
+      '<div class="msg me-msg"><div class="bubble own">Make the pricing card dark and add a Reserve button that scrolls to it.</div></div>' +
+      '<div class="stack"><div class="bubble bot"><p>The pricing card is dark now, with the price in white and the spec list in light gray. Wiring the Reserve button next.</p></div>' +
+      '<div class="working">' + dots('md') + '<b>Running a command</b><code>open index.html</code><span class="elapsed">0:14</span></div></div>' +
+      '<div class="me-col"><div class="bubble own">Also add a footer link to the press kit.</div><span class="queued">' + ico('clock') + 'Queued, sends when this turn ends</span></div>' +
+      '</div>';
+  }
+  function win(inner, o) {
+    o = o || {};
+    return '<div class="win" style="width:' + (o.w || 1180) + 'px;height:' + (o.h || 780) + 'px">' + inner + '</div>';
+  }
+
+  // ----- Today's app (Before), redrawn from the owner's screenshots -----
+  const OLD_BOTS = [
+    { sec: null, items: [['Generalist', '', '#ffffff', 'pinned']] },
+    { sec: 'Operations', items: [['Drive Admin', '', '#c9e8b8']] },
+    { sec: 'Content Studio', items: [['Content Writer', 'Social copy & scripts', '#ffffff'], ['Visual Creator', 'Social media design', '#d8dde6', 'on'], ['YT Producer', '', '#dcc9f2']] },
+    { sec: 'Growth & Opportunities', items: [['Job Scout', 'LinkedIn jobs', '#f3eba6'], ['Growth Tracker', 'Social analytics', '#f6b8d9']] },
+    { sec: 'Unassigned', items: [['Product Feedback', 'Feedback triage', '#f9cfae'], ['Morning Email Review', 'Email triage', '#ffffff']] }
+  ];
+  const VC = '#d8dde6';
+  function beforeSide(o) {
+    o = o || {};
+    const rail = OLD_BOTS.map(g => (g.sec ? '<div class="sec-title">' + ico('chev') + g.sec + '</div>' : '') + g.items.map(b =>
+      '<div class="bot-row' + (b[3] === 'pinned' ? ' pinned' : '') + ((o.select ? o.select === b[0] : b[3] === 'on') ? ' on' : '') + '">' + face('', b[2], false, b[3] === 'pinned' ? 44 : 34) +
+      '<div class="nm"><b>' + b[0] + '</b>' + (b[1] ? '<span>' + b[1] + '</span>' : '') + '</div></div>').join('')).join('');
+    return '<aside class="side"' + (o.h ? ' style="height:' + o.h + 'px"' : '') + '>' +
+      '<div class="band"><div class="lights"><i></i><i></i><i></i></div><div class="spacer"></div>' +
+      '<div class="round-btn">' + ico('search') + '</div><div class="round-btn">' + ico('plus') + '</div></div>' +
+      '<div class="logo-row"><div class="logo-tile">' + face('', '#ffffff', false, 22, 0) + '</div><b>Useful Bot</b></div>' +
+      '<div class="chats" style="gap:2px">' + rail + '</div>' +
+      '<div class="foot" style="border-top:0"><div class="me">WJ</div><div class="foot-pill">Connectors</div></div></aside>';
+  }
+  function oldHead(name, color, paneOn) {
+    return '<div class="head"><div class="pill">' + face('', color || VC, false, 22) + '<span>' + name + '</span></div><div class="side-btn' + (paneOn ? ' on' : '') + '">' + ico('panel') + '</div></div>';
+  }
+  function oldTranscript() {
+    return '<div class="transcript">' +
+      '<div class="stack"><div class="bubble bot"><p>I finished it. I built the landing page as a single index.html file. It uses only HTML, CSS, inline SVG and plain JavaScript, with no network requests.</p></div></div>' +
+      '<div class="msg me-msg"><div class="bubble own">Where is it? Can you open it in my browser?</div></div>' +
+      '<div class="stack"><div class="bubble bot"><p>It is at <code>/Users/wasimjalali/index.html</code>. Yes, I opened it in headless Chrome and checked it at 1440x900 and 400x800. No console errors came back for either size.</p></div></div>' +
+      '<div class="day">Today</div>' +
+      '<div class="msg me-msg"><div class="bubble own">Open it in my browser so I can see the result if it\'s finished.</div></div>' +
+      '<div class="unsent">' + ico('alert') + 'Not sent. The connection dropped before the reply finished.<span class="btn">Retry</span><span class="btn">Edit</span>' + ico('x') + '</div>' +
+      '</div>';
+  }
+  function oldComposer(name) {
+    return '<div class="composer-area"><div class="composer"><div class="plus">' + ico('plus') + '</div><div class="ph">Message ' + (name || 'Visual Creator') + '</div><div class="send">' + ico('up') + '</div></div>' +
+      '<div class="under"><span>' + ico('folder') + 'Project ' + ico('chev') + '</span><span>' + ico('shield') + '<b>Full access</b> ' + ico('chev') + '</span><span class="grow"></span><span><b>Flint V1.0:free</b> Fast ' + ico('chev') + '</span></div></div>';
+  }
+  function oldWindow(inner) { return win(beforeSide() + '<div class="stage-wrap"><div class="stage">' + inner + '</div></div>'); }
+  const VC_DESC = 'Image-first designer for Wasim\'s social channels: thumbnails, post graphics, covers, carousels, infographics and variants. Uses the connected default image model unless another is requested or clearly needed, and Excalidraw for diagrams and storyboards.';
+  const before = {
+    mainBefore: () => oldWindow('<div class="main">' + oldHead('Visual Creator') + oldTranscript() + oldComposer() + '</div>'),
+    menuBefore: () => '<div class="win" style="width:248px;height:360px">' +
+      '<aside class="side" style="height:360px"><div class="chats" style="gap:2px;padding-top:12px">' +
+      '<div class="sec-title">' + ico('chev') + 'Content Studio</div>' +
+      OLD_BOTS[2].items.map(b => '<div class="bot-row' + (b[0] === 'Visual Creator' ? ' on' : '') + '">' + face('', b[2], false, 34) + '<div class="nm"><b>' + b[0] + '</b>' + (b[1] ? '<span>' + b[1] + '</span>' : '') + '</div></div>').join('') +
+      '<div class="sec-title">' + ico('chev') + 'Growth & Opportunities</div>' +
+      OLD_BOTS[3].items.map(b => '<div class="bot-row">' + face('', b[2], false, 34) + '<div class="nm"><b>' + b[0] + '</b><span>' + b[1] + '</span></div></div>').join('') +
+      '</div></aside>' +
+      '<div class="menu" style="left:62px;top:139px;width:176px">' +
+      [['pin', 'Pin'], ['folder', 'Move to section'], ['sliders', 'Settings'], ['pencil', 'Rename'], ['eye', 'Hide']].map(m => '<div' + (m[1] === 'Pin' ? ' class="hl"' : '') + '>' + ico(m[0]) + m[1] + '</div>').join('') +
+      '<div class="danger">' + ico('trash') + 'Delete</div></div></div>',
+    confirmBefore: () => '<div class="win" style="width:520px;height:420px;background:var(--a-surface)">' +
+      '<div style="padding:24px 28px;display:grid;gap:18px;width:100%;align-content:start;justify-items:start">' +
+      '<div class="bubble bot" style="max-width:380px">Here are three thumbnail directions for the video, each at 1280x720.</div>' +
+      '<div class="msg me-msg" style="justify-self:stretch"><div class="bubble own" style="max-width:300px">Go with the second one.</div></div>' +
+      '<div class="bubble bot" style="max-width:380px">Exported the second one as a 1280x720 PNG to your Library.</div></div>' +
+      '<div class="scrim"><div class="dialog"><h4>Delete bot</h4><p>Delete Visual Creator? This removes the bot, its profile and its transcript. Workspace files stay.</p>' +
+      '<div class="acts"><span class="btn">Cancel</span><span class="btn danger">Delete</span></div></div></div></div>',
+    renameBefore: () => '<div class="win" style="width:760px;height:260px;background:var(--a-surface);flex-direction:column">' +
+      oldHead('Visual Creator') +
+      '<div style="padding:8px 32px;display:grid;gap:18px"><div class="bubble bot" style="justify-self:start">Here are three thumbnail directions for the video, each at 1280x720.</div>' +
+      '<div class="msg me-msg"><div class="bubble own">Go with the second one.</div></div></div>' +
+      '<div class="scrim"><div class="dialog" style="width:340px"><h4>Rename</h4><div class="label" style="margin:4px 0 0">Name</div><div class="input" style="flex:none;font-weight:400">Visual Creator</div>' +
+      '<div class="acts"><span class="btn">Cancel</span><span class="btn primary">Rename</span></div></div></div></div>',
+    approvalBefore: () => '<div class="win" style="width:922px;height:330px;background:var(--a-surface)">' +
+      '<div class="main" style="justify-content:flex-end;padding-top:14px">' +
+      '<div class="ask"><div class="approval"><div class="top"><span class="eyebrow" style="color:var(--a-ink)">' + ico('hand') + ' Needs approval</span><span style="flex:1"></span><span class="from">bash</span></div>' +
+      '<div class="from" style="margin-top:-4px">Morning Email Review</div><pre>gmail-cli send --to team@usefulbuild.com --subject "Digest for Oct 25" --body-file digest.md</pre>' +
+      '<div class="acts"><span class="btn">Deny</span><span class="btn primary">Approve</span></div></div></div>' +
+      oldComposer() + '</div></div>',
+    routinesBefore: () => oldWindow('<div class="main">' + oldHead('Visual Creator', VC, true) + oldTranscript() + oldComposer() + '</div>' +
+      '<div class="pane"><div class="pane-head" style="justify-content:flex-end;gap:4px"><span class="icon-btn">' + ico('sliders') + '</span><span class="icon-btn">' + ico('chevr2') + '</span></div>' +
+      '<div class="pane-body" style="justify-items:center;text-align:center;gap:10px">' + face('', VC, false, 76) +
+      '<b style="font-size:16px">Visual Creator</b><span style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--a-ink-faint-text)">Social media design</span>' +
+      '<p style="margin:0;font-size:13px;line-height:1.5;color:var(--a-ink-muted)">' + VC_DESC + '</p>' +
+      '<div style="width:100%;border-top:1px solid var(--a-border);margin-top:6px;padding-top:14px;display:grid;gap:10px;justify-items:center">' +
+      '<div class="sec-h" style="width:100%">Routines <span style="font-size:16px;color:var(--a-ink-muted)">+</span></div><span style="font-size:13px;color:var(--a-ink-muted)">Tasks this bot runs on a schedule.</span><span class="btn">Create routine</span></div>' +
+      '</div></div>'),
+    paneBefore: () => oldWindow('<div class="main">' + oldHead('Visual Creator', VC, true) + oldTranscript() + oldComposer() + '</div>' +
+      '<div class="pane"><div class="pane-head"><b>Settings</b><span class="icon-btn">' + ico('x') + '</span></div><div class="pane-body">' +
+      '<div class="sec"><div class="sec-h">Profile</div><div class="profile">' + face('face-lg', VC) + '<div style="display:grid;gap:8px;flex:1"><div class="input">Visual Creator</div><div class="input" style="font-weight:400">Social Media Design</div></div></div>' +
+      '<div class="sec-h" style="font-weight:400;font-size:12px;color:var(--a-ink-faint-text)">Avatar color <span>Silver · Reset</span></div><div class="swatches">' +
+      ['#ffffff', '#f9c5c5', '#f9cfae', '#f7dfa8', '#f3eba6', '#c9e8b8', '#b4e4da', '#b7dcf2', '#d8dde6', '#dcc9f2'].map((c, i) => '<i style="background:' + c + '"' + (i === 8 ? ' class="pick"' : '') + '></i>').join('') + '</div></div>' +
+      '<div class="sec"><div class="sec-h">Instructions <span class="btn" style="height:26px">Edit</span></div><div class="well clamp"><p>' + VC_DESC + '</p></div></div>' +
+      '<div class="sec"><div class="sec-h">Routines <span style="font-size:16px;color:var(--a-ink-muted)">+</span></div><div class="well">Tasks this bot runs on a schedule.</div></div>' +
+      '<div class="sec"><div class="sec-h">Memory</div><div class="well">Nothing remembered yet. Visual Creator saves notes as you work together.</div></div>' +
+      '<div class="toggle-row"><span>Notify when Visual Creator finishes</span><span class="switch off"></span></div>' +
+      '</div></div>'),
+    searchBefore: () => oldWindow('<div class="main">' + oldHead('Visual Creator') + oldTranscript() + oldComposer() + '</div>') .replace(/<\/div>$/, '') +
+      '',
+    emptyBefore: () => oldWindow('<div class="main"><div class="head" style="justify-content:flex-start;padding:0 28px;border-bottom:1px solid var(--a-border)"><span style="font-size:15px;font-weight:600;margin-right:12px">To</span><span style="font-size:15px;color:var(--a-ink-faint-text)">Search or create bots</span></div>' +
+      '<div style="padding:16px 22px"><div class="palette" style="width:560px">' +
+      '<div class="results"><div class="res hl"><div class="ic">' + ico('plus') + '</div><div class="txt"><b>New Bot</b></div><kbd>⌘1</kbd></div>' +
+      '<div class="res"><div class="ic">' + ico('users') + '</div><div class="txt"><b>Create group chat</b></div><kbd>⌘2</kbd></div>' +
+      [['Product Feedback', 'Feedback triage', '#f9cfae'], ['Morning Email Review', 'Email triage', '#ffffff'], ['Job Scout', 'LinkedIn jobs', '#f3eba6'], ['Growth Tracker', 'Social analytics', '#f6b8d9'], ['Content Writer', 'Social copy & scripts', '#ffffff'], ['Visual Creator', 'Social media design', VC], ['YT Producer', '', '#dcc9f2'], ['Drive Admin', '', '#c9e8b8']].map(b =>
+        '<div class="res">' + face('', b[2], false, 30) + '<div class="txt"><b>' + b[0] + '</b></div>' + (b[1] ? '<span class="tagchip">' + b[1] + '</span>' : '') + '</div>').join('') +
+      '</div></div></div></div>'),
+    earlierBefore: () => '<div class="win" style="width:248px;height:780px">' + beforeSide({ select: 'Job Scout', h: 780 }) + '</div>'
+  };
+  // Search (Before) needs the palette over the old window.
+  before.searchBefore = () => win(beforeSide() + '<div class="stage-wrap"><div class="stage"><div class="main">' + oldHead('Visual Creator') + oldTranscript() + oldComposer() + '</div></div></div>' +
+    '<div class="scrim top"><div class="palette"><div class="q">' + ico('search') + '<span style="color:var(--a-ink-faint-text)">Search</span></div>' +
+    '<div class="tabs"><span class="on">All</span><span>Messages</span><span>Bots</span><span>Groups</span></div><div class="results">' +
+    '<div class="res hl"><div class="ic">' + ico('newchat') + '</div><div class="txt"><b>New Bot</b></div></div>' +
+    '<div class="res-label">Recents</div>' +
+    ['Clear the simple chat history.', 'clear the chat history.', 'clear this chat history.'].map(r => '<div class="res">' + face('', '#ffffff', false, 30) + '<div class="txt"><b style="font-weight:500">' + r + '</b><span>Generalist · 3 wk ago</span></div></div>').join('') +
+    '<div class="res-label">Bots</div>' +
+    [['Product Feedback', 'Feedback triage', '#f9cfae'], ['Morning Email Review', 'Email triage', '#ffffff'], ['Job Scout', 'LinkedIn jobs', '#f3eba6']].map(b => '<div class="res">' + face('', b[2], false, 30) + '<div class="txt"><b style="font-weight:500">' + b[0] + '</b></div><span class="tagchip">' + b[1] + '</span></div>').join('') +
+    '</div></div></div>');
+
+  const SETTINGS_TABS = [['sliders', 'General'], ['note', 'Instructions and memory'], ['server', 'Providers'], ['monitor', 'Computer'], ['gauge', 'Usage'], ['chat', 'Feedback'], ['info', 'About']];
+  function settingsWin(tab, body) {
+    return '<div class="win" style="width:900px;height:680px"><div class="scrim">' +
+      '<div class="settings"><div class="s-nav">' + SETTINGS_TABS.map(n => '<div class="' + (n[1] === tab ? 'on' : '') + '">' + ico(n[0]) + n[1] + '</div>').join('') +
+      '</div><div class="s-main"><h3><span>' + tab + '</span><span class="icon-btn">' + ico('x') + '</span></h3>' + body + '</div></div></div></div>';
+  }
+
+
+  const APPS_ADDED = [['Gmail', 'G', 'Connected as wasim@usefulbuild.com'], ['Google Drive', 'D', 'Connected as wasim@usefulbuild.com'], ['Notion', 'N', 'Connected'], ['Excalidraw', 'E', 'MCP server · 2 tools']];
+  const APPS_ALL = [['Slack', 'S'], ['GitHub', 'GH'], ['Linear', 'L'], ['Google Calendar', 'C'], ['HubSpot', 'H'], ['Airtable', 'A']];
+  const lg = (l, cls) => '<span class="lg' + (cls ? ' ' + cls : '') + '">' + l + '</span>';
+  function cxFrame(inner, h) { return '<div class="win" style="width:900px;height:' + (h || 720) + 'px"><div class="scrim">' + inner + '</div></div>'; }
+  const GMAIL_TOOLS = {
+    reads: [['GMAIL_FETCH_EMAILS', 'List and search emails with Gmail query syntax'], ['GMAIL_GET_THREAD', 'Read every message in a thread'], ['GMAIL_LIST_LABELS', 'List the labels on the account'], ['GMAIL_GET_ATTACHMENT', 'Download an attachment from a message']],
+    writes: [['GMAIL_SEND_EMAIL', 'Send an email from your account'], ['GMAIL_CREATE_DRAFT', 'Save a draft without sending it'], ['GMAIL_MODIFY_LABELS', 'Add or remove labels on messages'], ['GMAIL_MOVE_TO_TRASH', 'Move a message to the trash']]
+  };
+  Object.assign(before, {
+    connectorsBefore: () => cxFrame('<div class="cx"><div class="cx-head"><h4>Connectors</h4><div class="cx-added"><span class="cx-stack">' + APPS_ADDED.slice(0, 3).map(a => lg(a[1], 'sm')).join('') + '</span>4 added</div></div>' +
+      '<div class="cx-search">' + ico('search') + 'Search apps</div><div class="cx-body">' +
+      '<div class="cx-sec">Added</div><div class="cx-grid">' + APPS_ADDED.map(a => '<div class="cx-tile">' + lg(a[1]) + '<div class="meta"><b>' + a[0] + '</b><span>' + a[2] + '</span></div><span class="mark">' + ico('check') + 'Added</span></div>').join('') + '</div>' +
+      '<div class="cx-sec">All apps</div><div class="cx-grid">' + APPS_ALL.map(a => '<div class="cx-tile">' + lg(a[1]) + '<div class="meta"><b>' + a[0] + '</b><span>Not connected</span></div><span class="add-pill">Add</span></div>').join('') + '</div></div>' +
+      '<div class="cx-foot"><span>Composio key ·…7f2a</span><span class="more">Show more (1,482 left)</span></div></div>'),
+    toolsBefore: () => cxFrame('<div class="cx"><span class="cx-back">' + ico('chevl') + 'Connectors</span>' +
+      '<div class="cx-id">' + lg('G', 'lgx') + '<div class="meta"><b>Gmail</b><span>App · Composio</span></div></div>' +
+      '<div style="padding:14px 28px 0;font-size:13px;color:var(--a-ink-muted)">Connected as wasim@usefulbuild.com</div>' +
+      '<div style="padding:16px 28px 0;display:flex;gap:8px"><span class="btn ghost">Disconnect</span></div>' +
+      '<div class="cx-tools"><div style="font-size:13px;font-weight:600">48 tools</div><div class="plain-tools">' +
+      GMAIL_TOOLS.reads.concat(GMAIL_TOOLS.writes).slice(0, 7).map(x => '<div><b>' + x[0] + '</b><span>' + x[1] + '</span></div>').join('') + '</div></div></div>')
+  });
+  const CX_AFTER = {
+    connectors: () => cxFrame('<div class="cx v2"><div class="cx-head"><h4>Connectors</h4><div class="cx-added"><span class="cx-stack">' + APPS_ADDED.slice(0, 3).map(a => lg(a[1], 'sm')).join('') + '</span>4 added</div></div>' +
+      '<div class="cx-search">' + ico('search') + 'Search 1,500 apps</div><div class="cx-body">' +
+      '<div class="cx-sec">Added</div><div class="cx-grid">' + APPS_ADDED.map((a, i) => '<div class="cx-tile' + (i === 0 ? ' hover' : '') + '">' + lg(a[1]) + '<div class="meta"><b>' + a[0] + '</b><span>' + (i === 2 ? 'Sign-in expired' : a[2]) + '</span></div>' + (i === 2 ? '<span class="chipst warn">Sign in again</span>' : '<span class="chipst ok">Connected</span>') + ico('chevr', 'chev') + '</div>').join('') + '</div>' +
+      '<div class="cx-sec">All apps</div><div class="cx-grid">' + APPS_ALL.map(a => '<div class="cx-tile">' + lg(a[1]) + '<div class="meta"><b>' + a[0] + '</b><span>Not connected</span></div><span class="add-pill">Add</span></div>').join('') + '</div></div>' +
+      '<div class="cx-foot"><span>Composio key ·…7f2a</span><span class="more">Show more (1,482 left)</span></div></div>'),
+    tools: () => cxFrame('<div class="cx v2"><span class="cx-back">' + ico('chevl') + 'Connectors</span>' +
+      '<div class="cx-id">' + lg('G', 'lgx') + '<div class="meta"><b>Gmail</b><span>App · Composio · connected as wasim@usefulbuild.com</span></div>' +
+      '<div class="cx-acts"><span class="btn">' + ico('refresh') + 'Reconnect</span><span class="btn ghost">Disconnect</span></div></div>' +
+      '<div class="cx-tools"><div class="cx-tools-bar"><span class="chipst ok">Connected</span><span style="font-size:13px;color:var(--a-ink-muted)">48 tools · 31 read · 17 write</span><span class="grow"></span><div class="mini-seg"><span class="on">All</span><span>Reads</span><span>Writes</span></div><div class="cx-tsearch">' + ico('search') + 'Filter tools</div></div>' +
+      '<div class="tool-list"><div class="tool-group"><span>Reads</span><span>Run without asking</span></div>' +
+      GMAIL_TOOLS.reads.slice(0, 3).map(x => '<div class="tool"><code>' + x[0] + '</code><span>' + x[1] + '</span><span class="chipst n">Read</span></div>').join('') +
+      '<div class="tool-group"><span>Writes</span><span>Ask you first in Auto</span></div>' +
+      GMAIL_TOOLS.writes.slice(0, 3).map(x => '<div class="tool"><code>' + x[0] + '</code><span>' + x[1] + '</span><span class="chipst warn">Asks first</span></div>').join('') +
+      '</div></div></div>')
+  };
+
+  // ----- Boards -----
+  const boards = {
+    main: () => win(sidebar() + '<div class="stage-wrap"><div class="stage"><div class="main">' + chatHead('Aurelith landing page') + transcript() + composer({ stop: true }) + '</div></div></div>'),
+
+    menu: () => '<div class="win" style="width:248px;height:360px">' +
+      '<aside class="side" style="height:360px">' +
+      '<div class="chats" style="padding-top:12px">' +
+      '<div class="group-label">Today</div>' +
+      CHATS[0].items.map(c => chatRow(c, { more: 'Q4 content calendar', hover: 'Q4 content calendar' })).join('') +
+      '<div class="group-label">Yesterday</div>' + CHATS[1].items.map(c => chatRow(c)).join('') +
+      '</div></aside>' +
+      '<div class="menu" style="left:80px;top:132px;width:150px"><div class="hl">' + ico('pencil') + 'Rename</div><div class="danger">' + ico('trash') + 'Delete<kbd>⌘⌫</kbd></div></div>' +
+      '</div>',
+
+    confirm: () => '<div class="win" style="width:520px;height:420px;background:var(--a-surface)">' +
+      '<div style="padding:24px 28px;display:grid;gap:18px;width:100%;align-content:start;justify-items:start">' +
+      '<div class="bubble bot" style="max-width:380px">The new calendar has 12 posts across four weeks, two per channel per week.</div>' +
+      '<div class="msg me-msg" style="justify-self:stretch"><div class="bubble own" style="max-width:300px">Move the LinkedIn posts to Tuesdays.</div></div>' +
+      '<div class="bubble bot" style="max-width:380px">Done. LinkedIn posts now go out on Tuesdays at 09:00.</div></div>' +
+      '<div class="scrim"><div class="dialog"><h4>Delete this chat?</h4><p>This can\'t be undone.</p>' +
+      '<div class="acts"><span class="btn">Cancel</span><span class="btn danger">Delete chat</span></div></div></div></div>',
+
+    rename: () => '<div class="win" style="width:760px;height:260px;background:var(--a-surface);flex-direction:column">' +
+      '<div class="head"><div class="pill editing pill-title"><div class="field"><span>Aurelith landing page</span><i class="caret-in"></i></div></div></div>' +
+      '<div style="padding:8px 32px;display:grid;gap:18px">' +
+      '<div class="msg me-msg"><div class="bubble own">Build a landing page for the Aurelith Calibre 01 as one index.html.</div></div>' +
+      '<div class="bubble bot" style="justify-self:start">I built it as a single <code>index.html</code> with HTML, CSS, inline SVG and plain JavaScript.</div></div></div>',
+    approval: () => '<div class="win" style="width:922px;height:330px;background:var(--a-surface)">' +
+      '<div class="main" style="justify-content:flex-end;padding-top:14px">' +
+      '<div class="ask"><div class="approval"><div class="top"><span class="eyebrow">Needs approval</span><span class="from">From another chat: <a>Morning email digest</a></span><span style="flex:1"></span><span class="btn ghost">' + ico('corner') + 'Open chat</span></div>' +
+      '<div class="tool">Run a command</div><pre>gmail-cli send --to team@usefulbuild.com --subject "Digest for Oct 25" --body-file digest.md</pre>' +
+      '<div class="acts"><span class="btn">Deny</span><span class="btn primary">Approve</span></div></div></div>' +
+      composer({ stop: true }) + '</div></div>',
+
+    routines: () => win(sidebar({ nav: 'routines', select: '' }) + '<div class="stage-wrap"><div class="stage"><div class="main">' +
+      '<div class="page-head"><h3>Routines</h3><span class="btn primary">' + ico('plus') + 'New routine</span></div>' +
+      '<div class="notice">' + ico('alert') + '<p>3 routines from your earlier bots are paused. Review them and turn on the ones you want.</p><span class="btn ghost">Dismiss</span></div>' +
+      '<div class="r-body"><div class="r-list">' +
+      '<div class="r-item on"><b>Morning email digest</b><small>Every day at 07:30</small><span class="st ok">Ran today</span></div>' +
+      '<div class="r-item"><b>Weekly growth report</b><small>Mondays at 09:00</small><span class="st fail">Failed</span></div>' +
+      '<div class="r-item"><b>LinkedIn job scan</b><small>Weekdays at 08:00 · from Job Scout</small><span class="st paused">Paused</span></div>' +
+      '<div class="r-item"><b>YouTube comments roundup</b><small>Fridays at 17:00 · from YT Producer</small><span class="st paused">Paused</span></div>' +
+      '<div class="r-item"><b>Drive tidy-up</b><small>First of the month · from Drive Admin</small><span class="st paused">Paused</span></div>' +
+      '</div><div class="r-detail">' +
+      '<h4><span class="grow">Morning email digest</span><span class="btn">' + ico('play') + 'Test run</span><span class="switch" title="Active"></span></h4>' +
+      '<div><div class="label">What ' + BOT + ' does each time</div><div class="well">Read my inbox from the last 24 hours. Group what needs a reply today, what can wait and newsletters. Draft the three most urgent replies but don\'t send them. Ask before sending anything.</div></div>' +
+      '<div><div class="label">When it runs</div><div class="chips"><span class="chip">Every day <i>07:30</i></span><span class="chip">Europe/Berlin</span><span class="chip">' + ico('plus') + 'Add another</span></div></div>' +
+      '<div><div class="label">Its chat</div><div class="chips"><span class="chip">' + ico('clock') + '<i>Morning email digest</i> ' + ico('chev') + '</span></div></div>' +
+      '<div><div class="label">Run history</div><div class="hist">' +
+      '<div><span class="when">Today 07:30</span><span><span class="st ok" style="font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:999px">Done</span> &nbsp;Waiting on you to approve one send</span><a>Open chat</a></div>' +
+      '<div><span class="when">Yesterday 07:30</span><span><span class="st ok" style="font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:999px">Done</span> &nbsp;14 emails, 3 drafts</span><a>Open chat</a></div>' +
+      '<div><span class="when">Oct 23 07:30</span><span><span class="st fail" style="font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:999px">Failed</span> &nbsp;Gmail sign-in expired</span><span style="font-size:12.5px;color:var(--a-ink-faint-text)">Chat deleted</span></div>' +
+      '</div></div></div></div></div></div></div>'),
+
+    pane: () => settingsWin('Instructions and memory',
+      '<div class="s-sec"><div class="s-sec-h"><b>Instructions</b><span>1,240 of 8,000</span></div>' +
+      '<div class="s-text">Call me Wasim. I build AI products under Useful Build. Keep answers short and plain. For anything that writes, sends or spends money, ask first. Save files in ~/Documents/Useful Bot. When you make a page, check it at desktop and phone width before saying it is done.</div>' +
+      '<div class="s-hint">' + BOT + ' reads these at the start of every chat.</div></div>' +
+      '<div class="s-sec"><div class="s-sec-h"><b>Memory</b><span>12 notes</span></div><div class="s-group">' +
+      [['Brand rules: monochrome, Geist, no purple', 'Saved by Useful Bot', 'Oct 22'], ['The newsletter goes out on Fridays at 17:00', 'Saved by Useful Bot', 'Oct 18'], ['Prefers CSV files over spreadsheets', 'Added by you', 'Oct 11'], ['Aurelith is a fictional watch brand used for demos', 'Saved by Useful Bot', 'Oct 9']].map(n =>
+        '<div class="s-row"><div class="grow"><b style="font-weight:500">' + n[0] + '</b><span>' + n[1] + '</span></div><small>' + n[2] + '</small><span class="icon-btn" title="Remove">' + ico('trash') + '</span></div>').join('') +
+      '<div class="s-row s-more">Show all 12 notes</div></div></div>'),
+
+    search: () => win(sidebar() + '<div class="stage-wrap"><div class="stage"><div class="main">' + chatHead('Aurelith landing page') + transcript() + composer({ stop: true }) + '</div></div></div>' +
+      '<div class="scrim top"><div class="palette"><div class="q">' + ico('search') + '<span>pricing card</span><span class="caret"></span></div>' +
+      '<div class="tabs"><span class="on">All</span><span>Chats</span><span>Library</span><span>Routines</span></div><div class="results">' +
+      '<div class="res-label">Messages</div>' +
+      '<div class="res hl"><div class="ic">' + ico('chat') + '</div><div class="txt"><b>Aurelith landing page</b><span>The <mark>pricing card</mark> is dark now, with the price in white and the spec list in light gray.</span></div><small>Today</small></div>' +
+      '<div class="res"><div class="ic">' + ico('chat') + '</div><div class="txt"><b>Pricing page copy</b><span>Three tiers on the <mark>pricing card</mark>: Starter, Pro and Team, with the yearly price first.</span></div><small>Yesterday</small></div>' +
+      '<div class="res-label">Library</div>' +
+      '<div class="res"><div class="ic">' + ico('doc') + '</div><div class="txt"><b>index.html</b><span>Aurelith landing page · Page</span></div><small>Today</small></div>' +
+      '<div class="res-label">Commands</div>' +
+      '<div class="res"><div class="ic">' + ico('newchat') + '</div><div class="txt"><b>New chat</b></div><kbd>⌘N</kbd></div>' +
+      '</div></div></div>'),
+
+    empty: () => win(sidebar({ select: '' }) + '<div class="stage-wrap"><div class="stage"><div class="main">' + chatHead('New chat') +
+      '<div class="empty">' + logo(56) + '<h4>What should we do first?</h4><p>' + BOT + ' can research, write, work with files and run routines for you.</p>' +
+      '<div class="starters"><span class="starter">Find what\'s taking up space on my Mac</span><span class="starter">Rename my screenshots by date</span><span class="starter">Save a folder\'s file list as a spreadsheet</span></div></div>' +
+      composer({ note: '<div class="note-card">' + ico('info') + '<p>Chats from the earlier version were not carried over. Your bot, notes, routines and connections are all here.</p><span class="icon-btn">' + ico('x') + '</span></div>' }) +
+      '</div></div></div>'),
+
+    earlier: () => settingsWin('General',
+      '<div class="s-group"><div class="s-row"><div class="grow"><b>Appearance</b></div><div class="mini-seg"><span>System</span><span class="on">Light</span><span>Dark</span></div></div>' +
+      '<div class="s-row"><div class="grow"><b>Notify when a chat finishes</b><span>Only while the window is in the background or the chat is closed</span></div><span class="switch"></span></div>' +
+      '<div class="s-row"><div class="grow"><b>Open at login</b></div><span class="switch off"></span></div></div>' +
+      '<div class="s-sec"><div class="s-sec-h"><b>Earlier bots</b></div><div class="s-group">' +
+      [['Visual Creator', 4], ['Content Writer', 7], ['Job Scout', 2], ['Drive Admin', 0]].map(b =>
+        '<div class="s-row"><div class="grow"><b>' + b[0] + '</b><span>' + (b[1] ? b[1] + ' notes' : 'No notes') + '</span></div>' +
+        '<span class="btn">' + ico('copy') + 'Copy instructions</span>' + '<span class="btn"' + (b[1] ? '' : ' style="visibility:hidden"') + '>Move notes</span>' + '<span class="btn ghost">Remove</span></div>').join('') +
+      '</div><div class="s-hint">Their routines are on the Routines page, paused. Their chats from the earlier version were not carried over.</div></div>')
+  };
+
+  // Render
+  Object.assign(boards, before, CX_AFTER);
+
+  const SCREENS = [
+    { id: 'main', title: 'Main window', b: ['mainBefore', 1180, 780], a: ['main', 1180, 780],
+      before: ['The sidebar lists bots in sections (Operations, Content Studio, Unassigned), with Generalist pinned on top.', 'The header shows the bot you are talking to. A bot\'s other chats are only reachable through search.', 'Connectors is a pill in the footer; Library sits in the account menu.'],
+      after: ['The sidebar lists your chats, grouped by day. There is one bot, Useful Bot; the header shows the chat title.', 'Each chat shows its state: a ring of dots while it works, an amber dot when it waits on you, a dark dot for an unread reply, a red mark when the last turn failed, otherwise the time.', 'Routines, Library and Connectors are fixed rows at the top. Routine chats carry a clock.', 'New chat (pencil) replaces New Bot. A message sent during a turn shows as queued.'],
+      backend: 'GET /api/chats · GET /api/engine/status · GET /api/chats/:id/rows · events · POST /api/chats/:id/turns',
+      note: 'In PR 2 (still on eve) the list shows the current chat plus up to 40 recent ones, titled from their last message, with no row menu and the working dots only on the open chat. The full states, rename and delete arrive with PR 3; the After board shows PR 3.' },
+    { id: 'menu', title: 'Row menu', b: ['menuBefore', 248, 360], a: ['menu', 248, 360],
+      before: ['Each bot row has a menu: Pin, Move to section, Settings, Rename, Hide, Delete.'],
+      after: ['Each chat row has two actions: Rename and Delete. Right-click opens the same menu.', 'Delete is greyed out while that chat is working ("Stop the chat first").'],
+      backend: 'PATCH /api/chats/:id · DELETE /api/chats/:id' },
+    { id: 'confirm', title: 'Delete confirm', b: ['confirmBefore', 520, 420], a: ['confirm', 520, 420],
+      before: ['Deleting a bot removes the bot, its profile and its transcript.'],
+      after: ['Deleting a chat removes only that chat. It can\'t be undone in the app.'],
+      backend: 'DELETE /api/chats/:id' },
+    { id: 'rename', title: 'Rename', b: ['renameBefore', 760, 260], a: ['rename', 760, 260],
+      before: ['Rename opens a dialog and renames the bot.'],
+      after: ['Clicking the title in the header renames the chat in place. Enter saves, Escape cancels.'],
+      backend: 'PATCH /api/chats/:id {title}' },
+    { id: 'approval', title: 'Approval card', b: ['approvalBefore', 922, 330], a: ['approval', 922, 330],
+      before: ['The card names the bot it came from, or "Sub-agent of NAME, from another chat". There is no way to jump to that chat.'],
+      after: ['A card from another chat says "From another chat" with the chat\'s title, and has Open chat. It still docks above the composer so you never miss one.'],
+      backend: 'GET /api/approvals (chatId) · POST /api/approvals/:id' },
+    { id: 'routines', title: 'Routines', b: ['routinesBefore', 1180, 780], a: ['routines', 1180, 780],
+      before: ['Routines live in each bot\'s side pane, under its profile and description.', 'Runs happen inside that bot\'s chat.'],
+      after: ['Routines get their own page: the list on the left, the routine on the right.', 'Each routine runs in its own chat, reused every run. Run history links to it, or says "Chat deleted".', 'Routines from your earlier bots arrive paused, with a notice until you review them.'],
+      backend: '/api/routines · POST /api/routines/:id/run · routine.movedFrom · RoutineRun.chatId' },
+    { id: 'settings', title: 'Instructions and memory', b: ['paneBefore', 1180, 780], a: ['pane', 900, 680],
+      before: ['A Settings pane beside the chat edits the open bot: name and role label, avatar color, instructions, routines, memory and the notify toggle.', 'Every bot has its own pane.'],
+      after: ['No side pane. Instructions and Memory live in Settings, in an "Instructions and memory" tab.', 'Profile (name, face color, role label) is gone: the bot is Useful Bot.', 'The notify toggle moves to Settings > General; routines have their own page.'],
+      backend: 'PUT /api/shell updateBot · GET /api/bots/context · /api/memory' },
+    { id: 'search', title: 'Search', b: ['searchBefore', 1180, 780], a: ['search', 1180, 780],
+      before: ['⌘K shows tabs All, Messages, Bots and Groups, a New Bot row, recent chats by bot, and the list of bots.'],
+      after: ['⌘K searches chat titles and message text, plus Library and Routines. A message hit opens the chat at that message.', 'Bots, Groups and New Bot go; New chat stays as a command.'],
+      backend: 'GET /api/chats/search?q= · /api/agent/media · /api/routines' },
+    { id: 'newchat', title: 'New chat', b: ['emptyBefore', 1180, 780], a: ['empty', 1180, 780],
+      before: ['The plus button opens "To: Search or create bots": New Bot, Create group chat, then every bot to pick from.'],
+      after: ['New chat opens an empty chat straight away: the logo, one line about what Useful Bot can do, and the three starter prompts.', 'The first launch after the update shows a one-time note that old chats were not carried over.'],
+      backend: 'POST /api/chats · GET /api/engine/status (cleanSlateNotice)' },
+    { id: 'earlier', title: 'Your other bots', b: ['earlierBefore', 248, 780], a: ['earlier', 900, 680],
+      before: ['Each specialist bot has a row in the sidebar, with its own instructions, memory and routines.'],
+      after: ['They become earlier bots in Settings > General: copy their instructions, move their notes into Useful Bot, or remove them.', 'Their routines are on the Routines page, paused. Their old chats were not carried over.'],
+      backend: 'GET /api/shell (archived) · PUT /api/shell moveNotes, removeArchivedBot · GET /api/memory?botId=' },
+    { id: 'connectors', title: 'Connectors', b: ['connectorsBefore', 900, 720], a: ['connectors', 900, 720],
+      before: ['A dialog: search, the added apps, then all apps with Add. Added apps say "Added".'],
+      after: ['The same dialog and layout. Added apps show their state: Connected, or Sign in again when a sign-in expired.', 'Each added app opens its page (next board).'],
+      backend: '/api/connectors · /api/connections (needsSignIn)' },
+    { id: 'tools', title: 'An app\'s tools', b: ['toolsBefore', 900, 720], a: ['tools', 900, 720],
+      before: ['The app page shows the status, Disconnect, the tool count and a plain list of tools.'],
+      after: ['Reconnect and Disconnect sit beside the app\'s name.', 'The count splits into reads and writes, with a filter and a search.', 'Tools are grouped: reads run without asking, writes ask you first in Auto (today\'s connector risk rules).'],
+      backend: '/api/connectors/tools?toolkit= · connector risk (agent/lib/connector-risk.ts)' }
+  ];
+
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const list = (items) => '<ul>' + items.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>';
+  const thumbW = (w) => (w >= 900 ? 560 : Math.min(w, 300));
+  function card(sc, side) {
+    const d = side === 'b' ? sc.b : sc.a;
+    const tw = thumbW(d[1]);
+    return '<button type="button" class="board-card" data-screen="' + sc.id + '" data-side="' + side + '" aria-label="Open ' + esc(sc.title) + ', ' + (side === 'b' ? 'before' : 'after') + '">' +
+      '<span class="cap">' + (side === 'b' ? 'Before' : 'After') + '</span>' +
+      '<span class="desk"><span class="thumb" data-w="' + d[1] + '" data-h="' + d[2] + '" data-tw="' + tw + '" style="display:block;width:' + tw + 'px"><span class="app" style="display:block">' + boards[d[0]]() + '</span></span></span></button>';
+  }
+  document.getElementById('canvas').innerHTML = SCREENS.map(sc =>
+    '<section class="screen" id="s-' + sc.id + '"><div class="screen-head"><h2>' + esc(sc.title) + '</h2><span class="backend"><b>Backend</b> ' + esc(sc.backend) + '</span></div>' +
+    '<div class="boards">' + card(sc, 'b') + card(sc, 'a') + '</div>' +
+    '<div class="changes"><div><h3>Before</h3>' + list(sc.before) + '</div><div><h3>After</h3>' + list(sc.after) + '</div></div>' +
+    (sc.note ? '<p class="pr2">' + esc(sc.note) + '</p>' : '') + '</section>').join('');
+  document.getElementById('toc').innerHTML = SCREENS.map(sc => '<a href="#s-' + sc.id + '">' + esc(sc.title) + '</a>').join('') + '<a href="#b-gaps">Notes</a>';
+
+  // Fit every thumbnail to its card (and to narrow screens).
+  const thumbs = Array.from(document.querySelectorAll('.thumb'));
+  function layout() {
+    const avail = Math.max(200, document.getElementById('canvas').clientWidth - 36);
+    thumbs.forEach(th => {
+      const w = +th.dataset.w, h = +th.dataset.h, tw = Math.min(+th.dataset.tw, avail);
+      const s = tw / w;
+      th.style.width = tw + 'px';
+      th.style.height = Math.round(h * s) + 'px';
+      const inner = th.firstElementChild;
+      inner.style.width = w + 'px';
+      inner.style.transform = 'scale(' + s + ')';
+    });
+    if (!viewer.hidden) fitViewer();
+  }
+
+  // Viewer
+  const viewer = document.getElementById('viewer');
+  const vBoard = document.getElementById('v-board'), vStage = document.getElementById('v-stage');
+  let cur = 0, side = 'a', lastFocus = null;
+  function fitViewer() {
+    const sc = SCREENS[cur], d = side === 'b' ? sc.b : sc.a;
+    const s = Math.min(1, (vStage.clientWidth - 48) / d[1], (vStage.clientHeight - 48) / d[2]);
+    vBoard.style.width = d[1] + 'px';
+    vBoard.style.height = d[2] + 'px';
+    vBoard.style.transform = 'scale(' + s + ')';
+    const box = document.getElementById('v-box');
+    box.style.width = Math.round(d[1] * s) + 'px';
+    box.style.height = Math.round(d[2] * s) + 'px';
+  }
+  function renderViewer() {
+    const sc = SCREENS[cur], d = side === 'b' ? sc.b : sc.a;
+    document.getElementById('v-title').textContent = sc.title;
+    document.getElementById('v-count').textContent = (cur + 1) + ' of ' + SCREENS.length;
+    document.getElementById('v-before').setAttribute('aria-pressed', String(side === 'b'));
+    document.getElementById('v-after').setAttribute('aria-pressed', String(side === 'a'));
+    vBoard.innerHTML = boards[d[0]]();
+    document.getElementById('v-notes').innerHTML = '<div><h3>Before</h3>' + list(sc.before) + '</div><div><h3>After</h3>' + list(sc.after) + '</div>' +
+      (sc.note ? '<p class="pr2">' + esc(sc.note) + '</p>' : '') + '<div class="backend"><b>Backend</b> ' + esc(sc.backend) + '</div>';
+    fitViewer();
+  }
+  function openViewer(id, s) {
+    lastFocus = document.activeElement;
+    cur = Math.max(0, SCREENS.findIndex(x => x.id === id)); side = s;
+    viewer.hidden = false; document.body.style.overflow = 'hidden';
+    renderViewer();
+    document.getElementById('v-close').focus();
+  }
+  function closeViewer() { viewer.hidden = true; document.body.style.overflow = ''; if (lastFocus) lastFocus.focus(); }
+  document.getElementById('canvas').addEventListener('click', (ev) => {
+    const c = ev.target.closest('.board-card'); if (c) openViewer(c.dataset.screen, c.dataset.side);
+  });
+  document.getElementById('v-close').addEventListener('click', closeViewer);
+  document.getElementById('v-prev').addEventListener('click', () => { cur = (cur + SCREENS.length - 1) % SCREENS.length; renderViewer(); });
+  document.getElementById('v-next').addEventListener('click', () => { cur = (cur + 1) % SCREENS.length; renderViewer(); });
+  document.getElementById('v-before').addEventListener('click', () => { side = 'b'; renderViewer(); });
+  document.getElementById('v-after').addEventListener('click', () => { side = 'a'; renderViewer(); });
+  document.addEventListener('keydown', (ev) => {
+    if (viewer.hidden) return;
+    if (ev.key === 'Escape') closeViewer();
+    else if (ev.key === 'ArrowRight') { cur = (cur + 1) % SCREENS.length; renderViewer(); }
+    else if (ev.key === 'ArrowLeft') { cur = (cur + SCREENS.length - 1) % SCREENS.length; renderViewer(); }
+    else if (ev.key === 'b' || ev.key === 'B') { side = 'b'; renderViewer(); }
+    else if (ev.key === 'a' || ev.key === 'A') { side = 'a'; renderViewer(); }
+  });
+  layout();
+  window.addEventListener('resize', layout);
+
+  // App theme switch (the mocked app only).
+  const apps = document.querySelectorAll('.app');
+  const bL = document.getElementById('theme-light'), bD = document.getElementById('theme-dark');
+  function setTheme(dark) {
+    apps.forEach(a => a.classList.toggle('dark', dark));
+    bL.setAttribute('aria-pressed', String(!dark)); bD.setAttribute('aria-pressed', String(dark));
+    try { localStorage.setItem('ub-mock-theme', dark ? 'dark' : 'light'); } catch (e) {}
+  }
+  bL.addEventListener('click', () => setTheme(false));
+  bD.addEventListener('click', () => setTheme(true));
+  try { if (localStorage.getItem('ub-mock-theme') === 'dark') setTheme(true); } catch (e) {}
+})();
+</script>
