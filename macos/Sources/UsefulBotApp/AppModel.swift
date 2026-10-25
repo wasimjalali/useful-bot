@@ -307,14 +307,32 @@ final class AppModel: ObservableObject {
         didSet {
             // The pane opens on the list, never on the row it showed last time.
             if pane != oldValue { closeRoutineDetail() }
-            if routinesVisible, let botId = selectedBotId {
+            if let botId = selectedBotId {
                 Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
             }
         }
     }
 
-    /// Both inline panes list the bot's routines.
-    private var routinesVisible: Bool { pane == .details || pane == .settings }
+    /// What the stage shows: a chat, the Routines page or the Library page.
+    enum Stage: Equatable {
+        case chat
+        case routines
+        case library
+    }
+
+    /// A Library item the search palette picked: the page opens on its detail.
+    var libraryFocusId: String?
+
+    @Published var stage: Stage = .chat {
+        didSet {
+            guard stage != oldValue else { return }
+            // The page opens on the list, never on the row it showed last time.
+            if oldValue == .routines { closeRoutineDetail() }
+            if stage == .routines, let botId = selectedBotId {
+                Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
+            }
+        }
+    }
 
     /// Routines for the open bot, plus the pane's own navigation state.
     @Published private(set) var routines: [Routine] = []
@@ -956,6 +974,7 @@ final class AppModel: ObservableObject {
 
     func select(_ botId: String, persist: Bool = true) {
         selectTick &+= 1
+        stage = .chat
         localOnlySelection = persist ? nil : botId
         guard botId != selectedBotId else {
             guard persist else { return }
@@ -1582,9 +1601,10 @@ final class AppModel: ObservableObject {
                 // by an idle poll that knows nothing new.
             }
             await refreshComposer()
-            // Only while the pane is open: a routine run that lands mid-poll
-            // has to show up without the owner reopening the pane.
-            if routinesVisible { await loadRoutines(botId: bot.id) }
+            // Always: the sidebar's Routines badge reads it, and a run that
+            // lands mid-poll has to show up on the page without a reopen.
+            await loadRoutines(botId: bot.id)
+            pollConnectorStates()
             pollAuthFailures = 0
         } catch let error as BackendError where error == .unauthorized {
             // Never leave the shell silently stuck on a rejected session.
@@ -4245,6 +4265,7 @@ final class AppModel: ObservableObject {
     /// New chat from the rail: clear the thread server-side and start fresh.
     func startNewChat(botId: String? = nil) {
         guard let id = botId ?? selectedBotId else { return }
+        stage = .chat
         // Any in-flight turn on this bot would repopulate the cleared thread.
         // Other bots keep working.
         let runningSession = inflightSessions[id] ?? (activeSession?.botId == id ? activeSession?.sessionId : nil)
@@ -4298,13 +4319,14 @@ final class AppModel: ObservableObject {
             self.rebuildTranscript()
             self.settingsOpen = false
             self.detailsOpen = false
-            self.clearRoutineState()
+            self.closeRoutineDetail()
             // Reload outside the chain: an SSE replay must not block writes.
             self.startReload()
         }
     }
 
     func openRecent(_ recentId: String) {
+        stage = .chat
         // Opening an old session replaces the live one for this bot; other
         // bots keep working.
         if let id = selectedBotId {
@@ -4994,8 +5016,8 @@ final class AppModel: ObservableObject {
         routines = []
         routinesError = nil
         routineBusy = []
-        // A pane left open on a bot switch would sit empty until the next poll.
-        if routinesVisible, let botId = selectedBotId {
+        // The Routines page and the sidebar badge would sit empty until the next poll.
+        if let botId = selectedBotId {
             Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
         }
     }
@@ -5095,6 +5117,68 @@ final class AppModel: ObservableObject {
     func runRoutine(id: String) {
         routineWrite(id: id) { client in
             try await client.runRoutine(id: id)
+        }
+    }
+
+    /// Routines whose newest run failed, for the sidebar badge.
+    var failedRoutineCount: Int {
+        routines.filter { $0.runHistory.last.map { !$0.succeeded } ?? false }.count
+    }
+
+    /// Routines the archive migration paused and the owner has not reviewed.
+    var movedRoutines: [Routine] {
+        routines.filter { $0.movedFrom != nil }
+    }
+
+    /// Dismiss on the moved-routines notice: one empty `PATCH` per routine.
+    /// Any edit clears `movedFrom` on the server, so none of them changes a field.
+    func dismissMovedRoutines() {
+        let ids = movedRoutines.map(\.id)
+        guard !ids.isEmpty else { return }
+        routineWrite(id: nil) { client in
+            for id in ids { _ = try await client.updateRoutine(id: id) }
+        }
+    }
+
+    /// Open the Routines page on one routine.
+    func showRoutine(_ id: String) {
+        stage = .routines
+        routineCreating = false
+        openRoutineId = id
+    }
+
+    // MARK: - Connector sign-in state
+
+    /// True when any added app or server needs signing in again, for the
+    /// sidebar's Connectors dot.
+    var connectorsNeedSignIn: Bool {
+        ConnectorTile.merge(apps: connectors?.toolkits ?? [], servers: directConnections).contains(where: \.needsSignIn)
+    }
+
+    private var connectorStateTick = 0
+
+    /// The dot reads state the Connectors dialog normally loads, so it is read
+    /// quietly here: on the first tick and then every two minutes.
+    private func pollConnectorStates() {
+        defer { connectorStateTick += 1 }
+        guard connectorStateTick % 48 == 0 else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.loadConnectors(search: self.connectorSearch, quiet: true)
+            await self.loadDirectConnections(quiet: true)
+        }
+    }
+
+    // MARK: - Chat shortcuts
+
+    /// ⌘N and the pencil: an empty chat is already a new one, so it only gets
+    /// the caret.
+    func newChatOrFocusComposer() {
+        if stage == .chat, !hasThreadContent, !pending {
+            composerFocusToken &+= 1
+        } else {
+            startNewChat(botId: Threads.defaultBotId)
+            composerFocusToken &+= 1
         }
     }
 

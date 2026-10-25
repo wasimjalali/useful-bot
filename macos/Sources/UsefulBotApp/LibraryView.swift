@@ -7,10 +7,9 @@ import UsefulBotCore
 /// Everything the agents made, as files in the owner's media folder (and the
 /// HTML pages they wrote, where they wrote them): a grid
 /// newest first, filtered by kind, bot and prompt, and one item at a time
-/// with what made it and what can be done with it.
+/// with what made it and what can be done with it. A page on the stage.
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
-    let onClose: () -> Void
 
     private enum Filter: String, CaseIterable {
         case all = "All"
@@ -31,12 +30,8 @@ struct LibraryView: View {
     @State private var regenerating: Set<String> = []
     @FocusState private var searchFocused: Bool
 
-    private static let gridHeight: CGFloat = 560
-
     var body: some View {
-        // The shared dialog, with the close button on the title's row rather
-        // than a row of its own.
-        NativeDialog(maxWidth: 1040, ariaLabel: "Library", closeRow: false, onClose: onClose) {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
                     if selected != nil {
@@ -65,26 +60,27 @@ struct LibraryView: View {
                             NSWorkspace.shared.open(url)
                         }
                     }
-                    NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
-                        .accessibilityLabel("Close Library")
-                        .accessibilityIdentifier("dialog-close")
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 14)
 
                 if let selected {
-                    LibraryDetail(
-                        item: selected,
-                        regenerating: regenerating.contains(selected.id),
-                        onOpenChat: { openChat(selected) },
-                        onLocate: { locate(selected) },
-                        onRegenerate: { regenerate(selected) },
-                        onTrash: { trash(selected) }
-                    )
-                    // A fresh detail per item: no picture or live page from
-                    // the one before carries over.
-                    .id(selected.id)
+                    // The detail has a fixed picture size; a narrow stage scrolls it.
+                    ScrollView([.vertical, .horizontal]) {
+                        LibraryDetail(
+                            item: selected,
+                            regenerating: regenerating.contains(selected.id),
+                            onOpenChat: { openChat(selected) },
+                            onLocate: { locate(selected) },
+                            onRegenerate: { regenerate(selected) },
+                            onTrash: { trash(selected) }
+                        )
+                        // A fresh detail per item: no picture or live page from
+                        // the one before carries over.
+                        .id(selected.id)
                         .padding(20)
+                    }
+                    .uvScroll()
                 } else {
                     toolbar
                         .padding(.horizontal, 20)
@@ -106,12 +102,19 @@ struct LibraryView: View {
                             .padding(.top, 12)
                     }
                     grid
-                        .frame(height: Self.gridHeight)
+                        .frame(maxHeight: .infinity)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .task { await load() }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task {
+            await load()
+            if let id = model.libraryFocusId {
+                model.libraryFocusId = nil
+                selected = items.first { $0.id == id }
+            }
+        }
     }
 
     private var toolbar: some View {
@@ -261,7 +264,6 @@ struct LibraryView: View {
             return
         }
         model.select(item.botId)
-        onClose()
     }
 
     /// Draw it again in place from the prompt the server kept; the item comes

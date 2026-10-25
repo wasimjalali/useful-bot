@@ -1,200 +1,231 @@
 import SwiftUI
 import UsefulBotCore
 
-/// The right-hand chat details pane from the Grok Bot reference
-/// (`03-agent-pane/`): the bot's profile above its routines. The gear opens the full settings pane and the chevrons
-/// collapse the pane, mirroring the reference's pane chrome. Opening a routine
-/// replaces the pane body with its detail view.
-struct ChatDetailsPaneView: View {
+/// The Routines page on the stage: the list of routines on the left, the
+/// selected routine (or the create form) on the right.
+struct RoutinesPage: View {
     @EnvironmentObject private var model: AppModel
-    let bot: ShellBot
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.routineCreating {
-                RoutineEditorView(bot: bot, routine: nil)
-            } else if let routine = model.openRoutine {
-                RoutineEditorView(bot: bot, routine: routine)
-            } else {
-                overview
+            header
+            let moved = model.movedRoutines.count
+            if moved > 0 {
+                notice(moved)
             }
+            HStack(spacing: 0) {
+                list
+                    .frame(width: 320)
+                    .frame(maxHeight: .infinity)
+                    .overlay(alignment: .trailing) { VerticalHairline() }
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxHeight: .infinity)
         }
-        .frame(width: DesignTokens.Space.settingsPaneWidth)
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.C.surface)
-        .overlay(alignment: .leading) { VerticalHairline() }
     }
 
-    private var overview: some View {
-        VStack(spacing: 0) {
-            toolbar
+    // MARK: - Header
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    profileSection
-                    routinesSection
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 20)
-            }
-            .uvScroll()
-        }
-    }
-
-    // MARK: - Chrome
-
-    private var toolbar: some View {
-        HStack(spacing: 2) {
-            Spacer(minLength: 0)
-            NativeIconButton(systemImage: "gearshape", size: 32, iconSize: 15) {
-                model.settingsOpen = true
-            }
-            .help("Settings")
-            .accessibilityLabel("Settings")
-            .accessibilityIdentifier("details-settings")
-            NativeIconButton(systemImage: "chevron.right.2", size: 32, iconSize: 15) {
-                model.detailsOpen = false
-            }
-            .help("Collapse details")
-            .accessibilityLabel("Collapse details")
-            .accessibilityIdentifier("details-collapse")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-    }
-
-    // MARK: - Profile
-
-    private var profileSection: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Spacer(minLength: 0)
-                BotAvatarView(bot: bot, size: 72)
-                Spacer(minLength: 0)
-            }
-            Text(bot.name)
+    private var header: some View {
+        HStack(spacing: 12) {
+            Text("Routines")
                 .font(.system(size: DesignTokens.FontSize.settingsTitle, weight: .semibold))
                 .foregroundStyle(Theme.C.ink)
-                .multilineTextAlignment(.center)
-            if !bot.label.isEmpty {
-                Text(bot.label.uppercased())
-                    .font(.system(size: 10, weight: .semibold))
-                    .tracking(DesignTokens.Tracking.label * 10)
-                    .foregroundStyle(Theme.C.inkFaint)
+            Spacer(minLength: 0)
+            NativeButton("New routine", systemImage: "plus", kind: .primary, small: true) {
+                model.routineCreating = true
+                model.openRoutineId = nil
             }
-            if !bot.description.isEmpty {
-                Text(bot.description)
-                    .font(.system(size: 13))
-                    .lineSpacing(3)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .multilineTextAlignment(.center)
-            }
+            .accessibilityIdentifier("routine-add")
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 12)
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
     }
 
-    // MARK: - Routines
+    private func notice(_ count: Int) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkMuted)
+            Text(count == 1
+                ? "1 routine from your earlier bots is paused. Review it and turn it on if you want it."
+                : "\(count) routines from your earlier bots are paused. Review them and turn on the ones you want.")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            NativeButton("Dismiss", kind: .secondary, small: true) {
+                model.dismissMovedRoutines()
+            }
+            .accessibilityIdentifier("routines-moved-dismiss")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+        .accessibilityIdentifier("routines-moved-notice")
+    }
 
-    private var routinesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Hairline()
-                .padding(.bottom, 2)
-            HStack(spacing: 4) {
-                sectionLabel("Routines")
-                Spacer(minLength: 0)
-                NativeIconButton(systemImage: "plus", size: 26, iconSize: 13) {
-                    model.routineCreating = true
+    // MARK: - List
+
+    private var list: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                if let error = model.routinesError, model.routines.isEmpty {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.danger)
+                        .padding(.horizontal, 10)
                 }
-                .help("New routine")
-                .accessibilityLabel("New routine")
-                .accessibilityIdentifier("routine-add")
-            }
-            if let error = model.routinesError {
-                Text(error)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.danger)
-            }
-            if model.routines.isEmpty {
-                routinesEmptyState
-            } else {
-                VStack(spacing: 2) {
-                    ForEach(model.routines) { routine in
-                        RoutineRowView(routine: routine) { model.openRoutineId = routine.id }
+                if model.routines.isEmpty {
+                    Text("Tasks Useful Bot runs on a schedule.")
+                        .font(.system(size: 13))
+                        .lineSpacing(3)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 4)
+                }
+                ForEach(model.routines) { routine in
+                    RoutineRowView(
+                        routine: routine,
+                        selected: model.openRoutineId == routine.id && !model.routineCreating,
+                        pageRow: true
+                    ) {
+                        model.routineCreating = false
+                        model.openRoutineId = routine.id
                     }
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 16)
         }
+        .uvScroll()
     }
 
-    /// The reference's empty state: one calm line and one button.
-    private var routinesEmptyState: some View {
-        VStack(spacing: 10) {
-            Text("Tasks this bot runs on a schedule.")
-                .font(.system(size: 13))
-                .lineSpacing(3)
-                .foregroundStyle(Theme.C.inkMuted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 260)
-            NativeButton("Create routine", kind: .secondary, small: true) {
-                model.routineCreating = true
+    // MARK: - Detail
+
+    @ViewBuilder
+    private var detail: some View {
+        if let bot = model.selectedBot {
+            if model.routineCreating {
+                RoutineEditorView(bot: bot, routine: nil, pageMode: true)
+            } else if let routine = model.openRoutine {
+                RoutineEditorView(bot: bot, routine: routine, pageMode: true)
+            } else {
+                VStack {
+                    Text(model.routines.isEmpty ? "No routines yet" : "Select a routine")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .accessibilityIdentifier("routine-create")
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-    }
-
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(Theme.C.inkMuted)
     }
 }
+
+extension Routine {
+    /// The earlier bot this routine came from, by name, while it is still unreviewed.
+    func movedFromName(_ store: ShellStore?) -> String? {
+        guard let movedFrom else { return nil }
+        return store?.bots.first { $0.id == movedFrom }?.name
+    }
+
+    /// How the last run went, for the list: "Paused", "Failed", "Ran today",
+    /// "Ran yesterday", "Ran Oct 23" or "Never run".
+    func statusLabel(now: Date = Date(), calendar: Calendar = .current) -> (text: String, failed: Bool) {
+        if !active { return ("Paused", false) }
+        if let last = runHistory.last, !last.succeeded { return ("Failed", true) }
+        guard let raw = lastRunAt ?? runHistory.last?.at, let date = RailClock.date(from: raw) else {
+            return ("Never run", false)
+        }
+        if calendar.isDate(date, inSameDayAs: now) { return ("Ran today", false) }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
+            return ("Ran yesterday", false)
+        }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return ("Ran \(formatter.string(from: date))", false)
+    }
+}
+
 
 // MARK: - List row
 
 /// Clock icon, name, schedule subtitle. A paused routine reads muted so the
 /// list does not claim it is going to run.
+///
+/// On the Routines page (`pageRow`) the row also carries the last run's
+/// state and the active toggle, and lifts off the list when selected.
 struct RoutineRowView: View {
+    @EnvironmentObject private var model: AppModel
     let routine: Routine
+    var selected = false
+    var pageRow = false
     let onOpen: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: 10) {
-                Image(systemName: "clock")
-                    .font(.system(size: 14))
-                    .foregroundStyle(routine.active ? Theme.C.inkMuted : Theme.C.inkFaint)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(routine.name)
+        HStack(spacing: 6) {
+            Button(action: onOpen) {
+                HStack(spacing: 10) {
+                    Image(systemName: "clock")
                         .font(.system(size: 14))
-                        .foregroundStyle(routine.active ? Theme.C.ink : Theme.C.inkMuted)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(routine.active
-                        ? RoutineCopy.scheduleLine(routine.schedules)
-                        : "Paused")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkFaint)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        .foregroundStyle(routine.active ? Theme.C.inkMuted : Theme.C.inkFaint)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(routine.name)
+                            .font(.system(size: 14, weight: selected ? .semibold : .regular))
+                            .foregroundStyle(routine.active ? Theme.C.ink : Theme.C.inkMuted)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(subtitle)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.C.inkFaint)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if pageRow {
+                            let status = routine.statusLabel()
+                            Text(status.text)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(status.failed ? Theme.C.danger : Theme.C.inkMuted)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(hovering ? Theme.C.sunken : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            if pageRow {
+                NativeSwitch(isOn: routine.active) {
+                    model.updateRoutine(id: routine.id, active: !routine.active)
+                }
+                .disabled(model.routineBusy.contains(routine.id))
+                .accessibilityLabel("Active")
+                .accessibilityIdentifier("routine-row-active")
+            }
         }
-        .buttonStyle(.plain)
-        .pointerOnHover()
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(selected ? Theme.C.sunken : (hovering ? Theme.C.sunken.opacity(0.6) : .clear))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
         .onHover { hovering = $0 }
         .accessibilityIdentifier("routine-row")
+    }
+
+    private var subtitle: String {
+        if !pageRow { return routine.active ? RoutineCopy.scheduleLine(routine.schedules) : "Paused" }
+        let schedule = RoutineCopy.scheduleLine(routine.schedules)
+        guard let from = routine.movedFromName(model.store) else { return schedule }
+        return "\(schedule) · from \(from)"
     }
 }
 
@@ -207,6 +238,9 @@ struct RoutineEditorView: View {
     @EnvironmentObject private var model: AppModel
     let bot: ShellBot
     let routine: Routine?
+    /// On the Routines page, which has its own list and header: no back or
+    /// collapse bar.
+    var pageMode = false
 
     @State private var name = ""
     @State private var instruction = ""
@@ -227,9 +261,16 @@ struct RoutineEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
+            if !pageMode { toolbar }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if pageMode {
+                        Text(isNew ? "New routine" : (routine?.name ?? ""))
+                            .font(.system(size: DesignTokens.FontSize.settingsTitle, weight: .semibold))
+                            .foregroundStyle(Theme.C.ink)
+                            .lineLimit(1)
+                            .padding(.top, 4)
+                    }
                     if let routine {
                         actionsRow(routine)
                     }
@@ -248,15 +289,23 @@ struct RoutineEditorView: View {
                         runHistory(routine)
                     }
                     if isNew {
-                        NativeButton(
-                            "Create routine",
-                            kind: .primary,
-                            small: true,
-                            enabled: canCreate && !model.routineCreateBusy
-                        ) {
-                            model.createRoutine(name: trimmedName, instruction: trimmedInstruction, schedules: schedules)
+                        HStack(spacing: 8) {
+                            NativeButton(
+                                "Create routine",
+                                kind: .primary,
+                                small: true,
+                                enabled: canCreate && !model.routineCreateBusy
+                            ) {
+                                model.createRoutine(name: trimmedName, instruction: trimmedInstruction, schedules: schedules)
+                            }
+                            .accessibilityIdentifier("routine-save")
+                            if pageMode {
+                                NativeButton("Cancel", kind: .secondary, small: true) {
+                                    model.closeRoutineDetail()
+                                }
+                                .accessibilityIdentifier("routine-cancel")
+                            }
                         }
-                        .accessibilityIdentifier("routine-save")
                     }
                     if let error = model.routinesError {
                         Text(error)
