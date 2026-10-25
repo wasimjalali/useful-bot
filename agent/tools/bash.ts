@@ -1,4 +1,4 @@
-import { defineTool } from "eve/tools";
+import { defineTool } from "../lib/tool.ts";
 import { z } from "zod";
 import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
@@ -62,11 +62,13 @@ function blockedReason(command: string, scoped: boolean): string | null {
 }
 
 export default defineTool({
+  name: "bash",
   description: "Run a shell command in the attached folder, or under the owner's home when none. The owner's own PATH and home apply, so CLIs they've signed in to (codex, claude, gh, npm) run as in their terminal. Not a login shell, stdin closed: use non-interactive flags (codex exec, claude -p). Default timeout 30s; pass timeoutMs for long runs, and timedOut: true means out of time, not failed. Run a CLI on a line of its own: a chained line gets no sign-in. gh and claude keep their token in the keychain, so a card-free run reads signed out: say so and offer a run they approve. Reads run at once; the owner's permission governs the rest.",
   inputSchema: z.object({
     command: z.string().min(1).max(8192),
     timeoutMs: z.number().int().min(1).max(MAX_TIMEOUT_MS).optional(),
   }),
+  sequential: true,
   async execute(input, ctx) {
     markOutside(ctx);
     // One grant read for root AND permission: two reads could pair a root
@@ -75,7 +77,7 @@ export default defineTool({
     // block, not a workspace error.
     let workspace;
     try {
-      workspace = effectiveRoot(ctx?.session?.id);
+      workspace = effectiveRoot(ctx.chatId);
     } catch (error) {
       // The posture is unknown here, so only the list every posture shares.
       const blocked = blockedReason(input.command, false);
@@ -107,7 +109,7 @@ export default defineTool({
       canonicalArgs: JSON.stringify({ command: input.command }),
       cwd: root,
       targetRevision: null,
-      backend: "just-bash",
+      backend: "seatbelt",
       toolVersion: "1",
     });
     // The posture decides who answers the card. In an attached folder, Auto
@@ -151,7 +153,9 @@ export default defineTool({
     if (!askOwner) {
       store.decide(rec.id, "approve", hash);
     } else {
-      await waitUntilNotPending(store, rec.id);
+      if (await waitUntilNotPending(store, rec.id, ctx.abortSignal) === "aborted") {
+        return { status: "cancelled" };
+      }
       // The workspace may have changed while the card sat open. The approval
       // was granted against the cwd AND the posture at request time, so a
       // changed root, a changed permission, or a revoked grant all refuse the
@@ -159,7 +163,7 @@ export default defineTool({
       // Same rule as the write path.
       let refreshed;
       try {
-        refreshed = effectiveRoot(ctx?.session?.id);
+        refreshed = effectiveRoot(ctx.chatId);
       } catch {
         // A grant revoked with no legacy root configured leaves nothing to
         // run in. That is the workspace changing, not a tool crash.
@@ -236,7 +240,7 @@ export default defineTool({
         // The turn's signal reaches the child: a Stop must not leave a
         // cancelled line running to its own timeout with side effects
         // landing after the owner gave up.
-        signal: ctx?.abortSignal,
+        signal: ctx.abortSignal,
       });
       const truncated = run.truncated
         || run.stdout.length > OUTPUT_MAX_BYTES
