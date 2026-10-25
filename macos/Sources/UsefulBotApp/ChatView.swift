@@ -626,6 +626,7 @@ struct ChatView: View {
                             working: model.pending || model.backgroundWorking,
                             bot: bot,
                             activity: model.activity,
+                            call: model.activityCall,
                             since: model.activitySince,
                             toolkits: model.connectorApps,
                             runningModel: model.runningModelNote(for: bot.id)
@@ -1541,6 +1542,7 @@ private struct WorkingSlot: View {
     let working: Bool
     let bot: ShellBot
     let activity: TurnActivity
+    let call: String?
     let since: Date
     let toolkits: [ConnectorToolkit]
     var runningModel: String?
@@ -1559,6 +1561,7 @@ private struct WorkingSlot: View {
                 WorkingRow(
                     bot: bot,
                     activity: activity,
+                    call: call,
                     since: since,
                     toolkits: toolkits,
                     runningModel: runningModel,
@@ -1586,6 +1589,8 @@ private struct WorkingSlot: View {
 private struct WorkingRow: View {
     let bot: ShellBot
     let activity: TurnActivity
+    /// The running step's call id, when the stream gave one.
+    let call: String?
     /// When this step began. The row counts up from it, a second at a time.
     let since: Date
     /// The connected apps, for the logo and name of a connector step.
@@ -1676,25 +1681,35 @@ private struct WorkingRow: View {
         }
         // Restarts on every new label, so a label that arrives while another
         // is waiting out its hold replaces it: only the latest shows.
-        .task(id: label) {
+        // The reveal restarts the hold, which can move the due time while a
+        // label waits, so it is part of the key and the wait loops until
+        // nothing is pending.
+        .task(id: HoldKey(label: label, revealed: labelShown)) {
             let now = Date.now.timeIntervalSinceReferenceDate
             guard !hold.shown.isEmpty else {
                 hold = LabelHold(label, at: now)
                 return
             }
             hold.offer(label, at: now)
-            guard let due = hold.due else { return }
-            let wait = due - Date.now.timeIntervalSinceReferenceDate
-            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
-            if Task.isCancelled { return }
-            hold.settle(at: Date.now.timeIntervalSinceReferenceDate)
+            while let due = hold.due {
+                let wait = due - Date.now.timeIntervalSinceReferenceDate
+                if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
+                if Task.isCancelled { return }
+                hold.settle(at: Date.now.timeIntervalSinceReferenceDate)
+            }
         }
     }
 
-    /// The command being run, so the mark can tell one command step from the next.
+    private struct HoldKey: Hashable {
+        let label: String
+        let revealed: Bool
+    }
+
+    /// The command step being run, so the mark can tell one from the next: its
+    /// call id, or the command line when the stream gave no id.
     private var commandStep: String? {
-        if case .tool("bash", let detail?) = activity { return detail }
-        return nil
+        guard case .tool("bash", let detail) = activity else { return nil }
+        return call ?? detail
     }
 
     static func elapsedSeconds(from start: Date, to now: Date) -> Int {

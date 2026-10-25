@@ -112,7 +112,10 @@ final class AppModel: ObservableObject {
     /// way `pending` does; the follower keeps it in step with the stream.
     @Published private(set) var backgroundWorking = false {
         didSet {
-            if backgroundWorking, !oldValue, !pending { activitySince = Date() }
+            // A reopened chat whose turn is already running keeps the turn's
+            // own start, so the working row does not replay the arrival or
+            // restart its timer; a turn this app did not send starts now.
+            if backgroundWorking, !oldValue, !pending { activitySince = projection.turnStartedAt ?? Date() }
         }
     }
     /// Failures with no turn to put them under (a send that never reached
@@ -185,6 +188,9 @@ final class AppModel: ObservableObject {
     /// What the live turn is doing, shown in the working row until the reply
     /// takes its place.
     @Published private(set) var activity: TurnActivity = .thinking
+    /// The running step's call id, so the working mark can tell one command
+    /// step from the next even when the command line is the same.
+    @Published private(set) var activityCall: String?
     /// When the running turn began, for the working row's timer. It counts
     /// the whole turn, from the send to the reply, through every step: a
     /// timer that went back to 0 at each tool read as the bot starting over.
@@ -3023,6 +3029,7 @@ final class AppModel: ObservableObject {
         if let started = projection.turnStartedAt, pending || backgroundWorking, activitySince != started {
             activitySince = started
         }
+        if projection.activityCall != activityCall { activityCall = projection.activityCall }
         guard projection.activity != activity else { return }
         activity = projection.activity
         // A connector step names its app and shows its logo; the list of

@@ -129,7 +129,8 @@ public enum AgentMarkFrames {
         MarkKey(0.44, .easeIn, []),
         MarkKey(0.48, .linear, [MarkDot(0, 0, 3.5)]),
         MarkKey(0.53, .linear, [MarkDot(-2, 0, 3.5), MarkDot(0, 0, 3), MarkDot(2, 0, 4)]),
-        MarkKey(0.66, .out, [MarkDot(-8, 0, 4.5), MarkDot(0, 0, 2.75), MarkDot(8, 0, 5)]),
+        // The loop's own row, so the arrival hands over without a size pop.
+        MarkKey(0.66, .out, [MarkDot(-8, 0, 4.5), MarkDot(0, 0, 3), MarkDot(8, 0, 5)]),
     ])
 
     /// 4.2, re-measured from the capture (rec-02, 3.87 s is t = 0). The spec's
@@ -267,10 +268,16 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     public private(set) var phase: AgentMarkPhase
     /// When the command figure started (its burst), while it is the figure.
     private var commandStart: Double?
-    /// A return to thinking that came while the command figure was still in
-    /// its dwell. It is applied the moment the dwell ends; a command before
-    /// then cancels it.
-    private var pending: AgentMarkPhase?
+    /// What came while the command figure was still in its dwell: a return to
+    /// thinking, or another command step. It is applied the moment the dwell
+    /// ends; the latest wins, and a plain command cancels a return.
+    private var pending: Pending?
+
+    private enum Pending: Equatable, Sendable {
+        case thinking
+        /// Another command step began: fold and burst once the dwell is over.
+        case restartCommand
+    }
 
     /// `arrives`: the turn's arrival first (a chat's working row). Without it
     /// the mark loops from the clock, so every sidebar mark stays in step.
@@ -295,15 +302,19 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     /// The command figure keeps the mark until its burst and one full shear
     /// have run. A return to thinking inside that dwell waits for it (the
     /// latest request wins), and a command inside it continues the same
-    /// figure, a `restart` included: the steps are too close to tell apart.
-    /// Past the dwell, `restart` re-triggers the collapse and burst when one
-    /// command step follows another (spec 4.3). A finished turn ends at once.
+    /// figure. A `restart` (one command step following another, spec 4.3)
+    /// inside the dwell waits for the dwell's end too, so a long command that
+    /// follows a short one still bursts. A finished turn ends at once.
     public mutating func set(_ next: AgentMarkPhase, at now: Double, restart: Bool = false) {
         settle(at: now)
         if next == .done {
             pending = nil
         } else if phase == .command, let end = dwellEnd, now < end {
-            pending = next == .thinking ? .thinking : nil
+            if next == .thinking {
+                pending = .thinking
+            } else {
+                pending = restart ? .restartCommand : nil
+            }
             return
         }
         guard next != phase || (restart && next == .command) else { return }
@@ -343,7 +354,7 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     private mutating func settle(at now: Double) {
         guard let next = pending, let end = dwellEnd, now >= end else { return }
         pending = nil
-        apply(next, at: end)
+        apply(next == .thinking ? .thinking : .command, at: end)
     }
 
     /// Moves on past a dwell that has ended, so the work is done once and not

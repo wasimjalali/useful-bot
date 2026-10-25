@@ -818,6 +818,19 @@ public enum EveStream {
         return nil
     }
 
+    /// The call id of the call `requestedToolName` names, if the event has one.
+    static func requestedCallId(_ data: JSONValue?) -> String? {
+        guard let actions = data?["actions"]?.arrayValue else { return nil }
+        for action in actions {
+            for key in ["toolName", "remoteAgentName", "name"] {
+                guard let name = action[key]?.stringValue, !name.isEmpty else { continue }
+                let id = action["callId"]?.stringValue ?? ""
+                return id.isEmpty ? nil : String(id.prefix(80))
+            }
+        }
+        return nil
+    }
+
     /// What the first named call was pointed at, in one short line. Only the
     /// fields that read as a sentence are used; ids and payloads are not. A
     /// shell line is cut to its program and subcommand: its arguments are
@@ -894,6 +907,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// Every failed turn still worth showing, in the order they failed. A
     /// retry that gets somewhere takes its failure's mark away.
     public private(set) var failureMarks: [FailureMark] = []
+    /// The call id of the step `activity` names, so two steps with the same
+    /// command line are still two steps (the working mark bursts for each).
+    public private(set) var activityCall: String?
     /// Every compaction eve ran in this session, in order.
     public private(set) var compactionMarks: [CompactionMark] = []
     /// The mark of the failure `failed` is about, while it is.
@@ -1857,6 +1873,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             if case .current = owner { foldRetriedFailures() }
             if case .current = owner, let name = EveStream.requestedToolName(event.data) {
                 activity = .tool(name, detail: EveStream.requestedToolDetail(event.data))
+                activityCall = EveStream.requestedCallId(event.data)
             }
             // The validated call is the one place a drawing is complete and
             // carries its call id. Input deltas are partial JSON, one event

@@ -139,7 +139,12 @@ private struct VisibilityProbe: NSViewRepresentable {
     let onChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> ProbeView { ProbeView(onChange: onChange) }
-    func updateNSView(_ view: ProbeView, context: Context) { view.onChange = onChange }
+    func updateNSView(_ view: ProbeView, context: Context) {
+        view.onChange = onChange
+        // The parent re-evaluated: the mark may have moved (a re-sorted sidebar
+        // row) without any event the probe observes.
+        DispatchQueue.main.async { [weak view] in view?.evaluate() }
+    }
 
     final class ProbeView: NSView {
         var onChange: (Bool) -> Void
@@ -149,6 +154,7 @@ private struct VisibilityProbe: NSViewRepresentable {
         init(onChange: @escaping (Bool) -> Void) {
             self.onChange = onChange
             super.init(frame: .zero)
+            postsFrameChangedNotifications = true
         }
 
         @available(*, unavailable)
@@ -171,11 +177,19 @@ private struct VisibilityProbe: NSViewRepresentable {
                         self?.evaluate()
                     })
                 }
+                // The mark's own frame moving (a re-sorted row) and the clip view
+                // scrolling or resizing.
+                observers.append(center.addObserver(
+                    forName: NSView.frameDidChangeNotification, object: self, queue: .main
+                ) { [weak self] _ in self?.evaluate() })
                 if let clip = enclosingScrollView?.contentView {
                     clip.postsBoundsChangedNotifications = true
-                    observers.append(center.addObserver(
-                        forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
-                    ) { [weak self] _ in self?.evaluate() })
+                    clip.postsFrameChangedNotifications = true
+                    for name in [NSView.boundsDidChangeNotification, NSView.frameDidChangeNotification] {
+                        observers.append(center.addObserver(forName: name, object: clip, queue: .main) { [weak self] _ in
+                            self?.evaluate()
+                        })
+                    }
                 }
             }
             evaluate()
@@ -187,7 +201,7 @@ private struct VisibilityProbe: NSViewRepresentable {
             evaluate()
         }
 
-        private func evaluate() {
+        func evaluate() {
             let visible = isSeen
             guard visible != last else { return }
             last = visible

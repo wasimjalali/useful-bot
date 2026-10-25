@@ -18,7 +18,7 @@ public struct ChatSnapshot: Codable, Equatable, Sendable {
     /// of any type stored inside it, changes. A snapshot of another version is
     /// never restored; the chat is replayed from zero instead and written
     /// again. `ChatSnapshotTests` pins the stored names to this number.
-    public static let formatVersion = 12
+    public static let formatVersion = 13
 
     public var version: Int
     public var botId: String

@@ -51,7 +51,8 @@ import Testing
         #expect(AgentMarkFrames.arrival(at: 0.46).isEmpty)
         #expect(same(AgentMarkFrames.arrival(at: 0.48), dots([(0, 0, 3.5), (0, 0, 3.5), (0, 0, 3.5)])))
         #expect(same(AgentMarkFrames.arrival(at: 0.53), dots([(-2, 0, 3.5), (0, 0, 3), (2, 0, 4)])))
-        #expect(same(AgentMarkFrames.arrival(at: 0.66), dots([(-8, 0, 4.5), (0, 0, 2.75), (8, 0, 5)])))
+        // The loop's own row, so the hand-over has no size pop.
+        #expect(same(AgentMarkFrames.arrival(at: 0.66), dots([(-8, 0, 4.5), (0, 0, 3), (8, 0, 5)])))
     }
 
     @Test func arrivalShrinksWithoutFadingIn() {
@@ -380,13 +381,56 @@ import Testing
         // Past where the thinking would have started, it is still the command figure.
         #expect(same(s.dots(at: 12.0), AgentMarkFrames.commandLoop(at: 12.0 - 10.2 - 0.2)))
         #expect(same(s.dots(at: 15.0), AgentMarkFrames.commandLoop(at: 15.0 - 10.2 - 0.2)))
-        // A restart inside the dwell continues the figure too.
+    }
+
+    @Test func aRestartInsideTheDwellWaitsForItsEndAndThenBursts() {
+        // A long command that follows a short one still gets its burst.
         var r = AgentMarkSequencer(start: 0)
         r.set(.command, at: 10)
+        let dwellEnd = 10.2 + 1.46
         let before = r.dots(at: 10.7)
         r.set(.command, at: 10.7, restart: true)
         #expect(same(r.dots(at: 10.7), before))
-        #expect(same(r.dots(at: 10.9), AgentMarkFrames.commandLoop(at: 10.9 - 10.2 - 0.2)))
+        // Until the dwell is over it is the same figure.
+        for t in stride(from: 10.8, to: dwellEnd, by: 0.02) {
+            #expect(same(r.dots(at: t), AgentMarkFrames.commandLoop(at: t - 10.2 - 0.2)), "frame at \(t)")
+        }
+        // Then it folds and bursts again.
+        #expect(!r.dots(at: dwellEnd + 0.1).isEmpty)
+        #expect(same(r.dots(at: dwellEnd + 0.2 + eps), AgentMarkFrames.burst(at: 0)))
+        #expect(same(r.dots(at: dwellEnd + 0.2 + 0.2 + eps), AgentMarkFrames.commandLoop(at: 0)))
+        // A command that already ended by then (a return to thinking after the
+        // restart) wins over the burst.
+        var ended = AgentMarkSequencer(start: 0)
+        ended.set(.command, at: 10)
+        ended.set(.command, at: 10.7, restart: true)
+        ended.set(.thinking, at: 10.9)
+        #expect(same(ended.dots(at: dwellEnd + 0.2 + eps), AgentMarkFrames.arrival(at: 0.48)))
+    }
+
+    // MARK: Hand-overs have no pop
+
+    @Test func theArrivalHandsOverToTheLoopWithoutAJump() {
+        let s = AgentMarkSequencer(start: 100)
+        let before = s.dots(at: 100.66 - 0.001)
+        let after = s.dots(at: 100.66 + 0.001)
+        #expect(before.count == after.count)
+        #expect(zip(before, after).allSatisfy { abs($0.x - $1.x) < 0.1 && abs($0.y - $1.y) < 0.1 && abs($0.d - $1.d) < 0.1 })
+    }
+
+    @Test func theFanBackToThreeHandsOverToTheLoopWithoutAJump() {
+        var s = AgentMarkSequencer(start: 0)
+        s.set(.command, at: 10)
+        s.set(.thinking, at: 20)
+        let join = 20 + 0.2 + 0.18
+        let before = s.dots(at: join - 0.001)
+        let after = s.dots(at: join + 0.001)
+        #expect(before.count == after.count)
+        #expect(zip(before, after).allSatisfy { abs($0.x - $1.x) < 0.1 && abs($0.y - $1.y) < 0.1 && abs($0.d - $1.d) < 0.1 })
+        // And the fold ends on the fan's first dot.
+        let dot = s.dots(at: 20 + 0.2 - 0.001)
+        let fan = s.dots(at: 20 + 0.2 + 0.001)
+        #expect(zip(dot, fan).allSatisfy { abs($0.d - $1.d) < 0.25 })
     }
 
     @Test func theLatestReturnWinsAndAFinishedTurnDoesNotWait() {
@@ -580,6 +624,26 @@ import Testing
         hold.offer("Thinking", at: 100.4)
         #expect(hold.due == nil)
         #expect(hold.shown(at: 105) == "Thinking")
+    }
+
+    @Test func aRestartBetweenAnOfferAndItsDueTimeStillShowsThePendingLabel() {
+        // The reveal restarts the hold while a label waits: the due time moves
+        // later, so a waiter that woke at the old time must go on waiting, and
+        // the label must show once the new time comes.
+        var hold = LabelHold("Thinking", at: 100)
+        hold.offer("Running a command", at: 100.3)
+        #expect(abs((hold.due ?? 0) - 100.8) < 1e-9)
+        hold.restart(at: 100.6)
+        let due = hold.due
+        #expect(due != nil && abs((due ?? 0) - 101.4) < 1e-9)
+        // The woken-early waiter settles at 100.8 and finds nothing to do ...
+        hold.settle(at: 100.8)
+        #expect(hold.shown == "Thinking")
+        #expect(hold.due != nil)
+        // ... and the loop's next wake, at the new due time, shows it.
+        hold.settle(at: 101.4)
+        #expect(hold.shown == "Running a command")
+        #expect(hold.due == nil)
     }
 
     @Test func aLabelThatOnlyBecameVisibleLaterHoldsFromThen() {
