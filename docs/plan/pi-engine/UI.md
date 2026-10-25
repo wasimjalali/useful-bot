@@ -88,7 +88,7 @@ Library moves out of the account menu. The Connectors footer pill goes (the row 
 
 | State | Mark | Clears when |
 |---|---|---|
-| working (a turn is running) | a ring of four dots chasing round (14pt, ink, one turn per second; still under Reduce Motion) | the turn settles |
+| working (a turn is running) | the agent-working dot mark at 0.6 scale (`useful-brand` agent-working motion, #215; it replaced the ring of four dots) | the turn settles |
 | waiting on owner (open question or pending approval in that chat) (PR 3) | amber dot | the question is answered, or the approval is decided or expires (5 min) |
 | reply ready (a turn settled while the chat was not open) (PR 3) | dark dot (ink; the Useful palette has no blue) | the chat is opened |
 | failed (newest turn failed, not retried) (PR 3) | red mark | Retry succeeds or a new turn starts |
@@ -262,8 +262,8 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Delete chat | `DELETE /api/chats/:id` (moves the file to `<stateRoot>/engine/trash/`, purged after 30 days) | 3 |
 | Open chat | `POST /api/chats/:id/open` (current chat, clears reply ready) | 2 (`openRecent`), 3 |
 | Transcript rows | `GET /api/chats/:id/rows` | 3 |
-| Live transcript | `GET /api/chats/:id/events` | 3 |
-| Send, queue, retry | `POST /api/chats/:id/turns` | 3 |
+| Live transcript | `GET /api/chats/:id/events`: `message.user`, `message.delta`, `message.final` (bubbles), `activity` (working row label), `tool.call` / `tool.result` (widgets, search chips), `row` (note, image, page, widget, card, unsent, failure rows), `compaction.done` (compaction note), `input.requested` / `input.resolved` (question card); `stream.ready` and `ping` are transport | 3 |
+| Send, queue, retry | `POST /api/chats/:id/turns`; events `turn.started` (working row on; with `retry` the app re-reads rows), `message.queued` (queued tag), `message.dropped` (unsent bubble with Send again), `turn.completed` / `turn.cancelled` (working row off), `turn.failed` (failure row with Retry) | 3 |
 | Stop | `POST /api/chats/:id/cancel` | 3 |
 | Approval cards (+ "From another chat") | `GET /api/approvals` (`chatId`, `botId`), `POST /api/approvals/:id` | 3 (`chatId`) |
 | Question card | `input.requested` / `input.resolved` events; answer = next turn | 3 |
@@ -273,7 +273,6 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Search chips | `tool.result.searchResults` | 3 |
 | Routines page | `/api/routines` CRUD, `POST /api/routines/:id/run`, run history with `chatId` | 2 (page move), 3 (`chatId` link) |
 | Routine chats in the list (clock mark) | chat index entry `routineId`; `routine.chatId`, `RoutineRun.chatId` | 3 |
-| Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
 | Connectors page, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b: direct MCP servers already carry it (connection state `authFailed` or `expired`); Composio apps gain `needsSignIn` on `/api/connectors` |
@@ -287,10 +286,10 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Composer folder and permission | `PUT /api/shell` `setWorkspace`, `setPermission`; `/api/workspace` | 2 |
 | Attachments | `POST /api/attachments` | 3 (structured parts) |
 | Search palette chats | chat index + `GET /api/chats/search?q=` | 2 (titles only), 3 (message text) |
-| Notifications, Dock badge | `/api/engine/status` transitions | 3 |
-| Earlier bots (Settings) | `GET /api/shell` (archived bots), `PUT /api/shell` `moveNotes`, `removeArchivedBot`; note count from `GET /api/memory?botId=` (`total`, from the store's `countLive`) | 2 |
+| Notifications, Dock badge | `/api/engine/status` transitions; the badge counts chats waiting on the owner | 3 |
 | Token usage, Providers, Settings | as today | unchanged |
-| First-launch note | engine `migration.json` flag in `GET /api/engine/status` (`cleanSlateNotice`) | 3 |
+
+Internal (no UI row): `POST /api/agent/tick` (the app's 2.5 s poll that runs the connect pumps and the orphan sweep), `/api/connectors/own-app` (the Needs-your-own-app form's credentials, part of Connectors), `/api/connections/callback`, `/api/connectors/callback` and `/auth/callback` (OAuth returns), `/api/health` and `/api/auth/session`. Removed by the fresh-install note (owner, 2026-10-25): the Earlier bots, moved-routines and first-launch-note rows.
 
 Backend capabilities that have no UI are not allowed. Check at PR 3 review: every route in
 `web/app/api/**` and every event type in SPEC 6.2 appears in the table above, or is listed as

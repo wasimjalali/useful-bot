@@ -15,6 +15,8 @@ type Session = { csrf: string; callerId: string };
 
 /** Writes against the engine, per caller. The route replaced had the same 60 a minute. */
 const WRITES_PER_MINUTE = 60;
+/** Stop and open: generous, so holding ⌘↑ through the chat list never blocks a Stop. */
+const CONTROL_PER_MINUTE = 600;
 
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
 const CURSOR = /^[A-Za-z0-9_:.-]{1,200}$/;
@@ -71,6 +73,11 @@ export type RelaySpec = {
   body?: "json" | "turn";
   /** For a `json` body: checks the parsed object and returns what to relay, or throws an `ApiError`. */
   checkBody?: (body: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * `control` writes (Stop, open a chat) get their own, larger bucket: a burst
+   * of chat switches must never leave Stop answering 429 (default: `writes`).
+   */
+  bucket?: "writes" | "control";
 };
 
 /**
@@ -83,7 +90,10 @@ export async function relayJson(request: Request, session: Session, spec: RelayS
   if (write) {
     const csrf = request.headers.get("x-ub-csrf");
     if (!csrf || csrf !== session.csrf) return fail(403, "csrf");
-    if (rateLimited(`chats:${session.callerId}`, WRITES_PER_MINUTE)) return fail(429, "rate_limited");
+    const control = spec.bucket === "control";
+    if (rateLimited(`chats${control ? "-control" : ""}:${session.callerId}`, control ? CONTROL_PER_MINUTE : WRITES_PER_MINUTE)) {
+      return fail(429, "rate_limited");
+    }
   }
   let body: string | undefined;
   if (spec.body) {

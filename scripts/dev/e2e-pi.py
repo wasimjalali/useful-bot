@@ -19,7 +19,8 @@ APP = "Useful Bot Dev"
 STATE = f"{HOME}/.useful-bot-dev-app"
 ENGINE = f"{STATE}/engine"
 DEV_RUNTIME = f"{HOME}/Library/Application Support/Useful Bot Dev/app"
-MAIN = "/Users/wasimjalali/Desktop/useful-bot"
+# The main checkout (verify/ lives there, not in a worktree).
+MAIN = os.path.dirname(os.path.abspath(subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True).stdout.strip()))
 TURN_LIMIT_S = 300
 
 
@@ -144,6 +145,17 @@ class Driver:
         return self.md
 
 
+def answer_card(d, ctx, seen=None):
+    """Approve a card only when it acts inside this run's work folder; deny anything else.
+    A web page the bot read could ask for another command: the run never approves that."""
+    md = d.md or ""
+    expected = ctx["work"] in md or "UsefulBotE2E" in md
+    if seen is not None:
+        seen.append(d.shot("card"))
+    d.click_label("Approve" if expected else "Deny")
+    ctx.setdefault("cards", []).append({"approved": expected})
+
+
 # ------------------------------------------------------------------ engine state (read-only)
 
 def chats():
@@ -206,7 +218,7 @@ def step_multi(d, ctx):
            f"2) write an HTML page to {work}/out/report.html titled 'E2E report {code}' with one paragraph. "
            f"3) search the web for 'Pi agent harness Earendil' and name one result. "
            f"4) save a memory note that the E2E codename is {code}. Then say done.")
-    t = d.wait_idle(on_card=lambda: (cards.append(d.shot("card")), d.click_label("Approve")))
+    t = d.wait_idle(on_card=lambda: answer_card(d, ctx, cards))
     d.shot("multi-done")
     chat = chat_by_title(f"E2E multi {code}")
     tools = tool_names(chat)
@@ -237,7 +249,7 @@ def step_queue(d, ctx):
     d.send("Now say the word pear.")
     md_mid = d.transcript()
     d.shot("queued")
-    t = d.wait_idle(on_card=lambda: d.click_label("Approve"))
+    t = d.wait_idle(on_card=lambda: answer_card(d, ctx))
     d.shot("queue-done")
     chat = chat_by_title(f"E2E queue {code}")
     starts = [e["data"] for e in entries(chat) if e.get("customType") == "ub.turn-start"]
@@ -318,7 +330,7 @@ def step_interrupt(d, ctx):
         raise Fail("no Retry after the engine was killed and the app relaunched")
     back = round(time.time() - t0, 1)
     d.click_label("Retry")
-    t = d.wait_idle(on_card=lambda: d.click_label("Approve"))
+    t = d.wait_idle(on_card=lambda: answer_card(d, ctx))
     d.shot("retried")
     chat = chat_by_title(f"E2E interrupt {code}")
     ends = turn_ends(chat)
@@ -371,7 +383,7 @@ def step_routine(d, ctx):
     new_chat(d)
     name = f"E2E ping {ctx['code']}"
     d.send(f"Create a routine named '{name}' that runs daily at 03:00 and whose instruction is: reply with the single word pong.")
-    d.wait_idle(on_card=lambda: d.click_label("Approve"))
+    d.wait_idle(on_card=lambda: answer_card(d, ctx))
     hits = [r for r in routines() if r["name"] == name]
     if not hits:
         raise Fail("the bot did not create the routine")
@@ -445,7 +457,7 @@ def step_widget(d, ctx):
     """Excalidraw through find_tools: a live widget, then a widget row the app persisted."""
     new_chat(d)
     d.send(f"E2E widget {ctx['code']}. Draw a small flowchart in Excalidraw: Start, then Work, then Done.")
-    t = d.wait_idle(on_card=lambda: d.click_label("Approve"))
+    t = d.wait_idle(on_card=lambda: answer_card(d, ctx))
     time.sleep(3)
     d.shot("widget")
     chat = chat_by_title(f"E2E widget {ctx['code']}")

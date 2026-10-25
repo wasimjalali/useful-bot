@@ -352,3 +352,16 @@ test("every chat route calls the relay, keeps the owner gate first, and takes th
   }
   assert.match(read("web/app/api/chats/[chatId]/turns/route.ts"), /body: "turn"/);
 });
+
+test("Stop still reaches the engine after the write bucket is spent: control writes have their own bucket", async () => {
+  await withEngine(async (engine) => {
+    const caller = session();
+    for (let index = 0; index < 61; index += 1) {
+      await relayJson(post(`/api/chats/${CHAT}/rename`, {}), caller, { method: "POST", path: `/chats/${CHAT}/open` });
+    }
+    const before = engine.requests.length;
+    const stop = await relayJson(post(`/api/chats/${CHAT}/cancel`, {}), caller, { method: "POST", path: `/chats/${CHAT}/cancel`, bucket: "control" });
+    assert.notEqual(stop.status, 429);
+    assert.equal(engine.requests.length, before + 1);
+  });
+});

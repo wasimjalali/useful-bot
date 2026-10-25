@@ -266,10 +266,8 @@ write, so reading a verb off it says something; an MCP server writes its own
 tool names, so a `list_items` that deletes would have read as a read.
 
 Budgets keep the router's walls out of reach, because a turn that hits one is
-refused with a non-retryable error. The router
-counts schemas and bytes, so both are budgeted, on the connect (which is
-refused before a row or a credential is written), on the mounted set (clamped
-every turn, whatever is in the store) and on what one session may pick up.
+refused with a non-retryable error. The router counts schemas and bytes, so
+both are budgeted on what one chat may pick up (at most 40 picked tools).
 `test/tool-cap.test.ts` does the arithmetic, so lowering a wall or adding an
 agent tool trips CI rather than a live turn.
 

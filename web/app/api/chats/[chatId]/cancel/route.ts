@@ -9,5 +9,5 @@ export async function POST(request: Request, context: { params: Promise<{ chatId
   if (isGateError(gate)) return gate.error;
   const chatId = safeId((await context.params).chatId);
   if (!chatId) return Response.json({ ok: false, error: "chat_not_found" }, { status: 404 });
-  return relayJson(request, gate.session, { method: "POST", path: `/chats/${chatId}/cancel` });
+  return relayJson(request, gate.session, { method: "POST", path: `/chats/${chatId}/cancel`, bucket: "control" });
 }
