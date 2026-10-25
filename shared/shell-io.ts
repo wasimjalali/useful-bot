@@ -13,8 +13,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { statePath } from "./stack.ts";
-import { moveRoutinesToBot } from "./routines-store.ts";
-import { archiveEarlierBots, DEFAULT_BOT_ID, isPerfFixtureBot, parseShell, seedStore, type ShellStore } from "./shell-store.ts";
+import { parseShell, seedStore, type ShellStore } from "./shell-store.ts";
 
 export function defaultShellPath(): string {
   if (process.env.UB_SHELL_PATH) return process.env.UB_SHELL_PATH;
@@ -126,7 +125,7 @@ export function shellWasReseeded(path = defaultShellPath()): boolean {
  * Read the roster without repairing it. `readShell` treats an unreadable store
  * as a reason to reseed, which is right for the app (an owner with a broken
  * store still gets a working one) and catastrophic for anything that deletes
- * by absence: every other bot's routines and transcripts become orphans.
+ * by absence: every routine whose bot is not on the stub becomes an orphan.
  *
  * Callers that delete must use this, do nothing when it returns null, and
  * check `shellWasReseeded` as well: null only covers a file this process could
@@ -141,133 +140,11 @@ export function peekShell(path = defaultShellPath()): ShellStore | null {
   }
 }
 
-/**
- * Set beside the store once the archive migration has run, and kept current by
- * every write this build makes. It names the bots that are allowed to be active
- * beside the default one: none in the app (the dev stack's perf fixtures are
- * exempt by name), but a roster this build wrote itself, such as a test
- * fixture, is recorded as it was written. Absent, or a roster with an active
- * bot it does not name, means the file is as an older build left it (or a
- * backup was copied back over it) and the pass runs again.
- */
-export function archiveMarkerPath(path = defaultShellPath()): string {
-  return `${path}.archived-v1`;
-}
-
-type ArchiveMarker = { at: string; allowed: string[] };
-
-/** Null when there is no marker. A marker that cannot be read allows nothing, so the pass reruns. */
-function readArchiveMarker(path: string): ArchiveMarker | null {
-  const file = archiveMarkerPath(path);
-  if (!existsSync(file)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(file, "utf8")) as Partial<ArchiveMarker>;
-    return {
-      at: typeof raw.at === "string" ? raw.at : "",
-      allowed: Array.isArray(raw.allowed) ? raw.allowed.filter((id): id is string => typeof id === "string") : [],
-    };
-  } catch {
-    return { at: "", allowed: [] };
-  }
-}
-
-/** The active bots, other than the default one, that the pass would archive. */
-function pendingBots(store: ShellStore): string[] {
-  return store.bots.filter((bot) => bot.id !== DEFAULT_BOT_ID && !bot.archived && !isPerfFixtureBot(bot)).map((bot) => bot.id);
-}
-
-function needsArchive(store: ShellStore, marker: ArchiveMarker | null): boolean {
-  if (!marker) return true;
-  return pendingBots(store).some((id) => !marker.allowed.includes(id));
-}
-
-/**
- * Write the marker with these allowed ids. Unchanged: the file (and its stamp)
- * is left alone, so an ordinary write costs a read.
- */
-function putArchiveMarker(path: string, allowed: string[]): void {
-  const marker = archiveMarkerPath(path);
-  allowed = [...allowed].sort();
-  const current = readArchiveMarker(path);
-  if (current && current.allowed.length === allowed.length && current.allowed.every((id, index) => id === allowed[index])) return;
-  const tmp = `${marker}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    writeFileSync(tmp, `${JSON.stringify({ at: new Date().toISOString(), allowed })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    renameSync(tmp, marker);
-  } catch (err) {
-    try { unlinkSync(tmp); } catch { /* nothing to clean */ }
-    throw err;
-  }
-}
-
-/**
- * Create the marker: only `migrateArchive` does, after the routine move. The
- * allowed ids are the active bots the roster still has, which after the pass is
- * none in the app.
- */
-function createArchiveMarker(path: string, store: ShellStore): void {
-  putArchiveMarker(path, pendingBots(store));
-}
-
-/**
- * Keep an existing marker true after a write. It never creates a marker, which
- * would end a migration that is still moving routines, and it never widens
- * `allowed`: a roster written from a stale read (an older build's, a restored
- * backup's) must not make an earlier bot permanent.
- */
-function narrowArchiveMarker(path: string, store: ShellStore): void {
-  const current = readArchiveMarker(path);
-  if (!current) return;
-  const pending = new Set(pendingBots(store));
-  putArchiveMarker(path, current.allowed.filter((id) => pending.has(id)));
-}
-
-/**
- * The archive migration. Every bot but the default one becomes archived and
- * its routines move to the default bot, paused (see `archiveEarlierBots` and
- * `moveRoutinesToBot`); nothing is deleted. It runs on the first read, and
- * again when a roster shows up with an active bot the marker does not name (an
- * older build wrote one, or a backup was restored).
- *
- * The shell lock covers the shell file only. The routine move waits on the
- * routines lock, up to eight seconds, and the shell lock goes stale after
- * three, so holding it across that wait would let another process take it.
- * The order is: drop the old marker and write the archived roster under the
- * shell lock, then move the routines, then write the marker last. A run that
- * dies anywhere leaves no marker and the next read finishes it; both steps are
- * idempotent. A store with nothing to archive only gets its marker, and the
- * shell file is not rewritten. Returns the store as it reads after.
- */
-function migrateArchive(path: string): ShellStore {
-  const release = acquireShellLock(path);
-  let result: ReturnType<typeof archiveEarlierBots>;
-  try {
-    // Re-checked under the lock: another process may have finished first.
-    const current = readShellFile(path);
-    if (!needsArchive(current, readArchiveMarker(path))) return current;
-    result = archiveEarlierBots(current);
-    if (result.changed) {
-      try { unlinkSync(archiveMarkerPath(path)); } catch { /* none yet */ }
-      writeShellFile(result.store, path);
-    }
-  } finally {
-    release();
-  }
-  if (result.moved.length > 0) moveRoutinesToBot(result.moved, DEFAULT_BOT_ID);
-  createArchiveMarker(path, result.store);
-  return result.store;
-}
-
+/** The roster. A missing file is seeded; one that will not parse (any other version included) is backed up and reseeded. */
 export function readShell(path = defaultShellPath()): ShellStore {
-  // The marker first, then the file: the marker is written after the archived
-  // roster, so a marker seen here means the file read next is already migrated.
-  const marker = readArchiveMarker(path);
-  if (!marker) return migrateArchive(path);
-  const store = readShellFile(path);
-  return needsArchive(store, marker) ? migrateArchive(path) : store;
+  return readShellFile(path);
 }
 
-/** The roster as it is on disk: seeded when missing, reseeded when unreadable. No migration. */
 function readShellFile(path: string): ShellStore {
   if (!existsSync(path)) {
     const seeded = seedStore();
@@ -294,25 +171,9 @@ function readShellFile(path: string): ShellStore {
   }
 }
 
-/**
- * Write the roster. An existing marker is kept true (narrowed, never widened)
- * and none is created: the marker is `migrateArchive`'s to create, after the
- * routine move. A store with no marker is migrated on its next read, which for
- * a fresh or reseeded one only writes the marker.
- */
+/** Write the roster. */
 export function writeShell(store: ShellStore, path = defaultShellPath()): void {
   writeShellFile(store, path);
-  narrowArchiveMarker(path, parseShell(store));
-}
-
-/**
- * Test fixtures only: write a roster that deliberately has more than one active
- * bot (the app makes no such roster), and record those bots as allowed so the
- * archive pass leaves them alone. Nothing in the app calls this.
- */
-export function writeFixtureShell(store: ShellStore, path = defaultShellPath()): void {
-  writeShellFile(store, path);
-  putArchiveMarker(path, pendingBots(parseShell(store)));
 }
 
 function writeShellFile(store: ShellStore, path: string): void {
@@ -352,32 +213,22 @@ function sleep(ms: number): void {
 }
 
 /**
- * Locked read-modify-write for the shell store. The route and the handoff pump
- * both update bot rows, and a plain read/apply/write pair can drop the other
- * writer's row when they overlap; the directory lock keeps the update whole
+ * Locked read-modify-write for the shell store. The route and the engine both
+ * update the bot row, and a plain read/apply/write pair can drop the other
+ * writer's change when they overlap; the directory lock keeps the update whole
  * across requests and across processes.
  */
 export function updateShell(
   mutate: (store: ShellStore) => ShellStore,
   path = defaultShellPath(),
 ): ShellStore {
-  for (let attempt = 0; ; attempt += 1) {
-    const release = acquireShellLock(path);
-    try {
-      const current = readShellFile(path);
-      // Checked on the roster read under this lock, not before it: a roster an
-      // older build wrote, or a restored backup, can land in between.
-      if (!needsArchive(current, readArchiveMarker(path))) {
-        const next = mutate(current);
-        writeShell(next, path);
-        return next;
-      }
-    } finally {
-      release();
-    }
-    // The migration takes and drops its own locks, so it runs outside this one.
-    if (attempt >= 2) throw new Error("shell_archive_pending");
-    migrateArchive(path);
+  const release = acquireShellLock(path);
+  try {
+    const next = mutate(readShellFile(path));
+    writeShell(next, path);
+    return next;
+  } finally {
+    release();
   }
 }
 

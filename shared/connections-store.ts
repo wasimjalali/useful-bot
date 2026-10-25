@@ -4,12 +4,12 @@ import { assertConnectionUrl } from "./connection-url.ts";
 import { statePath } from "./stack.ts";
 
 /**
- * Owner-approved MCP and OpenAPI connections. Secrets live in Keychain;
- * this file is the catalogue the eve registry and the connect card read.
+ * Owner-approved MCP connections. Secrets live in Keychain; this file is the
+ * catalogue `find_tools` and the connect card read.
  * Same write rules as connectors.json: 0600, atomic rename, locked merge.
  */
 
-export type ConnectionKind = "mcp" | "openapi";
+export type ConnectionKind = "mcp";
 export type ConnectionAuthKind = "none" | "apiKey" | "bearer" | "oauth";
 
 export type ConnectionEntry = {
@@ -115,7 +115,8 @@ function parseEntry(raw: unknown): ConnectionEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
   if (!isConnectionId(rec.id)) return null;
-  if (rec.kind !== "mcp" && rec.kind !== "openapi") return null;
+  // A row of any other kind (an OpenAPI server from an earlier build) is not read.
+  if (rec.kind !== "mcp") return null;
   const name = clip(rec.name, 80);
   if (!name) return null;
   let url: string;

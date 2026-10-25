@@ -701,7 +701,7 @@ test("streaming proxies sse and records usage", async () => {
   });
 });
 
-test("a stream cut off after a tool call reaches eve as a tool step", async () => {
+test("a stream cut off after a tool call is relayed as the upstream sent it, split and unterminated blocks included", async () => {
   await withRouter(async (base, tokens) => {
     const res = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
@@ -711,7 +711,8 @@ test("a stream cut off after a tool call reaches eve as a tool step", async () =
     assert.equal(res.status, 200);
     const text = await res.text();
     const finishes = [...text.matchAll(/"finish_reason":"(\w+)"/g)].map((m) => m[1]);
-    assert.deepEqual(finishes, ["tool_calls"]);
+    // The length stop is not rewritten: the engine fails a truncated tool call on purpose.
+    assert.deepEqual(finishes, ["length"]);
     assert.equal(text.includes("\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\""), true);
     // The last block had no closing blank line and still arrives.
     assert.equal(text.trimEnd().endsWith("data: [DONE]"), true);

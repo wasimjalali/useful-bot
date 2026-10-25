@@ -131,14 +131,6 @@ export function applyProvidersPut(body: ProvidersPutBody): { store: ProviderStor
   if (botId !== undefined && !readShell().bots.some((item) => item.id === botId)) {
     throw new Error("shell_bot_missing");
   }
-  // An earlier bot takes no model pick: nothing runs on it.
-  if (
-    botId !== undefined
-    && (body.modelId !== undefined || body.effort !== undefined || body.speed !== undefined)
-    && readShell().bots.some((item) => item.id === botId && item.archived)
-  ) {
-    throw new Error("shell_bot_archived");
-  }
   const store = updateProviderStore((current) => {
     let store = current;
     let botPick: { botId: string; selection: ReturnType<typeof botSelection> } | null = null;

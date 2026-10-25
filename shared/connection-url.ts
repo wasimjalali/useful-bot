@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
 /**
- * SSRF-facing URL rules for owner-approved MCP and OpenAPI servers, and for
+ * SSRF-facing URL rules for owner-approved MCP servers, and for
  * every URL fetched while talking to them (OAuth discovery, token, widget
  * HTML). https anywhere public; http only on 127.0.0.1.
  */
