@@ -31,7 +31,7 @@ export type ToolCtx = {
   abortSignal: AbortSignal;
   /** Bot, frozen selection, window, permission, folder and context of this turn. */
   snapshot: OkSnapshot;
-  /** Compatibility for helpers written against eve's ctx: `session.id` is the chat id. */
+  /** For helpers that read `session.id`: it is the chat id. */
   session: { id: string; turn: { id: string } };
   /** Writes a `ub.row` entry and emits a `row` event. Idempotent by `row.key`. */
   appendRow(row: RowInput): Promise<void>;

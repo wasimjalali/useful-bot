@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { RowInput, ToolCtx } from "../../agent/lib/tool.ts";
 import type { OkSnapshot } from "../../agent/lib/turn-snapshot.ts";
+import { upsertSessionGrant } from "../../shared/workspace-store.ts";
+import type { WorkspacePermission } from "../../shared/workspace-store.ts";
 
 export type TestCtx = ToolCtx & { rows: RowInput[]; abort: () => void };
 
@@ -10,7 +13,9 @@ export type TestCtx = ToolCtx & { rows: RowInput[]; abort: () => void };
  */
 export function fakeCtx(over: Partial<Pick<ToolCtx, "chatId" | "botId" | "turnId" | "callId" | "origin">> = {}): TestCtx {
   const chatId = over.chatId ?? "chat-test";
-  const turnId = over.turnId ?? "turn-test";
+  // A fresh turn per context unless a test names one: the outside-content mark
+  // is kept per chat and turn, and a shared id would leak it between tests.
+  const turnId = over.turnId ?? `turn-${randomUUID()}`;
   const controller = new AbortController();
   const rows: RowInput[] = [];
   const snapshot = {
@@ -35,4 +40,16 @@ export function fakeCtx(over: Partial<Pick<ToolCtx, "chatId" | "botId" | "turnId
     rows,
     abort: () => controller.abort(),
   };
+}
+
+/**
+ * Stamps the grant the engine writes before a turn: this chat works in `path`
+ * (null: no folder, the owner's home) under `permission`. A chat the engine
+ * never stamped fails closed to Read only, so tests that want Auto or Full
+ * access stamp it here. Reads the store path from UB_WORKSPACE_STORE_PATH.
+ */
+export function stampGrant(chatId: string, path: string | null, permission: WorkspacePermission): void {
+  // The record is keyed by the chat id; `sessionId` rides along until the
+  // store's input field is renamed everywhere.
+  upsertSessionGrant({ chatId, sessionId: chatId, path, permission } as never, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
 }

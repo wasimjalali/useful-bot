@@ -53,7 +53,7 @@ function blockedReason(command: string, scoped: boolean): string | null {
   for (const part of scoped ? [...BLOCKED_COMMAND_SUBSTRINGS, ...SCOPED_COMMAND_SUBSTRINGS] : BLOCKED_COMMAND_SUBSTRINGS) {
     if (lowered.includes(foldPath(part))) return `command references ${part}`;
   }
-  // The app's own stores: approvals, the roster, the grants. read_file and
+  // The app's own stores: approvals, the bot record, the grants. read_file and
   // list_dir refuse the same names; a shell line must not be the way round.
   // Every state folder, in either stack (.useful-bot, .useful-bot-dev-app),
   // and both runtime install folders (Library/Application Support/Useful Bot[ Dev]).

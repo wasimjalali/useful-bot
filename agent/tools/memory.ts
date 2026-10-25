@@ -38,7 +38,7 @@ function clipPreview(value: string): string {
 const input = z.object({
   action: z.enum(["search", "read", "save", "delete"]),
   query: z.string().optional().describe("search: what to look for."),
-  id: z.string().optional().describe("read and delete: the note id. save: give it to update that note."),
+  id: z.string().regex(NOTE_ID).optional().describe("read and delete: the note id. save: give it to update that note."),
   expectedRevision: lenientNullableNumber("save: the note's integer revision to update, or null to create. delete: the revision."),
   title: z.string().max(120).optional().describe("save: required."),
   tags: z.array(z.string().max(32)).max(8).optional(),
@@ -93,7 +93,6 @@ function read(args: Input, ctx: ToolCtx) {
 }
 
 async function save(args: Input, ctx: ToolCtx) {
-  if (args.id !== undefined && !NOTE_ID.test(args.id)) return { status: "invalid", error: "memory_id", hint: "An id is letters, digits and dashes, up to 80." };
   if (args.title === undefined) return missing("title", "save");
   if (args.body === undefined) return missing("body", "save");
   const note = { title: args.title, tags: args.tags ?? [], body: args.body };
@@ -170,7 +169,6 @@ async function save(args: Input, ctx: ToolCtx) {
 
 async function remove(args: Input, ctx: ToolCtx) {
   if (!args.id) return missing("id", "delete");
-  if (!NOTE_ID.test(args.id)) return { status: "invalid", error: "memory_id", hint: "An id is letters, digits and dashes, up to 80." };
   const revision = args.expectedRevision;
   if (revision === null) return missing("expectedRevision", "delete");
   // Deleting a note is the bot's own memory housekeeping, like editing one:

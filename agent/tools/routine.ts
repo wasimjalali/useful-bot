@@ -171,15 +171,6 @@ async function update(args: Input, ctx: ToolCtx) {
   const found = ownRoutine(args, ctx);
   if ("result" in found) return found.result;
   const existing = found.routine;
-  // A routine the archive migration moved here waits for the owner. Any edit
-  // clears its mark, so the bot must not be the one to review it.
-  if (existing.movedFrom) {
-    return {
-      status: "blocked",
-      error: "routine_awaiting_review",
-      hint: "This routine came from an earlier bot and is paused. The owner reviews moved routines; tell them it is waiting.",
-    };
-  }
   if (args.timezone !== undefined && !isValidTimeZone(args.timezone)) {
     return { status: "invalid", error: `${args.timezone} is not an IANA timezone` };
   }
@@ -309,10 +300,7 @@ async function run(args: Input, ctx: ToolCtx) {
       status: "paused",
       routineId: routine.id,
       error: "that routine is paused",
-      // A moved routine cannot be resumed by the bot at all (update refuses it).
-      hint: routine.movedFrom
-        ? "This routine came from an earlier bot and waits for the owner's review. Tell them it is waiting."
-        : "Ask the owner to resume it, or call routine update with active true once they agree.",
+      hint: "Ask the owner to resume it, or call routine update with active true once they agree.",
     };
   }
   const started = await engineApi().runRoutine(routine.id);

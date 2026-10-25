@@ -1,9 +1,9 @@
-import { assertConnectionUrl, assertResolvedPublic } from "./connection-url.ts";
+import { assertResolvedPublic } from "./connection-url.ts";
 import { mountedSchemaBytes } from "./json-schema-zod.ts";
 
 /**
  * Tiny Streamable HTTP JSON-RPC client for listing tools and reading UI
- * resources. Tool execution stays in eve. Tests inject fetch.
+ * resources and calling tools. Tests inject fetch.
  */
 
 export type McpToolInfo = {
