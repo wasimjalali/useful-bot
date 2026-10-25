@@ -429,6 +429,8 @@ final class AppModel: ObservableObject {
     private var sendsInFlight = 0
     /// Consecutive failed engine status reads.
     private var statusFailures = 0
+    /// Status chat ids the list has already been refreshed for (see `pollEngineStatus`).
+    private var refreshedForUnknown: Set<String> = []
     /// Files of messages this app sent, by client id, so Send again / Edit on a
     /// message the engine handed back unsent (text only) can restore them. A row
     /// left from before a restart comes back text only.
@@ -1005,6 +1007,8 @@ final class AppModel: ObservableObject {
                 threadError = nil
             }
             if event.type == "turn.failed" { armRetryClock(event) }
+            // A queued send that ran normally no longer needs its files kept for Send again.
+            if event.type == "message.user", let clientId = event.clientId { sentFilesByClient[clientId] = nil }
             if ["turn.started", "turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
                 awaitingStart = false
             }
@@ -1363,7 +1367,11 @@ final class AppModel: ObservableObject {
         notifyFinishedTurns(status)
         // A chat the list has not heard of yet (a routine's first run, a
         // reply to a message sent from elsewhere) shows up on the next read.
-        if status.chats.contains(where: { chat in !chats.contains { $0.chatId == chat.chatId } && chat.chatId != currentChatId }) {
+        // Only once per unknown id: a failed chat older than the loaded pages
+        // stays in the status for good and must not refetch the list every poll.
+        let unknown = Set(status.chats.map(\.chatId)).subtracting(chats.map(\.chatId)).subtracting([currentChatId].compactMap { $0 })
+        if !unknown.subtracting(refreshedForUnknown).isEmpty {
+            refreshedForUnknown.formUnion(unknown)
             await refreshChats()
         }
     }
