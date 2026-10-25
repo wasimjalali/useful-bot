@@ -246,6 +246,9 @@ private final class ContainedScrollView: NSScrollView {
         guard abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX),
               let document = documentView,
               document.frame.height > contentView.bounds.height + 1 else {
+            // Held opening events go first, so the field sees its swipe in order.
+            held.forEach { super.scrollWheel(with: $0) }
+            held = []
             super.scrollWheel(with: event)
             return
         }
@@ -264,13 +267,17 @@ private final class ContainedScrollView: NSScrollView {
         if wheel { lastWheel = event.timestamp }
         // A swipe's first events can carry no movement yet: they wait until
         // its direction says where the whole swipe goes, so it isn't split.
-        if swipeToPage == nil, dy == 0, !wheel {
+        if swipeToPage == nil, dy == 0, event.phase == .began || event.phase == .mayBegin {
             held.append(event)
-            // A swipe that ends without moving goes back to the field whole.
-            if event.phase == .ended || event.phase == .cancelled {
-                held.forEach { super.scrollWheel(with: $0) }
-                held = []
-            }
+            return
+        }
+        // Any other still event with no direction yet (a swipe that ended
+        // without moving, a stray momentum tail) goes to the field with what
+        // was held.
+        if swipeToPage == nil, dy == 0 {
+            held.forEach { super.scrollWheel(with: $0) }
+            held = []
+            super.scrollWheel(with: event)
             return
         }
         if swipeToPage == nil { swipeToPage = atEdge }

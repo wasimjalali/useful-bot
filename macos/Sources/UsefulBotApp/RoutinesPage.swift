@@ -280,7 +280,8 @@ struct RoutineEditorView: View {
                             .accessibilityIdentifier("routine-cancel")
                         }
                     }
-                    if let error = editError ?? model.routinesError {
+                    // The edit's own refusal and any other routine error, each once.
+                    ForEach(Array(Set([editError, model.routinesError].compactMap { $0 })).sorted(), id: \.self) { error in
                         Text(error)
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.C.danger)
@@ -571,7 +572,9 @@ struct RoutineEditorView: View {
         let nextInstruction = trimmedInstruction.isEmpty || trimmedInstruction == seedInstruction || trimmedInstruction == saved.instruction
             ? nil : trimmedInstruction
         guard nextName != nil || nextInstruction != nil else {
-            if trimmedName == saved.name, trimmedInstruction == saved.instruction {
+            // `saved` is stale while a write is in flight: only an idle routine
+            // that holds the typed text clears the flags.
+            if !model.routineBusy.contains(id), trimmedName == saved.name, trimmedInstruction == saved.instruction {
                 unsavedEdit = false
                 editError = nil
             }
@@ -588,10 +591,20 @@ struct RoutineEditorView: View {
             if let failure {
                 if nextName != nil, seedName == nextName { seedName = previous.name }
                 if nextInstruction != nil, seedInstruction == nextInstruction { seedInstruction = previous.instruction }
-                editError = "Not saved. \(failure)"
+                // Kept even when an earlier write's success cleared the flag.
+                unsavedEdit = true
+                // Back on this routine after a switch, the fields show the
+                // server copy: nothing is left to send or warn about.
+                let current = model.routines.first(where: { $0.id == id })
+                editError = current.map { $0.name == trimmedName && $0.instruction == trimmedInstruction } == true
+                    ? nil : "Not saved. \(failure)"
             } else {
-                editError = nil
-                unsavedEdit = trimmedName != seedName || trimmedInstruction != seedInstruction
+                // An empty field is never sent, so it doesn't count as unsaved:
+                // the next poll puts the stored text back.
+                let pending = (!trimmedName.isEmpty && trimmedName != seedName)
+                    || (!trimmedInstruction.isEmpty && trimmedInstruction != seedInstruction)
+                unsavedEdit = pending
+                if !pending { editError = nil }
             }
         }
     }

@@ -100,6 +100,8 @@ class Driver:
         named = [e for e in fields if "composer-input" in (e.get("identifier"), e.get("label"))]
         if named:
             return named[0]
+        if len(fields) == 1:
+            return fields[0]
         if not all((e.get("frame") or {}).get("y") is not None for e in fields):
             raise Fail("text areas without frames: can't tell the composer")
         return max(fields, key=lambda e: e["frame"]["y"])

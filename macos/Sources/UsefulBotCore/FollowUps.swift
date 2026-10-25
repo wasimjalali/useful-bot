@@ -14,8 +14,9 @@ public enum FollowUps {
     /// being typed ("Follow-u"), so the list doesn't flash in the bubble.
     public static func split(_ text: String, partial: Bool = false) -> (body: String, questions: [String])? {
         var lines = text.components(separatedBy: "\n")
-        if partial, let last = lines.last, isLabelPrefix(last) {
-            lines[lines.count - 1] = "Follow-ups:"
+        if partial, let index = lines.lastIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+           isLabelPrefix(lines[index]) {
+            lines[index] = "Follow-ups:"
         }
         var questions: [String] = []
         while let last = lines.last {
@@ -42,12 +43,13 @@ public enum FollowUps {
         return ["follow-ups:", "follow-ups", "follow ups:", "followups:", "follow-up questions:"].contains(bare)
     }
 
-    /// The start of a "Follow-ups:" label, four characters or more.
+    /// The start of a "Follow-ups:" label past "Follow-u", so a line that is
+    /// just "Follow" or "Follow-up" isn't hidden.
     static func isLabelPrefix(_ line: String) -> Bool {
         let bare = line.filter { $0 != "*" && $0 != "#" && $0 != "_" }
             .trimmingCharacters(in: .whitespaces)
             .lowercased()
-        return bare.count >= 4 && "follow-ups:".hasPrefix(bare)
+        return bare.count >= 10 && "follow-ups:".hasPrefix(bare)
     }
 
     static func bullet(_ line: String) -> String? {
