@@ -65,6 +65,7 @@ export class RoutineScheduler {
   /** Starts what is due or requested, up to the cap. Returns the routine ids it started. */
   tick(now = new Date()): string[] {
     const started: string[] = [];
+    this.engine.sweepRoutineLinks();
     let candidates: Routine[];
     try {
       candidates = pendingRoutines(now);

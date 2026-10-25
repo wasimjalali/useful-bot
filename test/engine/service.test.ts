@@ -5,8 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { ServiceError, startService } from "../../agent/engine/service.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
-import { makeWorld, parseBody, fakeTools, type World } from "./helpers.ts";
-import type { Deps } from "../../agent/engine/deps.ts";
+import { makeWorld, fakeTools, type World } from "./helpers.ts";
+import { currentChatInShell, setCurrentChatInShell, type Deps } from "../../agent/engine/deps.ts";
+import { parseTurnBody } from "../../shared/turn-input.ts";
 
 /** The service around the engine (SPEC 5.1) and contract test 11: nothing talks to the network but the router. */
 
@@ -22,17 +23,18 @@ async function freePort(): Promise<number> {
 
 function depsFor(world: World): Deps {
   const tools = fakeTools(world.state);
-  const current = new Map<string, string | null>();
   return {
     allTools: () => tools,
     pickedTools: () => [],
+    refreshPickedTools: async () => undefined,
+    restoreTodos: () => undefined,
     widgetForCall: () => null,
     listSkills: () => [],
     notesBlockFor: () => "",
     setRoutineChat: () => undefined,
-    parseTurnBody: parseBody,
-    currentChat: (botId) => current.get(botId) ?? null,
-    setCurrentChat: (botId, chatId) => { current.set(botId, chatId); },
+    parseTurnBody,
+    currentChat: currentChatInShell,
+    setCurrentChat: setCurrentChatInShell,
   };
 }
 

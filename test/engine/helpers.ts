@@ -6,10 +6,12 @@ import { z } from "zod";
 import { ApprovalStore } from "../../agent/lib/approvals.ts";
 import { defineTool, toolOutput, type RowInput, type UsefulTool } from "../../agent/lib/tool.ts";
 import type { Deps, TurnBody } from "../../agent/engine/deps.ts";
+import { parseTurnBody } from "../../shared/turn-input.ts";
 import { Engine, type EngineOptions } from "../../agent/engine/engine.ts";
 import type { EngineEvent } from "../../agent/engine/protocol.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
-import { readShell, writeFixtureShell } from "../../shared/shell-io.ts";
+import { readShell } from "../../shared/shell-io.ts";
+import { currentChatInShell, setCurrentChatInShell } from "../../agent/engine/deps.ts";
 import { startFakeRouter, type FakeRouter } from "./fake-router.ts";
 
 /**
@@ -84,7 +86,8 @@ export function fakeTools(state: FakeToolState): UsefulTool[] {
       sequential: true,
       execute: async (_input, ctx) => {
         const { id } = state.approvals.request({
-          sessionId: ctx.session.id,
+          chatId: ctx.chatId,
+          botId: ctx.botId,
           turnId: ctx.turnId,
           toolCallId: ctx.callId,
           tool: "bash",
@@ -127,13 +130,6 @@ export function fakeTools(state: FakeToolState): UsefulTool[] {
       },
     }),
   ];
-}
-
-export function parseBody(raw: unknown): TurnBody {
-  const body = raw as Partial<TurnBody>;
-  assert.equal(typeof body.clientId, "string");
-  assert.equal(typeof body.text, "string");
-  return { clientId: body.clientId as string, text: body.text as string, attachments: body.attachments ?? [], retry: body.retry === true };
 }
 
 export type World = {
@@ -200,23 +196,25 @@ export async function makeWorld(options: WorldOptions = {}): Promise<World> {
       schemaVersion: 3,
       providers: { [CONNECTION]: { fetchedAt: Date.now(), models: [modelRow(options.window ?? 200_000)] } },
     }));
-    writeFixtureShell(readShell());
+    readShell();
   }
 
   const approvals = new ApprovalStore(Date.now, join(root, "approvals.json"));
   const state: FakeToolState = { picked: [], searchCalls: 0, approvals };
   const tools = fakeTools(state);
-  const current = new Map<string, string | null>();
+  const restoredTodos: { chatId: string; todos: unknown[] }[] = [];
   const deps: Deps = {
     allTools: () => tools,
     pickedTools: () => state.picked,
+    refreshPickedTools: async () => undefined,
+    restoreTodos: (chatId, todos) => { restoredTodos.push({ chatId, todos }); },
     widgetForCall: (name, args) => (name === "demo__ping" ? { connectionId: "demo", toolName: "ping", arguments: args } : null),
     listSkills: () => [{ name: "about-useful-bot", description: "Questions about the app." }],
     notesBlockFor: () => "",
     setRoutineChat: () => undefined,
-    parseTurnBody: parseBody,
-    currentChat: (botId) => current.get(botId) ?? null,
-    setCurrentChat: (botId, chatId) => { current.set(botId, chatId); },
+    parseTurnBody: parseTurnBody,
+    currentChat: currentChatInShell,
+    setCurrentChat: setCurrentChatInShell,
     ...options.deps,
   };
   const engine = await Engine.boot({

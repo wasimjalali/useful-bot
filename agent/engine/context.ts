@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { OUTPUT_RESERVE_TOKENS } from "../../shared/admission.ts";
-import { estimateTokens, renderThisTurn, renderYourBot, type ContextBot, type ThisTurn } from "../../shared/context-blocks.ts";
+import { renderThisTurn, renderYourBot, type ContextBot, type ThisTurn } from "../../shared/context-blocks.ts";
 import { UB } from "./protocol.ts";
 
 /**
@@ -34,9 +33,14 @@ export function skillsBlock(skills: SkillInfo[]): string {
   ].join("\n");
 }
 
+/** The prompt before "Your bot": the rules and the skills list. */
+export function basePromptFor(skills: SkillInfo[]): string {
+  return [instructionsText(), skillsBlock(skills)].filter((part) => part !== "").join("\n\n");
+}
+
 /** The static system prompt: instructions, then the skills list, then "Your bot". */
 export function systemPromptFor(bot: ContextBot, skills: SkillInfo[]): string {
-  return [instructionsText(), skillsBlock(skills), renderYourBot(bot)].filter((part) => part !== "").join("\n\n");
+  return [basePromptFor(skills), renderYourBot(bot)].join("\n\n");
 }
 
 /** The per-turn hidden message: "This turn", then the notes block when there is one. */
@@ -59,30 +63,4 @@ export function contextNeedsSending(branch: readonly SessionEntry[], text: strin
     }
   }
   return true;
-}
-
-export type Envelope = {
-  /** The static prompt, the hidden context message, the tool schemas and the output reserve, in tokens. */
-  tokens: number;
-  windowTokens: number;
-  instructionTokens: number;
-};
-
-/**
- * The envelope a turn carries before the owner types a word (SPEC 5.5.1),
- * measured from the prompt Pi will send and the tool declarations it will
- * declare. A send whose envelope exceeds the window is refused, never clipped.
- */
-export function measureEnvelope(input: {
-  systemPrompt: string;
-  contextMessage: string;
-  toolDeclarations: unknown[];
-  windowTokens: number;
-}): Envelope {
-  const instructionTokens = estimateTokens(input.systemPrompt.length);
-  const tokens = instructionTokens
-    + estimateTokens(input.contextMessage.length)
-    + estimateTokens(JSON.stringify(input.toolDeclarations).length)
-    + OUTPUT_RESERVE_TOKENS;
-  return { tokens, windowTokens: input.windowTokens, instructionTokens };
 }

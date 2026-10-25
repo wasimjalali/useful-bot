@@ -1,6 +1,7 @@
 import { peekShell, updateShell } from "../../shared/shell-io.ts";
 import { setBotChat } from "../../shared/shell-store.ts";
 import type { UsefulTool } from "../lib/tool.ts";
+import type { TurnBody } from "../../shared/turn-input.ts";
 import type { SkillInfo } from "./context.ts";
 
 /**
@@ -12,9 +13,7 @@ import type { SkillInfo } from "./context.ts";
 
 export type WidgetRef = { connectionId: string; toolName: string; arguments: Record<string, unknown> };
 
-export type TurnAttachment = { name: string; mediaType: string; size: number; text?: string; dataUrl?: string };
-
-export type TurnBody = { clientId: string; text: string; attachments: TurnAttachment[]; retry: boolean };
+export type { TurnAttachment, TurnBody } from "../../shared/turn-input.ts";
 
 export type Deps = {
   /** The 16 declared tools, in their fixed order (agent/tools/index.ts). */
@@ -23,6 +22,10 @@ export type Deps = {
   pickedTools(chatId: string): UsefulTool[];
   /** The widget a picked tool's call opens, or null (shared/mcp-apps.ts). */
   widgetForCall(name: string, args: Record<string, unknown>): WidgetRef | null;
+  /** Before a reopened chat's picked tools are registered: checks each connection's listing is current (agent/tools/picked.ts). */
+  refreshPickedTools(chatId: string): Promise<void>;
+  /** Seeds the todo list from the branch's last `todo` result when a chat opens (agent/tools/todo.ts). */
+  restoreTodos(chatId: string, todos: unknown[]): void;
   /** Name and one line for each skill (agent/lib/skills.ts). */
   listSkills(): SkillInfo[];
   /** The rendered notes block for "This turn" (shared/notes-block.ts). */
@@ -36,6 +39,16 @@ export type Deps = {
   /** Makes a chat the bot's current one, or none, and updates its preview line. */
   setCurrentChat(botId: string, chatId: string | null, preview: string): void;
 };
+
+/** The chat a bot has open, from `shell.json`. */
+export function currentChatInShell(botId: string): string | null {
+  return peekShell()?.bots.find((item) => item.id === botId)?.chatId ?? null;
+}
+
+/** Makes a chat the bot's current one (or none) under the shell lock. */
+export function setCurrentChatInShell(botId: string, chatId: string | null, preview: string): void {
+  updateShell((store) => setBotChat(store, botId, chatId, preview, new Date().toISOString()));
+}
 
 /**
  * The real wiring. Every seam loads once, up front, so a seam that is not
@@ -57,18 +70,15 @@ export async function loadDeps(): Promise<Deps> {
   const deps: Deps = {
     allTools: await seam("allTools", async () => (await import("../tools/index.ts")).allTools),
     pickedTools: await seam("pickedTools", async () => (await import("../tools/picked.ts")).pickedTools),
+    refreshPickedTools: await seam("refreshPickedTools", async () => (await import("../tools/picked.ts")).refreshPickedTools),
+    restoreTodos: await seam("restoreTodos", async () => (await import("../tools/todo.ts")).restoreTodos as Deps["restoreTodos"]),
     widgetForCall: await seam("widgetForCall", async () => (await import("../../shared/mcp-apps.ts")).widgetForCall),
     listSkills: await seam("listSkills", async () => (await import("../lib/skills.ts")).listSkills),
     notesBlockFor: await seam("notesBlockFor", async () => (await import("../../shared/notes-block.ts")).notesBlockFor),
     setRoutineChat: await seam("setRoutineChat", async () => (await import("../../shared/routines-store.ts")).setRoutineChat),
     parseTurnBody: await seam("parseTurnBody", async () => (await import("../../shared/turn-input.ts")).parseTurnBody),
-    currentChat: (botId) => {
-      const bot = peekShell()?.bots.find((item) => item.id === botId) as { chatId?: string | null } | undefined;
-      return bot?.chatId ?? null;
-    },
-    setCurrentChat: (botId, chatId, preview) => {
-      updateShell((store) => setBotChat(store, botId, chatId, preview, new Date().toISOString()));
-    },
+    currentChat: currentChatInShell,
+    setCurrentChat: setCurrentChatInShell,
   };
   if (failures.length > 0) throw new Error(`seams_missing: ${failures.join("; ")}`);
   return deps;

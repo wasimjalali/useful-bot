@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSession, AgentSessionEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { descriptionTooLong, CONTEXT_TOO_LARGE_TEXT, DESCRIPTION_TOO_LONG_TEXT } from "../../shared/admission.ts";
+import { admission, descriptionTooLong, DESCRIPTION_TOO_LONG_TEXT } from "../../shared/admission.ts";
 import { readProviderStore, selectionAvailability } from "../../shared/providers.ts";
 import { botSelection } from "../../shared/session-selection.ts";
 import { peekShell } from "../../shared/shell-io.ts";
@@ -11,7 +11,7 @@ import { forgetRouterError, lastRouterError } from "../lib/router-fetch.ts";
 import { routerIds } from "../lib/router-identity.ts";
 import { buildSnapshot } from "../lib/turn-snapshot.ts";
 import { clip, PREVIEW_MAX, TITLE_MAX } from "./chats.ts";
-import { measureEnvelope, systemPromptFor, turnContextText } from "./context.ts";
+import { basePromptFor, systemPromptFor, turnContextText } from "./context.ts";
 import type { TurnBody } from "./deps.ts";
 import { type ChatRuntime, type EngineHost, type QueuedTurn, type RunningTurn, type TurnResult, type TurnSpec } from "./pi-host.ts";
 import { factsFor, turnBindings } from "./provider.ts";
@@ -163,16 +163,25 @@ export class TurnRunner {
     if (spec.images.length > 0 && facts.vision === false) throw new EngineError(400, "model_no_vision");
     if (descriptionTooLong(bot)) throw new EngineError(409, "description_too_long", { message: DESCRIPTION_TOO_LONG_TEXT });
     if (options.stampGrant) {
-      upsertSessionGrant({ sessionId: chat.chatId, path: bot.workspace?.path ?? null, permission: bot.permission, selection });
+      upsertSessionGrant({ chatId: chat.chatId, path: bot.workspace?.path ?? null, permission: bot.permission, selection });
     }
     const firstChat = !this.host.index.all().some((meta) => meta.botId === bot.id && meta.lastTurn !== null);
     const snapshot = buildSnapshot(bot.id, chat.chatId, undefined, { firstChat });
-    const systemPrompt = systemPromptFor(snapshot.context.bot, this.host.deps.listSkills());
-    const contextText = turnContextText(snapshot.context.turn, this.host.deps.notesBlockFor(bot.id));
+    const skills = this.host.deps.listSkills();
+    const systemPrompt = systemPromptFor(snapshot.context.bot, skills);
+    const notes = this.host.deps.notesBlockFor(bot.id);
+    const contextText = turnContextText(snapshot.context.turn, notes);
     const declarations = [...this.host.deps.allTools(), ...this.host.deps.pickedTools(chat.chatId)]
       .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
-    const envelope = measureEnvelope({ systemPrompt, contextMessage: contextText, toolDeclarations: declarations, windowTokens: facts.windowTokens });
-    if (envelope.tokens > envelope.windowTokens) throw new EngineError(409, "context_too_large", { message: CONTEXT_TOO_LARGE_TEXT });
+    // The shared admission, fed what this engine will really send: the prompt before "Your bot", the notes and the tool schemas.
+    const verdict = admission({
+      bot,
+      store,
+      notesChars: notes.length,
+      promptChars: basePromptFor(skills).length,
+      toolSchemaChars: JSON.stringify(declarations).length,
+    });
+    if (!verdict.ok) throw new EngineError(409, "context_too_large", { message: verdict.message });
     return { bot, snapshot, systemPrompt, contextText };
   }
 
@@ -557,8 +566,8 @@ export class TurnRunner {
       }
       case "tool_execution_start": {
         const widget = this.host.deps.widgetForCall(event.toolName, (event.args ?? {}) as Record<string, unknown>);
-        chat.callTurns.set(event.toolCallId, turn.turnId);
-        if (chat.callTurns.size > 200) chat.callTurns.delete(chat.callTurns.keys().next().value as string);
+        chat.calls.set(event.toolCallId, { turnId: turn.turnId, widget: widget ? { connectionId: widget.connectionId, toolName: widget.toolName } : null });
+        if (chat.calls.size > 200) chat.calls.delete(chat.calls.keys().next().value as string);
         this.activity(chat, turn, { kind: "tool", tool: event.toolName, detail: toolDetail(event.toolName) }, false);
         chat.bus.emit({ type: "tool.call", callId: event.toolCallId, name: event.toolName, ...(widget ? { widget } : {}) }, turn.turnId);
         return;

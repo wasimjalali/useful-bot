@@ -103,6 +103,8 @@ type Live = {
   pi: ExtensionAPI | null;
   declared: Set<string>;
   unsubscribe: (() => void) | null;
+  /** The picked MCP tools' listings are refreshed once per time a chat is opened. */
+  pickedRefreshed: boolean;
 };
 
 export type HostOptions = {
@@ -150,8 +152,8 @@ export class ChatRuntime {
   live: Live | null = null;
   replyReadySince: string | null = null;
   lastActive: number;
-  /** Which turn made a tool call, for the widget row the app files after the turn is over. */
-  readonly callTurns = new Map<string, string>();
+  /** What a tool call was, for the widget row the app files after the turn is over. */
+  readonly calls = new Map<string, { turnId: string; widget: { connectionId: string; toolName: string } | null }>();
   /** The question waiting for the owner's next message, from the rows or `ask`. */
   openQuestion: OpenQuestion | null = null;
 
@@ -206,8 +208,10 @@ export class ChatRuntime {
       pi: null,
       declared: new Set(),
       unsubscribe: null,
+      pickedRefreshed: false,
     };
     this.openQuestion = rows.openQuestion();
+    this.restoreTodos();
     return this.live;
   }
 
@@ -235,6 +239,7 @@ export class ChatRuntime {
       live.rows = RowBuilder.build(sm.getBranch());
       live.syncedLeaf = leaf;
       this.openQuestion = live.rows.openQuestion();
+      this.restoreTodos();
       return [];
     }
     const changes: RowChange[] = [];
@@ -247,6 +252,24 @@ export class ChatRuntime {
       }
     }
     return changes;
+  }
+
+  /** The todo list follows the branch: it is the last `todo` result on it, or empty (Pi's pattern for tool state). */
+  restoreTodos(): void {
+    const live = this.live;
+    if (!live) return;
+    const branch = live.sm.getBranch();
+    let todos: unknown[] = [];
+    for (let at = branch.length - 1; at >= 0; at -= 1) {
+      const entry = branch[at];
+      if (entry.type !== "message") continue;
+      const message = entry.message as unknown as { role?: string; toolName?: string; details?: { todos?: unknown } };
+      if (message.role === "toolResult" && message.toolName === "todo" && Array.isArray(message.details?.todos)) {
+        todos = message.details.todos;
+        break;
+      }
+    }
+    this.host.deps.restoreTodos(this.chatId, todos);
   }
 
   /** Remembers the session file in the index once it exists on disk. */
@@ -271,8 +294,11 @@ export class ChatRuntime {
   appendRow(row: RowInput): boolean {
     const live = this.ensureLive();
     if (live.rows.keys.has(row.key)) return false;
-    const filedIn = this.turn?.turnId ?? (row.kind === "widget" ? this.callTurns.get(row.callId) : undefined) ?? null;
-    this.appendCustom(UB.row, { ...row, turnId: filedIn });
+    const call = row.kind === "widget" ? this.calls.get(row.callId) : undefined;
+    const filedIn = this.turn?.turnId ?? call?.turnId ?? null;
+    // The app names the widget by its call; the row also says which connection and tool drew it.
+    const filed = row.kind === "widget" && call?.widget ? { ...call.widget, ...row } : row;
+    this.appendCustom(UB.row, { ...filed, turnId: filedIn });
     this.host.index.update(this.chatId, {});
     return true;
   }
@@ -322,6 +348,13 @@ export class ChatRuntime {
       extensionFactories: [(pi) => this.installExtension(pi, live)],
     });
     await loader.reload();
+    if (!live.pickedRefreshed) {
+      live.pickedRefreshed = true;
+      // Optional: the picks work from whatever the index holds, so a refresh that fails is logged and the chat goes on.
+      await this.host.deps.refreshPickedTools(this.chatId).catch((error: unknown) => {
+        console.error(JSON.stringify({ event: "picked_refresh_failed", chatId: this.chatId, error: error instanceof Error ? error.message : String(error) }));
+      });
+    }
     const tools = [...this.host.deps.allTools(), ...this.host.deps.pickedTools(this.chatId)];
     live.declared = new Set(tools.map((tool) => tool.name));
     const { session } = await createAgentSession({

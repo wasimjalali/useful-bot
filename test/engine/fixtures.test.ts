@@ -45,7 +45,7 @@ test("a turn with search, a widget, an image row, a question and its answer", as
     const chatId = world.newChat();
     const recorder = world.record(chatId);
     await fullTurn(world, chatId);
-    world.engine.fileRow(DEFAULT_BOT_ID, chatId, { key: "widget:call-excal-1", kind: "widget", widgetId: "wdg-0001", callId: world.engine.host.chat(chatId).callTurns.keys().next().value as string, connectionId: "excalidraw", toolName: "create_view" } as never);
+    world.engine.fileRow(DEFAULT_BOT_ID, chatId, { key: "widget:call-excal-1", kind: "widget", widgetId: "wdg-0001", callId: world.engine.host.chat(chatId).calls.keys().next().value as string, connectionId: "excalidraw", toolName: "create_view" } as never);
     recorder.events.push(world.engine.host.chat(chatId).bus.ping());
     const events = recorder.events as Event[];
     assertEnvelope(events);

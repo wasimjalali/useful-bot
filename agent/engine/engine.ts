@@ -1,16 +1,18 @@
-import { botSelection } from "../../shared/session-selection.ts";
 import { readProviderStore } from "../../shared/providers.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import { removeSessionGrant } from "../../shared/workspace-store.ts";
 import type { RowInput } from "../lib/tool.ts";
 import { installEngineApi } from "./api.ts";
 import { clip, PREVIEW_MAX, type ChatMeta } from "./chats.ts";
-import { measureEnvelope, systemPromptFor, turnContextText } from "./context.ts";
+import { admission } from "../../shared/admission.ts";
+import { TurnBodyError } from "../../shared/turn-input.ts";
+import { readRoutinesStore } from "../../shared/routines-store.ts";
+import { estimateTokens } from "../../shared/context-blocks.ts";
+import { basePromptFor } from "./context.ts";
 import type { Subscription } from "./events.ts";
+import type { Deps } from "./deps.ts";
 import { EngineHost, PI_VERSION_STRING, type HostOptions } from "./pi-host.ts";
-import { factsFor } from "./provider.ts";
 import { EngineError, type Activity, type EngineEvent, type Row } from "./protocol.ts";
-import { buildSnapshot } from "../lib/turn-snapshot.ts";
 import { RoutineScheduler, type RoutineOptions } from "./routines.ts";
 import { TurnRunner } from "./turns.ts";
 
@@ -72,6 +74,7 @@ export class Engine {
       runRoutine: async (routineId) => engine.routines.runNow(routineId),
       botContext: async (botId) => engine.botContext(botId),
     });
+    engine.sweepRoutineLinks();
     host.startSweeper();
     engine.routines.start();
     return engine;
@@ -126,7 +129,21 @@ export class Engine {
 
   // --- chats -----------------------------------------------------------------------
 
+  /**
+   * A chat that belonged to a routine which is gone is an ordinary chat again:
+   * nothing else clears the link when the owner deletes the routine.
+   */
+  sweepRoutineLinks(): void {
+    const linked = this.host.index.all().filter((meta) => meta.routineId !== null);
+    if (linked.length === 0) return;
+    const alive = new Set(readRoutinesStore().routines.map((routine) => routine.id));
+    for (const meta of linked) {
+      if (!alive.has(meta.routineId as string)) this.host.index.update(meta.chatId, { routineId: null }, { touch: false });
+    }
+  }
+
   listChats(query: { botId?: string; before?: string; limit?: number; includeFixtures?: boolean }): { current: string | null; chats: ChatListItem[]; nextBefore: string | null } {
+    this.sweepRoutineLinks();
     const page = this.host.index.list(query);
     return {
       current: query.botId ? this.currentChatId(query.botId) : null,
@@ -284,7 +301,7 @@ export class Engine {
 
   status(): { epoch: string; chats: StatusChat[] } {
     const pending = new Map<string, number>();
-    for (const card of this.host.approvals.listPending()) pending.set(card.sessionId, (pending.get(card.sessionId) ?? 0) + 1);
+    for (const card of this.host.approvals.listPending()) pending.set(card.chatId, (pending.get(card.chatId) ?? 0) + 1);
     const now = this.host.now().getTime();
     const chats: StatusChat[] = [];
     for (const meta of this.host.index.all()) {
@@ -305,7 +322,13 @@ export class Engine {
   // --- turns -----------------------------------------------------------------------------
 
   submitTurn(chatId: string, raw: unknown): { turnId?: string; queued?: true } {
-    const body = this.host.deps.parseTurnBody(raw);
+    let body: ReturnType<Deps["parseTurnBody"]>;
+    try {
+      body = this.host.deps.parseTurnBody(raw);
+    } catch (error) {
+      if (error instanceof TurnBodyError) throw new EngineError(400, error.code);
+      throw error;
+    }
     const result = this.turns.submitOwner(chatId, body);
     return result.queued ? { queued: true } : { turnId: result.turnId };
   }
@@ -337,14 +360,16 @@ export class Engine {
   /** What `/api/bots/context` shows: the bot's instructions against its model's window. */
   botContext(botId: string): { windowTokens: number; instructionTokens: number; envelopeTokens: number } {
     const bot = this.requireBot(botId);
-    const selection = botSelection(bot, readProviderStore());
-    const facts = factsFor(selection);
-    const snapshot = buildSnapshot(botId, `context:${botId}`, undefined);
-    const systemPrompt = systemPromptFor(snapshot.context.bot, this.host.deps.listSkills());
-    const contextText = turnContextText(snapshot.context.turn, this.host.deps.notesBlockFor(botId));
+    const notes = this.host.deps.notesBlockFor(botId);
     const declarations = this.host.deps.allTools().map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
-    const envelope = measureEnvelope({ systemPrompt, contextMessage: contextText, toolDeclarations: declarations, windowTokens: facts.windowTokens });
-    return { windowTokens: envelope.windowTokens, instructionTokens: envelope.instructionTokens, envelopeTokens: envelope.tokens };
+    const verdict = admission({
+      bot,
+      store: readProviderStore(),
+      notesChars: notes.length,
+      promptChars: basePromptFor(this.host.deps.listSkills()).length,
+      toolSchemaChars: JSON.stringify(declarations).length,
+    });
+    return { windowTokens: verdict.windowTokens, instructionTokens: estimateTokens(bot.description.length), envelopeTokens: verdict.tokens };
   }
 
   /** The index entry for a chat, for the routine scheduler. */
