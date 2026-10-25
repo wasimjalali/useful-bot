@@ -427,6 +427,12 @@ final class AppModel: ObservableObject {
     /// Sends whose answer has not come back. While one is out, the first rows
     /// load of a new chat must not drop `awaitingStart`.
     private var sendsInFlight = 0
+    /// Consecutive failed engine status reads.
+    private var statusFailures = 0
+    /// Files of messages this app sent, by client id, so Send again / Edit on a
+    /// message the engine handed back unsent (text only) can restore them. A row
+    /// left from before a restart comes back text only.
+    private var sentFilesByClient: [String: [Attachment]] = [:]
     /// The chat creation the first message started; a second message waits on it.
     private var chatCreation: Task<String, Error>?
     /// The load error text on screen, so a later good load clears only that one.
@@ -912,6 +918,7 @@ final class AppModel: ObservableObject {
         var needRows = true
         var backoff = 1.0
         var focus = highlight
+        var reloadedAt = Date.distantPast
         while !Task.isCancelled, generation == followGeneration {
             let after = needRows ? nil : projection.tailSeq
             let epoch = needRows ? nil : projection.epoch
@@ -921,9 +928,12 @@ final class AppModel: ObservableObject {
                 if needRows {
                     let page = try await client.chatRows(chatId: chatId)
                     guard generation == followGeneration else { return }
+                    // Without a tail the stream cannot be lined up with the page.
+                    guard page.tailSeq != nil else { throw BackendError.shell("rows_missing_tail") }
                     projection.load(page)
                     hasEarlierRows = projection.nextBefore != nil
                     needRows = false
+                    reloadedAt = Date()
                     transcriptReady = true
                     loadSucceeded = true
                     if sendsInFlight == 0 { awaitingStart = false }
@@ -943,8 +953,10 @@ final class AppModel: ObservableObject {
                 for try await event in stream {
                     guard generation == followGeneration else { return }
                     backoff = 1
-                    if !receive(event) {
+                    if !receive(event, resumed: after != nil) {
                         needRows = true
+                        // A gap right after a reload would loop: wait a second first.
+                        if Date().timeIntervalSince(reloadedAt) < 1 { delay = 1 }
                         break
                     }
                 }
@@ -979,8 +991,8 @@ final class AppModel: ObservableObject {
     }
 
     /// Applies one event. False when the rows have to be read again.
-    private func receive(_ event: ChatEvent) -> Bool {
-        switch projection.apply(event) {
+    private func receive(_ event: ChatEvent, resumed: Bool) -> Bool {
+        switch projection.apply(event, resumed: resumed) {
         case .resync, .gap:
             return false
         case .ignored:
@@ -1329,7 +1341,16 @@ final class AppModel: ObservableObject {
     /// Every chat that is working, waiting on the owner, reply-ready or whose
     /// newest turn failed. Polled with the approvals, 1.5 s.
     private func pollEngineStatus() async {
-        guard let status = try? await client.engineStatus() else { return }
+        guard let status = try? await client.engineStatus() else {
+            // Two misses in a row: the engine is down, so its marks are stale.
+            statusFailures += 1
+            if statusFailures >= 2, !chatMarks.isEmpty {
+                chatMarks = [:]
+                updateDockBadge()
+            }
+            return
+        }
+        statusFailures = 0
         var marks: [String: ChatStatus] = [:]
         for chat in status.chats { marks[chat.chatId] = chat }
         // Opening a chat clears its reply-ready mark here before the engine
@@ -1612,7 +1633,7 @@ final class AppModel: ObservableObject {
     func retryUnsent(_ id: String) {
         if let text = engineUnsentText(id) {
             hideEngineUnsent(id)
-            send(text, keepsComposer: true)
+            send(text, keepsComposer: true, files: sentFilesByClient.removeValue(forKey: id) ?? [])
             return
         }
         let key = chatKey
@@ -1640,6 +1661,7 @@ final class AppModel: ObservableObject {
         if let text = engineUnsentText(id) {
             hideEngineUnsent(id)
             draft = text
+            if let files = sentFilesByClient.removeValue(forKey: id), attachments.isEmpty { attachments = files }
             draftWriteToken &+= 1
             requestComposerFocus()
             return
@@ -1728,6 +1750,7 @@ final class AppModel: ObservableObject {
         // transcript follows it whatever the reader was doing before.
         sendTick &+= 1
         sendsInFlight += 1
+        if !sentAttachments.isEmpty { sentFilesByClient[clientId] = sentAttachments }
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.sendsInFlight -= 1 }
@@ -1741,6 +1764,9 @@ final class AppModel: ObservableObject {
                 if ack.queued {
                     self.projection.markQueued(clientId: clientId)
                     self.awaitingStart = false
+                } else {
+                    // Only a queued message can come back unsent.
+                    self.sentFilesByClient[clientId] = nil
                 }
                 if let retryId = retryingUnsentId { self.completeUnsentRetry(retryId, key: recordKey) }
                 self.publishTranscript(force: true)
@@ -1751,6 +1777,7 @@ final class AppModel: ObservableObject {
                 // with Send again and Edit, so a second message cannot stack
                 // on it.
                 self.projection.removePending(clientId: clientId)
+                self.sentFilesByClient[clientId] = nil
                 self.awaitingStart = false
                 // The server says this bot's model is gone: re-read the chip
                 // now so it shows as unavailable, rather than at the next poll.
@@ -1831,7 +1858,13 @@ final class AppModel: ObservableObject {
         // so they go now rather than on the next 1.5 s approvals poll.
         approvals.removeAll { $0.chatId == chatId }
         let client = client
-        Task { try? await client.cancelTurn(chatId: chatId) }
+        Task { @MainActor [weak self] in
+            do {
+                try await client.cancelTurn(chatId: chatId)
+            } catch {
+                self?.showSendNote("Couldn't stop the turn. Try again.")
+            }
+        }
     }
 
     /// A starter prompt: the text goes into the composer, the caret after

@@ -216,6 +216,31 @@ private func event(_ json: String) -> ChatEvent {
         #expect(projection.apply(event(#"{"epoch":"\#(epoch)","chatId":"c","type":"stream.ready","tailSeq":5,"resync":false}"#)) == .applied)
     }
 
+    @Test func aDequeuedMessageMovesBelowTheRowsTheTurnAdded() throws {
+        let json = #"{"rows":[{"rowId":"t1:u","kind":"user","turnId":"t1","text":"One","clientId":"c1"},{"rowId":"t1:a0","kind":"assistant","turnId":"t1","text":"Partial"},{"rowId":"q:c2","kind":"user","text":"Two","clientId":"c2","queued":true}],"tailSeq":9,"epoch":"\#(epoch)","running":{"turnId":"t1","partialText":""}}"#
+        var projection = ChatProjection()
+        projection.load(try JSONDecoder().decode(RowsPage.self, from: Data(json.utf8)))
+        projection.apply(event(#"{"seq":10,"epoch":"\#(epoch)","chatId":"c","turnId":"t1","type":"message.final","rowId":"t1:a1","text":"Later"}"#))
+        projection.apply(event(#"{"seq":11,"epoch":"\#(epoch)","chatId":"c","turnId":"t2","type":"message.user","rowId":"t2:u","clientId":"c2","text":"Two","attachments":[]}"#))
+        #expect(projection.rows.last?.rowId == "t2:u")
+        #expect(projection.rows.last?.queued == false)
+    }
+
+    @Test func aSettledTurnForgetsItsStart() {
+        var projection = empty()
+        projection.apply(event(#"{"seq":1,"epoch":"\#(epoch)","chatId":"c","turnId":"t1","type":"turn.started","origin":"owner","at":"2026-10-25T10:00:00Z"}"#))
+        #expect(projection.turnStartedAt != nil)
+        projection.apply(event(#"{"seq":2,"epoch":"\#(epoch)","chatId":"c","turnId":"t1","type":"turn.completed"}"#))
+        #expect(projection.turnStartedAt == nil)
+    }
+
+    @Test func aResumedStreamReadyIsNotAGap() {
+        var projection = empty(tailSeq: 5)
+        let ready = event(#"{"epoch":"\#(epoch)","chatId":"c","type":"stream.ready","tailSeq":8,"resync":false}"#)
+        #expect(projection.apply(ready, resumed: true) == .applied)
+        #expect(projection.apply(ready) == .gap)
+    }
+
     // MARK: Sending
 
     @Test func aSentMessageShowsAtOnceAndTheEnginesRowTakesItOver() {
