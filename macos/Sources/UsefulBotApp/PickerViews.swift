@@ -306,10 +306,11 @@ struct SearchPaletteView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.ink)
                         .lineLimit(1)
-                    // The title is the preview with its markdown marks gone, so
-                    // compare the plain text: equal means one line only.
+                    // The title is the preview with its markdown marks gone, and
+                    // may be clipped: a preview that starts with it adds nothing.
                     let previewLine = ChatEntry.plain(entry.preview)
-                    if !previewLine.isEmpty, previewLine != entry.title {
+                    let titleText = entry.title.trimmingCharacters(in: CharacterSet(charactersIn: "… "))
+                    if !previewLine.isEmpty, !previewLine.hasPrefix(titleText) {
                         Text(previewLine)
                             .font(.system(size: 11))
                             .foregroundStyle(Theme.C.inkMuted)
