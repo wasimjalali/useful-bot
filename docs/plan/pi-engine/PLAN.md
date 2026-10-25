@@ -122,14 +122,11 @@ Rules it builds:
   until PR 3 replaces them.
 - `GENERALIST_SEED_V3` without team language.
 
-**Swift worker owns:** `App/RailView.swift` (becomes the chat-first sidebar of `UI.md` 3, on eve
-data), new `App/RoutinesPage.swift` (`UI.md` 5, built from the routine views of
-`ChatDetailsPaneView.swift`), `App/LibraryView.swift` (stage page), `App/RootView.swift`
-(create-bot and create-group dialogs, sections, stage routing), `App/PickerViews.swift` (bot
-picker out; Chats, Library, Routines tabs), `App/ProposalCardView.swift`,
-`App/SettingsPaneView.swift` (group and routine parts out), `App/AppSettingsView.swift`
-(reviewer row), `App/UsefulBotApp.swift` (⌘N and the other shortcuts of `UI.md` 11),
-`App/ChatDetailsPaneView.swift`, `App/ChatView.swift`
+**Swift worker owns** (removals, decoding and payloads only; the chat-first UI is PR 2b):
+`App/RailView.swift` (only `bot-useful` shows, no create or delete bot), `App/RootView.swift`
+(create-bot and create-group dialogs, sections), `App/PickerViews.swift` (bot picker out),
+`App/ProposalCardView.swift`, `App/SettingsPaneView.swift` (group parts out),
+`App/AppSettingsView.swift` (reviewer row), `App/ChatDetailsPaneView.swift`, `App/ChatView.swift`
 (sub-agent cards, handoff and post strips, group header), `App/SubagentCard.swift` (delete),
 `App/AvatarStackView.swift` (delete), `App/ProvidersPaneView.swift` (reviewer row),
 `App/ComposerView.swift` (group placeholder), `Core/SubagentRuns.swift` and
@@ -138,8 +135,7 @@ picker out; Chats, Library, Routines tabs), `App/ProposalCardView.swift`,
 `Core/TranscriptBlocks.swift`, `Core/Transcript.swift`, `Core/BackendModels.swift`,
 `Core/Routines.swift` (`movedFrom`), `App/PerfHarness.swift` (fixture bots through the dev-only
 `select`), the sub-agent branches of `Core/EveStream.swift`, `App/AppModel.swift` (sub-agent
-branches, bot selection except the dev-only path `PerfHarness` uses, create and delete bot, sections, the bot picker, and the chat-first new
-and open flows), and the Swift tests that cover these
+branches, bot selection except the dev-only path `PerfHarness` uses, create and delete bot, sections and the bot picker), and the Swift tests that cover these
 (`SubagentCardTests`, `SubagentRunTests`, `ThreadsTests`, `ChatAttributionTests`, the group and
 fan-out cases of `TranscriptTests`, `TranscriptBlocksTests`, `ProposalTests`, `ShellActionsTests`).
 
@@ -315,8 +311,8 @@ the engine's eve-listener kill at boot, once every install has run the PR 3 rele
 ## What the owner decides or does
 
 - Decided 2026-10-25: one bot only (D5, D6), OpenAPI dropped (D17), reviewer role removed (D25).
-- Approve the UI mockups in Claude Design (before and after per screen); PR 2's UI parts wait
-  for that approval.
+- Approved the UI mockups on 2026-10-25 (`UI.md`, `mockups/chat-first-useful-bot.html`); the UI
+  lands in PR 2b.
 - Approve the golden-eval spend (two runs of 10 tasks on his subscriptions).
 - Ship the PR 3 release when he decides (`npm run release:mac`); its notes say old chats are not
   carried over.

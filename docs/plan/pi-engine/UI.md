@@ -227,7 +227,7 @@ the Composio key line. Polish only:
   line "App · Composio · connected as ACCOUNT"; **Reconnect** and **Disconnect** beside the name.
   Below: the state chip, "48 tools · 31 read · 17 write", a segmented **All / Reads / Writes** and
   a **Filter tools** field, then the tools grouped under **Reads** ("Run without asking") and
-  **Writes** ("Ask you first in Auto"), each row the tool slug in mono, a one-line description and
+  **Writes** ("Ask you first in Auto"; destructive tools sit here too), each row the tool slug in mono, a one-line description and
   a Read or Asks first chip. The split follows today's connector risk rules
   (`agent/lib/connector-risk.ts`). A direct MCP server's page has the same shape (Refresh instead
   of Reconnect where today's has it).
@@ -260,7 +260,7 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
-| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b (`needsSignIn` added to `/api/connectors`) |
+| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b: direct MCP servers already carry it (connection state `authFailed` or `expired`); Composio apps gain `needsSignIn` on `/api/connectors` |
 | App page Reconnect and Disconnect (Refresh for a direct MCP server) | `/api/connectors` (Composio), `/api/connections` (MCP), the same calls as today | 2 |
 | Account row owner name | `GET /api/status` (operator name) | 2 |
 | App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read`, `write` or `destructive`, the last two under Writes) from `connector-risk.ts` | 2b |

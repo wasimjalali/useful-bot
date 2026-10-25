@@ -115,7 +115,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D23 | eve's store | Deleted by the Pi release: the runtime rsync stops excluding `/.eve/`. A first-launch note says old chats were not carried over |
 | D24 | Reasoning effort | Pi thinking level `off`; the router applies effort from the selection |
 | D25 | Reviewer role | Removed: `review` tool, `/api/reviewer`, the Providers pane reviewer row. The router alias stays unused |
-| D26 | Delivery | PR 1 (router) and PR 2 (one bot) land on `main` on eve; PR 3 is the engine swap on a feature branch; PR 4 cleans up. See `PLAN.md` |
+| D26 | Delivery | PR 1 (router), PR 2 (one bot) and PR 2b (chat-first UI) land on `main` on eve; PR 3 is the engine swap on a feature branch; PR 4 cleans up. See `PLAN.md` |
 
 ## 5. Engine service
 
