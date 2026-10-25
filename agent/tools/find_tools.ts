@@ -3,7 +3,7 @@ import { z } from "zod";
 import { activateSessionTools } from "../../shared/connection-tools-store.ts";
 import { findConnectionTools, onDemandConnections } from "../../shared/connection-tools.ts";
 import { MAX_SESSION_TOOLS } from "../../shared/policy.ts";
-import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { flatLine, wrapUntrusted } from "../../shared/untrusted.ts";
 import { markOutside } from "../lib/outside-content.ts";
 
 /**
@@ -74,7 +74,7 @@ export default defineTool({
           name: hit.name,
           // Outside the fence, so kept to one line like the mounted
           // description keeps it.
-          app: hit.connectionName.replace(/[\r\n]+/g, " ").trim(),
+          app: flatLine(hit.connectionName),
           // The server wrote this, so it is quoted rather than spoken: a
           // listing is a place to plant instructions.
           description: wrapUntrusted(`connection:${hit.connectionId}`, hit.description),

@@ -9,7 +9,7 @@ import { getApprovalStore } from "../lib/write.ts";
 import { inAppGate, READ_ONLY_BLOCKED, settle } from "../lib/permission.ts";
 import { CLI_REGISTRY, cliStatus, findCli, resolveBin } from "../lib/cli-registry.ts";
 import { ownerPath, rescanOwnerPath } from "../../shared/user-path.ts";
-import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { clipUtf8, wrapUntrusted } from "../../shared/untrusted.ts";
 import { markOutside } from "../lib/outside-content.ts";
 
 /** An install fetches a package and builds it; npm on a cold cache is slow. */
@@ -144,8 +144,8 @@ export default defineTool({
         path: resolved,
         exitCode: run.exitCode,
         docs: entry.docs,
-        stdout: wrapUntrusted("install stdout", run.stdout.slice(-OUTPUT_MAX_BYTES)),
-        stderr: wrapUntrusted("install stderr", run.stderr.slice(-OUTPUT_MAX_BYTES)),
+        stdout: wrapUntrusted("install stdout", clipUtf8(run.stdout, OUTPUT_MAX_BYTES, "end").text),
+        stderr: wrapUntrusted("install stderr", clipUtf8(run.stderr, OUTPUT_MAX_BYTES, "end").text),
         ...(resolved
           ? { hint: `Sign in by running it: see ${entry.docs}.` }
           : run.exitCode === 0

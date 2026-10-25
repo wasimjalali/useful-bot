@@ -12,7 +12,7 @@ import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS, foldPath } from "../../shared/policy.ts";
 import { APP_STATE_DIR, mentionsAppState } from "../../shared/stack.ts";
 import { ownerPath } from "../../shared/user-path.ts";
-import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { clipUtf8, wrapUntrusted } from "../../shared/untrusted.ts";
 import { markOutside } from "../lib/outside-content.ts";
 
 const OUTPUT_MAX_BYTES = 32 * 1024;
@@ -242,12 +242,12 @@ export default defineTool({
         // landing after the owner gave up.
         signal: ctx.abortSignal,
       });
-      const truncated = run.truncated
-        || run.stdout.length > OUTPUT_MAX_BYTES
-        || run.stderr.length > OUTPUT_MAX_BYTES;
+      const stdout = clipUtf8(run.stdout, OUTPUT_MAX_BYTES);
+      const stderr = clipUtf8(run.stderr, OUTPUT_MAX_BYTES);
+      const truncated = run.truncated || stdout.cut || stderr.cut;
       return {
-        stdout: wrapUntrusted("bash stdout", run.stdout.slice(0, OUTPUT_MAX_BYTES)),
-        stderr: wrapUntrusted("bash stderr", run.stderr.slice(0, OUTPUT_MAX_BYTES)),
+        stdout: wrapUntrusted("bash stdout", stdout.text),
+        stderr: wrapUntrusted("bash stderr", stderr.text),
         exitCode: run.exitCode,
         truncated,
         // Named, so the model reads "this ran out of time" instead of

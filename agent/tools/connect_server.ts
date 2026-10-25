@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createProposal, listPendingProposals, threadIdFor } from "../../shared/agent-store.ts";
 import { assertConnectionUrl, connectionHost, ConnectionUrlError } from "../../shared/connection-url.ts";
 import { allocateConnectionId, findConnectionByUrl } from "../../shared/connections-store.ts";
+import { hasLineBreak } from "../../shared/untrusted.ts";
 
 /**
  * Ask the owner to connect an MCP server that is not in the Composio
@@ -31,7 +32,7 @@ export default defineTool({
     const host = connectionHost(url);
     const name = (input.name ?? host).trim();
     const description = (input.description ?? `${name} MCP server`).trim();
-    if (name.length < 1) return { status: "invalid_name" };
+    if (name.length < 1 || hasLineBreak(name)) return { status: "invalid_name" };
     if (description.length < 3) return { status: "invalid_description" };
     const existing = findConnectionByUrl(url);
     if (existing) return { status: "already_connected", id: existing.id, name: existing.name };

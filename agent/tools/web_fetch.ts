@@ -231,7 +231,36 @@ export async function fetchPage(
 
 let turndown: TurndownService | null = null;
 
+/** Past this many open elements turndown goes quadratic and then overflows its stack (30 ms at 200, 410 ms at 500). */
+const MAX_NEST_DEPTH = 200;
+/** Elements that never hold children, or that the parser closes on its own, so they do not deepen the tree. */
+const NO_NEST = new Set(["br", "hr", "img", "input", "meta", "link", "area", "base", "col", "embed", "source", "track", "wbr", "p", "li", "dt", "dd", "tr", "td", "th", "option"]);
+
+/** One linear pass: how deep the open tags stack, counting what a parser would not close by itself. */
+function nestingDepth(html: string): number {
+  let depth = 0;
+  let max = 0;
+  for (const match of html.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)[^<>]*?(\/?)>/g)) {
+    const name = match[2].toLowerCase();
+    if (NO_NEST.has(name) || match[3]) continue;
+    if (match[1]) depth = Math.max(0, depth - 1);
+    else if (++depth > max) max = depth;
+    if (max > MAX_NEST_DEPTH) break;
+  }
+  return max;
+}
+
 function toMarkdown(html: string): string {
+  if (nestingDepth(html) > MAX_NEST_DEPTH) return toPlainText(html);
+  try {
+    return convertMarkdown(html);
+  } catch (err) {
+    if (err instanceof RangeError) return toPlainText(html);
+    throw err;
+  }
+}
+
+function convertMarkdown(html: string): string {
   turndown ??= new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced", bulletListMarker: "-" })
     .remove((node) => ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "IFRAME", "SVG", "HEAD"].includes(node.nodeName.toUpperCase()));
   return turndown.turndown(html);

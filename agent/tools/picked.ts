@@ -16,7 +16,7 @@ import {
 import { findConnectionById } from "../../shared/connections-store.ts";
 import { toolInputSchema } from "../../shared/json-schema-zod.ts";
 import { callMcpTool, McpError, TOOL_CALL_TIMEOUT_MS } from "../../shared/mcp-http.ts";
-import { clipUtf8, wrapUntrusted } from "../../shared/untrusted.ts";
+import { clipUtf8, flatLine, wrapUntrusted } from "../../shared/untrusted.ts";
 import { mcpToolGate, mcpToolRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -134,7 +134,7 @@ async function callPicked(
     ...approvalActor(ctx),
     tool: "connection",
     actionSha256: hash,
-    preview: `${connectionName.replace(/[\r\n]+/g, " ").trim()} · ${toolName}${risk === "destructive" ? " (destructive)" : ""}`
+    preview: `${flatLine(connectionName)} · ${toolName}${risk === "destructive" ? " (destructive)" : ""}`
       + (previewArgs === "{}" ? "" : `\n${previewArgs}`),
   });
   if (gate === "run") {
@@ -173,6 +173,8 @@ async function callPicked(
         result: wrapUntrusted(`connection:${connectionId}/${toolName}`, text),
       };
     } catch (err) {
+      // A Stop is not a failure to retry: the call may still have run.
+      if (ctx.abortSignal.aborted) throw err;
       // The server refused the credential (revoked, rotated, or a token that
       // is still in date but no longer good): the owner's to renew too, and
       // recorded the same way, so the tool is not offered again as working.
@@ -186,7 +188,7 @@ async function callPicked(
           status: "blocked",
           error: "auth_failed",
           connection: connectionId,
-          hint: `Ask the owner to reconnect ${connectionName.replace(/[\r\n]+/g, " ").trim()} in Connectors.`,
+          hint: `Ask the owner to reconnect ${flatLine(connectionName)} in Connectors.`,
         };
       }
       // A sign-in that ran out is the owner's to renew, and the bot can say so
@@ -204,7 +206,7 @@ async function callPicked(
           status: "blocked",
           error: "oauth_expired",
           connection: connectionId,
-          hint: `Ask the owner to reconnect ${connectionName.replace(/[\r\n]+/g, " ").trim()} in Connectors.`,
+          hint: `Ask the owner to reconnect ${flatLine(connectionName)} in Connectors.`,
         };
       }
       // The server's words, never the headers that reached it: a server can
