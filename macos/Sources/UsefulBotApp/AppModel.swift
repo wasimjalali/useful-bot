@@ -4919,6 +4919,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Earlier bots (Settings > General)
+
+    /// The bots the one-bot migration archived, oldest first as stored.
+    var earlierBots: [ShellBot] {
+        store?.bots.filter { $0.kind == "bot" && $0.archived } ?? []
+    }
+
+    /// The live note count of an earlier bot.
+    func earlierBotNoteCount(_ botId: String) async throws -> Int {
+        try await client.memoryTotal(botId: botId)
+    }
+
+    /// Moves every note of an earlier bot to the one bot, then re-reads its list.
+    func moveEarlierBotNotes(_ botId: String) async throws {
+        let next = try await client.shellAction(ShellActions.moveNotes(fromBotId: botId))
+        applyStore(next)
+        if let selectedBotId { await loadMemory(botId: selectedBotId) }
+    }
+
+    /// Deletes an earlier bot's record and archives its notes.
+    func removeEarlierBot(_ botId: String) async throws {
+        let next = try await client.shellAction(ShellActions.removeArchivedBot(botId: botId))
+        applyStore(next)
+    }
+
     /// The full text of a note the list shows cut short.
     func fullMemoryNote(botId: String, id: String) async -> MemoryNote? {
         try? await client.memoryNote(botId: botId, id: id)
