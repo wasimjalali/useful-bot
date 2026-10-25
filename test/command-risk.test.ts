@@ -927,3 +927,123 @@ test("package installs, runs by name and paid-cloud create or deploy ask in Auto
     assert.equal(commandRisk(command, root), null, command);
   }
 });
+
+// The brief of a routine that counts its own words, as the bot sent it on
+// 2026-10-25: markdown, a URL, parentheses, an apostrophe, a quote line, a
+// bullet that starts with `rm`, and shell-looking text that is only text.
+const BRIEF = [
+  "# Monday AI news brief",
+  "",
+  "Open https://news.ycombinator.com (front page) and the top 5 stories.",
+  "- rm the duplicates; don't repeat a story",
+  "> Keep it under 300 words, cost about $5.",
+  "Mention `npm publish` news and $(date) only as text.",
+  "Never DROP TABLE anything; see /etc/hosts && ~/Notes for nothing.",
+].join("\n");
+
+test("a heredoc body is data, not a line of commands", () => {
+  const home = "/Users/owner";
+  for (const command of [
+    `cat <<'EOF' | wc -w\n${BRIEF}\nEOF`,
+    `wc -w <<'EOF'\n${BRIEF}\nEOF`,
+    `cat <<"EOF" | wc -w\n${BRIEF}\nEOF`,
+    `cat <<\\EOF | wc -w\n${BRIEF}\nEOF`,
+    `cat << 'EOF' | wc -w\n${BRIEF}\nEOF`,
+    `cat<<'EOF'|wc -w\n${BRIEF}\nEOF`,
+    `cat <<-'EOF' | wc -w\n\t${BRIEF.replace(/\n/g, "\n\t")}\n\tEOF`,
+    // Unquoted, the body expands variables, which run nothing.
+    "wc -w <<EOF\nIt costs $5 and lives in $HOME (not elsewhere).\nEOF",
+    "cat <<'A' && grep -c x <<'B'\nrm -rf a\nA\nopen b\nB",
+    `wc -w <<'EOF'\n${BRIEF}\nEOF\necho done`,
+    `LC_ALL=C wc -w <<'EOF'\n${BRIEF}\nEOF`,
+  ]) {
+    assert.equal(readOnlyRisk(command), null, command);
+    assert.equal(commandRisk(command, root), null, command);
+    assert.equal(wipeRisk(command, root, home), null, command);
+  }
+  // Writing a body into the folder is everyday work in an attached folder.
+  for (const command of [
+    `cat > notes.md <<'EOF'\n${BRIEF}\nEOF`,
+    `cat <<'EOF' > notes.md\n${BRIEF}\nEOF`,
+    `cat >> notes.md <<'EOF'\n${BRIEF}\nEOF`,
+    `tee notes.md <<'EOF'\n${BRIEF}\nEOF`,
+    `git commit -F - <<'EOF'\nfix: rm the open dialog\n\n${BRIEF}\nEOF`,
+    `body=$(cat <<'EOF'\n${BRIEF}\nEOF\n)`,
+  ]) {
+    assert.equal(commandRisk(command, root), null, command);
+    assert.equal(wipeRisk(command, root, home), null, command);
+  }
+});
+
+test("a heredoc still asks for every write, run or reach it carries", () => {
+  const home = "/Users/owner";
+  // Not read-only: each writes a file or runs the body.
+  for (const command of [
+    `cat > notes.md <<'EOF'\n${BRIEF}\nEOF`,
+    `cat <<'EOF' > notes.md\n${BRIEF}\nEOF`,
+    `cat >> notes.md <<'EOF'\n${BRIEF}\nEOF`,
+    "cat <<'EOF' >notes.md\nhi\nEOF",
+    `cat <<'EOF' | tee notes.md\n${BRIEF}\nEOF`,
+    `tee notes.md <<'EOF'\n${BRIEF}\nEOF`,
+    "cat <<'EOF' | sh\nls\nEOF",
+    "bash <<'EOF'\nls\nEOF",
+    "python3 <<'EOF'\nprint(1)\nEOF",
+    "cat <<'EOF' | xargs rm\na\nEOF",
+    "cat <<'EOF' | sqlite3 app.db\n.tables\nEOF",
+    // Unquoted, a substitution in the body runs.
+    "cat <<EOF\n$(rm -rf build)\nEOF",
+    "cat <<EOF\n`rm -rf build`\nEOF",
+    // What follows the body is a command again.
+    `wc -w <<'EOF'\n${BRIEF}\nEOF\nrm -rf build`,
+    `wc -w <<'EOF'\n${BRIEF}\nEOF\nsed -i '' s/a/b/ notes.md`,
+    // No delimiter line: the rest is judged as before.
+    "cat <<'EOF'\nrm -rf build",
+    "cat <<'EOF'\nEOF is not alone here\nrm -rf build",
+  ]) {
+    assert.notEqual(readOnlyRisk(command), null, command);
+  }
+  // In an attached folder: a reach outside, a body that runs, and anything
+  // after the body still ask.
+  for (const command of [
+    "cat > /etc/hosts <<'EOF'\n127.0.0.1 x\nEOF",
+    "cat <<'EOF' > ~/.zshrc\nalias x=y\nEOF",
+    "tee /tmp/x <<'EOF'\nhi\nEOF",
+    "cat <<'EOF' | tee -a /etc/hosts\nhi\nEOF",
+    "cat <<'EOF' | sh\nrm -rf build\nEOF",
+    "cat <<'EOF' |\nrm -rf build\nEOF\nsh",
+    "bash <<'EOF'\nrm -rf build\nEOF",
+    "sh -s <<'EOF'\necho hi\nEOF",
+    "python3 <<'EOF'\nimport shutil\nshutil.rmtree('build')\nEOF",
+    "python3 - <<'EOF'\nprint(1)\nEOF",
+    "cat <<'EOF' | python3\nprint(1)\nEOF",
+    "cat <<'EOF' | xargs rm\nbuild\nEOF",
+    "xargs rm <<'EOF'\nbuild\nEOF",
+    "cat <<'EOF' | sqlite3 app.db\n.shell rm -rf build\nEOF",
+    "cat <<'EOF' | sqlite3 app.db\nDROP TABLE users;\nEOF",
+    "sqlite3 app.db <<'EOF'\n.shell rm -rf build\nEOF",
+    "time cat <<'EOF'\nrm -rf build\nEOF",
+    "cat <<EOF > notes.md\n$(rm -rf build)\nEOF",
+    "cat <<EOF > notes.md\n`rm -rf build`\nEOF",
+    "cat > a.md <<'EOF'\nx\nEOF\nrm -rf build",
+    "cat > a.md <<'EOF' && rm -rf build\nx\nEOF",
+    "cat <<'EOF'\nrm -rf build",
+    "cat <<-'EOF'\n\tx\n  EOF\nrm -rf build",
+    // `<<` inside arithmetic is a shift, not a heredoc.
+    "echo $((1<<2))\nrm -rf build\n2",
+    // `<<<` is a here-string: a word, and the next line is a command.
+    "cat <<< 'x'\nrm -rf build",
+    // `<<` in a comment opens nothing: the next line runs.
+    "echo hi # <<EOF\nrm -rf build\nEOF",
+    "./cat <<'EOF'\nrm -rf build\nEOF",
+  ]) {
+    assert.notEqual(commandRisk(command, root), null, command);
+  }
+  // Full access still stops for a wipe the body feeds a shell.
+  for (const command of [
+    "bash <<'EOF'\nrm -rf ~\nEOF",
+    "cat <<'EOF' | sh\nrm -rf ~\nEOF",
+    "cat > a.md <<'EOF'\nx\nEOF\nrm -rf ~",
+  ]) {
+    assert.notEqual(wipeRisk(command, root, home), null, command);
+  }
+});
