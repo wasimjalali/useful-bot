@@ -16,13 +16,13 @@ import {
   updateRoutine,
   type Routine,
 } from "../../shared/routines-store.ts";
-import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { flatLine, wrapUntrusted } from "../../shared/untrusted.ts";
 
 const PREVIEW_MAX = 240;
 
 /** Fit an instruction onto the approval card without hiding that it was cut. */
 function clipPreview(value: string): string {
-  const flat = value.replace(/\s+/g, " ").trim();
+  const flat = flatLine(value).replace(/\s+/g, " ");
   return flat.length > PREVIEW_MAX ? `${flat.slice(0, PREVIEW_MAX)}...` : flat;
 }
 
@@ -147,7 +147,7 @@ async function create(args: Input, ctx: ToolCtx) {
     actionSha256: hash,
     // The instruction is what the owner is actually authorising, so it goes
     // on the card; without it they would be approving only a name.
-    preview: `create routine ${draft.name}, running: ${clipPreview(draft.instruction)}`,
+    preview: `create routine ${flatLine(draft.name)}, running: ${clipPreview(draft.instruction)}`,
   });
   await settle(store, record.id, hash, gate, ctx);
   return executeIfApproved(store, record.id, hash, () => {
@@ -234,7 +234,7 @@ async function update(args: Input, ctx: ToolCtx) {
     ...approvalActor(ctx),
     tool: "update_routine",
     actionSha256: hash,
-    preview: `update routine ${existing.name} (${existing.id}), ${reasons}`,
+    preview: `update routine ${flatLine(existing.name)} (${existing.id}), ${reasons}`,
   });
   await settle(store, record.id, hash, gate, ctx);
   return executeIfApproved(store, record.id, hash, () => {
@@ -272,7 +272,7 @@ async function remove(args: Input, ctx: ToolCtx) {
     actionSha256: hash,
     // The id is in the preview because a routine's name is editable by a
     // tool; the owner has to be able to tell two "Weekly report" cards apart.
-    preview: `delete routine ${routine.name} (${routine.id})`,
+    preview: `delete routine ${flatLine(routine.name)} (${routine.id})`,
   });
   await settle(store, record.id, hash, gate, ctx);
   return executeIfApproved(store, record.id, hash, () => {

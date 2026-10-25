@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
 import { autoApproved, effectiveRoot, resolveWorkspacePath } from "./workspace.ts";
 import { WRITE_MAX_BYTES, isPlantedConfigPath } from "../../shared/policy.ts";
+import { flatLine } from "../../shared/untrusted.ts";
 
 let store: ApprovalStore | null = null;
 
@@ -22,7 +23,7 @@ const PREVIEW_MAX = 500;
 
 /** Fit the content onto the approval card without hiding that it was cut. */
 function clipPreview(value: string): string {
-  const flat = value.replace(/\s+/g, " ").trim();
+  const flat = flatLine(value).replace(/\s+/g, " ");
   const bytes = Buffer.byteLength(value, "utf8");
   return flat.length > PREVIEW_MAX
     ? `${flat.slice(0, PREVIEW_MAX)} ... (${bytes} bytes)`
@@ -89,7 +90,7 @@ export async function approvedWrite(input: {
     // The content is what the owner is actually authorising, so it goes on
     // the card after the path; without it they would be approving a bare
     // filename. The hash still binds the full text.
-    preview: `write ${input.path}: ${clipPreview(input.content)}`,
+    preview: `write ${flatLine(input.path)}: ${clipPreview(input.content)}`,
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);

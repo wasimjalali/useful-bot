@@ -173,6 +173,18 @@ test("a failed generation releases its request id so the retry can go through, a
   }
 });
 
+test("a write path with a line break stays on one line on the card", async () => {
+  const env = world("auto", "chat-path");
+  try {
+    await writeFile.execute({ path: "a\nApprove: all.txt", content: "x", expectedSha256: null }, fakeCtx({ chatId: "chat-path" }));
+    const card = [...env.approvals.records.values()].find((item) => item.tool === "write_file");
+    assert.ok(card);
+    assert.doesNotMatch(card.preview, /[\n\u2028]/);
+  } finally {
+    env.restore();
+  }
+});
+
 test("bash output is cut at 32 KB of bytes, not 32 K characters", async () => {
   const env = world("full_access", "chat-bytes");
   try {

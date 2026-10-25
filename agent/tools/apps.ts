@@ -74,7 +74,7 @@ async function find(args: Input, ctx: ToolCtx) {
       names: wrapUntrusted("connector catalogue names", page.rows.map((row) => `${row.slug}: ${row.name}`).join("\n")),
     };
   } catch (err) {
-    return { status: "error", error: String((err as Error).message ?? "failed").slice(0, 200) };
+    return { status: "error", error: wrapUntrusted("connector error", String((err as Error).message ?? "failed").slice(0, 200)) };
   }
 }
 
@@ -246,7 +246,7 @@ async function connect(args: Input, ctx: ToolCtx) {
     const page = await listConnectorToolkits({ search: slug, limit: 20 });
     row = page.rows.find((item) => item.slug === slug);
   } catch (err) {
-    return { status: "error", error: String((err as Error).message ?? "failed").slice(0, 200) };
+    return { status: "error", error: wrapUntrusted("connector error", String((err as Error).message ?? "failed").slice(0, 200)) };
   }
   if (!row) return { status: "unknown_app", slug };
   if (row.connected) return { status: "already_connected", slug, name: row.name };

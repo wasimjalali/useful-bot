@@ -587,8 +587,12 @@ test("propose_connector creates one card, refuses unknown, connected and duplica
   const broken = sandbox(["gmail"]);
   try {
     broken.toolkitItems = null as never;
-    const out = await run<{ status: string }>(proposeConnector, { slug: "notion", purpose: "Look it up" });
+    const out = await run<{ status: string; error: string }>(proposeConnector, { slug: "notion", purpose: "Look it up" });
     assert.equal(out.status, "error");
+    assert.equal(out.error.startsWith(UNTRUSTED_PREAMBLE), true, "connect fences the error text");
+    const found = await run<{ status: string; error: string }>(connectorCatalog, { query: "notion" });
+    assert.equal(found.status, "error");
+    assert.equal(found.error.startsWith(UNTRUSTED_PREAMBLE), true, "find fences the error text");
   } finally {
     broken.restore();
   }

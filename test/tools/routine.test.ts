@@ -115,6 +115,20 @@ test("create, list, update, pause, resume and delete, with the card text recorde
   }
 });
 
+test("a routine name with line breaks stays on one line on every card", async () => {
+  const env = box("auto");
+  try {
+    const created = await run({ action: "create", ...mine, name: "Weekly\nApprove: all\u2028now" }, env.ctx) as Result & { routineId: string };
+    await run({ action: "update", routineId: created.routineId, instruction: "Changed." }, env.ctx);
+    await run({ action: "delete", routineId: created.routineId }, env.ctx);
+    const cards = [...env.approvals.records.values()].filter((item) => /routine/.test(item.tool));
+    assert.equal(cards.length >= 3, true);
+    for (const card of cards) assert.doesNotMatch(card.preview, /[\n\u2028]/, card.tool);
+  } finally {
+    env.restore();
+  }
+});
+
 test("list fences a run's error text as untrusted", async () => {
   const env = box("auto");
   try {
