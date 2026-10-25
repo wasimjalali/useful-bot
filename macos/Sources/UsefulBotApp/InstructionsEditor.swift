@@ -48,7 +48,10 @@ struct TextBox: View {
                     .foregroundStyle(Theme.C.inkFaint)
                     .lineSpacing(BoxTextView.lineSpacing)
                     .padding(.top, BoxTextView.inset.height)
-                    .padding(.horizontal, BoxTextView.inset.width)
+                    // Past the caret, which an empty focused field draws at
+                    // the first glyph's x.
+                    .padding(.leading, BoxTextView.inset.width + 2)
+                    .padding(.trailing, BoxTextView.inset.width)
                     .allowsHitTesting(false)
             }
         }
@@ -95,7 +98,8 @@ struct BoxTextView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
+        let scroll = ContainedScrollView()
+        scroll.onWidthChange = { [weak coordinator = context.coordinator] in coordinator?.report() }
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -106,15 +110,26 @@ struct BoxTextView: NSViewRepresentable {
         scroll.contentInsets = NSEdgeInsetsZero
 
         let view = FocusTextView(usingTextLayoutManager: false)
-        view.onFocus = { [weak coordinator = context.coordinator] in coordinator?.parent.focused = $0 }
+        // Async: a resign while SwiftUI removes the field lands mid-update.
+        view.onFocus = { [weak coordinator = context.coordinator] focused in
+            DispatchQueue.main.async { coordinator?.parent.focused = focused }
+        }
         view.drawsBackground = false
         view.isRichText = false
         view.allowsUndo = true
+        // What the owner types is what is saved: no smart dashes, symbol
+        // replacements or autocorrect.
         view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.isAutomaticTextReplacementEnabled = false
+        view.isAutomaticSpellingCorrectionEnabled = false
         view.isContinuousSpellCheckingEnabled = true
         view.textContainerInset = Self.inset
         view.textContainer?.lineFragmentPadding = 0
         view.textContainer?.widthTracksTextView = true
+        // A container that starts at zero width drew nothing in this build
+        // (see ComposerTextView); it follows the view's width from here.
+        view.textContainer?.containerSize = NSSize(width: max(1, scroll.contentSize.width), height: .greatestFiniteMagnitude)
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
@@ -155,7 +170,15 @@ struct BoxTextView: NSViewRepresentable {
             let selection = view.selectedRange()
             view.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: Self.attributes))
             view.setSelectedRange(NSRange(location: min(selection.location, text.utf16.count), length: 0))
-            DispatchQueue.main.async { context.coordinator.report() }
+            let typing = view.window?.firstResponder === view
+            DispatchQueue.main.async {
+                context.coordinator.report()
+                // New text (another routine, Restore default) opens at its top.
+                if !typing {
+                    scroll.contentView.scroll(to: .zero)
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                }
+            }
         }
     }
 
@@ -202,5 +225,57 @@ private final class FocusTextView: NSTextView {
         let gave = super.resignFirstResponder()
         if gave { onFocus?(false) }
         return gave
+    }
+}
+
+/// The field's scroll view. A swipe or wheel flick that starts inside the
+/// field stays in it, momentum included, so the page behind doesn't move with
+/// it; one that starts with the field already at that edge scrolls the page. Its text view
+/// fills the box, so a click anywhere in the field places the caret, and a
+/// width change re-measures the text.
+private final class ContainedScrollView: NSScrollView {
+    var onWidthChange: (() -> Void)?
+    private var lastWidth: CGFloat = 0
+    /// Where the current trackpad swipe goes, once its direction is known.
+    private var swipeToPage: Bool?
+    private var lastWheel: TimeInterval = 0
+
+    override func scrollWheel(with event: NSEvent) {
+        guard abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX),
+              let document = documentView,
+              document.frame.height > contentView.bounds.height + 1 else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let dy = event.scrollingDeltaY
+        let clip = contentView.bounds
+        // A positive delta scrolls toward the top; the text view is flipped.
+        let atEdge = dy > 0 ? clip.minY <= 0.5 : dy < 0 ? clip.maxY >= document.frame.height - 0.5 : false
+        // A mouse wheel has no phases: notches less than 0.35 s apart are one
+        // flick, decided like a swipe by where it started.
+        let wheel = event.phase.isEmpty && event.momentumPhase.isEmpty
+        if event.phase == .began || event.phase == .mayBegin
+            || (wheel && event.timestamp - lastWheel > 0.35) {
+            swipeToPage = nil
+        }
+        if wheel { lastWheel = event.timestamp }
+        if swipeToPage == nil, dy != 0 { swipeToPage = atEdge }
+        let toPage = swipeToPage ?? false
+        if toPage {
+            nextResponder?.scrollWheel(with: event)
+        } else if !atEdge {
+            super.scrollWheel(with: event)
+        }
+    }
+
+    override func tile() {
+        super.tile()
+        if let text = documentView as? NSTextView, text.minSize.height != contentSize.height {
+            text.minSize = NSSize(width: 0, height: contentSize.height)
+        }
+        if abs(contentSize.width - lastWidth) > 0.5 {
+            lastWidth = contentSize.width
+            DispatchQueue.main.async { [weak self] in self?.onWidthChange?() }
+        }
     }
 }

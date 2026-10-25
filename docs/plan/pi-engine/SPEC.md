@@ -659,7 +659,7 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
   `Threads.swift` except `defaultBotId`, and the eve-only tests (`app-map/swift.md` 7.1).
 - **UI:** everything in `UI.md`: the chat-first sidebar (fixed Routines, Library and Connectors
   rows, chat list with per-chat state marks, row menu), an empty chat header, the
-  Routines page on the stage, Settings > Instructions and memory in place of the Bot pane (notify
+  Routines page on the stage, Settings > Personalization (instructions and memory) in place of the Bot pane (notify
   moves to Settings > General), the search palette (Chats, Library, Routines), Settings > General >
   Earlier bots, the Connectors polish of `UI.md` 8b, and the removals of `UI.md` section 10.
   Also: proposal cards keep connect kinds; Providers pane drops the reviewer row;

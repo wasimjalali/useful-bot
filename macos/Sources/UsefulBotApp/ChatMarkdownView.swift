@@ -456,6 +456,14 @@ struct LinkTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    /// Sizes measured for this text, by width. SwiftUI asks several times a
+    /// pass and on every resize; the text only changes in `updateNSView`.
+    final class Measure {
+        var text: NSAttributedString?
+        var natural: CGFloat?
+        var heights: [CGFloat: CGFloat] = [:]
+    }
+
     func makeNSView(context: Context) -> NSTextView {
         let view = NSTextView(usingTextLayoutManager: false)
         view.isEditable = false
@@ -484,10 +492,21 @@ struct LinkTextView: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
-        let natural = Self.layout(text, width: .greatestFiniteMagnitude).width
+        let measure = context.coordinator.measure
+        if measure.text !== text, measure.text?.isEqual(to: text) != true {
+            measure.text = text
+            measure.natural = nil
+            measure.heights = [:]
+        }
+        let natural = measure.natural ?? Self.layout(text, width: .greatestFiniteMagnitude).width
+        measure.natural = natural
         let offered = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? natural
-        let width = min(natural, offered)
-        return CGSize(width: width, height: Self.layout(text, width: width).height)
+        let width = max(1, min(natural, offered))
+        if let height = measure.heights[width] { return CGSize(width: width, height: height) }
+        let height = Self.layout(text, width: width).height
+        if measure.heights.count > 16 { measure.heights.removeAll() }
+        measure.heights[width] = height
+        return CGSize(width: width, height: height)
     }
 
     /// The used size of the text laid out at a width, as `NSTextView` lays it out.
@@ -504,6 +523,8 @@ struct LinkTextView: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
+        let measure = Measure()
+
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL else { return false }
             NSWorkspace.shared.open(url)

@@ -9,8 +9,10 @@ public enum FollowUps {
 
     /// The reply without its closing list, and the list's questions. Nil when
     /// the reply doesn't end with a "Follow-ups:" label and bullet lines, or
-    /// when nothing but the list is left.
-    public static func split(_ text: String) -> (body: String, questions: [String])? {
+    /// when nothing but the list is left. `partial` is for a reply still being
+    /// written: a label with no bullets yet counts, so it never flashes in the
+    /// bubble.
+    public static func split(_ text: String, partial: Bool = false) -> (body: String, questions: [String])? {
         var lines = text.components(separatedBy: "\n")
         var questions: [String] = []
         while let last = lines.last {
@@ -23,7 +25,7 @@ public enum FollowUps {
                 break
             }
         }
-        guard !questions.isEmpty, let label = lines.last, isLabel(label) else { return nil }
+        guard !questions.isEmpty || partial, let label = lines.last, isLabel(label) else { return nil }
         lines.removeLast()
         let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return nil }
@@ -48,7 +50,11 @@ public enum FollowUps {
             rest = trimmed[trimmed.index(dot, offsetBy: 2)...]
         }
         guard let rest else { return nil }
-        let item = rest.filter { $0 != "*" && $0 != "`" }.trimmingCharacters(in: .whitespaces)
+        // Emphasis around the whole question goes; a `*` inside it stays.
+        var item = rest.trimmingCharacters(in: .whitespaces)
+        for mark in ["**", "*", "__", "_", "`"] where item.count > mark.count * 2 && item.hasPrefix(mark) && item.hasSuffix(mark) {
+            item = String(item.dropFirst(mark.count).dropLast(mark.count)).trimmingCharacters(in: .whitespaces)
+        }
         return item.isEmpty ? nil : item
     }
 }

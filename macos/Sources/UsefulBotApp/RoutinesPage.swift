@@ -219,6 +219,9 @@ struct RoutineEditorView: View {
     @FocusState private var focus: Field?
     /// The instruction box holds the caret (it's AppKit, outside `focus`).
     @State private var instructionFocused = false
+    /// A name or instruction edit the server refused: kept on screen, not
+    /// reseeded by a poll, and sent again on the next blur.
+    @State private var unsavedEdit = false
 
     private enum Field: Hashable { case name }
 
@@ -307,7 +310,7 @@ struct RoutineEditorView: View {
             // A write of this routine still in flight owns the rows: a poll
             // that lands between the edit and its echo would put the old
             // server copy back over it.
-            guard focus == nil, !instructionFocused, let current = routine, !model.routineBusy.contains(current.id) else { return }
+            guard focus == nil, !instructionFocused, !unsavedEdit, let current = routine, !model.routineBusy.contains(current.id) else { return }
             name = current.name
             instruction = current.instruction
             seedName = current.name
@@ -322,6 +325,13 @@ struct RoutineEditorView: View {
         .onChange(of: model.routinesError) { _, next in
             guard next != nil, let routine, !model.routineBusy.contains(routine.id) else { return }
             schedules = routine.schedules
+            // The typed text stays; seeds go back to the server's copy so the
+            // next blur sends it again.
+            if trimmedName != routine.name || trimmedInstruction != routine.instruction {
+                unsavedEdit = true
+                seedName = routine.name
+                seedInstruction = routine.instruction
+            }
         }
         .onChange(of: focus) { _, next in
             // One write for both fields: a second one on the routine is queued behind the first.
@@ -530,6 +540,7 @@ struct RoutineEditorView: View {
         if let loadedId { commitEdits(id: loadedId) }
         loadedId = id
         confirmingDelete = false
+        unsavedEdit = false
         let draft = routine == nil ? model.routineDraft : nil
         name = routine?.name ?? draft?.name ?? ""
         instruction = routine?.instruction ?? draft?.instruction ?? ""
@@ -553,6 +564,7 @@ struct RoutineEditorView: View {
         let nextInstruction = trimmedInstruction.isEmpty || trimmedInstruction == seedInstruction || trimmedInstruction == saved.instruction
             ? nil : trimmedInstruction
         guard nextName != nil || nextInstruction != nil else { return }
+        unsavedEdit = false
         if let nextName { seedName = nextName }
         if let nextInstruction { seedInstruction = nextInstruction }
         model.updateRoutine(id: id, name: nextName, instruction: nextInstruction)

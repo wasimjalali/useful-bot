@@ -1414,7 +1414,9 @@ struct TranscriptRowView: View, Equatable {
 
     /// One message from a bot, in its own bubble.
     private var replyRow: some View {
-        let followUps = FollowUps.split(row.text)
+        // While the reply streams a half-written list stays out of the bubble;
+        // it shows under the reply once the turn ends.
+        let followUps = FollowUps.split(row.text, partial: streaming)
         let shown = followUps?.body ?? row.text
         return HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
@@ -1432,7 +1434,7 @@ struct TranscriptRowView: View, Equatable {
                 // block scrolls or wraps inside it rather than going full
                 // column.
                 .frame(maxWidth: max(160, maxBubbleWidth) + MessageHoverActionsWidth.value, alignment: .leading)
-                if showsFollowUps, let questions = followUps?.questions {
+                if showsFollowUps, let questions = followUps?.questions, !questions.isEmpty {
                     FollowUpList(questions: questions)
                         .frame(maxWidth: max(160, maxBubbleWidth), alignment: .leading)
                         .padding(.top, 6)
@@ -1458,8 +1460,10 @@ private struct FollowUpList: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Theme.C.inkFaint)
                 .padding(.bottom, 4)
-            ForEach(questions, id: \.self) { question in
-                FollowUpRow(question: question, enabled: !model.pending) { model.send(question) }
+            // By position: the model can repeat a question.
+            ForEach(Array(questions.enumerated()), id: \.offset) { _, question in
+                // Sent on its own: a draft or files waiting in the composer stay there.
+                FollowUpRow(question: question, enabled: !model.pending) { model.sendFromCard(question) }
             }
         }
         .padding(.leading, 16)
@@ -1480,7 +1484,9 @@ private struct FollowUpRow: View {
                 Image(systemName: "arrow.turn.down.right")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.C.inkFaint)
-                Text(question)
+                // Code marks read as noise in a one-line suggestion; the
+                // question is sent as written.
+                Text(question.replacingOccurrences(of: "`", with: ""))
                     .font(.system(size: 13))
                     .foregroundStyle(hovering && enabled ? Theme.C.ink : Theme.C.inkMuted)
                     .multilineTextAlignment(.leading)

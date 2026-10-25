@@ -3387,16 +3387,20 @@ final class AppModel: ObservableObject {
         let botId = selectedBotId
         enqueue { [weak self] in
             guard let self else { return }
+            var failure: String?
             do {
                 try await work(self.client)
                 self.routinesError = nil
             } catch {
-                self.routinesError = (error as? LocalizedError)?.errorDescription ?? "That routine change failed."
+                failure = (error as? LocalizedError)?.errorDescription ?? "That routine change failed."
+                self.routinesError = failure
             }
             if let id { self.routineBusy.remove(id) }
             // Re-read rather than trusting the local copy: a scheduled run may
             // have appended history while this write was in flight.
             if let botId, botId == self.selectedBotId { await self.loadRoutines(botId: botId) }
+            // A good re-read clears the error; the failed write still says so.
+            if let failure { self.routinesError = failure }
             // An edit made while this write ran goes out now, unless the routine
             // is gone (this write deleted it, or it was deleted elsewhere).
             if let id, let queued = self.queuedRoutineEdits.removeValue(forKey: id),

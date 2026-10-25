@@ -258,10 +258,6 @@ enum ThinScrollbar {
             let swizzled = class_getInstanceMethod(NSScrollView.self, #selector(NSScrollView.ub_tile))
         else { return }
         method_exchangeImplementations(original, swizzled)
-        if let wheel = class_getInstanceMethod(NSScrollView.self, #selector(NSScrollView.scrollWheel(with:))),
-           let contained = class_getInstanceMethod(NSScrollView.self, #selector(NSScrollView.ub_scrollWheel(with:))) {
-            method_exchangeImplementations(wheel, contained)
-        }
     }
 }
 
@@ -275,25 +271,6 @@ extension NSScrollView {
     @objc fileprivate func ub_tile() {
         ub_tile()
         ub_applyThinChrome()
-    }
-
-    /// A scroll view inside another one (a long field in a scrolling page)
-    /// keeps a vertical scroll to itself while it can scroll at all: at its
-    /// edge AppKit handed the rest of the swipe to the page, so both moved.
-    /// One whose content fits passes the scroll on, so the page still moves.
-    @objc fileprivate func ub_scrollWheel(with event: NSEvent) {
-        if enclosingScrollView != nil,
-           abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX),
-           let document = documentView,
-           document.frame.height > contentView.bounds.height + 1 {
-            let clip = contentView.bounds
-            let end = document.frame.height - 0.5
-            let atTop = document.isFlipped ? clip.minY <= 0.5 : clip.maxY >= end
-            let atBottom = document.isFlipped ? clip.maxY >= end : clip.minY <= 0.5
-            // A positive delta scrolls toward the top.
-            if (event.scrollingDeltaY > 0 && atTop) || (event.scrollingDeltaY < 0 && atBottom) { return }
-        }
-        ub_scrollWheel(with: event)
     }
 
     fileprivate func ub_applyThinChrome() {

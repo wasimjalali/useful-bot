@@ -91,13 +91,20 @@ class Driver:
             raise Fail(f"no button {label!r}")
         return self.click(e)
 
+    def field(self, role):
+        """The composer: the lowest text area. A reply block with a link is a text area too."""
+        fields = [e for e in self.els() if e.get("role") == role]
+        if role == "AXTextArea" and fields:
+            return max(fields, key=lambda e: (e.get("frame") or {}).get("y", 0))
+        return fields[0] if fields else None
+
     def type(self, text, role="AXTextArea"):
         """Replace the field's text: clear it, then type (the composer keeps a draft between steps)."""
-        e = self.find(lambda e: e.get("role") == role)
+        e = self.field(role)
         if not e:
             raise Fail(f"no {role}")
         self.call("set_value", {"pid": self.pid, "element_token": e["element_token"], "value": ""})
-        e = self.find(lambda e: e.get("role") == role)
+        e = self.field(role)
         r = self.call("type_text", {"pid": self.pid, "window_id": self.wid, "session": self.session,
                                     "element_token": e["element_token"], "text": text})
         if r.get("effect") != "confirmed":

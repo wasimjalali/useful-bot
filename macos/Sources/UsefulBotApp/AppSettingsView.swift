@@ -1115,8 +1115,6 @@ struct AppSettingsView: View {
     }
 }
 
-/// System, Light and Dark as a pop-up button: the choice on a grey pill, a
-/// chevron, the system menu.
 /// The theme as three icons, the same control as the account menu's: small,
 /// and every choice is one click.
 private struct AppearancePicker: View {
@@ -1133,26 +1131,6 @@ private struct AppearancePicker: View {
         )
         .frame(width: 76)
         .accessibilityIdentifier("settings-appearance")
-    }
-}
-
-/// The face of a settings pop-up: the value and a small chevron on a grey pill.
-struct SettingsPopUpLabel: View {
-    let title: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Text(title)
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.C.ink)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Theme.C.inkMuted)
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 26)
-        .background(Theme.C.border.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }
 
