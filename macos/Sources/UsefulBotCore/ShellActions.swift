@@ -26,16 +26,11 @@ public enum ShellActions {
         ["type": "setPermission", "botId": botId, "permission": permission]
     }
 
+    /// A nil value is left out: no field of the bot clears on null.
     public static func updateBot(botId: String, patch: [String: Any?]) -> [String: Any] {
         var clean: [String: Any] = [:]
         for (key, value) in patch {
-            if let value {
-                clean[key] = value
-            } else if key == "petname" || key == "avatarImage" {
-                // Only these fields clear on null server-side; a null name or
-                // description would reach string clipping the wrong way.
-                clean[key] = NSNull()
-            }
+            if let value { clean[key] = value }
         }
         return ["type": "updateBot", "botId": botId, "patch": clean]
     }

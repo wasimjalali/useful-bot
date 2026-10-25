@@ -534,7 +534,7 @@ struct ChatView: View {
                             .frame(height: 1)
                     }
                     // The transcript spans the pane, not a centered column:
-                    // the owner's bubbles sit flush right and the bots' flush
+                    // the owner's bubbles sit flush right and the bot's flush
                     // left, however wide the window, with `bubbleMax` keeping
                     // the far side empty.
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -721,7 +721,7 @@ struct ChatView: View {
                 }
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
                 // `defaultScrollAnchor(.bottom)` holds the bottom as the content
-                // grows: opening a chat, switching bots, streaming and the
+                // grows: opening a chat, switching chats, streaming and the
                 // durable reload keep their place without being told to.
                 // Explicit bottom scrolls are kept to the few places that need
                 // one (the send below, the banner and landing re-pins), because

@@ -6,7 +6,6 @@ import Foundation
 public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
     public let id: String
     public var name: String
-    public var petname: String?
     public var label: String
     public var description: String
     public var notify: Bool
@@ -14,10 +13,6 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
     public var chatId: String?
     public var lastPreview: String
     public var lastAt: String?
-    public var avatarShape: String
-    public var avatarColor: String
-    public var avatarImage: String?
-    public var avatarCustom: Bool
     /// What the bot may do on this Mac, in the attached folder or under the
     /// owner's home. A string, like `BotWorkspace.permission`, so a newer
     /// server's value survives the decode.
@@ -36,9 +31,8 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, petname, label, description, notify
+        case id, name, label, description, notify
         case chatId, lastPreview, lastAt
-        case avatarShape, avatarColor, avatarImage, avatarCustom
         case permission, workspace
     }
 
@@ -46,21 +40,14 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = (try? c.decode(String.self, forKey: .name)) ?? id
-        petname = try? c.decodeIfPresent(String.self, forKey: .petname)
         label = (try? c.decode(String.self, forKey: .label)) ?? ""
         description = (try? c.decode(String.self, forKey: .description)) ?? ""
         notify = (try? c.decode(Bool.self, forKey: .notify)) ?? false
         chatId = try? c.decodeIfPresent(String.self, forKey: .chatId)
         lastPreview = (try? c.decode(String.self, forKey: .lastPreview)) ?? ""
         lastAt = try? c.decodeIfPresent(String.self, forKey: .lastAt)
-        avatarShape = (try? c.decode(String.self, forKey: .avatarShape)) ?? "circle"
-        avatarColor = (try? c.decode(String.self, forKey: .avatarColor)) ?? "ink"
-        avatarImage = try? c.decodeIfPresent(String.self, forKey: .avatarImage)
-        avatarCustom = (try? c.decode(Bool.self, forKey: .avatarCustom)) ?? false
         workspace = try? c.decodeIfPresent(BotWorkspace.self, forKey: .workspace)
-        // An older server carried the permission on the folder only.
-        let decoded = (try? c.decode(String.self, forKey: .permission)) ?? workspace?.permission ?? "auto"
-        permission = decoded == "guard" ? "auto" : decoded
+        permission = (try? c.decode(String.self, forKey: .permission)) ?? workspace?.permission ?? "auto"
     }
 }
 
@@ -142,10 +129,7 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
             ))
         }
         path = decodedPath
-        // "guard" is what this mode was called before it became Auto; a store
-        // written by that build still reads as the same posture.
-        let decoded = (try? c.decode(String.self, forKey: .permission)) ?? "auto"
-        permission = decoded == "guard" ? "auto" : decoded
+        permission = (try? c.decode(String.self, forKey: .permission)) ?? "auto"
     }
 }
 
@@ -282,7 +266,7 @@ public struct ComposerSelection: Equatable, Sendable {
 
     public init() {}
 
-    /// The owner opened another bot: its last read paints at once, or the
+    /// The bot opened: its last read paints at once, or the
     /// placeholder when none was read yet.
     public mutating func select(_ botId: String?) {
         selectedBotId = botId

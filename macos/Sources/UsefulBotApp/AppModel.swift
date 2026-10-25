@@ -115,8 +115,8 @@ final class AppModel: ObservableObject {
     private var proposalTapState: [String: (phase: Proposal.ConnectPhase, waitingSince: String?, requestFinishedAt: Date?)] = [:]
     @Published private(set) var operatorName = "Desktop owner"
     @Published private(set) var operatorInitials = "DO"
-    /// The selected bot's own model chip. Never another bot's: every read and
-    /// write names the bot and lands here only while that bot is selected.
+    /// The bot's own model chip: every read and write names the bot and lands
+    /// here only while that bot is selected.
     @Published private(set) var composer: ComposerState?
     /// The per-bot chip cache and its stale-answer guards.
     private var composerSelection = ComposerSelection()
@@ -356,11 +356,11 @@ final class AppModel: ObservableObject {
     @Published var composerFocused = false
 
     /// ⌘↑ and ⌘↓ switch chats only from an empty, focused composer on the chat
-    /// stage and while no turn runs. Anywhere else (another text field, a
-    /// composer with text) the key goes to the field and moves its caret, and
-    /// a turn in progress is not cut off by a switch.
+    /// stage. Anywhere else (another text field, a composer with text) the key
+    /// goes to the field and moves its caret. A turn keeps running in its chat
+    /// whichever chat is open.
     var chatSwitchKeysEnabled: Bool {
-        stage == .chat && composerFocused && draft.isEmpty && !pending
+        stage == .chat && composerFocused && draft.isEmpty
     }
     @Published var attachments: [Attachment] = []
     @Published var attachError: String?
@@ -718,8 +718,7 @@ final class AppModel: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { @MainActor [weak self] in
             // With no window on screen there is nobody to show a fresh rail
-            // or thread to, so those reads drop to every fourth tick. The
-            // handoff pump is not display work and keeps every tick.
+            // or thread to, so those reads drop to every fourth tick.
             var hiddenTicks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -791,6 +790,11 @@ final class AppModel: ObservableObject {
     /// Show a page, or a chat. Picking another chat never stops a running
     /// turn: every chat runs on its own in the engine.
     func openChat(_ chatId: String?, highlight rowId: String? = nil) {
+        // A notification click can launch the app: the chat opens once it is up.
+        guard phase == .ready else {
+            launchChatId = chatId
+            return
+        }
         stage = .chat
         searchOpen = false
         if chatId == currentChatId, chatId != nil || transcriptReady {
@@ -903,7 +907,6 @@ final class AppModel: ObservableObject {
                 if needRows {
                     let page = try await client.chatRows(chatId: chatId)
                     guard generation == followGeneration else { return }
-                    PerfHarness.shared?.mark("rows_first_paint", ["chat": chatId, "rows": page.rows.count])
                     projection.load(page)
                     hasEarlierRows = projection.nextBefore != nil
                     needRows = false
@@ -911,6 +914,7 @@ final class AppModel: ObservableObject {
                     loadSucceeded = true
                     awaitingStart = false
                     publishTranscript(force: true)
+                    PerfHarness.shared?.mark("rows_first_paint", ["chat": chatId, "rows": projection.rows.count])
                     loadProposalsSoon()
                     PerfHarness.shared?.mark("rows_done", ["chat": chatId, "rows": projection.rows.count])
                     if let target = focus {
@@ -990,18 +994,26 @@ final class AppModel: ObservableObject {
         applyChatList(page)
     }
 
-    /// The engine's current chat at launch.
+    /// The engine's current chat at launch, or the one a notification asked for.
+    /// A read that fails is tried again by the poll.
     private func loadInitialChat() async {
         guard let botId = selectedBotId else { return }
         do {
             let page = try await client.chats(botId: botId)
             applyChatList(page)
-            openChat(page.current)
+            initialChatPending = false
+            let target = launchChatId ?? page.current
+            launchChatId = nil
+            openChat(target)
         } catch {
-            threadError = (error as? LocalizedError)?.errorDescription ?? "Chats failed to load."
+            initialChatPending = true
             transcriptReady = true
         }
     }
+
+    private var launchChatId: String?
+    /// The first read of the chats failed (the engine was still starting).
+    private var initialChatPending = false
 
     private func applyChatList(_ page: ChatsPage) {
         var next = page.chats
@@ -1010,10 +1022,10 @@ final class AppModel: ObservableObject {
             let known = Set(page.chats.map(\.chatId))
             next += chats.filter { ($0.updatedAt ?? .distantPast) < oldest && !known.contains($0.chatId) }
         }
+        // With older pages on screen the cursor stays where they left it.
+        let keepsOlder = next.count > page.chats.count
         if next != chats { chats = next }
-        let more = chatsNextBefore == nil || page.nextBefore != nil || chats.count <= page.chats.count
-            ? page.nextBefore : chatsNextBefore
-        if more != chatsNextBefore { chatsNextBefore = more }
+        if !keepsOlder, page.nextBefore != chatsNextBefore { chatsNextBefore = page.nextBefore }
         chatsLoaded = true
     }
 
@@ -1216,7 +1228,11 @@ final class AppModel: ObservableObject {
                 reconcileSelection(fresh)
             }
             guard let bot = selectedBot else { return }
-            await refreshChats()
+            if initialChatPending {
+                await loadInitialChat()
+            } else {
+                await refreshChats()
+            }
             if proposals.contains(where: { $0.isOpen() && $0.phase == .waiting }) { await loadProposals() }
             pruneBusyProposals()
             // The day dividers say Today and Yesterday.
@@ -2989,15 +3005,10 @@ final class AppModel: ObservableObject {
                 onSuccess?()
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.applyStore(result.store)
-                // The roster change stood; something hanging off it did not.
-                // The tick sweeps the rest, so this says so and moves on
-                // rather than presenting a completed action as a failure.
                 // Scoped like the failure below: a late outcome must not
-                // clear or overwrite the banner of a bot it did not run for.
+                // clear the banner of a bot it did not run for.
                 guard botId == self.selectedBotId else { return }
-                self.saveError = result.detachError == nil
-                    ? nil
-                    : "Saved, but some of its data is still being cleared up."
+                self.saveError = nil
             } catch {
                 // The banner now shows in the chat column too, so a save
                 // that fails after a switch must not land on the new bot,

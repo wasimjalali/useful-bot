@@ -188,10 +188,6 @@ public enum ApprovalDecision: String, Sendable {
 
 private struct ShellResponse: Decodable {
     let store: ShellStore
-    /// Set when the server committed the roster change but could not finish
-    /// what hangs off it (a deleted bot's routines or transcript). The tick
-    /// sweeps the remainder, so this is a warning, never a failure.
-    let detachError: String?
     /// Set once, on a connect card's Authorize: the hosted sign-in to open.
     let redirectUrl: String?
     /// Authorize host the server stored on the card. Required to open it.
@@ -1476,19 +1472,12 @@ public actor BackendClient {
         return nil
     }
 
-    /// Apply a profile patch through the shell action endpoint. Nil values are
-    /// sent as null: the server treats them as "clear this field".
-    public func patchBot(botId: String, patch: [String: Any?]) async throws {
-        _ = try await shellAction(ShellActions.updateBot(botId: botId, patch: patch))
-    }
-
     /// Send any shell action, optionally resolving a proposal in the same
     /// write. Returns the authoritative store the server echoed back.
-    /// A shell action's full answer: the new store plus anything the server
-    /// could not finish alongside it.
+    /// A shell action's full answer: the new store plus the connect card's
+    /// sign-in redirect, when there is one.
     public struct ShellActionResult: Sendable {
         public let store: ShellStore
-        public let detachError: String?
         public let redirectUrl: String?
         public let redirectHost: String?
     }
@@ -1528,7 +1517,6 @@ public actor BackendClient {
         }
         return ShellActionResult(
             store: decoded.store,
-            detachError: decoded.detachError,
             redirectUrl: decoded.redirectUrl,
             redirectHost: decoded.redirectHost
         )

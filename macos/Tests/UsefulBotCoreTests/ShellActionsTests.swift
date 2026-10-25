@@ -3,16 +3,15 @@ import Testing
 @testable import UsefulBotCore
 
 @Suite struct ShellActionsTests {
-    @Test func updateBotSendsNullsForClearedFields() throws {
+    @Test func updateBotCarriesTheFieldsItIsGiven() throws {
         let action = ShellActions.updateBot(botId: "b1", patch: [
             "name": "Scout",
             "label": "",
-            "avatarImage": nil,
         ])
         #expect(action["type"] as? String == "updateBot")
         let patch = try #require(action["patch"] as? [String: Any])
         #expect(patch["name"] as? String == "Scout")
-        #expect(patch["avatarImage"] is NSNull)
+        #expect(patch["label"] as? String == "")
     }
 
     /// Every action the app can build must be one the server still takes. This
@@ -45,18 +44,13 @@ import Testing
         #expect(ProposalActions.confirm(unknown) == nil)
     }
 
-    @Test func updateBotOmitsNilForFieldsThatDoNotClear() throws {
+    @Test func updateBotOmitsNilValues() throws {
         let action = ShellActions.updateBot(botId: "b1", patch: [
             "name": nil,
             "label": nil,
-            "petname": nil,
-            "avatarImage": nil,
         ])
         let patch = try #require(action["patch"] as? [String: Any])
-        #expect(patch["name"] == nil)
-        #expect(patch["label"] == nil)
-        #expect(patch["petname"] is NSNull)
-        #expect(patch["avatarImage"] is NSNull)
+        #expect(patch.isEmpty)
     }
 
     @Test func pathComponentsEncodeSeparatorsAndPercent() {
