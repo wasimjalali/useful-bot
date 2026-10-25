@@ -545,6 +545,7 @@ test("auto runs everyday commands and stops for a destructive one", async () => 
     const cards = box.approvals.listPending();
     assert.equal(cards.length, 1);
     assert.equal(cards[0].preview.includes("deletes files"), true, "the card says why it came up");
+    assert.match(cards[0].preview.split("\n")[0], /deletes files/, "the reason leads, so a long command can never push it out of view");
     box.approvals.decide(cards[0].id, "approve", cards[0].actionSha256);
     await destructive;
     assert.equal(existsSync(join(box.project, "note.txt")), false);

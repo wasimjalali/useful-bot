@@ -148,7 +148,8 @@ export default defineTool({
       ...approvalActor(ctx),
       tool: "bash",
       actionSha256: hash,
-      preview: risk ? `${input.command}\n${risk}` : input.command,
+      // The reason first: a long command must never push the risk out of view.
+      preview: risk ? `${risk}\n${input.command}` : input.command,
     });
     if (!askOwner) {
       store.decide(rec.id, "approve", hash);

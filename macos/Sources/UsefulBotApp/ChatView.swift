@@ -48,6 +48,8 @@ struct ChatView: View {
     private static let sendScrollWindow: TimeInterval = 0.1
     /// How far above the composer the transcript fades out.
     private static let bottomFade: CGFloat = 28
+    /// An approval preview taller than this scrolls inside its card.
+    private static let previewMaxHeight: CGFloat = 220
     /// The chat whose landing gate is running. A send while it runs does not
     /// land the chat early: the gate is already waiting for the rows.
     @State private var gatingChatKey: String?
@@ -234,17 +236,21 @@ struct ChatView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkFaint)
             }
-            // The preview is what the owner is approving; a single truncated
-            // line hides the end of a command or an instruction they are
-            // agreeing to run.
-            Text(item.preview)
-                .font(.system(size: 14))
-                .foregroundStyle(Theme.C.ink)
-                .lineLimit(6)
-                .fixedSize(horizontal: false, vertical: true)
-                .multilineTextAlignment(.leading)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // The preview is what the owner is approving, so all of it shows:
+            // a cut-off command can hide the line that matters (the risk reason
+            // leads, and a long command scrolls inside the card).
+            ScrollView(.vertical) {
+                Text(item.preview)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: Self.previewMaxHeight)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("approval-preview")
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
                 NativeButton("Deny", kind: .danger, small: true, enabled: canDecide) {
