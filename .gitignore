@@ -56,3 +56,7 @@ web/tsconfig.tsbuildinfo
 # agent worktrees (global rules: Parallel work and worktrees)
 /.claude/worktrees/
 yarn.lock
+
+# Golden eval screenshots show the dev app sidebar with other chat titles: kept locally, copied to verify/golden-eval/shots/
+evals/golden/runs/*/shots/
+evals/golden/__pycache__/
