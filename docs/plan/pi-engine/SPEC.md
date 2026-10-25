@@ -487,7 +487,9 @@ summarized history from the transcript.
 ## 6. Chat protocol v1
 
 All paths are on the web service under `/api` with cookie session and CSRF as today; the web
-proxies them to the engine with the engine token and streams NDJSON without buffering.
+proxies them to the engine with the engine token and streams NDJSON without buffering. On the
+engine the same routes drop the `/api` prefix (`/chats/...`), and `/api/engine/status` is the
+engine's `/status`.
 
 ### 6.1 Requests
 
@@ -501,7 +503,7 @@ proxies them to the engine with the engine token and streams NDJSON without buff
 | `POST /api/chats/:chatId/open` | | marks it current and open in the app (clears `replyReady`) |
 | `GET /api/chats/:chatId/rows?before=&limit=` | | page (5.12) |
 | `GET /api/chats/:chatId/events?after=<seq>&epoch=<epoch>` | | NDJSON, stays open |
-| `POST /api/chats/:chatId/turns` | `{clientId, text, attachments: [{uploadId}], retry?: true}` | 202 `{turnId}` or `{queued: true}`; refusals 6.4 |
+| `POST /api/chats/:chatId/turns` | `{clientId, text, attachments: [{name, mediaType, size, text?, dataUrl?}], retry?: true}` (up to 5; `text` or `dataUrl` as `POST /api/attachments` returned them; there is no upload store) | 202 `{turnId}` or `{queued: true}`; refusals 6.4 |
 | `POST /api/chats/:chatId/cancel` | | 202 |
 | `GET /api/engine/status` | | `{epoch, cleanSlateNotice, chats: [{chatId, running: {turnId, activity}|null, waitingOnOwner: "question"|"approval"|null, replyReadySince|null, lastTurn: {turnId, outcome, endedAt}|null}]}`: every chat that is working, waiting on the owner, reply-ready or whose newest turn failed (until a later turn starts), plus chats with a `lastTurn` in the last 24 h |
 | `GET /api/proposals?botId=` | | open connect-app and connect-server proposals with their phase (replaces the proposals half of `/api/agent/state`) |
@@ -510,7 +512,7 @@ proxies them to the engine with the engine token and streams NDJSON without buff
 - The app polls `/api/engine/status` with the approvals poll (1.5 s) and drives the chat-row state
   marks (`UI.md` 3.3), turn notifications (on a `lastTurn` change while the window is not key or
   the chat is not open, if the bot's notify setting is on) and
-  the Dock badge from it. `cleanSlateNotice` is true until the first-launch note was shown once. `replyReadySince` is set when a turn settles in a chat that is not open in the app
+  the Dock badge from it. `cleanSlateNotice` is true from the clean-slate migration until the first owner turn starts (persisted in `migration.json`). `replyReadySince` is set when a turn settles in a chat that is not open in the app
   and cleared by `POST /open`.
 - The app polls `/api/proposals` while a card is in the waiting phase (2.5 s), as it polls
   `/api/agent/state` today. Proposal confirm and dismiss stay on `PUT /api/shell`.
@@ -690,6 +692,8 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
   `connection-tools.json` per-session picks.
 - **Deleted by the runtime update:** `.eve/` under the runtime install (the rsync exclude goes).
 - Migration runs once at engine boot, logged to `<stateRoot>/engine/migration.json`, idempotent.
+  The dropped files above are moved into `<stateRoot>/engine/legacy/` rather than deleted (small,
+  and recoverable if something was missed).
   `agent/engine/migrate.ts` (W1) orchestrates it and calls the store functions that do the work:
   the `shell.json` v2 migration in `shared/shell-store.ts` and the image-prompt backfill in
   `shared/media-store.ts` (both W3).
