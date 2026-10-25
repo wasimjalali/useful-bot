@@ -3396,15 +3396,18 @@ final class AppModel: ObservableObject {
                 failure = (error as? LocalizedError)?.errorDescription ?? "That routine change failed."
                 self.routinesError = failure
             }
-            if let id { self.routineBusy.remove(id) }
             // Re-read rather than trusting the local copy: a scheduled run may
-            // have appended history while this write was in flight.
+            // have appended history while this write was in flight. The routine
+            // stays busy through it, so an edit made meanwhile queues behind
+            // this write instead of racing the queued one with an older value.
             if let botId, botId == self.selectedBotId { await self.loadRoutines(botId: botId) }
             // A good re-read clears the error; the failed write still says so.
             if let failure { self.routinesError = failure }
             // The caller hears its own write's outcome: a shared error string
             // can't tell a second identical refusal from the first.
             onResult?(failure)
+            // Released and, if edits queued, taken again in the same turn.
+            if let id { self.routineBusy.remove(id) }
             // An edit made while this write ran goes out now, unless the routine
             // is gone (this write deleted it, or it was deleted elsewhere).
             if let id, let queued = self.queuedRoutineEdits.removeValue(forKey: id) {

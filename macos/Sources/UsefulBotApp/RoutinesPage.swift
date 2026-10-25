@@ -225,6 +225,8 @@ struct RoutineEditorView: View {
     /// Why the last name or instruction save failed, shown until one lands.
     /// The page's own: a poll's good read clears the shared error.
     @State private var editError: String?
+    /// Counts schedule edits, so only the newest one's refusal restores rows.
+    @State private var scheduleEdits = 0
 
     private enum Field: Hashable { case name }
 
@@ -317,24 +319,12 @@ struct RoutineEditorView: View {
                current.name == trimmedName, current.instruction == trimmedInstruction {
                 unsavedEdit = false
             }
-            // A write of this routine still in flight owns the rows: a poll
-            // that lands between the edit and its echo would put the old
-            // server copy back over it.
-            guard focus == nil, !instructionFocused, !unsavedEdit, let current = routine, !model.routineBusy.contains(current.id) else { return }
-            name = current.name
-            instruction = current.instruction
-            seedName = current.name
-            seedInstruction = current.instruction
-            schedules = current.schedules
+            reseedFromServer()
         }
-        // A refused schedule write leaves the rows showing a schedule the
-        // server does not have. Put the server's copy back so the rows match
-        // what the next edit starts from. The error is shared by every
-        // routine write, so only a routine with no write of its own in
-        // flight is restored: for that one the server copy is the truth.
-        .onChange(of: model.routinesError) { _, next in
-            guard next != nil, let routine, !model.routineBusy.contains(routine.id) else { return }
-            schedules = routine.schedules
+        // The write's own re-read lands while the routine is still busy, so
+        // the server's copy goes in once the last write of it settles.
+        .onChange(of: busy) { _, next in
+            if !next { reseedFromServer() }
         }
         .onChange(of: focus) { _, next in
             // Leaving both fields saves; moving between them can send two
@@ -609,9 +599,32 @@ struct RoutineEditorView: View {
         }
     }
 
+    /// Put the server's copy in the fields. A write of this routine still in
+    /// flight owns the rows: a poll that lands between the edit and its echo
+    /// would put the old server copy back over it.
+    private func reseedFromServer() {
+        guard focus == nil, !instructionFocused, !unsavedEdit, let current = routine,
+              loadedId == current.id, !model.routineBusy.contains(current.id) else { return }
+        name = current.name
+        instruction = current.instruction
+        seedName = current.name
+        seedInstruction = current.instruction
+        schedules = current.schedules
+    }
+
     private func commitSchedules() {
         guard let routine else { return }
-        model.updateRoutine(id: routine.id, schedules: schedules)
+        let id = routine.id
+        scheduleEdits += 1
+        let edit = scheduleEdits
+        model.updateRoutine(id: id, schedules: schedules) { failure in
+            // A refused write leaves the rows showing a schedule the server
+            // does not have: put the server's copy back so the next edit
+            // starts from it. A newer schedule edit hears its own result.
+            guard failure != nil, loadedId == id, edit == scheduleEdits,
+                  let current = model.routines.first(where: { $0.id == id }) else { return }
+            schedules = current.schedules
+        }
     }
 
     private func replace(_ index: Int, with next: RoutineSchedule) {
