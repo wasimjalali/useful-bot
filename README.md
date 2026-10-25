@@ -100,7 +100,7 @@ Anything the bot needs an answer to (an approval, a question, a connect card) do
 
 ## Library
 
-What the bot makes is the owner's, like the chats. Every generated image and every Excalidraw drawing is saved as a real file under `~/Documents/Useful Bot/Useful Bot/<YYYY-MM>/` (items made by an earlier bot keep that bot's folder): images as PNG, JPEG or WebP, drawings as `.excalidraw` scenes. The index in `~/.useful-bot/media.json` keeps the prompt, model, bot and current path, and nothing deletes a file on its own. Library (a fixed row at the top of the sidebar) shows everything, filtered by kind and searchable by prompt, with Open, Show in Finder, Copy, Open chat and Move to Trash. Drawing tiles show a native preview drawn from the saved scene; a drawing opens with that preview at once and hands over to the same live view the chat shows, with its own Edit and Open in Excalidraw. When a bot's Excalidraw camera does not cover its own drawing, the host widens it (4:3) so nothing is cut, in the chat and the Library alike. The Excalidraw app page is cached ten minutes per server, so drawings open without two network round trips each time. Every drawing still in a chat is listed, dated when it was first drawn. A file missing from its place offers Locate (point at where it went) and Regenerate, which draws it again in that row from the prompt the server kept, under the same id (each Regenerate is a paid image; the web service holds the router's desktop credential for it). The prompt under an image is one line with a copy button for the whole prompt. Locate only accepts a real file of the same kind, checked by content, never a link. If the folder cannot take a new image (no Documents access, a full disk), the app keeps it in its own store and moves it on the next Library load, so a billed image is never lost. To save a copy somewhere else, ask the bot: it copies the file there. Images from before the Library (base64 records in `~/.useful-bot/images`) move into the folder on first load.
+What the bot makes is the owner's, like the chats. Every generated image and every Excalidraw drawing is saved as a real file under `~/Documents/Useful Bot/Useful Bot/<YYYY-MM>/`: images as PNG, JPEG or WebP, drawings as `.excalidraw` scenes. The index in `~/.useful-bot/media.json` keeps the prompt, model, bot and current path, and nothing deletes a file on its own. Library (a fixed row at the top of the sidebar) shows everything, filtered by kind and searchable by prompt, with Open, Show in Finder, Copy, Open chat and Move to Trash. Drawing tiles show a native preview drawn from the saved scene; a drawing opens with that preview at once and hands over to the same live view the chat shows, with its own Edit and Open in Excalidraw. When a bot's Excalidraw camera does not cover its own drawing, the host widens it (4:3) so nothing is cut, in the chat and the Library alike. The Excalidraw app page is cached ten minutes per server, so drawings open without two network round trips each time. Every drawing still in a chat is listed, dated when it was first drawn. A file missing from its place offers Locate (point at where it went) and Regenerate, which draws it again in that row from the prompt the server kept, under the same id (each Regenerate is a paid image; the web service holds the router's desktop credential for it). The prompt under an image is one line with a copy button for the whole prompt. Locate only accepts a real file of the same kind, checked by content, never a link. If the folder cannot take a new image (no Documents access, a full disk), the app keeps it in its own store and moves it on the next Library load, so a billed image is never lost. To save a copy somewhere else, ask the bot: it copies the file there. Images from before the Library (base64 records in `~/.useful-bot/images`) move into the folder on first load.
 
 ## Routines
 
@@ -114,7 +114,7 @@ own 20-second timer, at most four at once. Each routine runs in its own chat
 (created on its first run and reused), so runs never pile into the chat you're
 in, and its outcome is kept in the routine's run history with a link to that
 chat. Sleeping the Mac means a missed window catches up with one run, not one per
-window missed. Routines moved over from earlier bots arrive paused.
+window missed.
 
 Test run ignores the pause switch. Pausing stops the schedule, not the button, so
 a paused routine can still be tried by hand; the run does not consume the next
@@ -232,8 +232,7 @@ Live check: `/usr/local/bin/node spikes/s4/probe.mjs` after the key is pasted.
 
 ## MCP connections
 
-Apps outside the Composio catalogue connect as MCP servers. OpenAPI connections
-are no longer supported: an old one shows a note to add it again as an MCP server.
+Apps outside the Composio catalogue connect as MCP servers.
 The owner-approved list lives in `~/.useful-bot/connections.json` (mode 0600).
 Secrets go in Keychain (`com.usefulbot.connection.{id}`), never in the JSON.
 `setup-local.mjs` seeds Excalidraw (`https://mcp.excalidraw.com/mcp`, no auth).

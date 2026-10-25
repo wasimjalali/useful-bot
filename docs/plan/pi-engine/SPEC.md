@@ -1,5 +1,12 @@
 # Pi engine: replace eve, one strong bot
 
+> **Owner, 2026-10-25 13:42: the Pi release ships as a brand-new app.** The owner is the only user, so there is
+> no migration and no compatibility code for older installs: no `shell.json` v1 migration, no archived or
+> earlier bots, no moved routines, no first-launch note, no OpenAPI note, no image-prompt backfill, no eve
+> leftovers kept for a release (PR 4 is folded into PR 3). A store whose format changed starts fresh; stores
+> whose format didn't (providers, config, Keychain, memory, routines, connections, media) keep working with no
+> extra code. Where this file says otherwise, this note wins.
+
 Status: draft 3, 2026-10-25 (one bot only, chat-first UI). Draft 2 was hardened by a five-model
 council (Fable 5.1, Sonnet 5.5, Haiku 5.5, GLM 5.3, DeepSeek V4.1 Flash; record in
 `evals/results/2026-10-24-pi-engine-spec-council.md`). Author: Opus 5.5 orchestrator.
@@ -95,7 +102,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D3 | Model path | Through the router. A registered native provider delegates to Pi's built-in `openai-completions` stream with our `routerFetch` |
 | D4 | Pi built-ins | All off: no built-in tools, no extensions from disk, no skill or context-file discovery, in-memory settings, nothing read under `~/.pi` |
 | D5 | Bots | One bot: the default (`bot-useful`), named "Useful Bot" (PR 2b renames the stored bot; the name can't be edited). No second bot, no bot switcher, no bot creation |
-| D6 | Other existing bots | Archived ("earlier bots"): hidden, record and memory notes kept under their id; their routines move to the bot, paused; Settings > General > Earlier bots offers Copy instructions, Move notes and Remove. No restore |
+| D6 | Other existing bots | None: the release is a fresh install (owner, 2026-10-25). PR 2's archive and Earlier bots are removed in PR 3 |
 | D7 | Sub-agents | Removed |
 | D8 | Groups, sections, pins, hide, handoffs, fan-out, cross-bot send, bot and group proposals, profile proposals | Removed |
 | D9 | Chats | The sidebar is the chat list (one Pi session per chat): new, open, rename, delete (to a trash kept 30 days), search, live state per chat (`UI.md` 3.3) |
@@ -106,13 +113,13 @@ The implementing agents follow these defaults. The owner can override any of the
 | D14 | Sends during a running turn | Queued **in the host** and sent as their own turn after the running one settles. Pi's follow-up queue is not used |
 | D15 | Mid-turn crash | No resume. The turn is closed with an "Interrupted" row and Retry |
 | D16 | MCP | Our own client, OAuth, Keychain auth, `find_tools` and `<connectionId>__<tool>` names; picked tools registered as Pi tools |
-| D17 | OpenAPI connections | Dropped. Existing entries show "No longer supported, add it as an MCP server" |
+| D17 | OpenAPI connections | Dropped, with no note for old entries |
 | D18 | Routines | Scheduler in the engine (20 s timer), at most 4 at once. Each routine runs in its own chat (created on first run, reused), so runs never pile into the owner's chat |
 | D19 | Connect-card resume | Web calls the engine's system-turn endpoint (PR 3, which also deletes the handoff queue); PR 2 keeps the handoff queue for this one use |
 | D20 | Tools dropped | `list_bots`, `rail_action`, `delete_bot`, `propose_bot`, `propose_group`, `post_to_group`, `send_to_bot`, `update_bot_profile`, `clear_history`, `review`, `list_models`, `plant_read`, eve `agent`, `task_cancel` |
 | D21 | Tools merged | memory (4 to 1), routines (5 to 1), Composio apps (4 to 1) |
 | D22 | Old chats | Clean slate. Not imported, not archived |
-| D23 | eve's store | Deleted by the Pi release: the runtime rsync stops excluding `/.eve/`. A first-launch note says old chats were not carried over |
+| D23 | eve's store | Deleted by the Pi release: the runtime rsync stops excluding `/.eve/`. No first-launch note |
 | D24 | Reasoning effort | Pi thinking level `off`; the router applies effort from the selection |
 | D25 | Reviewer role | Removed: `review` tool, `/api/reviewer`, the Providers pane reviewer row. The router alias stays unused |
 | D26 | Delivery | PR 1 (router), PR 2 (one bot) and PR 2b (chat-first UI) land on `main` on eve; PR 3 is the engine swap on a feature branch; PR 4 cleans up. See `PLAN.md` |
