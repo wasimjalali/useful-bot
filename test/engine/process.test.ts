@@ -77,7 +77,11 @@ test("it comes up, answers /health with the Pi version and stops on SIGTERM", as
       status = await fetch(`http://127.0.0.1:${port}/status`, { headers: { authorization: "Bearer process-token" } });
     }
     assert.equal(status.status, 200);
-    assert.equal((await status.json() as { epoch: string }).epoch, health.epoch);
+    // /health may answer before boot has an engine (epoch null then); once /status
+    // is up, both name the same epoch.
+    const booted = await (await fetch(`http://127.0.0.1:${port}/health`)).json() as { epoch: string | null };
+    assert.equal(typeof booted.epoch, "string");
+    assert.equal((await status.json() as { epoch: string }).epoch, booted.epoch);
     assert.match(engine.stdout(), /"event":"listening"/);
     assert.equal(engine.stdout().includes("process-token"), false, "no token in the log");
 
