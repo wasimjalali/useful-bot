@@ -29,6 +29,8 @@ const EXCLUDE = [
   /^evals\/results\/2026-09-26-perf-check-1156-7dfbcbc\/report\.json$/,
   // A launch film's source would show the cut before launch.
   /^video\//,
+  // Design mockups show the owner's own connected accounts.
+  /^docs\/plan\/pi-engine\/mockups\//,
 ];
 
 const { values } = parseArgs({
