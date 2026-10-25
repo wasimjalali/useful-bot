@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { EngineError, type TurnOutcome } from "./protocol.ts";
 
 /**
@@ -78,7 +78,8 @@ export class ChatIndex {
       if (!isMeta(item)) throw new Error("chat_index_unreadable");
       this.chats.set(item.chatId, {
         ...item,
-        sessionFile: item.sessionFile ?? null,
+        // Stored relative to the engine folder, so the state root can move with its files.
+        sessionFile: item.sessionFile ? resolve(this.engineDir, item.sessionFile) : null,
         titleSetByOwner: item.titleSetByOwner === true,
         preview: item.preview ?? "",
         routineId: item.routineId ?? null,
@@ -91,7 +92,13 @@ export class ChatIndex {
 
   private save(): void {
     mkdirSync(dirname(this.indexPath), { recursive: true });
-    const file: IndexFile = { schemaVersion: 1, chats: [...this.chats.values()] };
+    const file: IndexFile = {
+      schemaVersion: 1,
+      chats: [...this.chats.values()].map((meta) => ({
+        ...meta,
+        sessionFile: meta.sessionFile ? relative(this.engineDir, meta.sessionFile) : null,
+      })),
+    };
     const tmp = `${this.indexPath}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(file), { mode: 0o600 });
     renameSync(tmp, this.indexPath);

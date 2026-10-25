@@ -33,11 +33,36 @@ export type RecordedRequest = {
   at: number;
 };
 
+type Message = { role?: string; tool_calls?: { id?: string }[]; tool_call_id?: string };
+
+/**
+ * The router's pairing rules for a transcript: every tool call is answered by
+ * its tool message right after it, and a tool message answers a call that was
+ * made. Returns the first problem, or null.
+ */
+export function checkMessages(messages: unknown): string | null {
+  if (!Array.isArray(messages)) return "messages_not_array";
+  let open = new Set<string>();
+  for (const [at, message] of (messages as Message[]).entries()) {
+    if (message.role === "tool") {
+      if (!message.tool_call_id || !open.has(message.tool_call_id)) return `orphan_tool_result_at_${at}`;
+      open.delete(message.tool_call_id);
+      continue;
+    }
+    if (open.size > 0) return `unanswered_tool_call_before_${at}`;
+    open = new Set((message.tool_calls ?? []).map((call) => String(call.id)));
+  }
+  if (open.size > 0) return "unanswered_tool_call_at_end";
+  return null;
+}
+
 export type FakeRouter = {
   /** `http://127.0.0.1:<port>/v1` */
   baseUrl: string;
   port: number;
   requests: RecordedRequest[];
+  /** Requests refused because they broke the pairing rules or hit a busy session. */
+  refused: { n: number; code: string; problem: string }[];
   /** Queue replies in order. When the queue is empty the fallback answers. */
   enqueue(...replies: FakeReply[]): void;
   /** Replaces the fallback used when the queue is empty (default: a short text answer). */
@@ -86,6 +111,8 @@ export async function startFakeRouter(): Promise<FakeRouter> {
   const queue: FakeReply[] = [];
   let fallbackReply: FakeReply | ((request: RecordedRequest) => FakeReply) = { kind: "text", text: "ok" };
   const requests: RecordedRequest[] = [];
+  const refused: FakeRouter["refused"] = [];
+  const active = new Set<string>();
   const stalled = new Set<() => void>();
   const sockets = new Set<ServerResponse>();
 
@@ -158,6 +185,14 @@ export async function startFakeRouter(): Promise<FakeRouter> {
     res.end();
   }
 
+  function refuseReason(request: RecordedRequest): { code: string; problem: string } | null {
+    const problem = checkMessages(request.body.messages);
+    if (problem) return { code: "invalid_request", problem };
+    const session = request.headers["x-useful-session-id"];
+    if (session && active.has(session)) return { code: "session_busy", problem: "one model call per session" };
+    return null;
+  }
+
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
     req.on("data", (piece: Buffer) => chunks.push(piece));
@@ -177,7 +212,20 @@ export async function startFakeRouter(): Promise<FakeRouter> {
       for (const [key, value] of Object.entries(req.headers)) headers[key] = Array.isArray(value) ? value.join(",") : String(value ?? "");
       const request: RecordedRequest = { n: requests.length, headers, body, at: Date.now() };
       requests.push(request);
+      const refusal = refuseReason(request);
+      if (refusal) {
+        refused.push({ n: request.n, ...refusal });
+        res.writeHead(refusal.code === "session_busy" ? 409 : 400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: refusal.code, message: refusal.problem } }));
+        return;
+      }
       const next = queue.shift() ?? (typeof fallbackReply === "function" ? fallbackReply(request) : fallbackReply);
+      const sessionKey = request.headers["x-useful-session-id"];
+      if (sessionKey) {
+        active.add(sessionKey);
+        res.on("finish", () => active.delete(sessionKey));
+        res.on("close", () => active.delete(sessionKey));
+      }
       sockets.add(res);
       res.on("close", () => sockets.delete(res));
       void reply(res, request, next).catch(() => {
@@ -192,6 +240,7 @@ export async function startFakeRouter(): Promise<FakeRouter> {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     port,
     requests,
+    refused,
     enqueue: (...replies) => { queue.push(...replies); },
     fallback: (next) => { fallbackReply = next; },
     release: () => { for (const done of [...stalled]) done(); },

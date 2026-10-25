@@ -267,6 +267,15 @@ export async function makeWorld(options: WorldOptions = {}): Promise<World> {
   return world;
 }
 
+/** Resolves once the router has received `count` requests. */
+export async function waitForRequests(world: World, count: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (world.router.requests.length < count) {
+    if (Date.now() > deadline) throw new Error(`router saw ${world.router.requests.length} of ${count} requests`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /** The event types of a recorded stream, in order, without `ping`. */
 export function types(events: EngineEvent[]): string[] {
   return events.filter((event) => event.type !== "ping").map((event) => event.type);

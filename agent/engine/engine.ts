@@ -221,7 +221,7 @@ export class Engine {
     const limit = Math.min(Math.max(query.limit ?? 60, 1), 200);
     let all: Row[];
     try {
-      all = chat.ensureLive().rows.rows;
+      all = chat.ensureLive().rows.view();
     } catch (error) {
       if (!(error instanceof EngineError) || error.code !== "chat_unreadable") throw error;
       all = [{

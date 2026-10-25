@@ -475,8 +475,8 @@ export class EngineHost {
       retry: { enabled: true, maxRetries: 2, baseDelayMs: this.options.retryBaseDelayMs ?? 2_000, provider: { maxRetries: 0 } },
       cacheWarming: "off",
       enableInstallTelemetry: false,
-      defaultTools: [],
-    });
+      // Nothing project-local is ever trusted: no extension, skill or setting is loaded from a folder.
+    }, { projectTrusted: false });
   }
 
   /** The runtime of a chat in the index. Throws `chat_not_found` otherwise. */

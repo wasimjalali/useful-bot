@@ -20,7 +20,6 @@ import {
   UB,
   type Activity,
   type Attachment,
-  type AttachmentsData,
   type FailureData,
   type QueuedDropData,
   type QueuedData,
@@ -88,8 +87,11 @@ function textOfBlocks(content: unknown): string {
 type RetryTarget = {
   turnId: string;
   clientId: string;
+  /** The failed turn's `ub.turn-start`: the leaf moves to its parent, so the whole attempt is left behind. */
+  startEntry: SessionEntry;
+  /** The user message Pi wrote for it: the exact text and images the model saw. */
   userEntry: SessionEntry & { type: "message" };
-  attachments: AttachmentsData | null;
+  start: TurnStartData;
   failure: FailureData;
   failedAt: number;
 };
@@ -105,11 +107,11 @@ export function findRetryTarget(branch: readonly SessionEntry[]): RetryTarget | 
     }
   }
   if (startAt === -1) return null;
-  const start = (branch[startAt] as Extract<SessionEntry, { type: "custom" }>).data as TurnStartData;
+  const startEntry = branch[startAt] as Extract<SessionEntry, { type: "custom" }>;
+  const start = startEntry.data as TurnStartData;
   if (start.origin !== "owner" || !start.clientId) return null;
-  let failure: RetryTarget["failure"] | null = null;
+  let failure: FailureData | null = null;
   let failedAt = 0;
-  let attachments: AttachmentsData | null = null;
   let userEntry: RetryTarget["userEntry"] | null = null;
   for (let at = startAt + 1; at < branch.length; at += 1) {
     const entry = branch[at];
@@ -119,15 +121,12 @@ export function findRetryTarget(branch: readonly SessionEntry[]): RetryTarget | 
         failure = data;
         failedAt = Date.parse(entry.timestamp);
       }
-    } else if (entry.type === "custom" && entry.customType === UB.attachments) {
-      const data = entry.data as AttachmentsData;
-      if (data.turnId === start.turnId) attachments = data;
     } else if (entry.type === "message" && userEntry === null && (entry.message as unknown as { role?: string }).role === "user") {
       userEntry = entry;
     }
   }
   if (!failure || !userEntry) return null;
-  return { turnId: start.turnId, clientId: start.clientId, userEntry, attachments, failure, failedAt };
+  return { turnId: start.turnId, clientId: start.clientId, startEntry, userEntry, start, failure, failedAt };
 }
 
 export class TurnRunner {
@@ -235,6 +234,11 @@ export class TurnRunner {
     return { turnId: queued.turnId, queued: true, done: queued.done };
   }
 
+  /**
+   * Accepts the turn: everything here is synchronous, so the turn's marker is
+   * in the file, and its bubble in the rows, before anything else can be
+   * appended behind it. Only the model call is async (`run`).
+   */
   private start(chat: ChatRuntime, input: QueuedTurn, retryTarget?: RetryTarget): SubmitResult {
     const prepared = this.prepare(chat, input.spec, { stampGrant: true });
     const turn: RunningTurn = {
@@ -263,7 +267,43 @@ export class TurnRunner {
     };
     chat.turn = turn;
     chat.touch();
-    void this.run(chat, turn, retryTarget).catch((error) => {
+    try {
+      if (retryTarget) {
+        // The failed attempt stays in the file on an abandoned branch (SPEC 5.5.9). The session is
+        // dropped first so the next one is built from the branch we move to.
+        chat.disposeSession();
+        const live = chat.ensureLive();
+        if (retryTarget.startEntry.parentId === null) live.sm.resetLeaf();
+        else live.sm.branch(retryTarget.startEntry.parentId);
+        chat.syncRows();
+      }
+      this.host.ledger.turnStarted({ chatId: chat.chatId, turnId: turn.turnId, startedAt: new Date().toISOString() });
+      if (input.persisted) this.host.ledger.messageDequeued(chat.chatId, input.clientId);
+      const startData: TurnStartData = {
+        turnId: turn.turnId,
+        origin: turn.origin,
+        clientId: input.clientId,
+        ...(retryTarget ? { retry: true as const } : {}),
+        ...(turn.origin === "owner" ? { text: turn.spec.text, attachments: turn.spec.attachments } : {}),
+      };
+      const question = chat.openQuestion;
+      if (question && turn.origin === "owner") {
+        chat.openQuestion = null;
+        chat.bus.emit({ type: "input.resolved", requestId: question.requestId }, turn.turnId);
+      }
+      chat.appendCustom(UB.turnStart, startData);
+      this.titleFrom(chat, turn);
+      chat.bus.emit({
+        type: "turn.started",
+        origin: turn.origin,
+        ...(turn.origin === "owner" ? { clientId: input.clientId } : {}),
+        ...(retryTarget ? { retry: true } : {}),
+      }, turn.turnId);
+    } catch (error) {
+      chat.turn = null;
+      throw error;
+    }
+    void this.run(chat, turn).catch((error) => {
       console.error(JSON.stringify({ event: "turn_crashed", chatId: chat.chatId, turnId: turn.turnId, error: error instanceof Error ? error.message : String(error) }));
     });
     return { turnId: turn.turnId, queued: false, done: turn.done };
@@ -271,42 +311,11 @@ export class TurnRunner {
 
   // --- the run ------------------------------------------------------------------
 
-  private async run(chat: ChatRuntime, turn: RunningTurn, retryTarget?: RetryTarget): Promise<void> {
+  private async run(chat: ChatRuntime, turn: RunningTurn): Promise<void> {
     let runError: unknown = null;
     let runStarted = false;
     try {
-      this.host.ledger.turnStarted({ chatId: chat.chatId, turnId: turn.turnId, startedAt: new Date().toISOString() });
-      if (turn.clientId) this.host.ledger.messageDequeued(chat.chatId, turn.clientId);
       const session = await chat.ensureSession(turn);
-      if (retryTarget) {
-        // The failed attempt stays in the file on an abandoned branch (SPEC 5.5.9).
-        const moved = await session.navigateTree(retryTarget.userEntry.id, { summarize: false });
-        if (moved.cancelled) throw new EngineError(409, "retry_not_available");
-        chat.syncRows();
-      }
-      const startData: TurnStartData = {
-        turnId: turn.turnId,
-        origin: turn.origin,
-        ...(turn.clientId ? { clientId: turn.clientId } : {}),
-        ...(retryTarget ? { retry: true as const } : {}),
-      };
-      chat.appendCustom(UB.turnStart, startData);
-      if (turn.origin === "owner" && (turn.spec.attachments.length > 0 || retryTarget)) {
-        const attached: AttachmentsData = { turnId: turn.turnId, items: turn.spec.attachments, text: turn.spec.text };
-        if (turn.spec.attachments.length > 0) chat.appendCustom(UB.attachments, attached);
-      }
-      this.titleFrom(chat, turn);
-      const question = chat.openQuestion;
-      if (question && turn.origin === "owner") {
-        chat.openQuestion = null;
-        chat.bus.emit({ type: "input.resolved", requestId: question.requestId }, turn.turnId);
-      }
-      chat.bus.emit({
-        type: "turn.started",
-        origin: turn.origin,
-        ...(turn.clientId && turn.origin === "owner" ? { clientId: turn.clientId } : {}),
-        ...(retryTarget ? { retry: true } : {}),
-      }, turn.turnId);
       if (turn.cancelRequested) return;
       const binding = { chatId: chat.chatId, turnId: turn.turnId, selection: turn.snapshot.selection };
       await turnBindings.run(binding, async () => {
@@ -485,10 +494,10 @@ export class TurnRunner {
         .map((block) => ({ type: "image" as const, data: block.data as string, mimeType: block.mimeType as string }))
       : [];
     const spec: TurnSpec = {
-      text: target.attachments ? target.attachments.text : textOfBlocks(content),
+      text: target.start.text ?? textOfBlocks(content),
       promptText: textOfBlocks(content),
       images,
-      attachments: target.attachments ? target.attachments.items : [],
+      attachments: target.start.attachments ?? [],
     };
     this.prepare(chat, spec, { stampGrant: false });
     return this.start(chat, { turnId: randomUUID(), origin: "owner", clientId: target.clientId, spec, persisted: false, ...deferred() }, target);

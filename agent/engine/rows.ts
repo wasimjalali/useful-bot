@@ -1,7 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   UB,
-  type AttachmentsData,
   type FailureData,
   type OpenQuestion,
   type QueuedData,
@@ -19,7 +18,9 @@ import {
  * summarized history. The same builder runs over a whole file and over entries
  * as they arrive, so a live row and a rebuilt one have the same id.
  *
- * Row ids: user `<turnId>:u`, assistant `<turnId>:a<n>` (n counts the turn's
+ * The owner's bubble comes from the turn's own `ub.turn-start` entry, which the
+ * host writes the moment the turn is accepted, so its place in the chat never
+ * depends on when Pi gets around to writing the message. Row ids: user `<turnId>:u`, assistant `<turnId>:a<n>` (n counts the turn's
  * text-bearing assistant messages from 0), failure `<turnId>:f`, question
  * `<turnId>:q`, compaction `compaction:<entryId>`, unsent `unsent:<clientId>`,
  * and the `key` of a `ub.row` entry for everything a tool filed.
@@ -30,7 +31,6 @@ export const COMPACTION_NOTE = "Conversation compacted to fit the model's window
 /** What a pushed entry did to the row list, so the host can emit events. */
 export type RowChange =
   | { type: "added"; row: Row }
-  | { type: "replaced"; row: Row; previousRowId: string }
   | { type: "updated"; row: Row };
 
 type TurnState = {
@@ -38,7 +38,6 @@ type TurnState = {
   origin: TurnOrigin;
   clientId?: string;
   assistantCount: number;
-  userSeen: boolean;
   searchResults: SearchResult[];
 };
 
@@ -71,10 +70,12 @@ function searchResultsOf(details: unknown): SearchResult[] {
 }
 
 export class RowBuilder {
+  /** Rows in the order they happened. */
   readonly rows: Row[] = [];
   private readonly index = new Map<string, number>();
+  /** Messages waiting behind a running turn: always shown last, and moved into `rows` when their turn starts. */
+  private readonly pending: Row[] = [];
   private turn: TurnState | null = null;
-  private readonly attachments = new Map<string, AttachmentsData>();
   /** Every client id a turn-start or a queued entry carried, for the idempotent send. */
   readonly clients = new Map<string, { turnId: string; queued: boolean }>();
   /** Keys of `ub.row` entries, for append idempotency. */
@@ -88,12 +89,22 @@ export class RowBuilder {
   }
 
   has(rowId: string): boolean {
-    return this.index.has(rowId);
+    return this.index.has(rowId) || this.pending.some((row) => row.rowId === rowId);
   }
 
   get(rowId: string): Row | undefined {
     const at = this.index.get(rowId);
-    return at === undefined ? undefined : this.rows[at];
+    return at === undefined ? this.pending.find((row) => row.rowId === rowId) : this.rows[at];
+  }
+
+  /** What the app shows: the rows, then the messages still waiting their turn. */
+  view(): Row[] {
+    return this.pending.length === 0 ? this.rows : [...this.rows, ...this.pending];
+  }
+
+  private takePending(rowId: string): Row | undefined {
+    const at = this.pending.findIndex((row) => row.rowId === rowId);
+    return at === -1 ? undefined : this.pending.splice(at, 1)[0];
   }
 
   /** The question still waiting for an answer, or null. */
@@ -110,20 +121,10 @@ export class RowBuilder {
   }
 
   private add(row: Row): RowChange | null {
-    if (this.index.has(row.rowId)) return null;
+    if (this.has(row.rowId)) return null;
     this.index.set(row.rowId, this.rows.length);
     this.rows.push(row);
     return { type: "added", row };
-  }
-
-  /** Replaces a row in place (a queued bubble becoming its turn's, or an unsent one). */
-  private swap(previousRowId: string, row: Row): RowChange {
-    const at = this.index.get(previousRowId);
-    if (at === undefined) throw new Error(`row_missing:${previousRowId}`);
-    this.index.delete(previousRowId);
-    this.index.set(row.rowId, at);
-    this.rows[at] = row;
-    return { type: "replaced", row, previousRowId };
   }
 
   push(entry: SessionEntry): RowChange[] {
@@ -151,22 +152,6 @@ export class RowBuilder {
   private pushMessage(entry: Extract<SessionEntry, { type: "message" }>): RowChange[] {
     const message = entry.message as unknown as Record<string, unknown>;
     const turn = this.turn;
-    if (message.role === "user") {
-      if (!turn || turn.origin !== "owner" || turn.userSeen) return [];
-      turn.userSeen = true;
-      const attached = this.attachments.get(turn.turnId);
-      const rowId = `${turn.turnId}:u`;
-      const row: Row = {
-        rowId,
-        kind: "user",
-        turnId: turn.turnId,
-        at: entry.timestamp,
-        text: attached ? attached.text : textOf(message.content),
-        ...(turn.clientId ? { clientId: turn.clientId } : {}),
-        attachments: attached ? attached.items : [],
-      };
-      return [this.index.has(rowId) ? this.swap(rowId, row) : (this.add(row) as RowChange)];
-    }
     if (message.role === "assistant") {
       if (!turn) return [];
       const text = textOf(message.content);
@@ -200,24 +185,35 @@ export class RowBuilder {
           origin: start.origin,
           ...(start.clientId ? { clientId: start.clientId } : {}),
           assistantCount: 0,
-          userSeen: false,
           searchResults: [],
         };
         if (start.clientId) this.clients.set(start.clientId, { turnId: start.turnId, queued: false });
-        // The next owner message closes an open question.
-        if (start.origin === "owner") return this.closeQuestion();
-        return [];
-      }
-      case UB.attachments: {
-        const attached = data as unknown as AttachmentsData;
-        this.attachments.set(attached.turnId, attached);
-        return [];
+        if (start.origin !== "owner") return [];
+        // The next owner message closes an open question and is the turn's bubble.
+        const changes = this.closeQuestion();
+        const rowId = `${start.turnId}:u`;
+        const row: Row = {
+          rowId,
+          kind: "user",
+          turnId: start.turnId,
+          at,
+          text: start.text ?? "",
+          ...(start.clientId ? { clientId: start.clientId } : {}),
+          attachments: start.attachments ?? [],
+        };
+        // A message that waited has its bubble now: it leaves the waiting list for its place in the chat.
+        this.takePending(rowId);
+        const change = this.add(row);
+        if (change) changes.push(change);
+        return changes;
       }
       case UB.queued: {
         const queued = data as unknown as QueuedData;
         this.clients.set(queued.clientId, { turnId: queued.turnId, queued: true });
-        const change = this.add({
-          rowId: `${queued.turnId}:u`,
+        const rowId = `${queued.turnId}:u`;
+        if (this.has(rowId)) return [];
+        this.pending.push({
+          rowId,
           kind: "user",
           turnId: queued.turnId,
           at,
@@ -226,12 +222,12 @@ export class RowBuilder {
           attachments: queued.attachments ?? [],
           queued: true,
         });
-        return change ? [change] : [];
+        return [];
       }
       case UB.queuedDrop: {
         const drop = data as unknown as QueuedDropData;
-        const queuedRow = this.get(`${drop.turnId}:u`);
-        if (!queuedRow || queuedRow.kind !== "user" || !queuedRow.queued) return [];
+        const queuedRow = this.takePending(`${drop.turnId}:u`);
+        if (!queuedRow || queuedRow.kind !== "user") return [];
         this.clients.delete(drop.clientId);
         const unsent: Row = {
           rowId: `unsent:${drop.clientId}`,
@@ -242,7 +238,8 @@ export class RowBuilder {
           text: queuedRow.text,
           reason: drop.reason,
         };
-        return [this.swap(queuedRow.rowId, unsent)];
+        const change = this.add(unsent);
+        return change ? [change] : [];
       }
       case UB.failure: {
         const failure = data as unknown as FailureData;

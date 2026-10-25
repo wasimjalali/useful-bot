@@ -65,7 +65,6 @@ export class EngineError extends Error {
 export const UB = {
   turnStart: "ub.turn-start",
   turnEnd: "ub.turn-end",
-  attachments: "ub.attachments",
   queued: "ub.queued",
   queuedDrop: "ub.queued-drop",
   failure: "ub.failure",
@@ -74,9 +73,16 @@ export const UB = {
   context: "ub.context",
 } as const;
 
-export type TurnStartData = { turnId: string; origin: TurnOrigin; clientId?: string; retry?: true };
+/** Owner turns carry the text and attachments the user row shows, so the row never waits on Pi's own message. */
+export type TurnStartData = {
+  turnId: string;
+  origin: TurnOrigin;
+  clientId?: string;
+  retry?: true;
+  text?: string;
+  attachments?: Attachment[];
+};
 export type TurnEndData = { turnId: string; outcome: TurnOutcome | "interrupted" | "refused" };
-export type AttachmentsData = { turnId: string; items: Attachment[]; text: string };
 export type QueuedData = { turnId: string; clientId: string; text: string; attachments: Attachment[] };
 export type QueuedDropData = { turnId: string; clientId: string; reason: "cancelled" | "interrupted" };
 export type FailureData = { turnId: string; code: string; detail: string; retryAfterMs?: number; resetsAt?: string };
