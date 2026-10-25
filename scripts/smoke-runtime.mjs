@@ -3,12 +3,13 @@
 // with a space like a user's "Application Support" folder, and fails unless the
 // router's /health/live answers and the engine's /health reports its stack and Pi.
 // Usage: node scripts/smoke-runtime.mjs <stage-dir>
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnWithSecrets } from "./service-secrets.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stage = process.argv[2] ? path.resolve(process.argv[2]) : null;
@@ -59,11 +60,14 @@ try {
 
   // One service from the stage, its output kept for the failure report. `probe`
   // returns the answer once the service is up, or null while it is not.
-  const start = async (name, entry, env, probe) => {
-    const child = spawn(node, ["--experimental-strip-types", path.join(app, entry)], {
+  // Started the way service.mjs does: `secrets` go to its stdin for the staged preload to read, never into `env`.
+  const start = async (name, entry, env, secrets, probe) => {
+    const child = spawnWithSecrets(node, ["--experimental-strip-types", path.join(app, entry)], {
       cwd: app,
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      secrets,
+      preload: path.join(app, "scripts/secrets-preload.mjs"),
+      stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(child);
     child.stdout.on("data", (chunk) => (output += chunk));
@@ -91,7 +95,7 @@ try {
     UB_ROUTER_PORT: String(port),
     UB_ROUTER_CONFIG: path.join(home, ".useful-bot/config.json"),
     UB_ROUTER_DB: path.join(base, "usage.sqlite"),
-  }, async () => ((await fetch(`http://127.0.0.1:${port}/health/live`)).status === 200 ? true : null));
+  }, {}, async () => ((await fetch(`http://127.0.0.1:${port}/health/live`)).status === 200 ? true : null));
   process.stdout.write(`smoke ok: staged router answered /health/live from ${app}\n`);
 
   // The engine the way service.mjs starts it: an explicit environment, never the caller's.
@@ -101,12 +105,13 @@ try {
     HOME: home,
     UB_ROUTER_PORT: String(port),
     UB_ENGINE_PORT: String(enginePort),
-    UB_ENGINE_TOKEN: "smoke-engine-token",
-    UB_ROUTER_DESKTOP_TOKEN: "smoke-router-token",
     PI_OFFLINE: "1",
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
     PI_CODING_AGENT_DIR: path.join(home, ".useful-bot/engine/pi"),
+  }, {
+    UB_ENGINE_TOKEN: "smoke-engine-token",
+    UB_ROUTER_DESKTOP_TOKEN: "smoke-router-token",
   }, async () => {
     const res = await fetch(`http://127.0.0.1:${enginePort}/health`);
     return res.status === 200 ? await res.json() : null;

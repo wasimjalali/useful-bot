@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { spawnWithSecrets } from "./service-secrets.mjs";
 import { webLaunch } from "./web-mode.mjs";
 import { ownerPath } from "../shared/user-path.ts";
 import { LOOPBACK, enforceStack, enginePort, keychainName, routerConfigPath, routerPort, stateRoot, webPort } from "../shared/stack.ts";
@@ -13,6 +14,8 @@ import { LOOPBACK, enforceStack, enginePort, keychainName, routerConfigPath, rou
 const NODE = process.execPath;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2];
+// Loaded first in every service; it reads the secrets run() writes to stdin.
+const PRELOAD = path.join(ROOT, "scripts/secrets-preload.mjs");
 
 const [NODE_MAJOR, NODE_MINOR, NODE_PATCH] = process.versions.node.split(".").map(Number);
 if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1)) {
@@ -88,10 +91,12 @@ function keychain(service) {
 
 /**
  * The environment the engine runs with, built key by key (SPEC 5.1): it holds
- * the owner's tools and credentials, so it never inherits `process.env`. The
- * two tokens come from the Keychain; Pi's switches keep it from reading `~/.pi`,
- * checking for updates or reporting usage, and `PI_CODING_AGENT_DIR` is the
- * backstop for the one path Pi would otherwise default to the home folder.
+ * the owner's tools and credentials, so it never inherits `process.env`. Its
+ * two tokens are not here: they reach it on stdin (`run`), because anything in
+ * an exec environment is readable by every process of the same user. Pi's
+ * switches keep it from reading `~/.pi`, checking for updates or reporting
+ * usage, and `PI_CODING_AGENT_DIR` is the backstop for the one path Pi would
+ * otherwise default to the home folder.
  */
 const ENGINE_ENV_KEYS = [
   "HOME", "TMPDIR", "LANG", "TZ",
@@ -99,14 +104,13 @@ const ENGINE_ENV_KEYS = [
   "UB_ROUTER_PORT", "UB_WEB_PORT", "UB_ENGINE_PORT",
 ];
 
-function engineEnv(tokens) {
+export function engineEnv() {
   const env = { PATH: ownerPath() };
   for (const key of ENGINE_ENV_KEYS) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   return {
     ...env,
-    ...tokens,
     PI_OFFLINE: "1",
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
@@ -114,6 +118,7 @@ function engineEnv(tokens) {
   };
 }
 
+/** The router's environment and its secrets, kept apart: the secrets go to stdin (`run`). */
 async function childEnv() {
   // launchd and the app bundle both hand this script the minimal system
   // PATH, so a service that shells out sees none of what the owner has
@@ -124,25 +129,27 @@ async function childEnv() {
     PATH: ownerPath(),
     NODE_ENV: process.env.NODE_ENV || "production",
   };
+  const secrets = {};
   if (process.env.UB_SKIP_KEYCHAIN === "1") {
-    return env;
+    return { env, secrets };
   }
   try {
-    env.UB_OPENCODE_GO_KEY = await keychain(keychainName("opencode-go"));
+    secrets.UB_OPENCODE_GO_KEY = await keychain(keychainName("opencode-go"));
   } catch (error) {
     // A fresh install has no OpenCode Go key: the owner connects a provider
     // in the app instead, and the router reports itself "limited" on
     // /health/live. Only a key that does not exist degrades; a locked or
     // refusing Keychain still stops the service.
     if (error.message !== "not_found") fail("credential_store_locked_or_missing", keychainName("opencode-go"));
-    delete env.UB_OPENCODE_GO_KEY;
     process.stderr.write(`${JSON.stringify({ service: mode, warning: "credential_missing", item: keychainName("opencode-go") })}\n`);
   }
-  return env;
+  return { env, secrets };
 }
 
-function run(args, env) {
-  const child = spawn(NODE, args, { cwd: ROOT, env, stdio: "inherit" });
+// `env` is the child's exec environment and holds no secret; `secrets` is the
+// one JSON object it reads from stdin before its first line runs.
+function run(args, env, secrets) {
+  const child = spawnWithSecrets(NODE, args, { cwd: ROOT, env, secrets, preload: PRELOAD });
   let stopping = false;
   const stop = () => {
     stopping = true;
@@ -192,27 +199,27 @@ async function main() {
     }
   }
   if (mode === "router") {
-    const env = await childEnv();
+    const { env, secrets } = await childEnv();
     if (!env.UB_ROUTER_CONFIG) {
       env.UB_ROUTER_CONFIG = routerConfigPath();
     }
-    run(["--experimental-strip-types", path.join(ROOT, "router/src/index.ts")], env);
+    run(["--experimental-strip-types", path.join(ROOT, "router/src/index.ts")], env, secrets);
     return;
   }
   if (mode === "engine") {
     await waitReady(`http://${LOOPBACK}:${routerPort()}/health/live`, 60_000);
-    const tokens = {};
+    const secrets = {};
     try {
-      tokens.UB_ENGINE_TOKEN = await keychain(keychainName("channel.desktop"));
+      secrets.UB_ENGINE_TOKEN = await keychain(keychainName("channel.desktop"));
     } catch {
       fail("credential_store_locked_or_missing", keychainName("channel.desktop"));
     }
     try {
-      tokens.UB_ROUTER_DESKTOP_TOKEN = await keychain(keychainName("router.desktop"));
+      secrets.UB_ROUTER_DESKTOP_TOKEN = await keychain(keychainName("router.desktop"));
     } catch {
       fail("credential_store_locked_or_missing", keychainName("router.desktop"));
     }
-    run(["--experimental-strip-types", path.join(ROOT, "agent/server.ts")], engineEnv(tokens));
+    run(["--experimental-strip-types", path.join(ROOT, "agent/server.ts")], engineEnv(), secrets);
     return;
   }
   if (mode === "web") {
@@ -221,10 +228,11 @@ async function main() {
       PATH: ownerPath(),
       UB_ROUTER_CONFIG: routerConfigPath(),
     };
+    const secrets = {};
     try {
       // The bearer the web service presents to the engine (the same item the
       // engine reads), for the chat routes and the internal calls.
-      env.UB_ENGINE_TOKEN = await keychain(keychainName("channel.desktop"));
+      secrets.UB_ENGINE_TOKEN = await keychain(keychainName("channel.desktop"));
     } catch {
       fail("credential_store_locked_or_missing", keychainName("channel.desktop"));
     }
@@ -232,9 +240,8 @@ async function main() {
     // the same credential the agent's generate_image uses. Without it only
     // that button fails (and says so); the rest of the app runs.
     try {
-      env.UB_ROUTER_DESKTOP_TOKEN = await keychain(keychainName("router.desktop"));
+      secrets.UB_ROUTER_DESKTOP_TOKEN = await keychain(keychainName("router.desktop"));
     } catch {
-      delete env.UB_ROUTER_DESKTOP_TOKEN;
       process.stderr.write(`${JSON.stringify({ service: "web", warning: "router_token_missing", item: keychainName("router.desktop") })}\n`);
     }
     const launch = webLaunch(ROOT);
@@ -249,7 +256,7 @@ async function main() {
         PORT: String(webPort()),
         // Unset rather than "undefined" when package.json names no version.
         ...(typeof version === "string" && version ? { UB_APP_VERSION: version } : {}),
-      });
+      }, secrets);
       return;
     }
     run([
@@ -260,11 +267,14 @@ async function main() {
       LOOPBACK,
       "--port",
       String(webPort()),
-    ], env);
+    ], env, secrets);
     return;
   }
   process.stderr.write("usage: service.mjs router|engine|web\n");
   process.exit(2);
 }
 
-main();
+// Imported by a test, which must not start a service.
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  main();
+}
