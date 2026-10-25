@@ -7,97 +7,119 @@ struct SearchPaletteView: View {
 
     let onClose: () -> Void
     let onNewChat: () -> Void
-    let onSelect: (String) -> Void
-    let onOpenRecent: (_ recentId: String, _ sessionId: String?) -> Void
+    let onOpen: (ChatEntry) -> Void
+    let onOpenRoutine: (String) -> Void
+    let onOpenLibrary: (String) -> Void
+    let onOpenSettings: () -> Void
+    let onOpenConnectors: () -> Void
+    let onOpenUsage: () -> Void
 
     @State private var query = ""
     @State private var tab: SearchTab = .all
     @State private var active = 0
+    @State private var media: [MediaItem] = []
     @FocusState private var focused: Bool
 
-    // Only tabs `hits` can actually fill; a tab with no data source would
-    // never return a row and would always read "Nothing in X yet."
     enum SearchTab: String, CaseIterable {
-        case all, messages, bots
+        case all, chats, library, routines
 
         var label: String {
             switch self {
             case .all: return "All"
-            case .messages: return "Messages"
-            case .bots: return "Bots"
+            case .chats: return "Chats"
+            case .library: return "Library"
+            case .routines: return "Routines"
             }
         }
     }
 
+    enum Command: String, CaseIterable {
+        case newChat, settings, connectors, usage
+
+        var title: String {
+            switch self {
+            case .newChat: return "New chat"
+            case .settings: return "Open settings"
+            case .connectors: return "Connectors"
+            case .usage: return "Token usage"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .newChat: return "square.and.pencil"
+            case .settings: return "gearshape"
+            case .connectors: return "powerplug"
+            case .usage: return "gauge.with.dots.needle.33percent"
+            }
+        }
+
+        var shortcut: String? { self == .newChat ? "⌘N" : nil }
+    }
+
     enum Hit: Identifiable {
-        case newChat
-        case recent(ShellRecent, ShellBot?)
-        case bot(ShellBot)
+        case chat(ChatEntry)
+        case media(MediaItem)
+        case routine(Routine)
+        case command(Command)
 
         var id: String {
             switch self {
-            case .newChat: return "new-chat"
-            case .recent(let recent, _): return "recent-\(recent.id)"
-            case .bot(let bot): return "bot-\(bot.id)"
+            case .chat(let entry): return "chat-\(entry.id)"
+            case .media(let item): return "media-\(item.id)"
+            case .routine(let routine): return "routine-\(routine.id)"
+            case .command(let command): return "command-\(command.rawValue)"
+            }
+        }
+
+        var section: String {
+            switch self {
+            case .chat: return "Chats"
+            case .media: return "Library"
+            case .routine: return "Routines"
+            case .command: return "Commands"
             }
         }
     }
 
     private var hits: [Hit] {
-        guard let store = model.store else { return [] }
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         var results: [Hit] = []
-        if tab == .all { results.append(.newChat) }
 
-        if tab == .all || tab == .messages {
-            // A recent of an archived bot cannot be opened.
-            let activeIds = Set(store.railBots.map(\.id))
-            let recents = store.recents.filter { recent in
-                guard activeIds.contains(recent.botId) else { return false }
-                guard !needle.isEmpty else { return true }
-                let bot = store.bots.first { $0.id == recent.botId }
-                return "\(recent.title) \(recent.preview) \(bot?.name ?? "") \(bot?.label ?? "")"
-                    .lowercased()
-                    .contains(needle)
+        if tab == .all || tab == .chats {
+            let entries = model.chatEntries.filter { entry in
+                needle.isEmpty || "\(entry.title) \(entry.preview)".lowercased().contains(needle)
             }
-            // The same message from the same bot shows once, newest first.
-            var seen = Set<String>()
-            let unique = recents.sorted { $0.updatedAt > $1.updatedAt }.filter { recent in
-                seen.insert("\(recent.botId)|\(Self.recentText(recent))").inserted
-            }
-            for recent in (needle.isEmpty ? Array(unique.prefix(8)) : unique) {
-                results.append(.recent(recent, store.bots.first { $0.id == recent.botId }))
-            }
+            let shown = tab == .all && needle.isEmpty ? Array(entries.prefix(8)) : entries
+            results.append(contentsOf: shown.map(Hit.chat))
         }
 
-        if tab == .all || tab == .bots {
-            let bots = store.railBots.filter { bot in
-                guard !needle.isEmpty else { return true }
-                return "\(bot.name) \(bot.label) \(bot.description) \(bot.lastPreview)"
-                    .lowercased()
-                    .contains(needle)
-            }
-            results.append(contentsOf: bots.map { .bot($0) })
+        if tab == .library || (tab == .all && !needle.isEmpty) {
+            let items = media.filter { needle.isEmpty || $0.displayTitle.lowercased().contains(needle) }
+            results.append(contentsOf: items.map(Hit.media))
+        }
+
+        if tab == .routines || (tab == .all && !needle.isEmpty) {
+            let routines = model.routines.filter { needle.isEmpty || $0.name.lowercased().contains(needle) }
+            results.append(contentsOf: routines.map(Hit.routine))
+        }
+
+        if tab == .all {
+            let commands = Command.allCases.filter { needle.isEmpty || $0.title.lowercased().contains(needle) }
+            results.append(contentsOf: commands.map(Hit.command))
         }
         return results
     }
 
-    private func heading(for index: Int) -> String? {
+    private func heading(for index: Int, in hits: [Hit]) -> String? {
         guard tab == .all else { return nil }
         let hit = hits[index]
-        let previous = index > 0 ? hits[index - 1] : nil
-        if case .recent = hit {
-            if case .recent = previous { return nil }
-            return "Recents"
-        }
-        if case .bot = hit {
-            if case .bot = previous { return nil }
-            return "Bots"
-        }
-        return nil
+        if index > 0, hits[index - 1].section == hit.section { return nil }
+        return hit.section
     }
 
     var body: some View {
+        let hits = hits
         ZStack(alignment: .top) {
             Theme.C.overlay
                 .ignoresSafeArea()
@@ -143,7 +165,7 @@ struct SearchPaletteView: View {
                 .overlay(alignment: .bottom) { Hairline() }
 
                 tabs
-                results
+                results(hits)
             }
             .frame(maxWidth: 560)
             .background(Theme.C.surface)
@@ -159,6 +181,10 @@ struct SearchPaletteView: View {
         .onAppear {
             focused = true
             active = 0
+        }
+        .task {
+            // The Library has no copy in the model; read it when the palette opens.
+            if let listed = try? await GeneratedImageCache.shared.mediaList() { media = listed.items }
         }
         .onExitCommand {
             if query.isEmpty {
@@ -200,13 +226,13 @@ struct SearchPaletteView: View {
         .overlay(alignment: .bottom) { Hairline() }
     }
 
-    private var results: some View {
+    private func results(_ hits: [Hit]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(hits.enumerated()), id: \.element.id) { index, hit in
                         VStack(alignment: .leading, spacing: 0) {
-                            if let heading = heading(for: index) {
+                            if let heading = heading(for: index, in: hits) {
                                 Text(heading)
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(Theme.C.inkFaint)
@@ -244,52 +270,71 @@ struct SearchPaletteView: View {
     }
 
     private var emptyCopy: String {
-        tab == .all
-            ? "No matching chats."
-            : "Nothing in \(tab.label) yet."
+        let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        return searching || tab == .all ? "No matches." : "Nothing in \(tab.label) yet."
     }
 
     @ViewBuilder
     private func hitRow(_ hit: Hit) -> some View {
         HStack(spacing: 10) {
             switch hit {
-            case .newChat:
-                Image(systemName: "plus.bubble")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.ink)
-                Text("New chat")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.C.ink)
-            case .recent(let recent, let bot):
-                if let bot {
-                    BotAvatarView(bot: model.liveBot(bot), size: 24)
-                } else {
-                    Image(systemName: "bubble.left")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.C.ink)
-                }
+            case .chat(let entry):
+                icon("bubble.left")
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(Self.recentText(recent))
+                    Text(entry.title)
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.ink)
                         .lineLimit(1)
-                    Text([bot?.name, Self.relativeTime(recent.updatedAt)].compactMap { $0 }.joined(separator: " · "))
+                    if !entry.preview.isEmpty, entry.preview != entry.title {
+                        Text(entry.preview)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                if let updatedAt = entry.updatedAt {
+                    Text(ChatEntry.timeLabel(updatedAt))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(Theme.C.inkFaint)
+                }
+            case .media(let item):
+                icon(Self.mediaIcon(item.kind))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(item.displayTitle)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Text(Self.mediaKind(item.kind))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                Spacer(minLength: 0)
+            case .routine(let routine):
+                icon("clock")
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(routine.name)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Text(routine.active ? RoutineCopy.scheduleLine(routine.schedules) : "Paused")
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.C.inkMuted)
                         .lineLimit(1)
                 }
-            case .bot(let bot):
-                BotAvatarView(bot: bot, size: 24)
-                Text(bot.name)
+                Spacer(minLength: 0)
+            case .command(let command):
+                icon(command.icon)
+                Text(command.title)
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.ink)
-                    .lineLimit(1)
                 Spacer(minLength: 0)
-                if !bot.label.isEmpty, !sameAsName(bot.label, bot.name) {
-                    BotLabelChip(text: bot.label, fitsFully: true)
+                if let shortcut = command.shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.C.inkFaint)
                 }
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -297,62 +342,42 @@ struct SearchPaletteView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The message as plain text: markdown marks stripped, whitespace folded.
-    /// A recent as one plain line. Only markdown's own marks go: links keep
-    /// their text, code ticks and paired emphasis drop their marks, and a
-    /// heading or quote marker goes at the start of a line. "C#", "issue #42"
-    /// and "clear_history" stay as written.
-    private static func recentText(_ recent: ShellRecent) -> String {
-        let raw = AppModel.previewText(recent.title.isEmpty || recent.title == "Chat" ? recent.preview : recent.title)
-        var text = raw.replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
-        text = text.replacingOccurrences(of: "(?m)^\\s*(#{1,6}\\s+|>\\s)", with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: "`+", with: "", options: .regularExpression)
-        for mark in ["\\*\\*", "__", "\\*", "_", "~~"] {
-            text = text.replacingOccurrences(
-                of: "(?<![A-Za-z0-9])\(mark)(?=\\S)(.+?)(?<=\\S)\(mark)(?![A-Za-z0-9])",
-                with: "$1",
-                options: .regularExpression
-            )
-        }
-        text = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func icon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 14))
+            .foregroundStyle(Theme.C.ink)
+            .frame(width: 20)
     }
 
-    private static let plainISO = ISO8601DateFormatter()
-    private static let fractionalISO: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-    private static let relative: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
+    private static func mediaIcon(_ kind: String) -> String {
+        switch kind {
+        case "drawing": return "scribble.variable"
+        case "page": return "globe"
+        default: return "photo"
+        }
+    }
 
-    private static func relativeTime(_ iso: String) -> String? {
-        guard let date = fractionalISO.date(from: iso) ?? plainISO.date(from: iso) else { return nil }
-        return relative.localizedString(for: date, relativeTo: Date())
+    private static func mediaKind(_ kind: String) -> String {
+        switch kind {
+        case "drawing": return "Drawing"
+        case "page": return "Page"
+        default: return "Image"
+        }
     }
 
     private func run(_ hit: Hit?) {
         guard let hit else { return }
         switch hit {
-        case .newChat:
-            onNewChat()
-        case .recent(let recent, _):
-            onOpenRecent(recent.id, recent.sessionId)
-        case .bot(let bot):
-            onSelect(bot.id)
+        case .chat(let entry): onOpen(entry)
+        case .media(let item): onOpenLibrary(item.id)
+        case .routine(let routine): onOpenRoutine(routine.id)
+        case .command(let command):
+            switch command {
+            case .newChat: onNewChat()
+            case .settings: onOpenSettings()
+            case .connectors: onOpenConnectors()
+            case .usage: onOpenUsage()
+            }
         }
     }
-}
-
-/// True when a role label only repeats the bot's name ("Generalist" under
-/// "Generalist"), ignoring case, spaces and punctuation.
-func sameAsName(_ label: String, _ name: String) -> Bool {
-    func fold(_ value: String) -> String {
-        value.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
-    return fold(label) == fold(name)
 }

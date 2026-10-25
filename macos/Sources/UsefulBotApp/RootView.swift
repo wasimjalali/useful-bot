@@ -15,9 +15,7 @@ struct RootView: View {
     @State private var composerIn = true
 
     @State private var windowFullScreen = false
-    @State private var renameBot: ShellBot?
     @State private var connectorsOpen = false
-    @State private var libraryOpen = false
 
     /// The launch view covers the wait for the local services and nothing
     /// more: once they answer, the app shows, even mid-animation. Holding it
@@ -111,7 +109,6 @@ struct RootView: View {
         }
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.searchOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
-        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: libraryOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.instructionsEditorBotId)
     }
@@ -158,15 +155,32 @@ struct RootView: View {
                     onClose: { model.searchOpen = false },
                     onNewChat: {
                         model.searchOpen = false
-                        model.startNewChat(botId: Threads.defaultBotId)
+                        model.newChatOrFocusComposer()
                     },
-                    onSelect: { id in
+                    onOpen: { entry in
                         model.searchOpen = false
-                        model.select(id)
+                        model.open(entry)
                     },
-                    onOpenRecent: { recentId, _ in
+                    onOpenRoutine: { id in
                         model.searchOpen = false
-                        model.openRecent(recentId)
+                        model.showRoutine(id)
+                    },
+                    onOpenLibrary: { id in
+                        model.searchOpen = false
+                        model.libraryFocusId = id
+                        model.stage = .library
+                    },
+                    onOpenSettings: {
+                        model.searchOpen = false
+                        model.openAppSettings(.general)
+                    },
+                    onOpenConnectors: {
+                        model.searchOpen = false
+                        connectorsOpen = true
+                    },
+                    onOpenUsage: {
+                        model.searchOpen = false
+                        model.openAppSettings(.usage)
                     }
                 )
                 .transition(.opacity)
@@ -174,11 +188,6 @@ struct RootView: View {
 
             if connectorsOpen {
                 ConnectorsDialog(onClose: { connectorsOpen = false })
-                    .transition(.opacity)
-            }
-
-            if libraryOpen {
-                LibraryView(onClose: { libraryOpen = false })
                     .transition(.opacity)
             }
 
@@ -194,21 +203,6 @@ struct RootView: View {
                     .transition(.opacity)
             }
 
-            if let bot = renameBot {
-                PromptDialog(
-                    title: "Rename",
-                    label: "Name",
-                    initial: bot.name,
-                    submitLabel: "Rename",
-                    onClose: { renameBot = nil },
-                    onSubmit: { name in
-                        model.rename(botId: bot.id, name: name)
-                        renameBot = nil
-                    }
-                )
-                .transition(.opacity)
-            }
-
         }
     }
 
@@ -216,17 +210,8 @@ struct RootView: View {
         HStack(spacing: 0) {
             RailView(
                 onSearch: { model.searchOpen = true },
-                onNewChat: {
-                    model.settingsOpen = false
-                    model.startNewChat(botId: Threads.defaultBotId)
-                },
-                onOpenSettings: { id in
-                    model.select(id)
-                    model.settingsOpen = true
-                },
-                onRenameRequest: { renameBot = $0 },
+                onNewChat: { model.newChatOrFocusComposer() },
                 onConnectors: { connectorsOpen = true },
-                onLibrary: { libraryOpen = true },
                 onOpenAppSettings: { model.openAppSettings($0) },
                 fullScreen: windowFullScreen
             )
@@ -255,7 +240,11 @@ struct RootView: View {
                 .fill(Theme.C.surface)
                 .stageShadow()
 
-            ChatView()
+            switch model.stage {
+            case .chat: ChatView()
+            case .routines: RoutinesPage()
+            case .library: LibraryView()
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.stage, style: .continuous))
         .frame(maxWidth: .infinity, maxHeight: .infinity)

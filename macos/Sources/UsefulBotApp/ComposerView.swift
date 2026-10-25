@@ -87,7 +87,7 @@ struct ComposerView: View {
     private var placeholder: String {
         if replying != nil { return "Reply…" }
         if model.pendingRequests.contains(where: { !$0.options.isEmpty }) { return "Your message waits until you answer the card" }
-        return "Message \(bot.name)"
+        return "Message Useful Bot"
     }
 
     /// The reply chip belongs to the chat it was started in.
