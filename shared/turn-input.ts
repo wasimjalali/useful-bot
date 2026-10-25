@@ -108,7 +108,9 @@ export function parseTurnBody(raw: unknown): TurnBody {
   const rec = json as Record<string, unknown>;
   if (typeof rec.clientId !== "string" || !UUID.test(rec.clientId)) throw new TurnBodyError("client_id_invalid");
   if (typeof rec.text !== "string" || rec.text.length > TURN_TEXT_MAX) throw new TurnBodyError("turn_text_invalid");
-  if (rec.retry !== undefined && rec.retry !== true) throw new TurnBodyError("turn_invalid");
+  // `retry: false` is what this function itself returns, and the web relays
+  // that to the engine, which parses it again.
+  if (rec.retry !== undefined && typeof rec.retry !== "boolean") throw new TurnBodyError("turn_invalid");
   const items = rec.attachments === undefined ? [] : rec.attachments;
   if (!Array.isArray(items) || items.length > ATTACH_MAX_FILES) throw new TurnBodyError("attachment_invalid");
   const attachments = items.map(parseAttachment);
