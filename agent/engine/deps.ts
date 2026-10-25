@@ -1,4 +1,4 @@
-import { peekShell, updateShell } from "../../shared/shell-io.ts";
+import { peekShell, tryUpdateShell } from "../../shared/shell-io.ts";
 import { setBotChat } from "../../shared/shell-store.ts";
 import type { UsefulTool } from "../lib/tool.ts";
 import type { TurnBody } from "../../shared/turn-input.ts";
@@ -36,7 +36,7 @@ export type Deps = {
   parseTurnBody(raw: unknown): TurnBody;
   /** The chat a bot has open (`shell.json` v2 keeps only this per bot). */
   currentChat(botId: string): string | null;
-  /** Makes a chat the bot's current one, or none, and updates its preview line. */
+  /** Makes a chat the bot's current one, or none, and updates its preview line. Throws when the shell store is busy: the engine retries (current-chat.ts). */
   setCurrentChat(botId: string, chatId: string | null, preview: string): void;
 };
 
@@ -45,9 +45,13 @@ export function currentChatInShell(botId: string): string | null {
   return peekShell()?.bots.find((item) => item.id === botId)?.chatId ?? null;
 }
 
-/** Makes a chat the bot's current one (or none) under the shell lock. */
+/** How long the engine waits for the shell lock before parking the write (see CurrentChat). */
+const SHELL_WAIT_MS = 50;
+
+/** Makes a chat the bot's current one (or none) under the shell lock. Throws `shell_store_busy` when the lock stays held. */
 export function setCurrentChatInShell(botId: string, chatId: string | null, preview: string): void {
-  updateShell((store) => setBotChat(store, botId, chatId, preview, new Date().toISOString()));
+  const written = tryUpdateShell((store) => setBotChat(store, botId, chatId, preview, new Date().toISOString()), SHELL_WAIT_MS);
+  if (!written) throw new Error("shell_store_busy");
 }
 
 /**

@@ -110,11 +110,11 @@ export class Engine {
   }
 
   private currentChatId(botId: string): string | null {
-    return this.host.deps.currentChat(botId);
+    return this.host.current.get(botId);
   }
 
   private makeCurrent(botId: string, chatId: string | null, preview: string): void {
-    this.host.deps.setCurrentChat(botId, chatId, preview);
+    this.host.current.set(botId, chatId, preview);
   }
 
   /** The chat a row or a system turn without a chat id belongs to: the bot's current one, else a fresh one. */
@@ -202,7 +202,7 @@ export class Engine {
     const chats = this.host.index.all().filter((meta) => !meta.fixture).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const deadline = Date.now() + SEARCH_BUDGET_MS;
     const lastRowOf = (chatId: string): Row | undefined => {
-      const rows = this.host.chat(chatId).ensureLive().rows.rows;
+      const rows = this.host.chat(chatId).ensureCurrent().rows.rows;
       return rows[rows.length - 1];
     };
     const seen = new Set<string>();
@@ -228,7 +228,7 @@ export class Engine {
       try {
         const chat = this.host.chat(meta.chatId);
         const wasLive = chat.live !== null;
-        const live = chat.ensureLive();
+        const live = chat.ensureCurrent();
         let row: Row | undefined;
         for (let at = live.rows.rows.length - 1; at >= 0 && !row; at -= 1) {
           const candidate = live.rows.rows[at];
@@ -254,7 +254,7 @@ export class Engine {
     const limit = Math.min(Math.max(query.limit ?? 60, 1), 200);
     let all: Row[];
     try {
-      all = chat.ensureLive().rows.view();
+      all = chat.ensureCurrent().rows.view();
     } catch (error) {
       if (!(error instanceof EngineError) || error.code !== "chat_unreadable") throw error;
       all = [{
@@ -288,7 +288,7 @@ export class Engine {
             startedAt: new Date(turn.startedAt).toISOString(),
             // The streaming message's row, so a reload mid-turn puts the partial text on the right row.
             ...(turn.streamRowId ? { rowId: turn.streamRowId } : {}),
-            partialText: turn.partialText,
+            partialText: turn.streamRowId ? turn.partialText : "",
             activity: turn.activity ?? { kind: "thinking" },
           }
         : null,

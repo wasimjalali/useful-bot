@@ -70,7 +70,12 @@ test("it comes up, answers /health with the Pi version and stops on SIGTERM", as
     assert.equal(health.ok, true);
     assert.equal(health.stack, "daily");
     assert.match(String(health.pi), /^\d+\.\d+\.\d+/);
-    const status = await fetch(`http://127.0.0.1:${port}/status`, { headers: { authorization: "Bearer process-token" } });
+    // /health answers at once; every other route is 503 `engine_starting` until boot has finished.
+    let status = await fetch(`http://127.0.0.1:${port}/status`, { headers: { authorization: "Bearer process-token" } });
+    for (const deadline = Date.now() + 20_000; status.status === 503 && Date.now() < deadline;) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      status = await fetch(`http://127.0.0.1:${port}/status`, { headers: { authorization: "Bearer process-token" } });
+    }
     assert.equal(status.status, 200);
     assert.equal((await status.json() as { epoch: string }).epoch, health.epoch);
     assert.match(engine.stdout(), /"event":"listening"/);

@@ -20,6 +20,7 @@ import type { OkSnapshot } from "../lib/turn-snapshot.ts";
 import type { ModelSelection } from "../../shared/session-selection.ts";
 import { ChatIndex, clip, PREVIEW_MAX, type ChatMeta } from "./chats.ts";
 import { contextNeedsSending } from "./context.ts";
+import { CurrentChat } from "./current-chat.ts";
 import type { Deps } from "./deps.ts";
 import { ChatBus } from "./events.ts";
 import { overrideKey, RouterProvider, PROVIDER_ID } from "./provider.ts";
@@ -197,8 +198,13 @@ export class ChatRuntime {
         throw new EngineError(409, "chat_unreadable", { detail: error instanceof Error ? error.message : String(error) });
       }
     } else {
+      // A new chat, or one whose recorded file was never written (a crash before the first message): empty.
       sm = SessionManager.create(this.host.piCwd, dir, { id: meta.chatId });
     }
+    // The index names the file from the start, though Pi writes it only with the first message: a crash
+    // during the first response must find it again at boot.
+    const file = sm.getSessionFile();
+    if (file && meta.sessionFile !== file) this.host.index.update(this.chatId, { sessionFile: file }, { touch: false });
     const rows = RowBuilder.build(sm.getBranch());
     this.live = {
       sm,
@@ -215,6 +221,17 @@ export class ChatRuntime {
     this.openQuestion = rows.openQuestion();
     this.restoreTodos();
     return this.live;
+  }
+
+  /**
+   * `ensureLive` plus a sync. Pi emits `message_end` before it appends the message to the
+   * session, so the cache can lag the file while a tool runs: anything that reads the rows
+   * (a page, a duplicate-send check, search) goes through here.
+   */
+  ensureCurrent(): Live {
+    const live = this.ensureLive();
+    this.syncRows();
+    return live;
   }
 
   /** Pulls entries the session added since the last look into the row cache and emits what changed. */
@@ -247,7 +264,6 @@ export class ChatRuntime {
     const changes: RowChange[] = [];
     for (let at = fresh.length - 1; at >= 0; at -= 1) changes.push(...live.rows.push(fresh[at]));
     live.syncedLeaf = leaf;
-    this.afterAppend();
     for (const change of changes) {
       if (!NO_ROW_EVENT.has(change.row.kind) && change.type !== "updated") {
         this.bus.emit({ type: "row", row: change.row }, change.row.turnId ?? undefined);
@@ -306,16 +322,6 @@ export class ChatRuntime {
     this.host.deps.restoreTodos(this.chatId, todos);
   }
 
-  /** Remembers the session file in the index once it exists on disk. */
-  private afterAppend(): void {
-    const live = this.live;
-    if (!live) return;
-    const file = live.sm.getSessionFile();
-    if (file && this.meta.sessionFile === null && existsSync(file)) {
-      this.host.index.update(this.chatId, { sessionFile: file }, { touch: false });
-    }
-  }
-
   /** Appends a custom entry to the session and syncs the rows. Returns the entry id. */
   appendCustom(customType: string, data: unknown): string {
     const live = this.ensureLive();
@@ -330,7 +336,8 @@ export class ChatRuntime {
     if (live.rows.keys.has(row.key)) return false;
     const call = row.kind === "widget" ? this.callOf(row.callId) : undefined;
     if (row.kind === "widget" && !call?.widget && !("connectionId" in row)) throw new EngineError(404, "widget_call_unknown");
-    const filedIn = this.turn?.turnId ?? call?.turnId ?? null;
+    // A widget is filed after its turn, usually while the next one runs: it belongs to the turn that made the call.
+    const filedIn = row.kind === "widget" ? (call?.turnId || this.turn?.turnId || null) : (this.turn?.turnId ?? call?.turnId ?? null);
     // The app names the widget by its call; the row also says which connection and tool drew it.
     const filed = row.kind === "widget" && call?.widget ? { ...call.widget, ...row } : row;
     this.appendCustom(UB.row, { ...filed, turnId: filedIn });
@@ -483,6 +490,8 @@ export class EngineHost {
   readonly index: ChatIndex;
   readonly ledger: RunningLedger;
   readonly deps: Deps;
+  /** Each bot's open chat in `shell.json`: written off the request and settle paths. */
+  readonly current: CurrentChat;
   readonly approvals: HostOptions["approvals"];
   readonly now: () => Date;
   readonly provider: RouterProvider;
@@ -507,6 +516,7 @@ export class EngineHost {
     this.agentDir = join(options.engineDir, "pi");
     this.now = options.now ?? (() => new Date());
     this.deps = options.deps;
+    this.current = new CurrentChat(options.deps);
     this.approvals = options.approvals;
     this.index = new ChatIndex(options.engineDir, this.now);
     this.ledger = new RunningLedger(join(options.engineDir, "running.json"));
@@ -613,6 +623,7 @@ export class EngineHost {
   async close(): Promise<void> {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.sweepTimer = null;
+    this.current.stop();
     for (const chat of this.chats.values()) chat.disposeSession();
   }
 }

@@ -92,6 +92,11 @@ export class RowBuilder {
     return this.index.has(rowId) || this.pending.some((row) => row.rowId === rowId);
   }
 
+  /** A message still waiting behind a running turn (no bubble in the chat yet). */
+  isPending(rowId: string): boolean {
+    return this.pending.some((row) => row.rowId === rowId);
+  }
+
   get(rowId: string): Row | undefined {
     const at = this.index.get(rowId);
     return at === undefined ? this.pending.find((row) => row.rowId === rowId) : this.rows[at];

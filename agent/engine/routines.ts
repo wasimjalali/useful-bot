@@ -18,20 +18,34 @@ import type { TurnResult } from "./pi-host.ts";
  * a note row first, an hour of budget and ten minutes without events.
  */
 
+/** The routine store calls the scheduler makes, so a test can make one of them fail. */
+export type RoutineStore = {
+  pending: typeof pendingRoutines;
+  claimManual: typeof claimManualRun;
+  claimDue: typeof claimDueRoutine;
+  appendRun: typeof appendRoutineRun;
+};
+
 export type RoutineOptions = {
   tickMs?: number;
   maxRunning?: number;
   budgetMs?: number;
   idleMs?: number;
   checkMs?: number;
+  store?: Partial<RoutineStore>;
 };
 
 type Claimed = { routine: Routine };
 
 const DEFAULTS = { tickMs: 20_000, maxRunning: 4, budgetMs: 60 * 60_000, idleMs: 10 * 60_000, checkMs: 5_000 };
 
+function logFailure(event: string, fields: Record<string, unknown>, error: unknown): void {
+  console.error(JSON.stringify({ event, ...fields, error: error instanceof Error ? (error.stack ?? error.message) : String(error) }));
+}
+
 export class RoutineScheduler {
   private readonly options: typeof DEFAULTS;
+  private readonly store: RoutineStore;
   private readonly running = new Map<string, Promise<void>>();
   private timer: NodeJS.Timeout | null = null;
 
@@ -39,12 +53,21 @@ export class RoutineScheduler {
 
   constructor(engine: Engine, options: RoutineOptions = {}) {
     this.engine = engine;
-    this.options = { ...DEFAULTS, ...options };
+    const { store, ...rest } = options;
+    this.options = { ...DEFAULTS, ...rest };
+    this.store = { pending: pendingRoutines, claimManual: claimManualRun, claimDue: claimDueRoutine, appendRun: appendRoutineRun, ...store };
   }
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => { this.tick(); }, this.options.tickMs);
+    // A store that fails must not take the engine down: the next tick tries again.
+    this.timer = setInterval(() => {
+      try {
+        this.tick();
+      } catch (error) {
+        logFailure("routine_tick_failed", {}, error);
+      }
+    }, this.options.tickMs);
     this.timer.unref();
   }
 
@@ -64,7 +87,7 @@ export class RoutineScheduler {
     this.engine.sweepRoutineLinks();
     let candidates: Routine[];
     try {
-      candidates = pendingRoutines(now);
+      candidates = this.store.pending(now);
     } catch (error) {
       console.error(JSON.stringify({ event: "routines_unreadable", error: error instanceof Error ? error.message : String(error) }));
       return started;
@@ -72,7 +95,14 @@ export class RoutineScheduler {
     for (const routine of candidates) {
       if (this.running.size >= this.options.maxRunning) break;
       if (this.running.has(routine.id)) continue;
-      const claimed: Claimed | null = claimManualRun(routine.id) ?? claimDueRoutine(routine.id, now);
+      let claimed: Claimed | null;
+      try {
+        claimed = this.store.claimManual(routine.id) ?? this.store.claimDue(routine.id, now);
+      } catch (error) {
+        // One routine whose claim fails must not starve the others.
+        logFailure("routine_tick_failed", { routineId: routine.id }, error);
+        continue;
+      }
       if (!claimed) continue;
       try {
         this.begin(claimed.routine);
@@ -89,7 +119,12 @@ export class RoutineScheduler {
     if (this.running.has(routineId)) throw new EngineError(409, "routine_busy");
     const claimed = claimRunNow(routineId);
     if (!claimed) throw new EngineError(404, "routine_missing");
-    return this.begin(claimed.routine);
+    try {
+      return this.begin(claimed.routine);
+    } catch (error) {
+      this.recordFailure(claimed.routine, null, error);
+      throw error;
+    }
   }
 
   private begin(routine: Routine): { chatId: string; turnId: string | null; queued: boolean } {
@@ -105,9 +140,11 @@ export class RoutineScheduler {
     }
     const chat = this.engine.host.chat(chatId);
     const stamp = this.engine.host.now().toISOString();
-    chat.appendRow({ key: `note:routine-run-${routine.id}-${stamp}`, kind: "note", text: `Routine ${routine.name} ran.`, source: "routine" });
     const prompt = `Scheduled run of the routine ${routine.name}. Nobody is watching: do not ask questions or wait for cards.\n\n${routine.instruction}`;
-    const submitted = this.engine.turns.submitInternal(chatId, "routine", `routine:${routine.id}:${stamp}`, prompt);
+    // The note goes in once the run is admitted (a refused run did not "run"), and still just before the turn starts.
+    const submitted = this.engine.turns.submitInternal(chatId, "routine", `routine:${routine.id}:${stamp}`, prompt, () => {
+      chat.appendRow({ key: `note:routine-run-${routine.id}-${stamp}`, kind: "note", text: `Routine ${routine.name} ran.`, source: "routine" });
+    });
     const finished = this.watch(routine, chatId, submitted.turnId, submitted.done);
     this.running.set(routine.id, finished);
     void finished.finally(() => { this.running.delete(routine.id); });
@@ -128,11 +165,14 @@ export class RoutineScheduler {
     try {
       const result = await done;
       if (result.outcome === "completed") {
-        appendRoutineRun(routine.id, { status: "ok", chatId });
+        this.store.appendRun(routine.id, { status: "ok", chatId });
       } else {
         const error = result.failure?.detail ?? (result.outcome === "cancelled" ? "The run was stopped." : "The run failed.");
-        appendRoutineRun(routine.id, { status: "failed", chatId, error });
+        this.store.appendRun(routine.id, { status: "failed", chatId, error });
       }
+    } catch (error) {
+      // The run is over either way: a store that cannot record it is logged, not thrown into nowhere.
+      logFailure("routine_run_record_failed", { routineId: routine.id, chatId }, error);
     } finally {
       clearInterval(timer);
     }
@@ -142,6 +182,10 @@ export class RoutineScheduler {
     const detail = error instanceof EngineError && typeof error.fields.message === "string"
       ? error.fields.message
       : error instanceof EngineError ? error.code : error instanceof Error ? error.message : String(error);
-    appendRoutineRun(routine.id, { status: "failed", ...(chatId ? { chatId } : {}), error: detail });
+    try {
+      this.store.appendRun(routine.id, { status: "failed", ...(chatId ? { chatId } : {}), error: detail });
+    } catch (recordError) {
+      logFailure("routine_run_record_failed", { routineId: routine.id, chatId }, recordError);
+    }
   }
 }

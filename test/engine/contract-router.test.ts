@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { stableUuid } from "../../agent/lib/router-identity.ts";
 import { decodeSelectionHeader } from "./selection.ts";
-import { makeWorld } from "./helpers.ts";
+import { CONNECTION, MODEL, makeWorld } from "./helpers.ts";
 import { startRealRouter } from "./real-router.ts";
 
 /**
@@ -130,6 +132,39 @@ test("contract 5: compaction keeps every tool call with its result and the summa
     const sessionIds = new Set(world.router.requests.map((request) => request.headers["x-useful-session-id"]));
     assert.equal(sessionIds.size, 1, "the summary call used the chat's router session");
     assert.ok(world.engine.rows(chatId, {}).rows.some((row) => row.kind === "note" && row.source === "compaction"));
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 1: model facts follow the catalog: a changed window or vision flag re-registers the model", async () => {
+  const world = await makeWorld({ window: 100_000 });
+  try {
+    const chatId = world.newChat();
+    world.router.enqueue({ kind: "text", text: "one" }, { kind: "text", text: "two" });
+    world.send(chatId, "first");
+    await world.idle(chatId);
+    const selection = { connectionId: CONNECTION, modelId: MODEL, effort: null, speed: "standard" as const };
+    const provider = world.engine.host.provider;
+    const before = provider.modelFor(selection);
+    assert.equal(before.contextWindow, 100_000);
+    assert.equal(provider.modelFor(selection), before, "unchanged facts keep the same model");
+
+    // The owner refreshed the model list: the window shrank and the model lost vision.
+    writeFileSync(join(world.root, "models-cache.json"), JSON.stringify({
+      schemaVersion: 3,
+      providers: { [CONNECTION]: { fetchedAt: Date.now(), models: [{ id: MODEL, label: MODEL, efforts: ["low"], defaultEffort: "low", speeds: ["standard"], defaultSpeed: "standard", contextTokens: 40_000, inputs: ["text"] }] } },
+    }));
+    const after = provider.modelFor(selection);
+    assert.notEqual(after, before);
+    assert.equal(after.contextWindow, 40_000);
+    assert.deepEqual(after.input, ["text"]);
+    assert.equal(after.maxTokens, 4_000);
+
+    // The next turn builds its session on the new facts.
+    world.send(chatId, "second");
+    await world.idle(chatId);
+    assert.equal(world.engine.host.chat(chatId).live?.model, after);
   } finally {
     await world.close();
   }

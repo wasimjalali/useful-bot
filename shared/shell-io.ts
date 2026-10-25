@@ -232,11 +232,37 @@ export function updateShell(
   }
 }
 
+/**
+ * `updateShell` for a caller that must not wait: when the lock stays held for
+ * `timeoutMs` it returns null instead of blocking for the full lock timeout,
+ * and the caller tries again later.
+ */
+export function tryUpdateShell(
+  mutate: (store: ShellStore) => ShellStore,
+  timeoutMs: number,
+  path = defaultShellPath(),
+): ShellStore | null {
+  let release: () => void;
+  try {
+    release = acquireShellLock(path, timeoutMs);
+  } catch (error) {
+    if (error instanceof Error && error.message === "shell_store_locked") return null;
+    throw error;
+  }
+  try {
+    const next = mutate(readShellFile(path));
+    writeShell(next, path);
+    return next;
+  } finally {
+    release();
+  }
+}
+
 /** The shell store's directory lock; the returned function releases it. */
-function acquireShellLock(path: string): () => void {
+function acquireShellLock(path: string, timeoutMs = LOCK_TIMEOUT_MS): () => void {
   const lock = `${path}.lock`;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   let held = false;
   while (!held) {
     try {

@@ -132,6 +132,11 @@ test("live rows equal a rebuild from the file, and survive a restart", async () 
     world.router.enqueue({ kind: "stall", text: "partial" });
     world.send(chatId, "Desktop");
     await waitForRequests(world, 4);
+    // Stop only after the stalled turn has streamed: a cancel that lands first leaves nothing to compare.
+    const stallDeadline = Date.now() + 5_000;
+    while (!recorder.events.some((event) => event.type === "message.delta" && String(event.delta).includes("partial")) && Date.now() < stallDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     world.send(chatId, "queued one");
     world.engine.cancel(chatId);
     await world.idle(chatId);
@@ -185,6 +190,66 @@ test("contract 12: rows after a real compaction still contain every earlier mess
     assert.ok(JSON.stringify(last).length < JSON.stringify(rows).length + 20_000);
     assert.ok(!JSON.stringify(last).includes("message 0 "), "the model's context was summarized");
     assert.ok(rows.some((row) => row.kind === "user" && row.text.startsWith("message 0 ")), "the rows kept it");
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 1: a rows page fetched while a tool runs already has the assistant text that came before the call", async () => {
+  const world = await makeWorld();
+  try {
+    const chatId = world.newChat();
+    const recorder = world.record(chatId);
+    world.router.enqueue({ kind: "tools", text: "Let me look.", calls: [{ name: "slow", args: {} }] }, { kind: "text", text: "Done." });
+    world.send(chatId, "go");
+    const deadline = Date.now() + 5_000;
+    while (!recorder.events.some((event) => event.type === "tool.call") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const page = world.engine.rows(chatId, {});
+    const assistant = page.rows.filter((row) => row.kind === "assistant");
+    assert.deepEqual(assistant.map((row) => (row as { text: string }).text), ["Let me look."], "the finished assistant message is in the page");
+    assert.equal(page.running?.partialText, "");
+    // The page and its tailSeq agree: nothing the page lacks is hidden below the seq the app resumes from.
+    const finalSeq = recorder.events.find((event) => event.type === "message.final")?.seq as number;
+    assert.ok(finalSeq <= (page.tailSeq as number));
+    world.engine.cancel(chatId);
+    await world.idle(chatId);
+    assert.deepEqual(world.engine.rows(chatId, {}).rows.filter((row) => row.kind === "assistant").map((row) => row.rowId), assistant.map((row) => row.rowId));
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 1: a reply that is only whitespace streams nothing and leaves no blank row", async () => {
+  const world = await makeWorld();
+  try {
+    const chatId = world.newChat();
+    const recorder = world.record(chatId);
+    world.router.enqueue({ kind: "text", text: " \n ", chunks: 3 });
+    world.send(chatId, "say nothing");
+    await world.idle(chatId);
+    assert.deepEqual(recorder.events.filter((event) => event.type === "message.delta" || event.type === "message.final"), []);
+    assert.deepEqual(world.engine.rows(chatId, {}).rows.map((row) => row.kind), ["user"]);
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 1: leading whitespace is held back and sent with the first real text", async () => {
+  const world = await makeWorld();
+  try {
+    const chatId = world.newChat();
+    const recorder = world.record(chatId);
+    // Seven chunks of two characters: the first is "\n\n" on its own.
+    world.router.enqueue({ kind: "text", text: "\n\nHello there", chunks: 7 });
+    world.send(chatId, "hi");
+    await world.idle(chatId);
+    const deltas = recorder.events.filter((event) => event.type === "message.delta");
+    assert.ok(deltas.length >= 1);
+    assert.equal(deltas.map((event) => String(event.delta)).join(""), "\n\nHello there");
+    assert.ok(String(deltas[0].delta).trim() !== "", "the first delta already has content");
+    const final = recorder.events.find((event) => event.type === "message.final");
+    assert.equal(final?.rowId, deltas[0].rowId);
   } finally {
     await world.close();
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRoutine, readRoutine, requestRoutineRun } from "../../shared/routines-store.ts";
+import { appendRoutineRun, claimManualRun, createRoutine, pendingRoutines, readRoutine, requestRoutineRun } from "../../shared/routines-store.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { assertShapes, fixtureLines } from "./shapes.ts";
 import { makeWorld, waitForRequests, type World } from "./helpers.ts";
@@ -180,6 +180,81 @@ test("a run that fails is recorded with the reason", async () => {
     world.engine.routines.tick();
     assert.equal(readRoutine(orphan.id)?.runHistory.at(-1)?.status, "failed");
   } finally {
+    await world.close();
+  }
+});
+
+function chatOf(world: World, routineId: string): string | undefined {
+  return world.engine.host.index.all().find((meta) => meta.routineId === routineId)?.chatId;
+}
+
+test("review 1: a refused run says nothing ran, and Run now records the refusal", async () => {
+  const { world } = await routineWorld();
+  try {
+    // A bot that is gone refuses the run before Pi sees it.
+    const orphan = createRoutine({ botId: "bot-gone", name: "Orphan", instruction: "x", schedules: [{ kind: "daily", time: "09:00" }] });
+    assert.throws(() => world.engine.routines.runNow(orphan.id), /bot_missing/);
+    const runs = readRoutine(orphan.id)?.runHistory ?? [];
+    assert.equal(runs.length, 1, "Run now records the failure");
+    assert.equal(runs[0].status, "failed");
+    assert.match(runs[0].error ?? "", /bot_missing/);
+    const chatId = chatOf(world, orphan.id);
+    assert.ok(chatId);
+    assert.deepEqual(world.engine.rows(chatId, {}).rows.filter((row) => row.kind === "note"), [], "no 'ran' note for a run that never started");
+
+    // The tick path: same refusal, one failed run, still no note.
+    assert.ok(requestRoutineRun(orphan.id));
+    world.engine.routines.tick();
+    assert.equal(readRoutine(orphan.id)?.runHistory.length, 2);
+    assert.deepEqual(world.engine.rows(chatId, {}).rows.filter((row) => row.kind === "note"), []);
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 1: a routine store that fails does not take the engine down", async () => {
+  const errors: string[] = [];
+  const logged = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+  const crash: Error[] = [];
+  const onUncaught = (error: Error) => { crash.push(error); };
+  process.on("uncaughtException", onUncaught);
+  process.on("unhandledRejection", onUncaught);
+  let storeDown = true;
+  let fragile: ReturnType<typeof routine> | null = null;
+  const { world } = await routineWorld({
+    engine: {
+      routines: {
+        tickMs: 20,
+        store: {
+          // The timer path: a claim that throws inside setInterval.
+          pending: (now) => (storeDown && fragile ? [{ ...fragile, manualRunRequested: true }] : pendingRoutines(now)),
+          claimManual: (id) => { if (storeDown) throw new Error("store down"); return claimManualRun(id); },
+          // The run-end path: recording a finished run throws.
+          appendRun: (id, run) => { if (storeDown) throw new Error("store down"); return appendRoutineRun(id, run); },
+        },
+      },
+    },
+  });
+  const made = routine("Fragile");
+  fragile = made;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.ok(errors.some((line) => line.includes("routine_tick_failed")), "the failed tick was logged");
+    assert.equal(world.engine.routines.inFlight, 0);
+
+    world.router.enqueue({ kind: "text", text: "done" });
+    const started = world.engine.routines.runNow(made.id);
+    await world.idle(started.chatId);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(errors.some((line) => line.includes("routine_run_record_failed")), "the lost record was logged");
+    assert.equal(world.engine.routines.inFlight, 0, "the run is no longer in flight");
+    assert.deepEqual(crash, [], "nothing escaped as an uncaught error or an unhandled rejection");
+    storeDown = false;
+  } finally {
+    console.error = logged;
+    process.off("uncaughtException", onUncaught);
+    process.off("unhandledRejection", onUncaught);
     await world.close();
   }
 });

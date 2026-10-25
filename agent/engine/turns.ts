@@ -200,13 +200,15 @@ export class TurnRunner {
   }
 
   /** A routine run or a system turn. Same admission; the prompt is not an owner bubble. */
-  submitInternal(chatId: string, origin: Exclude<TurnOrigin, "owner">, clientId: string, text: string): SubmitResult {
+  submitInternal(chatId: string, origin: Exclude<TurnOrigin, "owner">, clientId: string, text: string, admitted?: () => void): SubmitResult {
     const chat = this.host.chat(chatId);
     chat.ensureLive();
     const existing = this.existing(chat, clientId);
     if (existing) return existing;
     const spec: TurnSpec = { text, promptText: text, images: [], attachments: [] };
     this.prepare(chat, spec, { stampGrant: false });
+    // Only a run that passed admission gets its note: `admitted` runs here, before the turn starts.
+    admitted?.();
     return this.accept(chat, { origin, clientId, spec, persisted: false });
   }
 
@@ -215,6 +217,7 @@ export class TurnRunner {
     if (chat.turn?.clientId === clientId) return { turnId: chat.turn.turnId, queued: false, done: chat.turn.done };
     const waiting = chat.queue.find((item) => item.clientId === clientId);
     if (waiting) return { turnId: waiting.turnId, queued: true, done: waiting.done };
+    chat.syncRows();
     const known = chat.live?.rows.clients.get(clientId);
     if (known) {
       return {
@@ -277,6 +280,7 @@ export class TurnRunner {
     };
     chat.turn = turn;
     chat.touch();
+    let marked = false;
     try {
       if (retryTarget) {
         // The failed attempt stays in the file on an abandoned branch (SPEC 5.5.9). The session is
@@ -287,6 +291,7 @@ export class TurnRunner {
         else live.sm.branch(retryTarget.startEntry.parentId);
         chat.syncRows();
       }
+      // The running record goes in before the marker, so a crash between the two still closes the turn at boot; a failure below undoes it.
       this.host.ledger.turnStarted({ chatId: chat.chatId, turnId: turn.turnId, startedAt: new Date().toISOString() });
       if (input.persisted) this.host.ledger.messageDequeued(chat.chatId, input.clientId);
       const startData: TurnStartData = {
@@ -305,21 +310,39 @@ export class TurnRunner {
         if (chat.meta.questionOpen) this.host.index.update(chat.chatId, { questionOpen: false }, { touch: false });
       }
       chat.appendCustom(UB.turnStart, startData);
+      marked = true;
       this.titleFrom(chat, turn);
       chat.bus.emit({
         type: "turn.started",
         origin: turn.origin,
         ...(turn.origin === "owner" ? { clientId: input.clientId } : {}),
-        ...(retryTarget ? { retry: true } : {}),
+        // A Retry leaves the failed attempt's rows on an abandoned branch: the app refetches the rows page.
+        ...(retryTarget ? { retry: true, resync: true } : {}),
       }, turn.turnId);
     } catch (error) {
       chat.turn = null;
+      this.undoStart(chat, turn, marked, error);
       throw error;
     }
     void this.run(chat, turn).catch((error) => {
       console.error(JSON.stringify({ event: "turn_crashed", chatId: chat.chatId, turnId: turn.turnId, error: error instanceof Error ? error.message : String(error) }));
     });
     return { turnId: turn.turnId, queued: false, done: turn.done };
+  }
+
+  /**
+   * A start that threw: the running record is withdrawn (or the next boot would
+   * report an interrupted turn that never ran), and a marker already in the file
+   * is closed as a refused turn, so nothing is left half open.
+   */
+  private undoStart(chat: ChatRuntime, turn: RunningTurn, marked: boolean, error: unknown): void {
+    this.settleStep(chat, turn, "undo_ledger", () => this.host.ledger.turnEnded(chat.chatId, turn.turnId));
+    if (!marked) return;
+    this.settleStep(chat, turn, "undo_marker", () => {
+      const detail = clip(error instanceof Error ? error.message : String(error), 500) || "The turn could not start.";
+      chat.appendCustom(UB.failure, { turnId: turn.turnId, code: "engine_error", detail } satisfies FailureData);
+      chat.appendCustom(UB.turnEnd, { turnId: turn.turnId, outcome: "refused" } satisfies TurnEndData);
+    });
   }
 
   // --- the run ------------------------------------------------------------------
@@ -387,38 +410,47 @@ export class TurnRunner {
     }
     forgetRouterError(ids.turnId);
 
-    try {
+    // Every step is its own try: a bookkeeping write that throws is logged and must never leave the chat busy.
+    this.settleStep(chat, turn, "write", () => {
       chat.syncRows();
       if (failure) chat.appendCustom(UB.failure, failure);
       const outcome: TurnEndData["outcome"] = result.outcome === "failed" && thrown?.refused ? "refused" : result.outcome;
       chat.appendCustom(UB.turnEnd, { turnId: turn.turnId, outcome } satisfies TurnEndData);
-    } catch (error) {
-      console.error(JSON.stringify({ event: "settle_write_failed", chatId: chat.chatId, turnId: turn.turnId, error: error instanceof Error ? error.message : String(error) }));
-    }
-    this.host.ledger.turnEnded(chat.chatId, turn.turnId);
+    });
+    this.settleStep(chat, turn, "ledger", () => this.host.ledger.turnEnded(chat.chatId, turn.turnId));
     chat.turn = null;
     chat.touch();
-    this.recordLastTurn(chat, turn.turnId, result.outcome);
+    this.settleStep(chat, turn, "last_turn", () => this.recordLastTurn(chat, turn.turnId, result.outcome));
     this.updateShellPreview(chat);
     if (result.outcome !== "cancelled" && this.host.openChatId !== chat.chatId) {
       chat.replyReadySince = this.host.now().toISOString();
     }
-    if (result.outcome === "completed") chat.bus.emit({ type: "turn.completed" }, turn.turnId);
-    else if (result.outcome === "cancelled") chat.bus.emit({ type: "turn.cancelled" }, turn.turnId);
-    else if (failure) {
-      chat.bus.emit({
-        type: "turn.failed",
-        code: failure.code,
-        detail: failure.detail,
-        ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
-        ...(failure.resetsAt !== undefined ? { resetsAt: failure.resetsAt } : {}),
-        messageKept: true,
-        rowId: `${turn.turnId}:f`,
-      }, turn.turnId);
-    }
+    this.settleStep(chat, turn, "emit", () => {
+      if (result.outcome === "completed") chat.bus.emit({ type: "turn.completed" }, turn.turnId);
+      else if (result.outcome === "cancelled") chat.bus.emit({ type: "turn.cancelled" }, turn.turnId);
+      else if (failure) {
+        chat.bus.emit({
+          type: "turn.failed",
+          code: failure.code,
+          detail: failure.detail,
+          ...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
+          ...(failure.resetsAt !== undefined ? { resetsAt: failure.resetsAt } : {}),
+          messageKept: true,
+          rowId: `${turn.turnId}:f`,
+        }, turn.turnId);
+      }
+    });
     turn.finish(result);
-    this.host.sweep();
+    this.settleStep(chat, turn, "sweep", () => this.host.sweep());
     this.startNext(chat);
+  }
+
+  private settleStep(chat: ChatRuntime, turn: RunningTurn, step: string, run: () => void): void {
+    try {
+      run();
+    } catch (error) {
+      console.error(JSON.stringify({ event: `settle_${step}_failed`, chatId: chat.chatId, turnId: turn.turnId, error: error instanceof Error ? error.message : String(error) }));
+    }
   }
 
   private recordLastTurn(chat: ChatRuntime, turnId: string, outcome: "completed" | "cancelled" | "failed"): void {
@@ -429,8 +461,8 @@ export class TurnRunner {
   private updateShellPreview(chat: ChatRuntime): void {
     const meta = chat.meta;
     try {
-      if (this.host.deps.currentChat(meta.botId) !== chat.chatId) return;
-      this.host.deps.setCurrentChat(meta.botId, chat.chatId, meta.preview);
+      if (this.host.current.get(meta.botId) !== chat.chatId) return;
+      this.host.current.set(meta.botId, chat.chatId, meta.preview);
     } catch (error) {
       console.error(JSON.stringify({ event: "shell_preview_failed", chatId: chat.chatId, error: error instanceof Error ? error.message : String(error) }));
     }
@@ -474,7 +506,8 @@ export class TurnRunner {
   }
 
   private dropQueued(chat: ChatRuntime, queued: QueuedTurn, reason: QueuedDropData["reason"], failure?: { code: string; detail: string }): void {
-    if (queued.persisted) {
+    // A message whose turn was already written (its start failed afterwards) is no longer waiting: nothing to drop.
+    if (queued.persisted && chat.ensureLive().rows.isPending(`${queued.turnId}:u`)) {
       const data: QueuedDropData = { turnId: queued.turnId, clientId: queued.clientId, reason };
       chat.appendCustom(UB.queuedDrop, data);
       this.host.ledger.messageDequeued(chat.chatId, queued.clientId);
@@ -490,7 +523,9 @@ export class TurnRunner {
     turn.abortReason = reason;
     this.host.approvals.expireSession(chat.chatId);
     turn.abort.abort();
-    void chat.live?.session?.abort().catch(() => undefined);
+    void chat.live?.session?.abort().catch((error: unknown) => {
+      console.error(JSON.stringify({ event: "abort_failed", chatId: chat.chatId, error: error instanceof Error ? error.message : String(error) }));
+    });
   }
 
   private retry(chat: ChatRuntime, body: TurnBody): SubmitResult {
@@ -530,6 +565,9 @@ export class TurnRunner {
       case "turn_start":
         this.activity(chat, turn, { kind: "thinking" }, true);
         return;
+      case "turn_end":
+        chat.syncRows();
+        return;
       case "message_start": {
         const message = event.message as unknown as { role?: string };
         if (message.role === "user" && turn.origin === "owner" && !turn.userEmitted) {
@@ -547,9 +585,15 @@ export class TurnRunner {
       case "message_update": {
         const inner = event.assistantMessageEvent as { type?: string; delta?: string };
         if (inner.type === "text_delta" && typeof inner.delta === "string" && inner.delta !== "") {
-          if (!turn.streamRowId) turn.streamRowId = `${turn.turnId}:a${turn.assistantCount}`;
           turn.partialText += inner.delta;
-          chat.bus.emit({ type: "message.delta", rowId: turn.streamRowId, delta: inner.delta }, turn.turnId);
+          let delta = inner.delta;
+          if (!turn.streamRowId) {
+            // Whitespace alone makes no row: it is held back and goes out with the first real text.
+            if (turn.partialText.trim() === "") return;
+            turn.streamRowId = `${turn.turnId}:a${turn.assistantCount}`;
+            delta = turn.partialText;
+          }
+          chat.bus.emit({ type: "message.delta", rowId: turn.streamRowId, delta }, turn.turnId);
         } else if (inner.type === "thinking_delta") {
           this.activity(chat, turn, { kind: "thinking" }, true);
         }
@@ -573,6 +617,8 @@ export class TurnRunner {
         return;
       }
       case "tool_execution_start": {
+        // The assistant message that made this call is in the session by now: rows fetched during the tool must have it.
+        chat.syncRows();
         const widget = this.host.deps.widgetForCall(event.toolName, (event.args ?? {}) as Record<string, unknown>);
         chat.calls.set(event.toolCallId, { turnId: turn.turnId, widget: widget ? { connectionId: widget.connectionId, toolName: widget.toolName } : null });
         if (chat.calls.size > 200) chat.calls.delete(chat.calls.keys().next().value as string);

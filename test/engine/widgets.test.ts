@@ -38,6 +38,26 @@ test("the web names the call; the engine adds the connection and tool, and the t
   }
 });
 
+test("review 1: a widget row filed while a later turn runs belongs to the turn that made the call", async () => {
+  const { world, chatId, callId } = await drawn();
+  try {
+    const callTurn = world.engine.host.chat(chatId).calls.get(callId)?.turnId;
+    world.router.enqueue({ kind: "stall", text: "the next turn" });
+    world.send(chatId, "something else");
+    const deadline = Date.now() + 5_000;
+    while (!world.engine.host.chat(chatId).turn?.partialText && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    const running = world.engine.host.chat(chatId).turn?.turnId;
+    assert.ok(running && running !== callTurn, "another turn is running");
+    world.engine.fileRow(DEFAULT_BOT_ID, chatId, { key: `widget:${callId}`, kind: "widget", widgetId: "wdg-5", callId });
+    const row = world.engine.rows(chatId, {}).rows.find((item) => item.kind === "widget");
+    assert.equal(row?.turnId, callTurn);
+    world.router.release();
+    await world.idle(chatId);
+  } finally {
+    await world.close();
+  }
+});
+
 test("after a restart the call is found on the branch, and an unknown call is refused", async () => {
   const { world, chatId, callId } = await drawn();
   try {
