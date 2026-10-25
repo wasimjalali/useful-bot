@@ -126,8 +126,9 @@ struct ChatView: View {
                         if let note = model.threadError ?? model.saveError {
                             ComposerNote(
                                 text: note,
-                                // A rail write that failed has nothing to re-read.
-                                reload: model.threadError != nil ? { model.reloadFromNote() } : nil
+                                // A rail write that failed, or a new chat (a gone
+                                // one lands there), has nothing to re-read.
+                                reload: model.threadError != nil && model.currentChatId != nil ? { model.reloadFromNote() } : nil
                             ) { model.dismissNote() }
                                 .frame(maxWidth: DesignTokens.Space.chatColumnMax)
                                 .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
