@@ -27,6 +27,15 @@ public struct ConnectorTile: Identifiable, Equatable, Sendable {
 
     public var isReady: Bool { mark == .added }
 
+    /// A sign-in expired or was refused: the tile shows Sign in again and the
+    /// sidebar's Connectors row shows a dot.
+    public var needsSignIn: Bool {
+        switch source {
+        case .app(let app): return app.needsSignIn
+        case .server(let server): return server.state.needsSignIn
+        }
+    }
+
     public static func appId(_ slug: String) -> String { "app:\(slug)" }
     public static func serverId(_ id: String) -> String { "server:\(id)" }
 

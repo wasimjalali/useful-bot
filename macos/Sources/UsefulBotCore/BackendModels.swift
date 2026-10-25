@@ -949,6 +949,8 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
     public let connected: Bool
     public let accountId: String?
     public let status: String?
+    /// The connected account's sign-in expired or was revoked.
+    public let needsSignIn: Bool
 
     public var id: String { slug }
 
@@ -962,9 +964,10 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
         connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
         accountId = try? c.decodeIfPresent(String.self, forKey: .accountId)
         status = try? c.decodeIfPresent(String.self, forKey: .status)
+        needsSignIn = (try? c.decode(Bool.self, forKey: .needsSignIn)) ?? false
     }
 
-    public init(slug: String, name: String, logo: String?, noAuth: Bool, ownApp: Bool = false, connected: Bool, accountId: String?, status: String?) {
+    public init(slug: String, name: String, logo: String?, noAuth: Bool, ownApp: Bool = false, connected: Bool, accountId: String?, status: String?, needsSignIn: Bool = false) {
         self.slug = slug
         self.name = name
         self.logo = logo
@@ -973,10 +976,11 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
         self.connected = connected
         self.accountId = accountId
         self.status = status
+        self.needsSignIn = needsSignIn
     }
 
     enum CodingKeys: String, CodingKey {
-        case slug, name, logo, noAuth, ownApp, connected, accountId, status
+        case slug, name, logo, noAuth, ownApp, connected, accountId, status, needsSignIn
     }
 }
 
@@ -1104,16 +1108,25 @@ public enum ImageFetch: Equatable, Sendable {
 
 /// One tool a direct connection offers.
 public struct DirectConnectionTool: Decodable, Equatable, Sendable {
+    /// How the connector risk rules rate the tool. Reads run without asking;
+    /// writes and destructive tools ask first in Auto.
+    public enum Risk: String, Sendable {
+        case read, write, destructive
+    }
+
     public let name: String
     public let description: String?
+    /// A tool without a risk the app knows is shown as a write: it asks first.
+    public let risk: Risk
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
         description = try? c.decodeIfPresent(String.self, forKey: .description)
+        risk = (try? c.decodeIfPresent(String.self, forKey: .risk)).flatMap { $0.flatMap(Risk.init(rawValue:)) } ?? .write
     }
 
-    enum CodingKeys: String, CodingKey { case name, description }
+    enum CodingKeys: String, CodingKey { case name, description, risk }
 }
 
 /// One direct MCP or OpenAPI connection from `/api/connections`. No secrets
