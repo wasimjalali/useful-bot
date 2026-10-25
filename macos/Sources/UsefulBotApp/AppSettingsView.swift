@@ -39,7 +39,7 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// `.settings-modal`: a 220pt nav rail and the scrolling pane, 860x640.
+/// `.settings-modal`: a 244pt nav rail (wide enough for "Instructions and memory" on one line) and the scrolling pane, 860x640.
 struct AppSettingsView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -166,6 +166,7 @@ struct AppSettingsView: View {
                         Text(item.label)
                             .font(.system(size: 13))
                             .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 10)
@@ -185,7 +186,7 @@ struct AppSettingsView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 16)
-        .frame(width: 220)
+        .frame(width: 244)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.C.canvas)
         .overlay(alignment: .trailing) { VerticalHairline() }
@@ -1326,7 +1327,7 @@ private struct EarlierBotsGroup: View {
                         .foregroundStyle(Theme.C.ink)
                         .lineLimit(1)
                     if let count {
-                        Text(count == 1 ? "1 note" : "\(count) notes")
+                        Text(count == 0 ? "No notes" : (count == 1 ? "1 note" : "\(count) notes"))
                             .font(.system(size: 12))
                             .foregroundStyle(Theme.C.inkMuted)
                             .monospacedDigit()
@@ -1342,19 +1343,29 @@ private struct EarlierBotsGroup: View {
                     NativeButton("Remove", kind: .danger, small: true, enabled: !working) { remove(bot) }
                         .accessibilityIdentifier("earlier-remove-confirm-\(bot.id)")
                 } else {
-                    NativeButton(copied == bot.id ? "Copied" : "Copy instructions", kind: .secondary, small: true) {
-                        copy(bot)
+                    NativeButton(kind: .secondary, small: true, action: { copy(bot) }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: copied == bot.id ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 12))
+                            Text(copied == bot.id ? "Copied" : "Copy instructions")
+                        }
+                        .lineLimit(1)
+                        .fixedSize()
                     }
-                    .frame(width: 128)
+                    .frame(width: 168)
                     .accessibilityIdentifier("earlier-copy-\(bot.id)")
-                    NativeButton("Move notes", kind: .secondary, small: true, enabled: !working) { move(bot) }
-                        .frame(width: 92)
+                    NativeButton(kind: .secondary, small: true, enabled: !working, action: { move(bot) }) {
+                        Text("Move notes").lineLimit(1).fixedSize()
+                    }
+                        .frame(width: 108)
                         .opacity(count == 0 ? 0 : 1)
                         .allowsHitTesting(count != 0)
                         .accessibilityHidden(count == 0)
                         .accessibilityIdentifier("earlier-move-\(bot.id)")
-                    NativeButton("Remove", kind: .ghost, small: true, enabled: !working) { confirming = bot.id }
-                        .frame(width: 72)
+                    NativeButton(kind: .ghost, small: true, enabled: !working, action: { confirming = bot.id }) {
+                        Text("Remove").lineLimit(1).fixedSize()
+                    }
+                        .frame(width: 80)
                         .accessibilityIdentifier("earlier-remove-\(bot.id)")
                 }
             }

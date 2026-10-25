@@ -99,15 +99,3 @@ struct BrandAvatarView: View {
             .accessibilityHidden(true)
     }
 }
-
-struct BotAvatarView: View {
-    let bot: ShellBot
-    var size: CGFloat = 24
-
-    var body: some View {
-        // Shape and image fields are retained on the wire for old saved stores,
-        // but are no longer competing visual identities.
-        BotStillFaceView(color: BrandAssets.colorID(for: bot), size: size)
-    }
-}
-

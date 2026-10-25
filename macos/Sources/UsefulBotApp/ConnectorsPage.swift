@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UsefulBotCore
 
-/// What one added tile opens inside the Connectors dialog: who it is, how it
+/// What one added tile opens on the Connectors page: who it is, how it
 /// is doing, what the owner can do with it and the tools it offers.
 private struct ConnectorDetailPage: View {
     @EnvironmentObject private var model: AppModel
@@ -26,9 +26,9 @@ private struct ConnectorDetailPage: View {
 
     private var kindLine: String {
         switch tile.source {
-        case .app(let row):
-            guard let account = row.accountId else { return "App \u{00B7} Composio" }
-            return "App \u{00B7} Composio \u{00B7} connected as \(account)"
+        case .app:
+            // The payload only carries an opaque account id, never a name to show.
+            return "App \u{00B7} Composio"
         case .server(let row): return "\(row.host) \u{00B7} \(row.kind.label)"
         }
     }
@@ -313,7 +313,7 @@ private struct ConnectorDetailPage: View {
         switch tile.source {
         case .app(let row):
             Task {
-                // A failed disconnect leaves the app added; the dialog stays and the error shows behind it.
+                // A failed disconnect leaves the app added; the page stays and the error shows on it.
                 if await model.disconnectConnector(row, search: search) { onBack() }
             }
         case .server(let row):
@@ -332,27 +332,17 @@ private extension ConnectorTile.Source {
     }
 }
 
-private struct ConnectorsPageHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-struct ConnectorsDialog: View {
+/// The Connectors page on the stage: the catalogue of apps and servers, or
+/// the page of one added item.
+struct ConnectorsPage: View {
     @EnvironmentObject private var model: AppModel
-    let onClose: () -> Void
 
     @State private var search = ""
     @State private var selectedTile: String?
-    /// The list page's height with the catalogue showing; the detail page keeps it.
-    @State private var pageHeight: CGFloat?
-    private static let fallbackPageHeight: CGFloat = 600
     @State private var keyDraft = ""
     /// What the owner has typed into the own-app form, by field name. Cleared
-    /// when the form closes; it never outlives the dialog.
+    /// when the form closes; it never outlives the page.
     @State private var ownAppDraft: [String: String] = [:]
-    /// The catalogue scrolls inside a fixed height, so the dialog keeps one
-    /// size while a search narrows or widens the list.
-    private static let listHeight: CGFloat = 470
     @FocusState private var keyFocused: Bool
     @FocusState private var searchFocused: Bool
     @FocusState private var ownAppFocused: String?
@@ -380,19 +370,20 @@ struct ConnectorsDialog: View {
     }
 
     private var connectorsPanel: some View {
-        NativeDialog(maxWidth: 760, ariaLabel: "Connectors", onClose: close, onEscape: {
-            // Esc on a detail page goes back to the list; on the list it closes.
-            if selectedTile != nil { selectedTile = nil } else { close() }
-        }) {
+        Group {
             if let tile = selectedTileValue {
                 ConnectorDetailPage(tile: tile, search: search, onBack: { selectedTile = nil })
                     .id(tile.id)
-                    // The page keeps the list's height, measured once the catalogue has shown.
-                    .frame(height: pageHeight ?? Self.fallbackPageHeight, alignment: .top)
             } else {
                 listPage
             }
         }
+        .padding(.top, 20)
+        .frame(maxWidth: 760, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Theme.C.surface)
+        // Esc on an app page goes back to the list; on the list it does nothing.
+        .onExitCommand { if selectedTile != nil { selectedTile = nil } }
         .task {
             async let direct: Void = model.loadDirectConnections()
             await model.loadConnectors()
@@ -412,6 +403,11 @@ struct ConnectorsDialog: View {
         // Field names repeat across apps (client_id, client_secret), so a
         // draft typed for one app must not prefill the next app's form.
         .onChange(of: model.connectorOwnApp?.toolkit) { _, _ in ownAppDraft = [:] }
+        .onDisappear {
+            model.stopConnectorPoll()
+            model.stopDirectConnectionPoll()
+            model.dismissOwnApp()
+        }
     }
 
     private var listPage: some View {
@@ -455,23 +451,7 @@ struct ConnectorsDialog: View {
                         .padding(.vertical, 20)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: ConnectorsPageHeightKey.self, value: proxy.size.height)
-                }
-            )
-            .onPreferenceChange(ConnectorsPageHeightKey.self) { height in
-                if model.connectors?.hasKey == true, model.connectorOwnApp == nil, height > 0 { pageHeight = height }
-            }
-    }
-
-    private func close() {
-        model.stopConnectorPoll()
-        model.stopDirectConnectionPoll()
-        model.dismissOwnApp()
-        ownAppDraft = [:]
-        onClose()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // MARK: - No key
@@ -595,7 +575,7 @@ struct ConnectorsDialog: View {
                 }
             }
             // A failed load with nothing to list leaves only the error line.
-            .frame(height: payload.toolkits.isEmpty && model.connectorsError != nil && addedTiles.isEmpty ? 0 : Self.listHeight)
+            .frame(maxHeight: payload.toolkits.isEmpty && model.connectorsError != nil && addedTiles.isEmpty ? 0 : .infinity)
             keyFooter(payload)
         }
     }

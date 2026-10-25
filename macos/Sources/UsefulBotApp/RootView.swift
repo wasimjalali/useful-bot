@@ -15,7 +15,6 @@ struct RootView: View {
     @State private var composerIn = true
 
     @State private var windowFullScreen = false
-    @State private var connectorsOpen = false
 
     /// The launch view covers the wait for the local services and nothing
     /// more: once they answer, the app shows, even mid-animation. Holding it
@@ -61,7 +60,6 @@ struct RootView: View {
         }
         .animation(Theme.ease(0.3), value: firstRun.active)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.showChatGptPlanWelcome)
-        .environment(\.starterBotId, firstRun.landingBotId(model.store))
         .environment(\.connectModel, firstRun)
         .environment(\.noModelPreview, firstRun.previewsNoModel)
         .onChange(of: model.phase) { _, phase in
@@ -108,9 +106,7 @@ struct RootView: View {
             launchFinished = true
         }
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.searchOpen)
-        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
-        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.instructionsEditorBotId)
     }
 
     /// Into the first chat: the rail slides in from the left, the stage lifts
@@ -176,7 +172,7 @@ struct RootView: View {
                     },
                     onOpenConnectors: {
                         model.searchOpen = false
-                        connectorsOpen = true
+                        model.stage = .connectors
                     },
                     onOpenUsage: {
                         model.searchOpen = false
@@ -186,21 +182,11 @@ struct RootView: View {
                 .transition(.opacity)
             }
 
-            if connectorsOpen {
-                ConnectorsDialog(onClose: { connectorsOpen = false })
-                    .transition(.opacity)
-            }
-
             if model.appSettingsOpen {
                 AppSettingsView(initialTab: model.appSettingsTab) {
                     model.appSettingsOpen = false
                 }
                 .transition(.opacity)
-            }
-
-            if let botId = model.instructionsEditorBotId {
-                InstructionsEditorView(botId: botId) { model.instructionsEditorBotId = nil }
-                    .transition(.opacity)
             }
 
         }
@@ -211,7 +197,6 @@ struct RootView: View {
             RailView(
                 onSearch: { model.searchOpen = true },
                 onNewChat: { model.newChatOrFocusComposer() },
-                onConnectors: { connectorsOpen = true },
                 onOpenAppSettings: { model.openAppSettings($0) },
                 fullScreen: windowFullScreen
             )
@@ -244,6 +229,7 @@ struct RootView: View {
             case .chat: ChatView()
             case .routines: RoutinesPage()
             case .library: LibraryView()
+            case .connectors: ConnectorsPage()
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.stage, style: .continuous))

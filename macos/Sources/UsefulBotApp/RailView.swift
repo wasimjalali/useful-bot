@@ -10,7 +10,6 @@ struct RailView: View {
 
     var onSearch: () -> Void
     var onNewChat: () -> Void
-    var onConnectors: () -> Void
     var onOpenAppSettings: (AppSettingsTab) -> Void
     /// This window is in full screen, where the traffic lights are hidden.
     var fullScreen = false
@@ -111,10 +110,11 @@ struct RailView: View {
             RailNavRow(
                 icon: "powerplug",
                 title: "Connectors",
-                selected: false,
-                id: "rail-connectors",
-                action: onConnectors
+                selected: model.stage == .connectors,
+                id: "rail-connectors"
             ) {
+                model.stage = .connectors
+            } trailing: {
                 if model.connectorsNeedSignIn {
                     Circle()
                         .fill(Theme.C.warning)

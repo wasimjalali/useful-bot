@@ -92,7 +92,7 @@ struct RoutinesPage: View {
                 ForEach(model.routines) { routine in
                     RoutineRowView(
                         routine: routine,
-                        selected: model.openRoutineId == routine.id && !model.routineCreating,
+                        selected: shownRoutine?.id == routine.id && !model.routineCreating,
                         pageRow: true
                     ) {
                         model.routineCreating = false
@@ -108,16 +108,19 @@ struct RoutinesPage: View {
 
     // MARK: - Detail
 
+    /// The routine the page shows: the one picked, else the first.
+    private var shownRoutine: Routine? { model.openRoutine ?? model.routines.first }
+
     @ViewBuilder
     private var detail: some View {
         if let bot = model.selectedBot {
             if model.routineCreating {
-                RoutineEditorView(bot: bot, routine: nil, pageMode: true)
-            } else if let routine = model.openRoutine {
-                RoutineEditorView(bot: bot, routine: routine, pageMode: true)
+                RoutineEditorView(bot: bot, routine: nil)
+            } else if let routine = shownRoutine {
+                RoutineEditorView(bot: bot, routine: routine)
             } else {
                 VStack {
-                    Text(model.routines.isEmpty ? "No routines yet" : "Select a routine")
+                    Text("No routines yet")
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.C.inkMuted)
                 }
@@ -238,9 +241,6 @@ struct RoutineEditorView: View {
     @EnvironmentObject private var model: AppModel
     let bot: ShellBot
     let routine: Routine?
-    /// On the Routines page, which has its own list and header: no back or
-    /// collapse bar.
-    var pageMode = false
 
     @State private var name = ""
     @State private var instruction = ""
@@ -261,16 +261,13 @@ struct RoutineEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !pageMode { toolbar }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if pageMode {
-                        Text(isNew ? "New routine" : (routine?.name ?? ""))
-                            .font(.system(size: DesignTokens.FontSize.settingsTitle, weight: .semibold))
-                            .foregroundStyle(Theme.C.ink)
-                            .lineLimit(1)
-                            .padding(.top, 4)
-                    }
+                    Text(isNew ? "New routine" : (routine?.name ?? ""))
+                        .font(.system(size: DesignTokens.FontSize.settingsTitle, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                        .padding(.top, 4)
                     if let routine {
                         actionsRow(routine)
                     }
@@ -299,12 +296,10 @@ struct RoutineEditorView: View {
                                 model.createRoutine(name: trimmedName, instruction: trimmedInstruction, schedules: schedules)
                             }
                             .accessibilityIdentifier("routine-save")
-                            if pageMode {
-                                NativeButton("Cancel", kind: .secondary, small: true) {
-                                    model.closeRoutineDetail()
-                                }
-                                .accessibilityIdentifier("routine-cancel")
+                            NativeButton("Cancel", kind: .secondary, small: true) {
+                                model.closeRoutineDetail()
                             }
+                            .accessibilityIdentifier("routine-cancel")
                         }
                     }
                     if let error = model.routinesError {
@@ -353,35 +348,6 @@ struct RoutineEditorView: View {
                 commitInstruction()
             }
         }
-    }
-
-    // MARK: Chrome
-
-    private var toolbar: some View {
-        HStack(spacing: 2) {
-            NativeIconButton(systemImage: "chevron.left", size: 32, iconSize: 15) {
-                // Commit before leaving: an edit still focused would be lost.
-                commitName()
-                commitInstruction()
-                model.closeRoutineDetail()
-            }
-            .help("Back to routines")
-            .accessibilityLabel("Back to routines")
-            .accessibilityIdentifier("routine-back")
-            Text(isNew ? "New routine" : "Routine")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.C.ink)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            NativeIconButton(systemImage: "chevron.right.2", size: 32, iconSize: 15) {
-                // Also reached from the settings pane, which hosts this editor.
-                model.pane = .none
-            }
-            .help("Collapse pane")
-            .accessibilityLabel("Collapse pane")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
     }
 
     private func actionsRow(_ routine: Routine) -> some View {
