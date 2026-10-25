@@ -9,7 +9,7 @@ router/.env
 secrets/
 *.pem
 
-# eve runtime state and build output
+# build output (.eve/ is left in pre-Pi checkouts; PR 4 drops the line)
 .eve/
 dist/
 router/dist/

@@ -18,7 +18,6 @@ import { completeUpstream, outputCapFor, resolveFor } from "./upstreams/opencode
 import { generateImage, IMAGE_USAGE_TOKENS } from "./upstreams/images.ts";
 import { readCapped } from "./read-capped.ts";
 import { usageFromPayload, usageFromSseBlock, type ObservedUsage } from "../../shared/usage-parse.ts";
-import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
 import { requestSignal } from "./request-signal.ts";
 import { createThinkStream, flushThinkStream, isToolImageCarrier, noteInlineThink, splitThinkBlock, splitThinkCompletion } from "./inline-think.ts";
 import { REASONING_TEXT_FIELDS } from "../../shared/inline-think.ts";
@@ -400,9 +399,8 @@ function validateMessages(messages: unknown[]): void {
 }
 
 /**
- * Sampling knobs the router accepts and throws away. eve's compaction call
- * sends `temperature: 0`, and eve ends the whole session, not the turn, on
- * any 4xx from here: refusing it retired every chat that grew past its
+ * Sampling knobs the router accepts and throws away. A compaction call sends
+ * `temperature: 0`, and refusing it would fail every chat that grew past its
  * model's window. Neither key moves spend, effort or where the call goes,
  * and several upstream models refuse them, so they never travel on.
  */
@@ -808,7 +806,6 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             const reader = upstream.response.body.getReader();
             const decoder = new TextDecoder();
             let leftover = "";
-            const toolSeen = { toolCall: false };
             // A think block written into the answer moves to the reasoning
             // field on the way through (see inline-think.ts).
             const thinkStream = createThinkStream(() => learnInlineThink(requestId, upstream.providerId, upstream.model));
@@ -846,7 +843,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                   });
                 }
                 // Whole blocks are relayed, not raw chunks, so a block can be
-                // repaired on its way through (see tool-finish.ts); a partial
+                // rewritten on its way through (see inline-think.ts); a partial
                 // block waits in `leftover` for the rest of it.
                 let out = "";
                 for (const part of parts) {
@@ -860,7 +857,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                   }
                   const usage = usageFromSseBlock(part);
                   if (usage) record(usage);
-                  out += `${splitThinkBlock(settleStreamBlock(part, toolSeen), thinkStream)}\n\n`;
+                  out += `${splitThinkBlock(part, thinkStream)}\n\n`;
                 }
                 if (!firstEvent) {
                   firstEvent = true;
@@ -896,7 +893,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (leftover.trim()) {
               const usage = usageFromSseBlock(leftover);
               if (usage) record(usage);
-              tail = `${splitThinkBlock(settleStreamBlock(leftover, toolSeen), thinkStream)}\n\n`;
+              tail = `${splitThinkBlock(leftover, thinkStream)}\n\n`;
             }
             // Text still held back by the think split, when the stream ended
             // with neither a finish reason nor [DONE] to release it.
@@ -933,7 +930,6 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             (json as { model: string }).model = parsed.model;
           }
           record(usageFromPayload(json));
-          settleCompletion(json);
           if (splitThinkCompletion(json)) learnInlineThink(requestId, upstream.providerId, upstream.model);
           send(res, upstream.response.status, json, outHeaders);
           usageOutcome = "ok";

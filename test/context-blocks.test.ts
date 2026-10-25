@@ -160,7 +160,7 @@ test("7 notes show 6 bodies and the 7th as a title line", () => {
   const cards = Array.from({ length: 7 }, (_, i) => note(i + 1));
   const text = renderNotesBlock(cards);
   assert.equal(text.match(/^- Title \d \(/gm)?.length, 6);
-  assert.ok(text.includes("Other notes (open with memory_read):\n- note-"));
+  assert.ok(text.includes("Other notes (open with memory read):\n- note-"));
   assert.equal(text.includes("more:"), false);
   // The oldest note (day 01) is the one demoted to a title.
   assert.ok(text.includes("- note-001: Title 1"));
@@ -171,16 +171,16 @@ test("57 notes show 6 bodies, 50 titles and a count of 1", () => {
   const text = renderNotesBlock(cards);
   assert.equal(text.match(/^- Title \d+ \(/gm)?.length, 6);
   assert.equal(text.match(/^- note-\d+: /gm)?.length, 50);
-  assert.ok(text.includes("\n1 more: use memory_search.\n"));
+  assert.ok(text.includes("\n1 more: use memory search.\n"));
   assert.ok(text.includes("- Title 57 ("));
 });
 
 test("a body over 1,200 characters is cut with the open-it pointer", () => {
   const text = renderNotesBlock([note(1, { body: "b".repeat(1500) })]);
-  assert.ok(text.includes(`${"b".repeat(1200)}... open with memory_read`));
+  assert.ok(text.includes(`${"b".repeat(1200)}... open with memory read`));
   assert.equal(text.includes("b".repeat(1201)), false);
   const exact = renderNotesBlock([note(1, { body: "b".repeat(1200) })]);
-  assert.equal(exact.includes("open with memory_read"), false);
+  assert.equal(exact.includes("open with memory read"), false);
 });
 
 test("the block never passes 6,000 characters, and bodies fall back to titles first", () => {
@@ -198,7 +198,7 @@ test("a long list of long titles is cut to titles and a count within the cap", (
   const cards = Array.from({ length: 200 }, (_, i) => note(i + 1, { title: "t".repeat(80), id: `${"i".repeat(70)}-${i}` }));
   const text = renderNotesBlock(cards);
   assert.ok(text.length <= NOTES_BLOCK_CAP);
-  assert.ok(/\n\d+ more: use memory_search\.\n/.test(text));
+  assert.ok(/\n\d+ more: use memory search\.\n/.test(text));
 });
 
 test("a note written after outside content shows an id-only line with the marker, and still takes a full slot", () => {
@@ -207,7 +207,7 @@ test("a note written after outside content shows an id-only line with the marker
     note(2, { source: "model", updatedAt: "2026-08-01T00:00:00.000Z" }),
     note(3, { source: "owner", updatedAt: "2026-08-02T00:00:00.000Z" }),
   ]);
-  assert.ok(text.includes("- note-001: (written after reading outside content; open with memory_read only if you need it)"));
+  assert.ok(text.includes("- note-001: (written after reading outside content; open with memory read only if you need it)"));
   assert.equal(text.includes("Body 1"), false, "no body for an outside note");
   assert.equal(text.match(/written after reading outside content/g)?.length, 1);
   assert.ok(text.includes("Body 2") && text.includes("Body 3"), "clean notes keep their bodies");
@@ -257,8 +257,8 @@ test("\"N more\" counts against the live total when only a page of notes is pass
   const cards = Array.from({ length: 56 }, (_, index): NoteCard => ({
     id: `n${String(index).padStart(2, "0")}`, title: `T${index}`, body: "b", updatedAt: new Date(Date.UTC(2026, 9, 1, 0, index)).toISOString(),
   }));
-  assert.match(renderNotesBlock(cards, 90), /34 more: use memory_search\./);
-  assert.doesNotMatch(renderNotesBlock(cards), /more: use memory_search/);
+  assert.match(renderNotesBlock(cards, 90), /34 more: use memory search\./);
+  assert.doesNotMatch(renderNotesBlock(cards), /more: use memory search/);
 });
 
 test("an outside note in the title list or demoted by the cap shows its id only, never its title", () => {
@@ -272,7 +272,7 @@ test("an outside note in the title list or demoted by the cap shows its id only,
   // Sorted newest first, s03 is the seventh.
   const text = renderNotesBlock(seventh);
   assert.equal(text.includes(CANARY), false);
-  assert.ok(text.includes("- s03: (written after reading outside content; open with memory_read only if you need it)"));
+  assert.ok(text.includes("- s03: (written after reading outside content; open with memory read only if you need it)"));
   // Demoted from a full slot by the 6,000 cap: bodies are big, so the sixth newest (the first
   // full slot the cap removes) falls back to the title list. b2 is the sixth newest of eight.
   const big = Array.from({ length: 8 }, (_, index): NoteCard => ({
@@ -281,7 +281,7 @@ test("an outside note in the title list or demoted by the cap shows its id only,
   }));
   const demoted = renderNotesBlock(big);
   assert.equal(demoted.includes(CANARY), false);
-  assert.ok(demoted.includes("Other notes (open with memory_read):"), "the cap really demoted notes to titles");
+  assert.ok(demoted.includes("Other notes (open with memory read):"), "the cap really demoted notes to titles");
   const line = demoted.indexOf("- b2: (written after reading outside content");
-  assert.ok(line > demoted.indexOf("Other notes (open with memory_read):"), "the demoted outside note sits in the title list");
+  assert.ok(line > demoted.indexOf("Other notes (open with memory read):"), "the demoted outside note sits in the title list");
 });

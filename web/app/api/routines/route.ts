@@ -3,7 +3,6 @@ import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { createRoutine, deleteRoutine, listRoutines, readRoutine } from "../../../../shared/routines-store.ts";
 import { readShell } from "../../../../shared/shell-io.ts";
-import { routineCreateRefusal } from "../../../lib/archived-bots";
 
 export const runtime = "nodejs";
 
@@ -56,8 +55,9 @@ export async function POST(request: Request) {
     }
     // A routine that names no live bot would never run and would keep firing
     // nothing after the bot is gone.
-    const refusal = routineCreateRefusal(readShell().bots, body.botId);
-    if (refusal) return NextResponse.json({ ok: false, error: refusal.error }, { status: refusal.status });
+    if (!readShell().bots.some((bot) => bot.id === body.botId)) {
+      return NextResponse.json({ ok: false, error: "bot_missing" }, { status: 400 });
+    }
     const routine = createRoutine({
       botId: body.botId,
       name: typeof body.name === "string" ? body.name : "",

@@ -4,22 +4,18 @@ import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { runtimeConfig } from "../../../lib/auth";
 import {
-  appendAgentEvent,
   claimProposal,
-  clearThread,
   readProposal,
   reopenProposal,
   threadIdFor,
   type Proposal,
 } from "../../../../shared/agent-store.ts";
-import { syncSessionWorkspace } from "../../../lib/agent-exec";
+import { engineNoteRow } from "../../../../shared/engine-client.ts";
+import { restampWorkspaceGrants } from "../../../lib/agent-exec";
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
-import { moveEarlierBotNotes, removeEarlierBot, revokeGrantsFor } from "../../../lib/earlier-bots";
 import { applyShellAction, DESCRIPTION_MAX, isGrantableRootPath, isShellActionType, type ShellAction } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
-import { readProviderStore } from "../../../../shared/providers.ts";
-import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { webOrigin } from "../../../../shared/stack.ts";
 
 export async function GET(request: Request) {
@@ -30,17 +26,6 @@ export async function GET(request: Request) {
   } catch (err) {
     return NextResponse.json({ ok: false, error: errorCode(err, "shell_unavailable") }, { status: 400 });
   }
-}
-
-/**
- * Side effects the UI asks for alongside a shell action: clearing a thread
- * drops that bot's agent transcript with its eve session.
- *
- * Moving an earlier bot's notes and removing the bot are not here: see
- * web/lib/earlier-bots.ts.
- */
-function applyFollowUp(action: ShellAction | undefined): void {
-  if (action?.type === "clearThread") clearThread(action.botId);
 }
 
 /**
@@ -74,15 +59,15 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
   }
 }
 
-/** Note that the proposal was answered, on the thread that raised it. */
-function noteProposal(claimed: Proposal, action: ShellAction | undefined): void {
+/** Note that the proposal was answered, in the bot's current chat. The key keeps a repeat from writing it twice. */
+async function noteProposal(claimed: Proposal, action: ShellAction | undefined): Promise<void> {
   const fallback = action && "botId" in action && typeof action.botId === "string"
     ? threadIdFor(action.botId)
     : "";
-  const threadId = claimed.threadId || fallback;
-  if (!threadId) return;
+  const botId = claimed.threadId || fallback;
+  if (!botId) return;
   const label = claimed.status === "confirmed" ? "Confirmed" : "Dismissed";
-  appendAgentEvent(threadId, { kind: "note", text: `${label} ${claimed.kind}.` });
+  await engineNoteRow(botId, `proposal:${claimed.id}`, `${label} ${claimed.kind}.`);
 }
 
 export async function PUT(request: Request) {
@@ -105,13 +90,10 @@ export async function PUT(request: Request) {
     if (!body.action && !body.proposalId) {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
-    // An action this build does not know (a removed one such as createGroup,
-    // pin or sendToBot included) is refused before anything else runs.
+    // An action this build does not know is refused before anything else runs.
     if (body.action && !isShellActionType((body.action as { type?: unknown }).type)) {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
-    const current = readShell();
-
     // A connect card confirms by starting the hosted sign-in, not by claiming:
     // the card stays pending (phase waiting) until the tick sees the account
     // active and hands the bot its resume. The URL goes back once, to be
@@ -161,21 +143,10 @@ export async function PUT(request: Request) {
           "proposal_missing", "proposal_settled", "already_connected", "proposal_expired",
           "authorize_in_flight", "secret_invalid", "oauth_no_as", "oauth_no_dcr",
           "oauth_register", "url_invalid", "url_http", "url_host", "url_protocol", "url_credentials",
-          "url_resolved", "url_resolve", "tool_budget_exceeded", "tool_count_unknown",
-          "tool_name_too_long",
+          "url_resolved", "url_resolve",
         ]);
         return NextResponse.json({ ok: false, error: known.has(code) ? code : "connect_failed" }, { status: 400 });
       }
-    }
-
-    // Earlier bots: Move notes, and Remove. Both are validated before they touch anything.
-    if (body.action?.type === "moveNotes") {
-      const { store, moved } = moveEarlierBotNotes(body.action.fromBotId);
-      return NextResponse.json({ ok: true, store, queued: 0, moved });
-    }
-    if (body.action?.type === "removeArchivedBot") {
-      const { store, detachError } = removeEarlierBot(body.action.botId);
-      return NextResponse.json({ ok: true, store, queued: 0, detachError });
     }
 
     // The one server-side phone ban (decision F2/S5): a phone session may
@@ -253,63 +224,22 @@ export async function PUT(request: Request) {
     const action = body.action;
     const next = action
       ? updateShell((shell) => applyShellAction(shell, action).store)
-      : current;
-    // Revoking here, not only at the next turn stamp. `syncSessionWorkspace`
-    // runs when a turn starts, so without this a detach leaves the capability
-    // live for the rest of an in-flight turn and for any approval card still
-    // open — the owner's decision has to take effect when they make it.
-    // The selection the running turn was stamped with, read before the
-    // revoke below can delete the grant: a permission or folder change must
-    // not move an in-flight turn's model (see syncSessionWorkspace).
-    const priorSelection = (action?.type === "setPermission" || action?.type === "setWorkspace")
-      ? (() => {
-        const sessionId = next.bots.find((item) => item.id === action.botId)?.sessionId;
-        return sessionId ? readSessionGrant(sessionId)?.selection : undefined;
-      })()
-      : undefined;
-    revokeGrantsFor(action, current, next);
+      : readShell();
     // A permission or folder change takes effect now, not at the next turn:
     // the tools re-read the grant before spending a card, so a card raised
-    // under Auto must see the Read only the owner just picked.
+    // under Auto must see the Read only the owner just picked. A detach is the
+    // same write with no folder, so the capability follows the owner's decision
+    // when they make it. The selection the running turn was stamped with is
+    // kept, so the change cannot move an in-flight turn's model.
     if (action?.type === "setPermission" || action?.type === "setWorkspace") {
-      const bot = next.bots.find((item) => item.id === action.botId);
-      if (bot?.sessionId) {
-        try {
-          // Providers store first, then the roster, the order the turn
-          // freeze uses: a per-bot pick pins this bot before it moves the
-          // default, so a store read first never pairs with an older roster.
-          const store = readProviderStore();
-          const fresh = readShell().bots.find((item) => item.id === bot.id);
-          if (!fresh) {
-            // Deleted in the gap: revoke rather than stamp the stale bot
-            // (as syncSessionWorkspaceFresh does).
-            removeSessionGrant(bot.sessionId);
-          } else {
-            syncSessionWorkspace(bot.sessionId, fresh, store, { keptSelection: priorSelection });
-          }
-        } catch {
-          // The roster action stood but the grant still says the old
-          // permission, and a card already open re-reads that grant before
-          // it spends. No grant at all reads as Read only, so revoking is
-          // the fail-closed answer; the next turn's stamp restores it.
-          try {
-            removeSessionGrant(bot.sessionId);
-          } catch {
-            /* a store locked twice in a row: the next turn's stamp settles it */
-          }
-        }
-      }
-    }
-    try {
-      applyFollowUp(action);
-    } catch {
-      /* the shell action already landed; the transcript clear is best effort */
+      restampWorkspaceGrants(action.botId);
     }
     if (claimed) {
       try {
-        noteProposal(claimed, body.action);
-      } catch {
-        /* the transcript note is best effort */
+        await noteProposal(claimed, body.action);
+      } catch (err) {
+        // The card is answered either way; only the line in the chat is missing.
+        console.error("[useful-bot] proposal note not written", err instanceof Error ? err.message : err);
       }
     }
     return NextResponse.json({ ok: true, store: next, queued: 0, detachError: null });
