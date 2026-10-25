@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { UB } from "../agent/engine/protocol.ts";
 import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
-import { enginePort, LOOPBACK } from "../shared/stack.ts";
+import { enginePort, isDevStateFolder, LOOPBACK } from "../shared/stack.ts";
 
 const BASE_TIME = Date.parse("2026-10-01T09:00:00.000Z");
 const USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -241,10 +241,9 @@ function listening(port) {
 export async function assertSafeToWrite(env = process.env) {
   if (env.UB_STACK !== "dev") throw new Error("refusing: UB_STACK must be dev (the fixtures belong to the dev stack only)");
   if (!env.UB_STATE_ROOT) throw new Error("refusing: UB_STATE_ROOT is not set");
-  // The same folder rule the dev stack's own check uses: a dev state root is a
-  // `.useful-bot-<name>` folder, never the daily `.useful-bot`.
-  if (!/^\.useful-bot-[a-z0-9]+(-[a-z0-9]+)*$/.test(path.basename(path.resolve(env.UB_STATE_ROOT)))) {
-    throw new Error(`refusing: UB_STATE_ROOT must be a .useful-bot-<name> dev folder, got ${env.UB_STATE_ROOT}`);
+  // The same folder rule the dev stack's own check uses: never the daily state folder.
+  if (!isDevStateFolder(env.UB_STATE_ROOT)) {
+    throw new Error(`refusing: UB_STATE_ROOT must be a dev state folder, got ${env.UB_STATE_ROOT}`);
   }
   const port = enginePort(env);
   if (await listening(port)) throw new Error(`refusing: the engine is listening on ${LOOPBACK}:${port}; quit Useful Bot Dev first`);

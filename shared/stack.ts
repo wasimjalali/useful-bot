@@ -77,6 +77,11 @@ const DEV_STATE_NAME = /^\.useful-bot-[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const SERVICE_TAIL = /^[a-z0-9][a-z0-9._-]{0,120}$/;
 
+/** True when a folder's name is a dev state root's (`.useful-bot-<name>`), never the daily one. */
+export function isDevStateFolder(path: string): boolean {
+  return DEV_STATE_NAME.test(basename(resolve(path)));
+}
+
 export class StackConfigError extends Error {
   readonly problems: string[];
   constructor(problems: string[]) {

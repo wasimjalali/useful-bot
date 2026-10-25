@@ -74,8 +74,8 @@ test("the writer refuses off the dev stack, without a state root and while the e
   await assert.rejects(assertSafeToWrite({ UB_STATE_ROOT: "/x" }), /UB_STACK must be dev/);
   await assert.rejects(assertSafeToWrite({ UB_STACK: "daily", UB_STATE_ROOT: "/x" }), /UB_STACK must be dev/);
   await assert.rejects(assertSafeToWrite({ UB_STACK: "dev" }), /UB_STATE_ROOT/);
-  await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/Users/someone/.useful-bot" }), /dev folder/);
-  await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/x" }), /dev folder/);
+  await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/Users/someone/.useful-bot" }), /dev state folder/);
+  await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/x" }), /dev state folder/);
 
   const server = createServer();
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
