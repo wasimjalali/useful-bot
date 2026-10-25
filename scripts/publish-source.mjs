@@ -9,7 +9,7 @@
 // --push it stops there, so the result can be read first; with it, the branch
 // is pushed and a PR opened, to merge like any other change.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,12 @@ const EXCLUDE = [
   // Design mockups show the owner's own connected accounts.
   /^docs\/plan\/pi-engine\/mockups\//,
 ];
+
+// The public repo's own CI, added there: the snapshot never replaces it.
+const PUBLIC_ONLY = ".github/workflows";
+if (execFileSync("git", ["ls-files", PUBLIC_ONLY], { cwd: ROOT, encoding: "utf8" }).trim()) {
+  throw new Error(`${PUBLIC_ONLY} is tracked here too: decide which copy the public repo keeps`);
+}
 
 const { values } = parseArgs({
   options: {
@@ -69,8 +75,19 @@ if (secrets.length) throw new Error(`refusing to publish files that look like se
 const stage = mkdtempSync(path.join(tmpdir(), "ub-source-"));
 try {
   for (const file of files) cpSync(path.join(ROOT, file), path.join(stage, file), { verbatimSymlinks: true });
-  // The public tree is exactly the stage: everything else in the clone goes.
-  for (const entry of readdirSync(clone)) if (entry !== ".git") rmSync(path.join(clone, entry), { recursive: true, force: true });
+  // The public tree is exactly the stage, except the public repo's own CI.
+  for (const entry of readdirSync(clone)) {
+    if (entry === ".git") continue;
+    if (entry === ".github") {
+      if (!lstatSync(path.join(clone, entry)).isDirectory()) throw new Error(`${clone}/.github is not a plain folder`);
+      for (const inner of readdirSync(path.join(clone, entry))) {
+        // APFS ignores case, so compare the way it does.
+        if (path.join(entry, inner).toLowerCase() !== PUBLIC_ONLY) rmSync(path.join(clone, entry, inner), { recursive: true, force: true });
+      }
+      continue;
+    }
+    rmSync(path.join(clone, entry), { recursive: true, force: true });
+  }
   cpSync(stage, clone, { recursive: true, verbatimSymlinks: true });
 } finally {
   rmSync(stage, { recursive: true, force: true });
