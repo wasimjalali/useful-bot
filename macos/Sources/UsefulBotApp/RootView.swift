@@ -193,14 +193,19 @@ struct RootView: View {
         .alert(
             "Leave this chat?",
             isPresented: Binding(
-                get: { model.leaveChatTarget != nil },
-                set: { if !$0 { model.leaveChatTarget = nil } }
-            ),
-            presenting: model.leaveChatTarget
-        ) { entry in
-            Button("Leave", role: .destructive) { model.openNow(entry) }
+                get: { model.leaveChatTarget != nil || model.leaveForNewChat },
+                set: { if !$0 { model.leaveChatTarget = nil; model.leaveForNewChat = false } }
+            )
+        ) {
+            Button("Leave", role: .destructive) {
+                if let entry = model.leaveChatTarget {
+                    model.openNow(entry)
+                } else if model.leaveForNewChat {
+                    model.startNewChatNow()
+                }
+            }
             Button("Cancel", role: .cancel) {}
-        } message: { _ in
+        } message: {
             Text("The reply in progress stops.")
         }
     }

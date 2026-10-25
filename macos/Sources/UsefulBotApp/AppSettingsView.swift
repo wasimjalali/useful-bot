@@ -1310,16 +1310,22 @@ private struct EarlierBotsGroup: View {
                     }
             }
             ForEach(Array(unfinished.enumerated()), id: \.element.id) { index, removed in
-                Text("Removed \(removed.name), but some of its data is still being cleared up.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.danger)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .overlay(alignment: .bottom) {
-                        if index < unfinished.count - 1 { Hairline().padding(.horizontal, 12) }
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Removed \(removed.name), but couldn't clear all of its routines and history.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    NativeIconButton(systemImage: "xmark", size: 20, iconSize: 10) {
+                        model.earlierBotsUnfinished.removeAll { $0.id == removed.id }
                     }
-                    .accessibilityIdentifier("earlier-unfinished-\(removed.id)")
+                    .accessibilityLabel("Dismiss")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .overlay(alignment: .bottom) {
+                    if index < unfinished.count - 1 { Hairline().padding(.horizontal, 12) }
+                }
+                .accessibilityIdentifier("earlier-unfinished-\(removed.id)")
             }
         }
         .background(Theme.C.sunken)
@@ -1327,8 +1333,6 @@ private struct EarlierBotsGroup: View {
         .task(id: bots.map(\.id)) {
             for bot in bots { await loadCount(bot.id) }
         }
-        // The notes belong to this visit to Settings.
-        .onDisappear { model.earlierBotsUnfinished = [] }
     }
 
     private func row(_ bot: ShellBot) -> some View {

@@ -352,9 +352,25 @@ final class AppModel: ObservableObject {
     @Published var replyQuotes: [String: ReplyQuote] = [:]
     /// Bumped when Reply wants the caret in the composer.
     @Published private(set) var composerFocusToken: UInt64 = 0
+    /// A focus was asked for and no composer has taken it yet. A composer that
+    /// mounts afterwards (New chat from a page) reads it and takes the caret.
+    private var composerFocusPending = false
+
+    /// Ask for the caret in the composer, whether it is on screen yet or not.
+    func requestComposerFocus() {
+        composerFocusToken &+= 1
+        composerFocusPending = true
+    }
+
+    func takeComposerFocusPending() -> Bool {
+        defer { composerFocusPending = false }
+        return composerFocusPending
+    }
     /// A chat the owner picked while a reply is coming in; the root view asks
     /// "Leave this chat?" before it opens.
     @Published var leaveChatTarget: ChatEntry?
+    /// The same ask for a new chat (⌘N, the pencil, the palette) while a reply is coming in.
+    @Published var leaveForNewChat = false
     /// The composer's text view is the focused control (set by the composer).
     @Published var composerFocused = false
 
@@ -2394,7 +2410,7 @@ final class AppModel: ObservableObject {
     func fillDraft(_ text: String) {
         draft = text
         draftWriteToken &+= 1
-        composerFocusToken &+= 1
+        requestComposerFocus()
     }
 
     /// Reply to a bot message: the chip goes above the composer of this chat
@@ -2404,7 +2420,7 @@ final class AppModel: ObservableObject {
         // before a selection is stored.
         guard botId == selectedBot?.id else { return }
         replyQuotes[botId] = ReplyQuote(botId: botId, text: text)
-        composerFocusToken &+= 1
+        requestComposerFocus()
     }
 
     /// Clear the composer only for the text and files this send owned, so
@@ -3760,11 +3776,12 @@ final class AppModel: ObservableObject {
     /// True when the disconnect call itself went through, whatever the reload after it did.
     @discardableResult
     func disconnectConnector(_ row: ConnectorToolkit, search: String) async -> Bool {
-        guard let accountId = row.accountId else { return false }
+        let accountIds = row.accountIds.isEmpty ? (row.accountId.map { [$0] } ?? []) : row.accountIds
+        guard !accountIds.isEmpty else { return false }
         connectorBusy = row.slug
         connectorsError = nil
         do {
-            try await client.disconnectConnector(accountId: accountId)
+            for accountId in accountIds { try await client.disconnectConnector(accountId: accountId) }
         } catch {
             connectorsError = "Could not disconnect \(row.name)."
             connectorBusy = nil
@@ -4966,6 +4983,7 @@ final class AppModel: ObservableObject {
         routines = []
         routinesError = nil
         routineBusy = []
+        queuedRoutineEdits = [:]
         // The Routines page and the sidebar badge would sit empty until the next poll.
         if let botId = selectedBotId {
             Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
@@ -5016,6 +5034,18 @@ final class AppModel: ObservableObject {
             // Re-read rather than trusting the local copy: a scheduled run may
             // have appended history while this write was in flight.
             if let botId, botId == self.selectedBotId { await self.loadRoutines(botId: botId) }
+            // An edit made while this write ran goes out now, unless the routine
+            // is gone (this write deleted it, or it was deleted elsewhere).
+            if let id, let queued = self.queuedRoutineEdits.removeValue(forKey: id),
+               self.routines.contains(where: { $0.id == id }) {
+                self.updateRoutine(
+                    id: id,
+                    name: queued.name,
+                    instruction: queued.instruction,
+                    schedules: queued.schedules,
+                    active: queued.active
+                )
+            }
         }
     }
 
@@ -5037,6 +5067,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Edits made while a write on the same routine was in flight, merged field
+    /// by field (the newer value wins) and sent when that write lands.
+    private struct QueuedRoutineEdit {
+        var name: String?
+        var instruction: String?
+        var schedules: [RoutineSchedule]?
+        var active: Bool?
+    }
+    private var queuedRoutineEdits: [String: QueuedRoutineEdit] = [:]
+
     func updateRoutine(
         id: String,
         name: String? = nil,
@@ -5044,6 +5084,15 @@ final class AppModel: ObservableObject {
         schedules: [RoutineSchedule]? = nil,
         active: Bool? = nil
     ) {
+        if routineBusy.contains(id) {
+            var queued = queuedRoutineEdits[id] ?? QueuedRoutineEdit()
+            if let name { queued.name = name }
+            if let instruction { queued.instruction = instruction }
+            if let schedules { queued.schedules = schedules }
+            if let active { queued.active = active }
+            queuedRoutineEdits[id] = queued
+            return
+        }
         routineWrite(id: id) { client in
             try await client.updateRoutine(
                 id: id,
@@ -5129,11 +5178,19 @@ final class AppModel: ObservableObject {
     func newChatOrFocusComposer() {
         if transcriptReady, !hasThreadContent, !pending {
             stage = .chat
-            composerFocusToken &+= 1
+            requestComposerFocus()
+        } else if pending {
+            // A new chat stops the reply in progress: ask first, as open() does.
+            leaveForNewChat = true
         } else {
-            startNewChat(botId: Threads.defaultBotId)
-            composerFocusToken &+= 1
+            startNewChatNow()
         }
+    }
+
+    /// The alert's Leave for a new chat, or the new chat itself when nothing is running.
+    func startNewChatNow() {
+        startNewChat(botId: Threads.defaultBotId)
+        requestComposerFocus()
     }
 
     // MARK: - Composer attachments

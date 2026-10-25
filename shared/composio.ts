@@ -30,6 +30,8 @@ export interface ConnectorToolkit {
   ownApp: boolean;
   connected: boolean;
   accountId: string | null;
+  /** Every account behind the row; a lapsed app can have several, and Disconnect removes them all. */
+  accountIds: string[];
   status: string | null;
   /** The account is connected but its sign-in is no longer valid; the owner has to sign in again. */
   needsSignIn: boolean;
@@ -169,6 +171,8 @@ export interface ConnectorPage {
   rows: ConnectorToolkit[];
   total: number;
   nextOffset: number | null;
+  /** The lapsed-account lookup failed, so the page lists no sign-in-again rows. Set only then. */
+  lapsedLookupFailed?: true;
 }
 
 export type ComposioFactory = (apiKey: string) => ComposioLike;
@@ -392,11 +396,14 @@ type ToolkitItem = Awaited<ReturnType<ComposioSessionLike["toolkits"]>>["items"]
  * it, and it does not change between two keystrokes.
  */
 const CONNECTED_TTL_MS = 2000;
-let connectedMemo: { at: number; sessionId: string; rows: ConnectorToolkit[] } | null = null;
+let connectedMemo: { at: number; sessionId: string; rows: ConnectorToolkit[]; lapsedLookupFailed: boolean } | null = null;
 
-async function connectedRows(session: ComposioSessionLike, path: string): Promise<ConnectorToolkit[]> {
+async function connectedRows(
+  session: ComposioSessionLike,
+  path: string,
+): Promise<{ rows: ConnectorToolkit[]; lapsedLookupFailed: boolean }> {
   if (connectedMemo && connectedMemo.sessionId === session.sessionId && Date.now() - connectedMemo.at < CONNECTED_TTL_MS) {
-    return connectedMemo.rows;
+    return connectedMemo;
   }
   const rows: ConnectorToolkit[] = [];
   let cursor: string | undefined;
@@ -407,14 +414,21 @@ async function connectedRows(session: ComposioSessionLike, path: string): Promis
     if (!cursor || connected.items.length === 0) break;
   }
   const connectedSlugs = rows.filter((row) => row.connected).map((row) => row.slug);
-  rows.push(...(await lapsedRows(session, path, new Set(rows.map((row) => row.slug)))));
+  // The connected set goes to the store first: the agent's tools depend on it, the lapsed lookup does not.
   updateConnectorsStore((store) => setConnectedToolkits(store, connectedSlugs), path);
-  connectedMemo = { at: Date.now(), sessionId: session.sessionId, rows };
-  return rows;
+  let lapsedLookupFailed = false;
+  try {
+    rows.push(...(await lapsedRows(session, path, new Set(rows.map((row) => row.slug)))));
+  } catch (err) {
+    lapsedLookupFailed = true;
+    console.error("[connectors] lapsed account lookup failed", err);
+  }
+  connectedMemo = { at: Date.now(), sessionId: session.sessionId, rows, lapsedLookupFailed };
+  return connectedMemo;
 }
 
 /**
- * Apps whose account lapsed (EXPIRED, FAILED, INACTIVE) and have no active one.
+ * Apps whose account lapsed (EXPIRED, FAILED, INACTIVE, REVOKED) and have no active one.
  * `isConnected` is documented as "connected toolkits only", so the lapsed
  * accounts are asked for by status. They list beside the connected apps with
  * `needsSignIn`, and stay out of the store's connected set so the agent never
@@ -423,7 +437,7 @@ async function connectedRows(session: ComposioSessionLike, path: string): Promis
 async function lapsedRows(session: ComposioSessionLike, path: string, have: Set<string>): Promise<ConnectorToolkit[]> {
   const store = readConnectorsStore(path);
   const client = factory(requireKey(store));
-  const accounts = new Map<string, { id: string; status: string }>();
+  const accounts = new Map<string, { ids: string[]; status: string }>();
   let cursor: string | undefined;
   for (let page = 0; page < ACCOUNT_PAGE_MAX; page += 1) {
     const mine = await client.connectedAccounts.list({
@@ -434,7 +448,10 @@ async function lapsedRows(session: ComposioSessionLike, path: string, have: Set<
     });
     for (const item of mine.items) {
       const slug = item.toolkit?.slug;
-      if (slug && !have.has(slug) && !accounts.has(slug)) accounts.set(slug, { id: item.id, status: item.status ?? "EXPIRED" });
+      if (!slug || have.has(slug)) continue;
+      const known = accounts.get(slug);
+      if (known) known.ids.push(item.id);
+      else accounts.set(slug, { ids: [item.id], status: item.status ?? "EXPIRED" });
     }
     if (!mine.nextCursor || mine.nextCursor === cursor) break;
     cursor = mine.nextCursor;
@@ -447,7 +464,7 @@ async function lapsedRows(session: ComposioSessionLike, path: string, have: Set<
       const account = accounts.get(item.slug);
       if (!account) continue;
       // The listing names the app and its logo; the sign-in state is what the account list said.
-      rows.push({ ...toRow(item), connected: false, accountId: account.id, status: account.status, needsSignIn: true });
+      rows.push({ ...toRow(item), connected: false, accountId: account.ids[0] ?? null, accountIds: account.ids, status: account.status, needsSignIn: true });
     }
   }
   return rows;
@@ -479,7 +496,8 @@ export async function listConnectorToolkits(
   const search = options.search?.trim().toLowerCase() || undefined;
   return withSession(path, async (session) => {
     const rows = new Map<string, ConnectorToolkit>();
-    for (const row of await connectedRows(session, path)) rows.set(row.slug, row);
+    const connected = await connectedRows(session, path);
+    for (const row of connected.rows) rows.set(row.slug, row);
     const add = (items: Array<ToolkitItem & { ownApp?: boolean | undefined }>) => {
       for (const item of items) if (!rows.has(item.slug)) rows.set(item.slug, toRow(item));
     };
@@ -506,7 +524,12 @@ export async function listConnectorToolkits(
       );
     });
     const page = list.slice(offset, offset + limit);
-    return { rows: page, total: list.length, nextOffset: offset + limit < list.length ? offset + limit : null };
+    return {
+      rows: page,
+      total: list.length,
+      nextOffset: offset + limit < list.length ? offset + limit : null,
+      ...(connected.lapsedLookupFailed ? { lapsedLookupFailed: true as const } : {}),
+    };
   });
 }
 
@@ -537,11 +560,11 @@ function score(row: ConnectorToolkit, search: string): number {
 
 /**
  * Composio connected-account statuses (INITIALIZING, INITIATED, ACTIVE, FAILED,
- * EXPIRED, INACTIVE) where the owner has to sign in again: the token expired
- * or was revoked (EXPIRED), or the account stopped working (FAILED, INACTIVE).
+ * EXPIRED, INACTIVE, REVOKED) where the owner has to sign in again: the token expired
+ * or was revoked (EXPIRED, REVOKED), or the account stopped working (FAILED, INACTIVE).
  * INITIALIZING and INITIATED are a sign-in still in progress, not a lapsed one.
  */
-const SIGN_IN_AGAIN_STATUSES: ReadonlySet<string> = new Set(["EXPIRED", "FAILED", "INACTIVE"]);
+const SIGN_IN_AGAIN_STATUSES: ReadonlySet<string> = new Set(["EXPIRED", "FAILED", "INACTIVE", "REVOKED"]);
 
 function toRow(item: ToolkitItem & { ownApp?: boolean | undefined }): ConnectorToolkit {
   const account = item.connection?.connectedAccount;
@@ -554,6 +577,7 @@ function toRow(item: ToolkitItem & { ownApp?: boolean | undefined }): ConnectorT
     ownApp: item.ownApp === true,
     connected,
     accountId: account?.id ?? null,
+    accountIds: account ? [account.id] : [],
     status: account?.status ?? null,
     needsSignIn: account !== undefined && SIGN_IN_AGAIN_STATUSES.has(account.status),
   };

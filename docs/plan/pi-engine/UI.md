@@ -236,7 +236,7 @@ the Composio key line. Polish only:
   of Reconnect where today's has it), except the tools: `mcpToolGate` asks for every MCP tool in
   Auto, whatever its name, so the server's page shows one **Writes** group ("Ask you first in Auto"),
   with no All / Reads / Writes segment and no read count (the filter field stays).
-- An app whose sign-in lapsed (Composio EXPIRED, FAILED or INACTIVE) stays under **Added** with
+- An app whose sign-in lapsed (Composio EXPIRED, FAILED, INACTIVE or REVOKED) stays under **Added** with
   **Sign in again**, and its page puts **Reconnect** first and says "Sign in again to see its tools."
   in place of the tool list (`/api/connectors/tools` answers `needs_sign_in`, not `not_connected`).
   It is not listed again under All apps.

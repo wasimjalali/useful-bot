@@ -54,6 +54,8 @@ interface StubState {
   deleted: string[];
   accounts: Record<string, Array<{ id: string; status?: string; toolkit?: { slug: string } }>>;
   executeThrows: unknown;
+  /** Thrown by connectedAccounts.list when it is asked for lapsed accounts by status. */
+  lapsedListThrows: unknown;
   directTools: Array<{ slug: string; description?: string; inputParameters?: Record<string, unknown>; toolkit?: { slug: string } }>;
   /** Thrown by the next session.authorize, once. */
   authorizeThrows: unknown;
@@ -81,6 +83,7 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
     deleted: [],
     accounts: {},
     executeThrows: null,
+    lapsedListThrows: null,
     directTools: [],
     authorizeThrows: null,
     toolkitInfo: {},
@@ -145,6 +148,7 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
     },
     connectedAccounts: {
       async list(query) {
+        if (query.statuses && state.lapsedListThrows) throw state.lapsedListThrows;
         // Paged the way Composio pages: a cursor is the offset of the next
         // page, and the last page carries no `nextCursor`.
         const all = query.userIds
@@ -808,6 +812,48 @@ test("a lapsed account does not hide behind an active one for the same app", asy
   setComposioFactory(factory);
   const { rows } = await listConnectorToolkits({}, path);
   assert.deepEqual(rows.map((row) => [row.slug, row.connected, row.needsSignIn]), [["gmail", true, false]]);
+});
+
+test("REVOKED lists as sign in again, and every lapsed account of an app is kept", async () => {
+  const path = tmpPath();
+  const userId = readConnectorsStore(path).userId;
+  const { factory } = stub({
+    toolkitItems: [SLACK, { slug: "gmail", name: "Gmail", isNoAuth: false }],
+    accounts: {
+      [userId]: [
+        { id: "ca_old1", status: "EXPIRED", toolkit: { slug: "gmail" } },
+        { id: "ca_old2", status: "REVOKED", toolkit: { slug: "gmail" } },
+      ],
+    },
+  });
+  setComposioFactory(factory);
+  const { rows } = await listConnectorToolkits({}, path);
+  const gmail = rows.find((row) => row.slug === "gmail");
+  assert.equal(gmail?.needsSignIn, true);
+  assert.deepEqual(gmail?.accountIds, ["ca_old1", "ca_old2"]);
+  assert.equal(gmail?.accountId, "ca_old1");
+});
+
+test("a failed lapsed lookup still lists the active apps and keeps the connected set", async () => {
+  const path = tmpPath();
+  const { factory } = stub({ toolkitItems: [GMAIL, SLACK], lapsedListThrows: new Error("composio down") });
+  setComposioFactory(factory);
+  const logged: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args);
+  let page;
+  try {
+    page = await listConnectorToolkits({}, path);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(page.lapsedLookupFailed, true);
+  assert.deepEqual(page.rows.map((row) => [row.slug, row.connected, row.needsSignIn]), [["gmail", true, false], ["slack", false, false]]);
+  assert.deepEqual(readConnectorsStore(path).connectedToolkits, ["gmail"]);
+  assert.match(String(logged[0]?.[0]), /\[connectors\] lapsed account lookup failed/);
+  const { factory: ok } = stub({ toolkitItems: [GMAIL] });
+  setComposioFactory(ok);
+  assert.equal((await listConnectorToolkits({}, tmpPath())).lapsedLookupFailed, undefined);
 });
 
 test("listToolkitTools lists a connected toolkit's tools, refuses an unconnected one and caches briefly", async () => {

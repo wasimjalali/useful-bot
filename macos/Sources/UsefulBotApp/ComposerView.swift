@@ -333,7 +333,8 @@ struct ComposerView: View {
                     model.composerFocused = $0
                 },
                 onDropFiles: { model.addAttachments($0) },
-                focusToken: model.composerFocusToken
+                focusToken: model.composerFocusToken,
+                takePendingFocus: { model.takeComposerFocusPending() }
             )
             .accessibilityLabel(placeholder)
         }

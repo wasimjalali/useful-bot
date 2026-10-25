@@ -245,6 +245,11 @@ struct RoutineEditorView: View {
     @State private var name = ""
     @State private var instruction = ""
     @State private var schedules: [RoutineSchedule] = []
+    /// What name and instruction were last set from the server's copy (or last
+    /// sent). A field that still equals it was not typed in since, so it is
+    /// never written back: a server-side edit must not be undone by a stale field.
+    @State private var seedName = ""
+    @State private var seedInstruction = ""
     @State private var loadedId: String?
     @State private var confirmingDelete = false
     @FocusState private var focus: Field?
@@ -275,7 +280,7 @@ struct RoutineEditorView: View {
                         TextField("", text: $name)
                             .nativeField(focused: focus == .name)
                             .focused($focus, equals: .name)
-                            .onSubmit { commitName() }
+                            .onSubmit { if let loadedId { commitEdits(id: loadedId) } }
                             .accessibilityIdentifier("routine-name")
                     }
                     FieldShell(label: "Instruction") {
@@ -339,6 +344,8 @@ struct RoutineEditorView: View {
             guard focus == nil, let current = routine, !model.routineBusy.contains(current.id) else { return }
             name = current.name
             instruction = current.instruction
+            seedName = current.name
+            seedInstruction = current.instruction
             schedules = current.schedules
         }
         // A refused schedule write leaves the rows showing a schedule the
@@ -351,10 +358,8 @@ struct RoutineEditorView: View {
             schedules = routine.schedules
         }
         .onChange(of: focus) { _, next in
-            if next == nil {
-                commitName()
-                commitInstruction()
-            }
+            // One write for both fields: a second one on the routine is queued behind the first.
+            if next == nil, let loadedId { commitEdits(id: loadedId) }
         }
     }
 
@@ -555,6 +560,8 @@ struct RoutineEditorView: View {
         let draft = routine == nil ? model.routineDraft : nil
         name = routine?.name ?? draft?.name ?? ""
         instruction = routine?.instruction ?? draft?.instruction ?? ""
+        seedName = routine?.name ?? ""
+        seedInstruction = routine?.instruction ?? ""
         schedules = routine?.schedules ?? draft?.schedules ?? [.weekly(days: [1], time: "09:00")]
     }
 
@@ -566,23 +573,16 @@ struct RoutineEditorView: View {
     }
 
     /// Save the name and instruction typed for an existing routine, in one
-    /// write: a second write on a routine already being written is refused.
+    /// write. Only a field typed in since the last seed goes out.
     private func commitEdits(id: String) {
         guard id != "new", let saved = model.routines.first(where: { $0.id == id }) else { return }
-        let nextName = trimmedName.isEmpty || trimmedName == saved.name ? nil : trimmedName
-        let nextInstruction = trimmedInstruction.isEmpty || trimmedInstruction == saved.instruction ? nil : trimmedInstruction
+        let nextName = trimmedName.isEmpty || trimmedName == seedName || trimmedName == saved.name ? nil : trimmedName
+        let nextInstruction = trimmedInstruction.isEmpty || trimmedInstruction == seedInstruction || trimmedInstruction == saved.instruction
+            ? nil : trimmedInstruction
         guard nextName != nil || nextInstruction != nil else { return }
+        if let nextName { seedName = nextName }
+        if let nextInstruction { seedInstruction = nextInstruction }
         model.updateRoutine(id: id, name: nextName, instruction: nextInstruction)
-    }
-
-    private func commitName() {
-        guard let routine, !trimmedName.isEmpty, trimmedName != routine.name else { return }
-        model.updateRoutine(id: routine.id, name: trimmedName)
-    }
-
-    private func commitInstruction() {
-        guard let routine, !trimmedInstruction.isEmpty, trimmedInstruction != routine.instruction else { return }
-        model.updateRoutine(id: routine.id, instruction: trimmedInstruction)
     }
 
     private func commitSchedules() {

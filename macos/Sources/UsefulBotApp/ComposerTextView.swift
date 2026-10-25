@@ -38,6 +38,10 @@ struct ComposerTextView: NSViewRepresentable {
     var onDropFiles: ([URL]) -> Void = { _ in }
     /// Bumped to put the caret in the field (Reply on a message).
     var focusToken: UInt64 = 0
+    /// True once, when a focus was asked for before this field existed (New
+    /// chat from a page): the caret goes in as soon as the field is in the
+    /// window. Reading it clears the request.
+    var takePendingFocus: () -> Bool = { false }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -64,6 +68,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.onDropFiles = { [weak coordinator = context.coordinator] urls in
             coordinator?.onDropFiles(urls)
         }
+        textView.focusOnMount = takePendingFocus()
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.allowsUndo = true
@@ -111,8 +116,16 @@ struct ComposerTextView: NSViewRepresentable {
         context.coordinator.syncFromModel(into: textView, text: text, writeToken: writeToken)
         if focusToken != context.coordinator.focusToken {
             context.coordinator.focusToken = focusToken
+            // Handled here, so the request does not wait for the next mount.
+            _ = takePendingFocus()
             DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) }
         }
+    }
+
+    /// The field leaves the window with its focus: ⌘↑ and ⌘↓ must not stay
+    /// enabled for a composer that is gone.
+    static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        coordinator.onFocusChange(false)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
@@ -246,6 +259,18 @@ struct ComposerTextView: NSViewRepresentable {
 private final class FocusReportingTextView: NSTextView {
     var onFocusChange: (Bool) -> Void = { _ in }
     var onDropFiles: ([URL]) -> Void = { _ in }
+    /// Take first responder once the view is in a window.
+    var focusOnMount = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard focusOnMount, window != nil else { return }
+        focusOnMount = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.window?.makeFirstResponder(self)
+        }
+    }
 
     /// File URLs on the drag, or nil when the drag carries none, in which
     /// case the text view handles it as it always did (dropped text).

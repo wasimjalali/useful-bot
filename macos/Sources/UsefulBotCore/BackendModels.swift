@@ -948,6 +948,8 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
     public let ownApp: Bool
     public let connected: Bool
     public let accountId: String?
+    /// Every account behind the row: a lapsed app can have several, and Disconnect removes them all.
+    public let accountIds: [String]
     public let status: String?
     /// The connected account's sign-in expired or was revoked.
     public let needsSignIn: Bool
@@ -963,11 +965,12 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
         ownApp = (try? c.decode(Bool.self, forKey: .ownApp)) ?? false
         connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
         accountId = try? c.decodeIfPresent(String.self, forKey: .accountId)
+        accountIds = (try? c.decode([String].self, forKey: .accountIds)) ?? []
         status = try? c.decodeIfPresent(String.self, forKey: .status)
         needsSignIn = (try? c.decode(Bool.self, forKey: .needsSignIn)) ?? false
     }
 
-    public init(slug: String, name: String, logo: String?, noAuth: Bool, ownApp: Bool = false, connected: Bool, accountId: String?, status: String?, needsSignIn: Bool = false) {
+    public init(slug: String, name: String, logo: String?, noAuth: Bool, ownApp: Bool = false, connected: Bool, accountId: String?, accountIds: [String]? = nil, status: String?, needsSignIn: Bool = false) {
         self.slug = slug
         self.name = name
         self.logo = logo
@@ -975,12 +978,13 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
         self.ownApp = ownApp
         self.connected = connected
         self.accountId = accountId
+        self.accountIds = accountIds ?? accountId.map { [$0] } ?? []
         self.status = status
         self.needsSignIn = needsSignIn
     }
 
     enum CodingKeys: String, CodingKey {
-        case slug, name, logo, noAuth, ownApp, connected, accountId, status, needsSignIn
+        case slug, name, logo, noAuth, ownApp, connected, accountId, accountIds, status, needsSignIn
     }
 }
 
