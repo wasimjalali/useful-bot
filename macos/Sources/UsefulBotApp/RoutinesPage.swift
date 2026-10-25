@@ -50,7 +50,7 @@ struct RoutinesPage: View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 13))
-                .foregroundStyle(Theme.C.inkMuted)
+                .foregroundStyle(Theme.C.warning)
             Text(count == 1
                 ? "1 routine from your earlier bots is paused. Review it and turn it on if you want it."
                 : "\(count) routines from your earlier bots are paused. Review them and turn on the ones you want.")
@@ -64,7 +64,7 @@ struct RoutinesPage: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .background(Theme.C.warningSoft, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
         .accessibilityIdentifier("routines-moved-notice")

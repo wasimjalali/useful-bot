@@ -9,6 +9,15 @@ import Testing
         return try JSONDecoder().decode(DirectConnection.self, from: Data(json.utf8))
     }
 
+    @Test func readyServerWithToolCountShowsKindAndCount() throws {
+        func ready(_ count: Int) throws -> ConnectorTile {
+            let json = #"{"id":"x","name":"X","url":"https://x.com/mcp","kind":"mcp","authKind":"none","builtin":false,"state":"ready","toolCount":\#(count),"tools":[]}"#
+            return ConnectorTile(server: try JSONDecoder().decode(DirectConnection.self, from: Data(json.utf8)))
+        }
+        #expect(try ready(2).status == "MCP server · 2 tools")
+        #expect(try ready(1).status == "MCP server · 1 tool")
+    }
+
     private func app(_ slug: String, name: String, connected: Bool = true) -> ConnectorToolkit {
         ConnectorToolkit(slug: slug, name: name, logo: "https://logos.composio.dev/api/\(slug)", noAuth: false, connected: connected, accountId: "ca_\(slug)", status: "ACTIVE")
     }

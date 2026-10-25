@@ -115,11 +115,17 @@ final class OperatorAvatarStore: ObservableObject {
     }
 }
 
-/// The owner's avatar: the saved photo, or the initials on a sunken disc.
+/// The owner's avatar: the saved photo, or the initials on a disc. The disc is
+/// the ink in light (the sunken tone matches the sidebar there) and stays
+/// sunken in dark.
+
 struct OperatorAvatarView: View {
     let initials: String
     var size: CGFloat = DesignTokens.Control.operatorAvatar
     @ObservedObject private var store = OperatorAvatarStore.shared
+
+    private static let disc = Theme.adaptive(DesignTokens.Hex.ink, DesignTokens.DarkHex.sunken)
+    private static let initialsInk = Theme.adaptive(DesignTokens.Hex.white, DesignTokens.DarkHex.ink)
 
     var body: some View {
         Group {
@@ -131,9 +137,9 @@ struct OperatorAvatarView: View {
                 Text(initials)
                     .font(.system(size: 10, weight: .bold))
                     .tracking(DesignTokens.Tracking.operatorAvatar * 10)
-                    .foregroundStyle(Theme.C.ink)
+                    .foregroundStyle(Self.initialsInk)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Theme.C.sunken)
+                    .background(Self.disc)
             }
         }
         .frame(width: size, height: size)

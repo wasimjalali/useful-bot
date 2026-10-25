@@ -933,10 +933,10 @@ private struct ConnectorStateChip: View {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
         }
-        .foregroundStyle(warning ? Theme.C.warning : Theme.C.inkMuted)
+        .foregroundStyle(warning ? Theme.C.warning : (connected ? Theme.C.success : Theme.C.inkMuted))
         .padding(.horizontal, 8)
         .frame(height: 22)
-        .background(warning ? Theme.C.warningSoft : Theme.C.sunken)
+        .background(warning ? Theme.C.warningSoft : (connected ? Theme.C.successSoft : Theme.C.sunken))
         .clipShape(Capsule(style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
@@ -947,6 +947,8 @@ private struct ConnectorStateChip: View {
         if case .warning = tile.mark { return true }
         return false
     }
+
+    private var connected: Bool { !tile.needsSignIn && tile.mark == .added }
 
     private var label: String {
         if tile.needsSignIn { return "Sign in again" }

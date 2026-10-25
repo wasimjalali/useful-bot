@@ -53,10 +53,16 @@ public struct ConnectorTile: Identifiable, Equatable, Sendable {
         id = Self.serverId(server.id)
         name = server.name
         source = .server(server)
-        status = Self.statusLine(server.state)
+        status = Self.readyLine(server) ?? Self.statusLine(server.state)
         mark = Self.mark(server.state)
         logoURL = nil
         iconData = Self.decodeIcon(server.icon)
+    }
+
+    /// "MCP server · 2 tools" for a ready server whose kind and tool count are known.
+    private static func readyLine(_ server: DirectConnection) -> String? {
+        guard server.state == .ready, server.kind != .unknown, let count = server.toolCount else { return nil }
+        return "\(server.kind.label) server · \(count) \(count == 1 ? "tool" : "tools")"
     }
 
     /// The plain-words line under a server's name.

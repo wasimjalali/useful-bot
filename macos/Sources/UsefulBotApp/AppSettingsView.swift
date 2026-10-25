@@ -1363,7 +1363,7 @@ private struct EarlierBotsGroup: View {
                         .accessibilityHidden(count == 0)
                         .accessibilityIdentifier("earlier-move-\(bot.id)")
                     NativeButton(kind: .ghost, small: true, enabled: !working, action: { confirming = bot.id }) {
-                        Text("Remove").lineLimit(1).fixedSize()
+                        Text("Remove").font(.system(size: 13, weight: .regular)).foregroundStyle(Theme.C.inkMuted).lineLimit(1).fixedSize()
                     }
                         .frame(width: 80)
                         .accessibilityIdentifier("earlier-remove-\(bot.id)")
