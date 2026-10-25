@@ -103,7 +103,8 @@ function list(ctx: ToolCtx) {
       runHistory: routine.runHistory.slice(-5).map((entry) => ({
         at: entry.at,
         status: entry.status,
-        error: entry.error,
+        // A failure message can carry text from the page or server that failed.
+        error: entry.error ? wrapUntrusted(`routine:${routine.id} run error`, entry.error) : entry.error,
       })),
     })),
   };

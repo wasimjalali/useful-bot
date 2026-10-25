@@ -5,8 +5,6 @@ export { foldPath };
 
 export type Alias = "workhorse" | "reviewer" | "image";
 export type Profile = "desktop" | "phone" | "reviewer" | "eval";
-export type SandboxBackendName = "microsandbox" | "docker" | "just-bash";
-export type Isolation = "verified-vm" | "non-vm";
 
 export const POLICY_WINDOW_TOKENS = 131_072;
 /**

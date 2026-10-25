@@ -16,7 +16,7 @@ import {
 import { findConnectionById } from "../../shared/connections-store.ts";
 import { toolInputSchema } from "../../shared/json-schema-zod.ts";
 import { callMcpTool, McpError, TOOL_CALL_TIMEOUT_MS } from "../../shared/mcp-http.ts";
-import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { clipUtf8, wrapUntrusted } from "../../shared/untrusted.ts";
 import { mcpToolGate, mcpToolRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -39,8 +39,8 @@ const RESULT_MAX_BYTES = 24 * 1024;
  */
 const CARD_ARGS_MAX = 4000;
 
-/** Connections the last `refreshPickedTools` judged unfit to mount. */
-const blocked = new Set<string>();
+/** Per chat, the connections its last `refreshPickedTools` judged unfit to mount. */
+const blocked = new Map<string, Set<string>>();
 
 /**
  * Before a chat's picked tools are registered after a restart: make sure each
@@ -52,17 +52,16 @@ export async function refreshPickedTools(chatId: string): Promise<void> {
   const saved = readConnectionToolsStore().sessions[chatId]?.tools ?? [];
   const ids = saved.map((name) => splitMountedName(name)?.connectionId).filter((id): id is string => id !== undefined);
   const stale = await refreshBeforeMount(ids);
-  for (const id of new Set(ids)) {
-    if (stale.has(id)) blocked.add(id);
-    else blocked.delete(id);
-  }
+  const mine = new Set<string>();
+  for (const id of new Set(ids)) if (stale.has(id)) mine.add(id);
+  blocked.set(chatId, mine);
 }
 
 export function pickedTools(chatId: string): UsefulTool[] {
   const store = readConnectionToolsStore();
   const saved = store.sessions[chatId]?.tools ?? [];
   const picks = selectMountedTools(saved, {
-    connection: (connectionId) => (blocked.has(connectionId) ? null : findConnectionById(connectionId)),
+    connection: (connectionId) => (blocked.get(chatId)?.has(connectionId) ? null : findConnectionById(connectionId)),
     indexed: (connectionId, tool) => store.index[connectionId]?.tools.find((item) => item.name === tool),
   });
   return picks.map(({ split, entry, indexed }) => {
@@ -135,7 +134,7 @@ async function callPicked(
     ...approvalActor(ctx),
     tool: "connection",
     actionSha256: hash,
-    preview: `${connectionName} · ${toolName}${risk === "destructive" ? " (destructive)" : ""}`
+    preview: `${connectionName.replace(/[\r\n]+/g, " ").trim()} · ${toolName}${risk === "destructive" ? " (destructive)" : ""}`
       + (previewArgs === "{}" ? "" : `\n${previewArgs}`),
   });
   if (gate === "run") {
@@ -166,12 +165,7 @@ async function callPicked(
     try {
       headers = await connectionHeaders(current);
       const raw = await callMcpTool(url, toolName, args, headers, AbortSignal.any([AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS), ctx.abortSignal]));
-      let text = JSON.stringify(raw);
-      let truncated = false;
-      if (text.length > RESULT_MAX_BYTES) {
-        text = text.slice(0, RESULT_MAX_BYTES);
-        truncated = true;
-      }
+      const { text, cut: truncated } = clipUtf8(JSON.stringify(raw), RESULT_MAX_BYTES);
       return {
         status: "ok",
         tool: toolName,
