@@ -64,6 +64,12 @@ struct UsefulBotDesktopApp: App {
                 }
                 .keyboardShortcut(.downArrow, modifiers: .command)
                 .disabled(!model.chatSwitchKeysEnabled)
+
+                Button("Delete chat") {
+                    model.requestDeleteCurrentChat()
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(!model.canDeleteCurrentChat)
             }
         }
     }

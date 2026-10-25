@@ -1,7 +1,7 @@
 import SwiftUI
 import UsefulBotCore
 
-/// A bot head that can move: the rail, pinned bots and the working row.
+/// A bot head that can move: the rail and the working row.
 /// Idle, it holds still and costs nothing per frame.
 struct BotFaceView: View {
     let color: String

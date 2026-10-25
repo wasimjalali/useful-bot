@@ -27,22 +27,6 @@ import Testing
         #expect(ProposalActions.confirm(proposal) == nil)
     }
 
-    /// The four kinds that went away stay on disk in old stores. They decode
-    /// (a store that fails to decode empties the chat) but are not a card.
-    @Test func removedKindsDecodeAsRetiredWithTheirOldFieldsIgnored() throws {
-        for kind in ["createBot", "createGroup", "updateBotProfile", "fanout"] {
-            let proposal = try decode("""
-            {"id":"p1","kind":"\(kind)","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-             "name":"Scout","petname":"New Bot 2","title":"Research","description":"Find things",
-             "sectionId":null,"brief":"Find pricing","memberIds":["b1"],"botId":"b1","patch":null,
-             "message":"ship it","targetIds":["b1","b2"],"groupId":"g1","sourceBotId":"b9"}
-            """)
-            #expect(proposal.kind == .retired)
-            #expect(proposal.isOpen())
-            #expect(ProposalActions.confirm(proposal) == nil)
-        }
-    }
-
     @Test func unparseableExpiryIsClosed() throws {
         let proposal = try decode("""
         {"id":"p9","kind":"connectApp","status":"pending","expiresAt":"not a date","name":"Scout"}

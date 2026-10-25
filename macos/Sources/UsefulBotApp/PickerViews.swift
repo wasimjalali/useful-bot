@@ -8,6 +8,7 @@ struct SearchPaletteView: View {
     let onClose: () -> Void
     let onNewChat: () -> Void
     let onOpen: (ChatEntry) -> Void
+    let onOpenMessage: (ChatSearchHit) -> Void
     let onOpenRoutine: (String) -> Void
     let onOpenLibrary: (String) -> Void
     let onOpenSettings: () -> Void
@@ -19,6 +20,9 @@ struct SearchPaletteView: View {
     @State private var active = 0
     @State private var media: [MediaItem] = []
     @State private var mediaFailed = false
+    /// Message-text hits from the engine, for the current query.
+    @State private var textHits: [ChatSearchHit] = []
+    @State private var textSearch: Task<Void, Never>?
     @State private var escapeMonitor: Any?
     @FocusState private var focused: Bool
 
@@ -61,6 +65,7 @@ struct SearchPaletteView: View {
 
     enum Hit: Identifiable {
         case chat(ChatEntry)
+        case message(ChatSearchHit)
         case media(MediaItem)
         case routine(Routine)
         case command(Command)
@@ -68,6 +73,7 @@ struct SearchPaletteView: View {
         var id: String {
             switch self {
             case .chat(let entry): return "chat-\(entry.id)"
+            case .message(let hit): return "message-\(hit.id)"
             case .media(let item): return "media-\(item.id)"
             case .routine(let routine): return "routine-\(routine.id)"
             case .command(let command): return "command-\(command.rawValue)"
@@ -76,7 +82,7 @@ struct SearchPaletteView: View {
 
         var section: String {
             switch self {
-            case .chat: return "Chats"
+            case .chat, .message: return "Chats"
             case .media: return "Library"
             case .routine: return "Routines"
             case .command: return "Commands"
@@ -94,6 +100,9 @@ struct SearchPaletteView: View {
             }
             let shown = tab == .all && needle.isEmpty ? Array(entries.prefix(8)) : entries
             results.append(contentsOf: shown.map(Hit.chat))
+            // Words inside chats, found by the engine; a chat whose title
+            // already matched is not listed twice for the same row.
+            results.append(contentsOf: textHits.map(Hit.message))
         }
 
         if tab == .library || (tab == .all && !needle.isEmpty) {
@@ -206,7 +215,10 @@ struct SearchPaletteView: View {
             if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
             escapeMonitor = nil
         }
-        .onChange(of: query) { _, _ in active = 0 }
+        .onChange(of: query) { _, next in
+            active = 0
+            searchText(next)
+        }
         .onChange(of: tab) { _, _ in active = 0 }
     }
 
@@ -323,6 +335,24 @@ struct SearchPaletteView: View {
                         .font(.system(size: 11).monospacedDigit())
                         .foregroundStyle(Theme.C.inkFaint)
                 }
+            case .message(let hit):
+                icon("text.bubble")
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(ChatEntry.plain(hit.snippet))
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Text(ChatEntry.plain(hit.title))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if let at = hit.at {
+                    Text(ChatEntry.timeLabel(at))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(Theme.C.inkFaint)
+                }
             case .media(let item):
                 icon(Self.mediaIcon(item.kind))
                 VStack(alignment: .leading, spacing: 0) {
@@ -390,10 +420,28 @@ struct SearchPaletteView: View {
         }
     }
 
+    /// Looks inside the chats once the owner pauses typing.
+    private func searchText(_ text: String) {
+        textSearch?.cancel()
+        let needle = text.trimmingCharacters(in: .whitespaces)
+        guard needle.count >= 2 else {
+            textHits = []
+            return
+        }
+        textSearch = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let found = await model.searchChatText(needle)
+            guard !Task.isCancelled else { return }
+            textHits = found
+        }
+    }
+
     private func run(_ hit: Hit?) {
         guard let hit else { return }
         switch hit {
         case .chat(let entry): onOpen(entry)
+        case .message(let hit): onOpenMessage(hit)
         case .media(let item): onOpenLibrary(item.id)
         case .routine(let routine): onOpenRoutine(routine.id)
         case .command(let command):

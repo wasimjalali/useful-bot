@@ -25,7 +25,6 @@ struct LibraryView: View {
     @State private var error: String?
     @State private var search = ""
     @State private var filter: Filter = .all
-    @State private var botFilter: String?
     @State private var selected: MediaItem?
     @State private var regenerating: Set<String> = []
     @FocusState private var searchFocused: Bool
@@ -70,7 +69,6 @@ struct LibraryView: View {
                         LibraryDetail(
                             item: selected,
                             regenerating: regenerating.contains(selected.id),
-                            onOpenChat: { openChat(selected) },
                             onLocate: { locate(selected) },
                             onRegenerate: { regenerate(selected) },
                             onTrash: { trash(selected) }
@@ -176,22 +174,6 @@ struct LibraryView: View {
 
             Spacer(minLength: 0)
 
-            // With one bot there is nothing to tell apart; earlier bots' items
-            // bring the filter back.
-            if botNames.count > 1 {
-                Menu {
-                    Button("All bots") { botFilter = nil }
-                    ForEach(botNames, id: \.id) { bot in
-                        Button(bot.name) { botFilter = bot.id }
-                    }
-                } label: {
-                    Text(botNames.first { $0.id == botFilter }?.name ?? "All bots")
-                        .font(.system(size: 13))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityLabel("Filter by bot")
-            }
         }
     }
 
@@ -236,14 +218,6 @@ struct LibraryView: View {
             ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
     }
 
-    private var botNames: [(id: String, name: String)] {
-        var seen = Set<String>()
-        return items.compactMap { item in
-            guard !item.botId.isEmpty, seen.insert(item.botId).inserted else { return nil }
-            return (item.botId, item.botName)
-        }
-    }
-
     private var visible: [MediaItem] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         return items.filter { item in
@@ -253,9 +227,8 @@ struct LibraryView: View {
             case .drawings: if item.kind != "drawing" { return false }
             case .pages: if item.kind != "page" { return false }
             }
-            if let botFilter, item.botId != botFilter { return false }
             if q.isEmpty { return true }
-            return item.title.lowercased().contains(q) || item.prompt.lowercased().contains(q) || item.botName.lowercased().contains(q)
+            return item.title.lowercased().contains(q) || item.prompt.lowercased().contains(q)
         }
     }
 
@@ -270,15 +243,6 @@ struct LibraryView: View {
             self.error = "The Library could not load"
         }
         loaded = true
-    }
-
-    private func openChat(_ item: MediaItem) {
-        guard botExists(item.botId) else {
-            error = "The bot that made this is no longer here"
-            selected = nil
-            return
-        }
-        model.select(item.botId)
     }
 
     /// Draw it again in place from the prompt the server kept; the item comes
@@ -300,10 +264,6 @@ struct LibraryView: View {
             }
             regenerating.remove(item.id)
         }
-    }
-
-    private func botExists(_ id: String) -> Bool {
-        !id.isEmpty && (model.store?.activeBots.contains { $0.id == id } ?? false)
     }
 
     /// Point a moved item at where its file went, then show it from there.
@@ -395,7 +355,7 @@ private struct LibraryTile: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
-                Text(item.exists ? "\(item.botName) · \(LibraryDetail.shortDate(item.createdAt))" : "Moved or deleted")
+                Text(item.exists ? LibraryDetail.shortDate(item.createdAt) : "Moved or deleted")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkMuted)
                     .lineLimit(1)
@@ -430,7 +390,6 @@ private struct LibraryTile: View {
 struct LibraryDetail: View {
     let item: MediaItem
     var regenerating = false
-    let onOpenChat: () -> Void
     let onLocate: () -> Void
     let onRegenerate: () -> Void
     let onTrash: () -> Void
@@ -490,7 +449,6 @@ struct LibraryDetail: View {
                 if !prompt.isEmpty {
                     PromptFact(prompt: prompt)
                 }
-                fact("Bot", item.botName)
                 if !item.model.isEmpty {
                     fact("Model", item.model)
                 }
@@ -535,9 +493,6 @@ struct LibraryDetail: View {
                             if item.kind == "image", !item.prompt.isEmpty {
                                 NativeButton(regenerating ? "Generating" : "Regenerate", kind: .secondary, small: true, enabled: !regenerating, action: onRegenerate)
                             }
-                        }
-                        if !item.botId.isEmpty {
-                            NativeButton("Open chat", kind: .secondary, small: true, action: onOpenChat)
                         }
                         NativeButton(item.exists ? "Move to Trash" : "Remove", kind: .secondary, small: true, action: onTrash)
                     }
