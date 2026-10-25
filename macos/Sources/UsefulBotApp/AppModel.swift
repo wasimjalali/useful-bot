@@ -521,6 +521,9 @@ final class AppModel: ObservableObject {
         // otherwise leave the flag set for an unrelated later start.
         let replaceHung = ownerRetried
         ownerRetried = false
+        // A Retry or a stack switch boots again: the watch from the last boot
+        // must not start services while this one stops and starts them.
+        services.stopWatching()
         startAttempt += 1
         let attempt = startAttempt
         phase = .starting
@@ -648,6 +651,8 @@ final class AppModel: ObservableObject {
             phase = .unavailable
             return
         }
+        // The stack is up: from here a service that dies is started again.
+        services.startWatching(config: config)
         // No second gate on the web endpoint alone: `ensure` just checked all
         // three, and asking again about one of them only re-opened the door
         // this fix closes. A service that dies after this point surfaces as a

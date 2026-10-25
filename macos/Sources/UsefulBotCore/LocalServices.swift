@@ -34,6 +34,9 @@ public struct LocalServices: Sendable {
     /// actually exit after SIGTERM before it sends SIGKILL. A freed port is not
     /// an exit: Next and the engine close their listener first and drain after.
     private let stopExitGraceSeconds: Double
+    /// The one running watch (see `startWatching`). A class, because the
+    /// struct is copied around and every copy must see the same task.
+    private let watcher = WatchHandle()
 
     public init(
         runner: ProcessRunner = FoundationProcessRunner(),
@@ -258,8 +261,8 @@ public struct LocalServices: Sendable {
     /// as a wedged process and signal it. True on the first pass, where the
     /// listener predates this app's attempt; false on the retries, where it
     /// would be killing something this call just started.
-    func startMissing(config: ServerConfig, allowRestart: Bool = true, deadline: Date? = nil) async {
-        await ensureService(
+    func startMissing(config: ServerConfig, allowRestart: Bool = true, deadline: Date? = nil, only: ServiceMode? = nil) async {
+        if only == nil || only == .router { await ensureService(
             mode: .router,
             port: config.variant.routerPort,
             health: config.variant.routerHealthURL,
@@ -267,8 +270,8 @@ public struct LocalServices: Sendable {
             variant: config.variant,
             allowRestart: allowRestart,
             deadline: deadline
-        )
-        await ensureService(
+        ) }
+        if only == nil || only == .engine { await ensureService(
             mode: .engine,
             port: config.variant.enginePort,
             health: config.variant.engineHealthURL,
@@ -276,8 +279,8 @@ public struct LocalServices: Sendable {
             variant: config.variant,
             allowRestart: allowRestart,
             deadline: deadline
-        )
-        await ensureService(
+        ) }
+        if only == nil || only == .web { await ensureService(
             mode: .web,
             port: config.variant.webPort,
             health: config.healthURL,
@@ -285,7 +288,54 @@ public struct LocalServices: Sendable {
             variant: config.variant,
             allowRestart: allowRestart,
             deadline: deadline
-        )
+        ) }
+    }
+
+    // MARK: - Watching after launch
+
+    /// How many times one service is restarted inside `restartWindowSeconds`
+    /// before it is left dead: a service that keeps dying has a cause a restart
+    /// does not fix, and a loop would only hide it.
+    static let maxRestarts = 3
+    static let restartWindowSeconds: TimeInterval = 300
+
+    /// Watches the stack for the rest of the app's life, after `ensure` has
+    /// succeeded. Replaces a watch already running, so there is never a second.
+    /// `stopOwnServices` and `stopWatching` end it.
+    public func startWatching(config: ServerConfig, intervalSeconds: Double = 10) {
+        let ledger = RestartLedger()
+        watcher.replace(with: Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(intervalSeconds * 1_000_000_000))
+                if Task.isCancelled { return }
+                await watchTick(config: config, ledger: ledger, now: Date())
+            }
+        })
+    }
+
+    public func stopWatching() {
+        watcher.replace(with: nil)
+    }
+
+    /// One look at the stack. A service whose port has no listener and which
+    /// has no live process of ours is started again, through the same path as
+    /// the launch retries: `allowRestart: false` fills an empty port and never
+    /// signals a listener, so a slow starter and a foreign process are left be.
+    func watchTick(config: ServerConfig, ledger: RestartLedger, now: Date) async {
+        for mode in Self.allModes {
+            if Task.isCancelled { return }
+            guard runner.listeners(port: port(of: mode, variant: config.variant)).isEmpty,
+                  !runner.hasLiveSpawn(of: mode) else { continue }
+            switch ledger.record(mode, now: now) {
+            case .restart(let number):
+                runner.logServiceEvent(mode, "service \(mode.rawValue) is down, restarting (\(number) of \(Self.maxRestarts) in 5 minutes)")
+                await startMissing(config: config, allowRestart: false, only: mode)
+            case .giveUp:
+                runner.logServiceEvent(mode, "service \(mode.rawValue) died \(Self.maxRestarts) times in 5 minutes, giving up on restarting it")
+            case .stillGivenUp:
+                break
+            }
+        }
     }
 
     /// A service is left alone when its health endpoint answers. Otherwise any
@@ -395,6 +445,8 @@ public struct LocalServices: Sendable {
     /// recorded with.
     @discardableResult
     public func stopOwnServices(config: ServerConfig) async -> ServiceStopResult {
+        // Stopped first: a watch running during the stop would start them again.
+        stopWatching()
         let repoPath = config.repoPath
         let owns: @Sendable (String) -> Bool = { [supervisor] line in
             supervisor.isOwnNodeProcess(line, repoPath: repoPath)
@@ -483,6 +535,48 @@ public struct LocalServices: Sendable {
     }
 }
 
+/// The restarts the watch has made, per service, so one that keeps dying is
+/// left after `LocalServices.maxRestarts` inside the window.
+final class RestartLedger: @unchecked Sendable {
+    enum Verdict: Equatable {
+        case restart(number: Int)
+        /// The limit was just reached: logged once.
+        case giveUp
+        case stillGivenUp
+    }
+
+    private let lock = NSLock()
+    private var restarts: [ServiceMode: [Date]] = [:]
+    private var givenUp: Set<ServiceMode> = []
+
+    /// Asks for a restart of `mode` at `now` and records it when allowed.
+    func record(_ mode: ServiceMode, now: Date) -> Verdict {
+        lock.lock(); defer { lock.unlock() }
+        let recent = (restarts[mode] ?? []).filter { now.timeIntervalSince($0) < LocalServices.restartWindowSeconds }
+        restarts[mode] = recent
+        if recent.count >= LocalServices.maxRestarts {
+            return givenUp.insert(mode).inserted ? .giveUp : .stillGivenUp
+        }
+        givenUp.remove(mode)
+        restarts[mode] = recent + [now]
+        return .restart(number: recent.count + 1)
+    }
+}
+
+/// Holds the one watch task; replacing it cancels the one before.
+final class WatchHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    func replace(with next: Task<Void, Never>?) {
+        lock.lock()
+        let previous = task
+        task = next
+        lock.unlock()
+        previous?.cancel()
+    }
+}
+
 /// A process recorded with its start time and the command line it was running,
 /// so a later signal or exit check can tell it from an unrelated process that
 /// reused its pid. All three have to match, checked fresh before each signal.
@@ -560,9 +654,12 @@ public protocol ProcessRunner: Sendable {
     /// SIGTERM (SIGKILL when `force`) to `process` if, checked immediately
     /// before the signal, it is still the same process. False when it was not.
     func signalProcess(_ process: OwnedProcess, force: Bool) -> Bool
+    /// One line in `mode`'s `service-<mode>.log`, stamped with the time.
+    func logServiceEvent(_ mode: ServiceMode, _ line: String)
 }
 
 extension ProcessRunner {
+    public func logServiceEvent(_ mode: ServiceMode, _ line: String) {}
     public func ownServiceProcesses(owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] { [] }
     public func isStillRunning(_ process: OwnedProcess) -> Bool { false }
     public func signalProcess(_ process: OwnedProcess, force: Bool) -> Bool { false }
@@ -860,6 +957,10 @@ public struct FoundationProcessRunner: ProcessRunner {
             if let handle { try? handle.close() }
             Self.appendEvent("failed to launch \(label): \(error.localizedDescription)", to: logURL)
         }
+    }
+
+    public func logServiceEvent(_ mode: ServiceMode, _ line: String) {
+        Self.appendEvent(line, to: Self.logFile(label: mode.rawValue))
     }
 
     public func hasLiveSpawn(of mode: ServiceMode) -> Bool {
