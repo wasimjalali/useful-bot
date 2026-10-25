@@ -622,17 +622,14 @@ struct ChatView: View {
                         // when the row leaves: the content is bottom-aligned,
                         // and a row that vanished pulled everything down by
                         // its height.
-                        Group {
-                            if model.pending || model.backgroundWorking {
-                                WorkingRow(
-                                    bot: bot,
-                                    activity: model.activity,
-                                    since: model.activitySince,
-                                    toolkits: model.connectorApps,
-                                    runningModel: model.runningModelNote(for: bot.id)
-                                )
-                            }
-                        }
+                        WorkingSlot(
+                            working: model.pending || model.backgroundWorking,
+                            bot: bot,
+                            activity: model.activity,
+                            since: model.activitySince,
+                            toolkits: model.connectorApps,
+                            runningModel: model.runningModelNote(for: bot.id)
+                        )
                         .frame(height: WorkingRow.height, alignment: .leading)
                         if !model.searchHits.isEmpty {
                             SearchChipsRow(chips: model.searchHits)
@@ -1537,6 +1534,46 @@ struct TranscriptRowView: View, Equatable {
     }
 }
 
+/// The working row while a turn runs, and for the 50 ms the dots take to
+/// shrink away once it ends, so the mark leaves the way the spec draws it
+/// instead of being cut.
+private struct WorkingSlot: View {
+    let working: Bool
+    let bot: ShellBot
+    let activity: TurnActivity
+    let since: Date
+    let toolkits: [ConnectorToolkit]
+    var runningModel: String?
+
+    @State private var finishing = false
+
+    var body: some View {
+        Group {
+            if working || finishing {
+                WorkingRow(
+                    bot: bot,
+                    activity: activity,
+                    since: since,
+                    toolkits: toolkits,
+                    runningModel: runningModel,
+                    done: !working
+                )
+            }
+        }
+        .onChange(of: working) { was, now in
+            if now {
+                finishing = false
+            } else if was {
+                finishing = true
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: UInt64(AgentMarkFrames.completionDuration * 1.6 * 1e9))
+                    if !working { finishing = false }
+                }
+            }
+        }
+    }
+}
+
 private struct WorkingRow: View {
     let bot: ShellBot
     let activity: TurnActivity
@@ -1547,6 +1584,13 @@ private struct WorkingRow: View {
     /// The model this turn is still on when the owner has picked another
     /// since it started. Nil when they match.
     var runningModel: String?
+    /// The turn has ended: the dots shrink away and the label stops sweeping.
+    var done = false
+
+    /// False for the first beat of a fresh row, so the mark arrives alone and
+    /// the label follows (spec section 5). A row that opens on a turn already
+    /// under way shows its label at once.
+    @State private var labelShown = false
 
     /// The avatar's box, which is also the slot the transcript reserves.
     static let height: CGFloat = 24
@@ -1567,30 +1611,28 @@ private struct WorkingRow: View {
         let label = runningModel.map { "\(step) · \($0)" } ?? step
         // Sits where the reply will, so the text does not jump sideways
         // when the first token lands.
-        HStack(alignment: .center, spacing: 10) {
-            // The ring sits in the same box a reply avatar used to, so the
-            // label keeps the reply's left edge.
-            DotsRing(size: 18)
+        // The label starts 16 pt from the mark's 24 pt box: 28 pt from the
+        // centre of the dots.
+        HStack(alignment: .center, spacing: 16) {
+            AgentMark(phase: done ? .done : (activity.runsCommand ? .command : .thinking))
                 .frame(width: Self.height, height: Self.height)
             HStack(spacing: 8) {
                 if let connector {
                     AppLogo(name: connector.name, url: connector.logo, size: 16)
                         .transition(.opacity)
                 }
-                // Swapped in one frame, the way Claude's step line does: a
-                // crossfade between labels of different widths ran the old
-                // one over the timer beside it.
-                Text(label)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .font(.system(size: DesignTokens.FontSize.chatBody))
-                    .foregroundStyle(Theme.C.inkMuted)
-                // One text view redrawn once a second, not a clock ticking
-                // through the transcript.
+                // Slides up and crossfades in 120 ms. The outgoing text is an
+                // overlay clipped to the new label's width, so it never runs
+                // over the timer beside it.
+                WorkingLabel(text: label, visible: labelShown, done: done)
+                // Shown from 5 s, then once a second: one text view redrawn
+                // once a second, not a clock ticking through the transcript.
                 TimelineView(.periodic(from: since, by: 1)) { context in
-                    Text(Self.elapsed(from: since, to: context.date))
-                        .font(.system(size: DesignTokens.FontSize.chatBody).monospacedDigit())
-                        .foregroundStyle(Theme.C.inkFaint)
+                    if Self.elapsedSeconds(from: since, to: context.date) >= AgentShimmer.timerAfter {
+                        Text(Self.elapsed(from: since, to: context.date))
+                            .font(.system(size: DesignTokens.FontSize.chatBody).monospacedDigit())
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
                 }
                 .layoutPriority(1)
             }
@@ -1604,11 +1646,22 @@ private struct WorkingRow: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
+        .task {
+            guard !labelShown else { return }
+            let age = Date().timeIntervalSince(since)
+            guard age < AgentShimmer.firstLabelDelay else { labelShown = true; return }
+            try? await Task.sleep(nanoseconds: UInt64(AgentShimmer.firstLabelDelay * 1e9))
+            labelShown = true
+        }
+    }
+
+    static func elapsedSeconds(from start: Date, to now: Date) -> Int {
+        max(0, Int(now.timeIntervalSince(start)))
     }
 
     /// "0s", "9s", "1m 5s": whole seconds, never negative.
     static func elapsed(from start: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        let seconds = elapsedSeconds(from: start, to: now)
         return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
     }
 }

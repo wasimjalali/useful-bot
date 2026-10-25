@@ -105,6 +105,12 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     /// read as a hang.
     case compacting
 
+    /// A shell command is running: the working mark shows its four-dot figure.
+    public var runsCommand: Bool {
+        if case .tool("bash", _) = self { return true }
+        return false
+    }
+
     /// Sentence case, no trailing period: the row swaps between these while
     /// the turn runs, and a period on every one of them reads as a stutter.
     public var label: String {

@@ -475,7 +475,10 @@ private struct ChatRowView: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if working {
-                    DotsRing(size: 14)
+                    // The three-dot loop at 60%, off the shared clock so every
+                    // working row moves together.
+                    AgentMark(phase: .thinking, scale: 0.6, arrives: false)
+                        .accessibilityElement(children: .ignore)
                         .accessibilityLabel("Working")
                 } else if let updatedAt = entry.updatedAt {
                     Text(ChatEntry.timeLabel(updatedAt))
@@ -505,9 +508,9 @@ private struct ChatRowView: View {
     }
 }
 
-/// Four dots chasing round a ring, one turn a second. The work-in-progress
-/// mark that replaces the mascot face; held still when the owner asks for
-/// reduced motion.
+/// Four dots chasing round a ring, one turn a second. Now only the loader
+/// while a chat's first transcript loads: an agent working is `AgentMark`.
+/// Held still when the owner asks for reduced motion.
 struct DotsRing: View {
     var size: CGFloat = 14
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
