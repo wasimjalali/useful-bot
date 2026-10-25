@@ -147,26 +147,39 @@ class Snap:
         self.d = d
         self.elements = d["elements"]
         self.nodes = self.parse(d["tree_markdown"])
+        # Only indexed (actionable) elements carry a frame; a bot paragraph has the Copy action, so it has one.
+        by_idx = {e.get("element_index"): e for e in self.elements}
+        for n in self.nodes:
+            fr = (by_idx.get(n["idx"]) or {}).get("frame") if n["idx"] is not None else None
+            n["frame"] = fr
 
     @staticmethod
     def parse(md):
-        nodes = []
+        """One node per tree line. A text value can span several lines (a code block, a bash command), and
+        so can an action list, so any line that does not start a node belongs to the node before it."""
+        recs = []
         for line in md.split("\n"):
             m = Snap.LINE.match(line)
-            if not m:
-                continue  # continuation lines of multi-line action lists
-            rest = m["rest"]
+            if m:
+                recs.append([m, []])
+            elif recs:
+                recs[-1][1].append(line)
+        nodes = []
+        for m, extra in recs:
+            rest = m["rest"] + ("\n" + "\n".join(extra) if extra else "")
             n = {"depth": len(m["ind"]) // 2, "idx": int(m["idx"]) if m["idx"] else None,
                  "role": m["role"], "label": None, "value": None, "id": None, "copy": False}
-            v = re.match(r' = "(.*)"(?: \[.*)?$', rest)
+            v = re.match(r' = "(.*?)"(?= \[(?:id=|actions=|help=)|$)', rest, re.S)
+            tail = rest
             if v:
                 n["value"] = v.group(1)
-                n["copy"] = "name:copy" in rest
+                tail = rest[v.end():]
+                n["copy"] = "name:copy" in tail
             else:
-                lab = re.match(r" \((.*?)\)(?= \[|$)", rest)
+                lab = re.match(r" \((.*?)\)(?= \[|$)", rest, re.S)
                 if lab:
                     n["label"] = lab.group(1)
-            ident = re.search(r"\[id=([^\s\]]+)", rest)
+            ident = re.search(r"\[id=([^\s\]]+)", tail)
             if ident:
                 n["id"] = ident.group(1)
             # a child that repeats its parent's text is the same text, not a second line
@@ -199,11 +212,23 @@ class Snap:
     # ---- what the transcript and cards say
 
     def texts(self):
-        """Depth-1 static texts in tree order: [{'text', 'bot'}]. bot = it carries the Copy action."""
+        """Depth-1 static texts in tree order: [{'text', 'bot', 'y', 'x', 'code'}]. bot = it carries the Copy
+        action. y and x are the element frame when the tree gives one. A text with no frame (a code block, a
+        user bubble) takes the position of the last framed node before it (a code block follows its 'Copy
+        code' button). code = the text sits right after a 'Copy code' button."""
         out = []
+        last = (0.0, 0.0)
+        after_copy_code = False
         for n in self.nodes:
+            fr = n.get("frame")
+            if fr:
+                last = (fr["y"], fr["x"])
+            if n["role"] == "AXButton":
+                after_copy_code = n["label"] == "Copy code"
             if n["role"] == "AXStaticText" and n["value"] is not None and n["depth"] == 1:
-                out.append({"text": n["value"], "bot": n["copy"]})
+                out.append({"text": n["value"], "bot": n["copy"], "y": fr["y"] if fr else last[0] + 0.01,
+                            "x": fr["x"] if fr else last[1], "framed": bool(fr), "code": after_copy_code and not fr})
+                after_copy_code = False
         return out
 
     def working_label(self):
@@ -228,10 +253,12 @@ class Snap:
                         continue
                     if m["role"] == "AXStaticText" and m["value"] is not None:
                         texts.append(m["value"])
-                    if len(texts) > 8:
+                    if len(texts) > 12:
                         break
-                cards.append({"tool": texts[0] if texts else "", "preview": texts[-1] if len(texts) > 1 else "",
-                              "texts": texts})
+                # texts[0] is the tool name; everything after it up to Deny is what the owner is approving
+                # (a command, a path and a body). "From another chat" lines are not part of it.
+                body = [t for t in texts[1:] if not t.startswith("From another chat")]
+                cards.append({"tool": texts[0] if texts else "", "preview": "\n".join(body), "texts": texts})
         return cards
 
     def question_cards(self):
@@ -532,6 +559,9 @@ def split_turn(texts, prompt, before_bot):
         tail = bots[before_bot:]
         found = False
     tail = [t for t in tail if t["text"] not in UI_STRINGS and not t["text"].startswith("Message ")]
+    # The tree does not list a bubble's paragraphs in screen order after a streamed turn (the first
+    # paragraph of the last bubble came last), so order by position on screen. sorted() is stable.
+    tail = sorted(tail, key=lambda t: (t["y"], t["x"]))
     return tail, found
 
 
@@ -541,19 +571,78 @@ def render_lines(items):
         if t["text"] == "•":
             bullet = True
             continue
-        out.append(("- " if bullet else "") + t["text"])
+        text = "```\n" + t["text"] + "\n```" if t.get("code") else t["text"]
+        out.append(("- " if bullet else "") + text)
         bullet = False
     return "\n".join(out)
+
+
+def chat_rows(snap):
+    return [e for e in (snap.element_by_idx(n["idx"]) for n in snap.nodes
+                        if n["id"] == "chat-row" and n["idx"] is not None) if e]
+
+
+def reopen_chat(drv):
+    """Show another chat for a moment and come back, so the app redraws this one from its store.
+    Pure navigation: two sidebar clicks, nothing sent. The chat that just had a turn is the first row."""
+    snap = drv.snapshot()
+    rows = chat_rows(snap)
+    if len(rows) < 2:
+        return "skipped: fewer than two chats in the sidebar"
+    mine = rows[0].get("label")
+    for pick in (1, 0):
+        snap = drv.snapshot()
+        rows = chat_rows(snap)
+        if len(rows) < 2 or (pick == 0 and rows[0].get("label") != mine):
+            return f"failed: sidebar rows changed (wanted {mine!r} first)"
+        r = drv.click(snap, rows[pick])
+        if r.get("refusal") or r.get("status") == "refused":
+            return f"failed: click refused: {r}"
+        time.sleep(1.0)
+    return "ok"
+
+
+def read_turn(drv, prompt, before_bot, shot):
+    """Read the finished turn off the window. The tree read right after a streamed turn has come back with
+    paragraphs out of order and cut short (t02, t04, t07 of the first baseline), so: read once, redraw the
+    chat (reopen_chat), then read until two reads in a row give the same reply. Items are ordered by their
+    frames in split_turn. Returns (snapshot, tail, found, info)."""
+    first = drv.snapshot()
+    tail0, _ = split_turn(first.texts(), prompt, before_bot)
+    info = {"reply_before_redraw": render_lines(tail0)}
+    try:
+        info["redraw"] = reopen_chat(drv)
+    except Exception as e:  # the redraw is a repair step: a failure is recorded, the read still happens
+        info["redraw"] = f"error: {e}"
+    prev = None
+    for n in range(1, 7):
+        time.sleep(1.0)
+        final = drv.snapshot(shot=shot)
+        tail, found = split_turn(final.texts(), prompt, before_bot)
+        cur = render_lines(tail)
+        if cur == prev:
+            info.update({"reply_reads": n, "reply_stable": True})
+            break
+        prev = cur
+    else:
+        info.update({"reply_reads": 6, "reply_stable": False})
+    if info["reply_before_redraw"] == prev:
+        del info["reply_before_redraw"]  # kept only when the redraw changed something
+    return final, tail, found, info
 
 
 def run_turn(drv, prompt, policy, shot, turn_no, dry=False):
     pre = drv.snapshot()
     before_bot = len([t for t in pre.texts() if t["bot"]])
     t_send_wall = time.time()
-    t0 = time.monotonic()
+    t_prep = time.monotonic()
     send_info = send_prompt(drv, prompt)
+    # The clock starts when the Send click has returned. Typing, the AX walks around it and the click
+    # itself (cua-driver animates the agent cursor, about 2.6 s per click) are not the bot's time.
+    t0 = time.monotonic()
     rec = {"turn": turn_no, "prompt": prompt, "sent_at_ms": int(t_send_wall * 1000), "activity": [], "cards": [],
-           "questions": [], "timeout": False, "never_busy": False, "send": send_info}
+           "questions": [], "timeout": False, "never_busy": False, "send": send_info,
+           "prep_s": round(t0 - t_prep, 2)}
     busy_seen = False
     first_busy = None
     idle_since = None
@@ -626,15 +715,17 @@ def run_turn(drv, prompt, policy, shot, turn_no, dry=False):
     rec["first_busy_s"] = round(first_busy, 2) if first_busy is not None else None
     rec["never_busy"] = not busy_seen
     rec["ended_at_ms"] = int(time.time() * 1000)
-    final = drv.snapshot(shot=shot)
+    final, tail, found, read_info = read_turn(drv, prompt, before_bot, shot)
     texts = final.texts()
-    tail, found = split_turn(texts, prompt, before_bot)
+    rec.update(read_info)
     rec["user_bubble_found"] = found
     rec["reply"] = render_lines(tail)
     rec["reply_items"] = tail
     rec["screenshot"] = os.path.relpath(shot, HERE) if shot else None
     # a failure row or an unsent row is text under the transcript; keep every static line for the judge
-    rec["transcript_full"] = render_lines([{"text": ("USER: " if (not t["bot"] and normalise(t["text"]) == normalise(prompt)) else "") + t["text"], "bot": t["bot"]} for t in texts])
+    rec["transcript_full"] = render_lines([{**t, "text": ("USER: " if (not t["bot"] and normalise(t["text"]) == normalise(prompt)) else "") + t["text"]}
+                                           for t in sorted((t for t in texts if t["text"] not in UI_STRINGS and not t["text"].startswith("Message ")),
+                                           key=lambda t: (t["y"], t["x"]))])
     return rec
 
 
@@ -915,7 +1006,7 @@ def main():
                 ctx["turns"] = turns
                 ctx["cards"] += tr["cards"]
                 ctx["activity"] += tr["activity"]
-                log(f"    wall {tr['wall_s']}s, first work {tr['first_busy_s']}s, cards {len(tr['cards'])}"
+                log(f"    wall {tr['wall_s']}s, first work {tr['first_busy_s']}s after Send, cards {len(tr['cards'])}"
                     f"{', TIMEOUT' if tr['timeout'] else ''}{', never busy' if tr['never_busy'] else ''}")
                 if tr["timeout"]:
                     rec["errors"].append(f"turn {i + 1} hit the {int(TURN_LIMIT_S)}s limit; later turns skipped")

@@ -48,7 +48,7 @@ Per task, in `runs/<run-id>/<task-id>.json` (plus `judge-input/<task-id>.md` and
 | Measure | How |
 |---|---|
 | Pass | deterministic checks (files, memory notes, routines, cards) plus the judge's rubric verdict |
-| Latency | wall seconds per turn, from clicking Send to the moment the turn stopped working (the 3 s idle confirmation is not counted), time to the first sign of work, and per-task total |
+| Latency | wall seconds per turn, from the moment the Send click returned to the moment the turn stopped working (the 3 s idle confirmation is not counted), `first_busy_s` (seconds from Send to the first poll that saw the Stop button, a working row or a card; an upper bound, resolution about 0.3 s, and 0 means work was already visible when the click returned), `prep_s` (typing and the Send click, not counted), and the per-task total |
 | Cost | `cost.py`: input and output tokens from the router's usage records for the task's time window, priced from `prices.json` |
 | Behaviour | every approval card seen (tool, preview, what the harness clicked), every question card, the working-row labels in time order (which tools it used), the full transcript text, a screenshot at the end of each turn |
 
@@ -56,6 +56,17 @@ Per task, in `runs/<run-id>/<task-id>.json` (plus `judge-input/<task-id>.md` and
 harness commit, cua-driver version) and the ids of any routines the run created. Task 7 creates a
 routine: **the harness never deletes anything**, so the orchestrator removes that routine after the
 run (its id is in `run.json` under `created_routines`).
+
+### Reading the reply
+
+The accessibility tree lists a text value across several lines when it has newlines (a code block, a
+bash command in an approval card), and after a streamed turn it can list a bubble's paragraphs out of
+screen order or cut short. The harness joins multi-line values, orders the reply by element frames
+(a code block, which has no frame, takes the place of its "Copy code" button), renders code blocks as
+fenced text, then reads the transcript only after redrawing the chat (it shows the chat above the
+current one for a moment and comes back: two sidebar clicks, nothing sent) and until two reads in a row
+agree. `reply_before_redraw` is kept in a turn's record when the redraw changed the text, and
+`reply_stable` says whether the reads settled. Approval cards keep the whole preview after the tool name.
 
 ### Idle detection
 
