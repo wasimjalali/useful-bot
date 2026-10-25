@@ -79,11 +79,11 @@ struct ComposerTextView: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = false
         textView.isGrammarCheckingEnabled = false
         textView.font = .systemFont(ofSize: DesignTokens.FontSize.chatBody)
-        textView.textColor = NSColor(Theme.C.ink)
-        textView.insertionPointColor = NSColor(Theme.C.ink)
+        textView.textColor = Theme.NS.ink
+        textView.insertionPointColor = Theme.NS.ink
         textView.typingAttributes = [
             .font: NSFont.systemFont(ofSize: DesignTokens.FontSize.chatBody),
-            .foregroundColor: NSColor(Theme.C.ink),
+            .foregroundColor: Theme.NS.ink,
         ]
         textView.minSize = NSSize(width: 0, height: Self.minHeight)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
