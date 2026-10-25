@@ -15,12 +15,16 @@ import { pathToFileURL } from "node:url";
 export function spawnWithSecrets(command, args, { cwd, env, secrets, preload, stdio = ["pipe", "inherit", "inherit"] }) {
   const child = spawn(command, ["--import", pathToFileURL(preload).href, ...args], {
     cwd,
-    env,
+    // The marker tells the preload to read stdin; without it an inherited preload does nothing.
+    env: { ...env, UB_SECRETS_ON_STDIN: "1" },
     stdio: ["pipe", stdio[1], stdio[2]],
   });
-  // A child that dies before reading its stdin is reported by its exit, not by a broken pipe.
   child.stdin.on("error", (error) => {
-    if (error.code !== "EPIPE") throw error;
+    // A child that dies before reading its stdin is reported by its exit, not by a broken pipe.
+    if (error.code === "EPIPE") return;
+    // One that cannot get its secrets must not run on without them.
+    process.stderr.write(`${JSON.stringify({ service: "service-secrets", error: "secrets_handoff_failed", code: error.code })}\n`);
+    child.kill("SIGKILL");
   });
   child.stdin.end(`${JSON.stringify(secrets ?? {})}\n`);
   return child;

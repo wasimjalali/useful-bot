@@ -77,7 +77,7 @@ test("the preload refuses bad input with exit 2 and a JSON line, and starts with
   const run = (input: string | undefined) =>
     spawnSync(process.execPath, ["--import", PRELOAD_URL, "-e", `process.stdout.write(String(Object.keys(process.env).filter((k) => k.startsWith("UB_")).length))`], {
       input,
-      env: { PATH: process.env.PATH },
+      env: { PATH: process.env.PATH, UB_SECRETS_ON_STDIN: "1" },
       encoding: "utf8",
     });
   for (const [label, input] of [
@@ -162,6 +162,152 @@ test("a release stage carries the files that deliver the secrets, and no launche
   for (const file of ["scripts/service.mjs", "scripts/smoke-runtime.mjs"]) {
     const source = readFileSync(join(ROOT, file), "utf8");
     assert.ok(!/\benv\.UB_(ENGINE_TOKEN|ROUTER_DESKTOP_TOKEN|OPENCODE_GO_KEY)\s*=/.test(source), `${file} assigns no secret into an env`);
+  }
+});
+
+/** Runs `body` (an ES module) as a service that holds the marker secret; resolves with the one JSON line it prints. */
+async function inService(body: string): Promise<any> {
+  const dir = scratch();
+  let service: ChildProcess | null = null;
+  try {
+    const script = join(dir, "service.mjs");
+    writeFileSync(script, body);
+    service = spawnWithSecrets(process.execPath, [script], {
+      cwd: dir,
+      env: { PATH: process.env.PATH },
+      secrets: { [KEY]: MARK },
+      preload: PRELOAD,
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    return JSON.parse(await Promise.race([
+      readLine(service!),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the service never answered in 20 s")), 20_000)),
+    ]));
+  } finally {
+    service?.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("a worker thread's env drops the secrets, so nothing it starts can pass them on", async () => {
+  const results = await inService(`
+    import { Worker, SHARE_ENV } from "node:worker_threads";
+    const probe = 'printf "%s" "$' + '{${KEY}-gone}"';
+    const code = \`
+      const cp = require("node:child_process");
+      const { parentPort } = require("node:worker_threads");
+      parentPort.postMessage({
+        env: process.env.${KEY} ?? null,
+        child: cp.spawnSync("/bin/sh", ["-c", \${JSON.stringify(probe)}], { encoding: "utf8" }).stdout,
+      });\`;
+    const results = {};
+    for (const [label, options] of [["default", {}], ["parent env", { env: process.env }]]) {
+      const worker = new Worker(code, { eval: true, ...options });
+      results[label] = await new Promise((resolve, reject) => { worker.once("message", resolve); worker.once("error", reject); });
+    }
+    try { new Worker("", { eval: true, env: SHARE_ENV }); results.shared = "allowed"; } catch (error) { results.shared = "refused"; }
+    process.stdout.write(JSON.stringify(results) + "\\n");
+    setInterval(() => {}, 1000);
+  `);
+  for (const label of ["default", "parent env"]) {
+    assert.deepEqual(results[label], { env: null, child: "gone" }, `worker with ${label}`);
+  }
+  assert.equal(results.shared, "refused", "a worker that shares the real environment is refused: it cannot be stripped");
+});
+
+test("a null or undefined args slot is an empty one in every wrapped call", async () => {
+  const results = await inService(`
+    import cp from "node:child_process";
+    import { writeFileSync } from "node:fs";
+    import path from "node:path";
+    const script = 'printf "%s|%s" "$PWD" "\${${KEY}-gone}"';
+    const results = {};
+    results.spawnSyncUndefined = cp.spawnSync("/bin/sh", undefined, { input: script, encoding: "utf8", cwd: "/" }).stdout;
+    results.spawnSyncNull = cp.spawnSync("/bin/sh", null, { input: script, encoding: "utf8", cwd: "/" }).stdout;
+    results.spawnNull = await new Promise((resolve) => {
+      let out = "";
+      const child = cp.spawn("/bin/sh", null, { cwd: "/" });
+      child.stdout.on("data", (d) => (out += d));
+      child.on("close", () => resolve(out));
+      child.stdin.end(script);
+    });
+    results.execFileNullOptions = await new Promise((resolve) => cp.execFile("/bin/sh", ["-c", script], null, (e, out) => resolve(out)));
+    results.execFileSyncNull = cp.execFileSync("/bin/sh", ["-c", script], null) + "";
+    results.execNullOptions = await new Promise((resolve) => cp.exec(script, null, (e, out) => resolve(out)));
+
+    // An options slot that exists and holds null or undefined is replaced, not shifted: callbacks still fire.
+    const plain = 'printf "%s" "\${${KEY}-gone}"';
+    const kid = path.join(process.cwd(), "kid.mjs");
+    writeFileSync(kid, 'process.send({ seen: process.env.${KEY} ?? null });');
+    for (const empty of [null, undefined]) {
+      const label = String(empty);
+      results["execFile " + label] = await new Promise((resolve) => cp.execFile("/bin/sh", ["-c", plain], empty, (e, out) => resolve(out)));
+      results["exec " + label] = await new Promise((resolve) => cp.exec(plain, empty, (e, out) => resolve(out)));
+      results["spawn " + label] = await new Promise((resolve) => {
+        let out = "";
+        const child = cp.spawn("/bin/sh", ["-c", plain], empty);
+        child.stdout.on("data", (d) => (out += d));
+        child.on("close", () => resolve(out));
+      });
+      results["spawnSync " + label] = cp.spawnSync("/bin/sh", ["-c", plain], empty).stdout.toString();
+      results["execFileSync " + label] = cp.execFileSync("/bin/sh", ["-c", plain], empty).toString();
+      results["fork " + label] = (await new Promise((resolve) => {
+        const child = cp.fork(kid, [], empty);
+        child.once("message", (message) => { child.kill("SIGKILL"); resolve(message); });
+      })).seen;
+    }
+    process.stdout.write(JSON.stringify(results) + "\\n");
+    setInterval(() => {}, 1000);
+  `);
+  for (const key of ["spawnSyncUndefined", "spawnSyncNull", "spawnNull"]) {
+    assert.equal(results[key], "/|gone", `${key} keeps its options and strips the secret`);
+  }
+  for (const key of ["execFileNullOptions", "execFileSyncNull", "execNullOptions"]) {
+    assert.ok(results[key].endsWith("|gone"), `${key} still runs and strips the secret: ${results[key]}`);
+  }
+  for (const label of ["null", "undefined"]) {
+    for (const call of ["execFile", "exec", "spawn", "spawnSync", "execFileSync"]) {
+      assert.equal(results[`${call} ${label}`], "gone", `${call} with ${label} options still runs and its child sees no secret`);
+    }
+    assert.equal(results[`fork ${label}`], MARK, `fork with ${label} options still hands the secret over stdin`);
+  }
+});
+
+test("fork with an undefined args slot keeps its options, and a caller that wants the child's stdin is refused loudly", async () => {
+  const results = await inService(`
+    import cp from "node:child_process";
+    import { writeFileSync } from "node:fs";
+    import path from "node:path";
+    const kid = path.join(process.cwd(), "kid.mjs");
+    writeFileSync(kid, 'process.stdout.write(JSON.stringify({ cwd: process.cwd(), seen: process.env.${KEY} ?? null }) + "\\\\n"); setInterval(() => {}, 1000);');
+    const results = {};
+    const child = cp.fork(kid, undefined, { cwd: "/", stdio: ["inherit", "pipe", "inherit", "ipc"] });
+    results.child = await new Promise((resolve) => child.stdout.once("data", (d) => resolve(JSON.parse(String(d)))));
+    child.kill("SIGKILL");
+    for (const stdio of ["pipe", ["pipe", "inherit", "inherit", "ipc"]]) {
+      try { cp.fork(kid, [], { stdio }); results["refused " + JSON.stringify(stdio)] = false; } catch (error) { results["refused " + JSON.stringify(stdio)] = /stdin/.test(error.message); }
+    }
+    process.stdout.write(JSON.stringify(results) + "\\n");
+    setInterval(() => {}, 1000);
+  `);
+  assert.deepEqual(results.child, { cwd: "/", seen: MARK });
+  assert.equal(results['refused "pipe"'], true);
+  assert.equal(results['refused ["pipe","inherit","inherit","ipc"]'], true);
+});
+
+test("a preload inherited by a descendant that is not handed secrets does nothing, even with a stdin that never closes", async () => {
+  const child = spawn(process.execPath, ["--import", PRELOAD_URL, "-e", `process.stdout.write("ran")`], {
+    env: { PATH: process.env.PATH },
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  try {
+    const code = await Promise.race([
+      new Promise<number | null>((resolve) => child.once("exit", resolve)),
+      new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 5000)),
+    ]);
+    assert.equal(code, 0, "the descendant ran instead of waiting on its stdin");
+  } finally {
+    child.kill("SIGKILL");
   }
 });
 
