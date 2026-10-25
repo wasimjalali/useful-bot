@@ -217,8 +217,10 @@ struct RoutineEditorView: View {
     @State private var loadedId: String?
     @State private var confirmingDelete = false
     @FocusState private var focus: Field?
+    /// The instruction box holds the caret (it's AppKit, outside `focus`).
+    @State private var instructionFocused = false
 
-    private enum Field: Hashable { case name, instruction }
+    private enum Field: Hashable { case name }
 
     /// The zone the server reads this routine's wall clock in. A new routine
     /// has none yet, and the server stamps the host's, so that is what the
@@ -305,7 +307,7 @@ struct RoutineEditorView: View {
             // A write of this routine still in flight owns the rows: a poll
             // that lands between the edit and its echo would put the old
             // server copy back over it.
-            guard focus == nil, let current = routine, !model.routineBusy.contains(current.id) else { return }
+            guard focus == nil, !instructionFocused, let current = routine, !model.routineBusy.contains(current.id) else { return }
             name = current.name
             instruction = current.instruction
             seedName = current.name
@@ -323,7 +325,10 @@ struct RoutineEditorView: View {
         }
         .onChange(of: focus) { _, next in
             // One write for both fields: a second one on the routine is queued behind the first.
-            if next == nil, let loadedId { commitEdits(id: loadedId) }
+            if next == nil, !instructionFocused, let loadedId { commitEdits(id: loadedId) }
+        }
+        .onChange(of: instructionFocused) { _, next in
+            if !next, focus == nil, let loadedId { commitEdits(id: loadedId) }
         }
     }
 
@@ -371,32 +376,15 @@ struct RoutineEditorView: View {
     }
 
     private var instructionEditor: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $instruction)
-                .font(.system(size: DesignTokens.FontSize.fieldInput))
-                .foregroundStyle(Theme.C.ink)
-                .scrollContentBackground(.hidden)
-                .scrollIndicators(.never)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .frame(minHeight: 96)
-                .focused($focus, equals: .instruction)
-                .accessibilityIdentifier("routine-instruction")
-            if instruction.isEmpty {
-                Text("What \(bot.name) should do each time")
-                    .font(.system(size: DesignTokens.FontSize.fieldInput))
-                    .foregroundStyle(Theme.C.inkFaint)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .allowsHitTesting(false)
-            }
-        }
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                .strokeBorder(focus == .instruction ? Theme.C.ink : Theme.C.borderStrong, lineWidth: 1)
+        TextBox(
+            text: $instruction,
+            placeholder: "What \(bot.name) should do each time",
+            minHeight: 96,
+            maxHeight: 220,
+            accessibilityLabel: "Instruction",
+            accessibilityIdentifier: "routine-instruction",
+            focused: $instructionFocused
         )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
     }
 
     // MARK: Schedules

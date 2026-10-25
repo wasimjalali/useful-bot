@@ -137,8 +137,6 @@ final class AppModel: ObservableObject {
     /// Recently decided approvals, briefly hidden from a racing poll.
     private var decidedApprovals: [String: Date] = [:]
     @Published private(set) var approvalError: String?
-    /// Web results the newest turn surfaced, shown as chips under the transcript.
-    @Published private(set) var searchHits: [SearchChip] = []
     /// The question the open chat's bot is waiting on the owner to answer.
     @Published private(set) var openQuestions: [OwnerQuestion] = []
 
@@ -891,7 +889,6 @@ final class AppModel: ObservableObject {
         projection = ChatProjection()
         transcript = []
         transcriptBlocks = []
-        searchHits = []
         openQuestions = []
         activity = .thinking
         activityCall = nil
@@ -2063,7 +2060,6 @@ final class AppModel: ObservableObject {
             transcript = rows
             transcriptBlocks = blocks
         }
-        if searchHits != projection.searchHits { searchHits = projection.searchHits }
         let questions = projection.openQuestion.map { [$0] } ?? []
         if openQuestions != questions { openQuestions = questions }
         publishActivity()

@@ -17,7 +17,7 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .general: return "General"
-        case .instructions: return "Instructions and memory"
+        case .instructions: return "Personalization"
         case .providers: return "Providers"
         case .computer: return "Computer"
         case .usage: return "Usage"
@@ -29,7 +29,7 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
-        case .instructions: return "text.alignleft"
+        case .instructions: return "person.crop.circle"
         case .providers: return "server.rack"
         case .computer: return "desktopcomputer"
         case .usage: return "chart.bar"
@@ -39,7 +39,7 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// `.settings-modal`: a 244pt nav rail (wide enough for "Instructions and memory" on one line) and the scrolling pane, 860x640.
+/// `.settings-modal`: a 244pt nav rail and the scrolling pane, 860x640.
 struct AppSettingsView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -308,7 +308,7 @@ struct AppSettingsView: View {
         }
     }
 
-    // MARK: - Instructions and memory
+    // MARK: - Personalization (instructions and memory)
 
     @ViewBuilder
     private var instructionsPane: some View {
@@ -959,31 +959,15 @@ struct AppSettingsView: View {
                 Text("Your message")
                     .font(.system(size: DesignTokens.FontSize.fieldLabel, weight: .medium))
                     .foregroundStyle(Theme.C.inkMuted)
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: $feedbackDraft.message)
-                        .font(.system(size: DesignTokens.FontSize.fieldInput))
-                        .foregroundStyle(Theme.C.ink)
-                        .scrollContentBackground(.hidden)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 8)
-                        .accessibilityLabel("Your message")
-                        .accessibilityIdentifier("feedback-message")
-                    if feedbackDraft.message.isEmpty {
-                        Text(feedbackPlaceholder)
-                            .font(.system(size: DesignTokens.FontSize.fieldInput))
-                            .foregroundStyle(Theme.C.inkFaint)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
-                }
-                .frame(height: 150)
-                .background(Theme.C.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                        .strokeBorder(feedbackLength > Feedback.messageMax ? Theme.C.danger : Theme.C.borderStrong, lineWidth: 1)
+                TextBox(
+                    text: $feedbackDraft.message,
+                    placeholder: feedbackPlaceholder,
+                    minHeight: 150,
+                    maxHeight: 150,
+                    invalid: feedbackLength > Feedback.messageMax,
+                    accessibilityLabel: "Your message",
+                    accessibilityIdentifier: "feedback-message"
                 )
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
                 // The count shows only near the limit, where it matters.
                 if feedbackLength > Feedback.messageMax - 500 {
                     Text("\(feedbackLength.formatted(.number.locale(Locale(identifier: "en_US")))) of 4,000")
@@ -1133,37 +1117,22 @@ struct AppSettingsView: View {
 
 /// System, Light and Dark as a pop-up button: the choice on a grey pill, a
 /// chevron, the system menu.
+/// The theme as three icons, the same control as the account menu's: small,
+/// and every choice is one click.
 private struct AppearancePicker: View {
     @Binding var selection: AppAppearance
 
     var body: some View {
-        Menu {
-            ForEach(AppAppearance.allCases) { option in
-                Button {
-                    selection = option
-                } label: {
-                    if option == selection {
-                        Label(option.label, systemImage: "checkmark")
-                    } else {
-                        Text(option.label)
-                    }
-                }
-            }
-        } label: {
-            // Wide enough for the longest choice: macOS sizes this menu to
-            // the button, and at "Light"'s width it cut "System" to "Sy…m".
-            SettingsPopUpLabel(title: selection.label)
-                .frame(minWidth: 96, alignment: .trailing)
-        }
-        // The button style with a plain look draws the label as built; the
-        // borderless style flattens it to text and moves the chevron.
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .pointerOnHover()
-        .accessibilityLabel("Theme")
-        .accessibilityValue(selection.label)
+        ToneSegmented(
+            items: AppAppearance.allCases,
+            selection: $selection,
+            height: 30,
+            accessibilityLabel: "Theme",
+            label: { option in AnyView(Image(systemName: option.systemImage).font(.system(size: 12))) },
+            name: { $0.label }
+        )
+        .frame(width: 76)
+        .accessibilityIdentifier("settings-appearance")
     }
 }
 

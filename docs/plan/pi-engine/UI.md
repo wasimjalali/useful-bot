@@ -186,11 +186,11 @@ history views (`ChatDetailsPaneView.swift` 149-786) at full width:
   Turning a moved routine on or editing it clears its `movedFrom`; Dismiss on the notice clears
   them all (one `PATCH` per moved routine).
 
-## 6. Instructions and memory (Settings)
+## 6. Personalization (instructions and memory) (Settings)
 
 There is no Bot pane. Its contents move to app Settings:
 
-- **Settings > Instructions and memory** (new tab, second in the list):
+- **Settings > Personalization** (new tab, second in the list):
   - **Instructions**: today's editor with the instruction counter ("1,240 of 8,000",
     `/api/bots/context`) and the hint "Useful Bot reads these at the start of every chat."
   - **Memory**: the notes list (title, who saved it, date, remove), "Show all N notes"; today's
@@ -216,8 +216,8 @@ Tabs **All**, **Chats**, **Library**, **Routines**:
 
 ## 8. Settings (app)
 
-- Tabs: **General, Instructions and memory** (section 6), **Providers, Computer, Usage, Feedback,
-  About**. The nav is 244pt (not 220) so "Instructions and memory" fits on one line. Providers drops the reviewer role row.
+- Tabs: **General, Personalization** (section 6), **Providers, Computer, Usage, Feedback,
+  About**. The nav is 244pt. Providers drops the reviewer role row.
 - **Earlier bots** (new, in General, shown only if the migration archived any): one row per earlier
   bot with its name and memory-note count, and three buttons in fixed columns: **Copy instructions**,
   **Move notes** (hidden but holding its place when the bot has no notes) and **Remove** (confirm; deletes that archived bot's record and archives its notes, so they leave memory). This is the
@@ -284,8 +284,8 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | App page Reconnect and Disconnect (Refresh for a direct MCP server) | `/api/connectors` (Composio), `/api/connections` (MCP), the same calls as today | 2 |
 | Account row owner name | `GET /api/status` (operator name) | 2 |
 | App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read`, `write` or `destructive`, the last two under Writes) from `connector-risk.ts` | 2b |
-| Settings > Instructions and memory: instructions and counter | `PUT /api/shell` `updateBot`, `GET /api/bots/context` | 2, 3 (engine-measured) |
-| Settings > Instructions and memory: memory | `/api/memory` | 2 |
+| Settings > Personalization: instructions and counter | `PUT /api/shell` `updateBot`, `GET /api/bots/context` | 2, 3 (engine-measured) |
+| Settings > Personalization: memory | `/api/memory` | 2 |
 | Settings > General: notify when a chat finishes | `PUT /api/shell` `updateBot {notify}` on the one bot; the "only in the background or when closed" rule is today's app-side check, not a setting | 2 |
 | Composer model chip | `/api/providers` composer state | 2 |
 | Composer folder and permission | `PUT /api/shell` `setWorkspace`, `setPermission`; `/api/workspace` | 2 |
@@ -320,7 +320,7 @@ cards; group avatar stack; reviewer role row; Bots and Groups in search; the rai
 ## 12. Verification
 
 Screenshots (light and dark) of: sidebar with all five chat states, row menu, rename, delete
-confirm, Routines page, Library page, Settings > Instructions and memory, search palette with a
+confirm, Routines page, Library page, Settings > Personalization, search palette with a
 message hit, an approval from another chat, Earlier bots, Connectors with a Sign in again chip, an
 app's tools page. Compare each against its After artboard. A 30 fps recording of: sending a message while another chat's routine
 runs (its row turns to working, then reply ready, then the notification), and of deleting the open
@@ -336,7 +336,7 @@ chat. All in Useful Bot Dev with its one bot.
 | Rename | dialog | inline in the sidebar row (the artboard's header rename is superseded by 4.1) |
 | Approval card | the other bot's name | "From another chat: TITLE", Open chat |
 | Routines | in each bot's pane | own page, one chat per routine, moved-routines notice |
-| Instructions and memory | the bot's Settings pane | Settings tab, no Profile |
+| Personalization | the bot's Settings pane | Settings tab, no Profile |
 | Search | Bots, Groups, New Bot | Chats, Library, Routines, message hits |
 | New chat | "To: Search or create bots" picker | empty chat with the logo and the first-launch note |
 | Your other bots | sidebar rows | Settings > General > Earlier bots |
