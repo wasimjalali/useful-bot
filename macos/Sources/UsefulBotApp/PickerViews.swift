@@ -18,6 +18,7 @@ struct SearchPaletteView: View {
     @State private var tab: SearchTab = .all
     @State private var active = 0
     @State private var media: [MediaItem] = []
+    @State private var mediaFailed = false
     @FocusState private var focused: Bool
 
     enum SearchTab: String, CaseIterable {
@@ -184,7 +185,11 @@ struct SearchPaletteView: View {
         }
         .task {
             // The Library has no copy in the model; read it when the palette opens.
-            if let listed = try? await GeneratedImageCache.shared.mediaList() { media = listed.items }
+            do {
+                media = try await GeneratedImageCache.shared.mediaList().items
+            } catch {
+                mediaFailed = true
+            }
         }
         .onExitCommand {
             if query.isEmpty {
@@ -257,6 +262,14 @@ struct SearchPaletteView: View {
                             .foregroundStyle(Theme.C.inkMuted)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 12)
+                    }
+                    // Library hits are missing, not absent: say so quietly.
+                    if mediaFailed, tab == .all || tab == .library {
+                        Text("Couldn't load the library")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkFaint)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
                     }
                 }
                 .padding(8)

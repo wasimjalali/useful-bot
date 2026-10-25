@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { mcpToolRisk, type ConnectorRisk } from "../agent/lib/connector-risk.ts";
+import { type ConnectorRisk } from "../agent/lib/connector-risk.ts";
 import { parseBundle, refreshLockPath, withRefreshLock } from "./connection-auth.ts";
 import { cancelDiscovery, discoverConnection, discoveryRunning, settleAllDiscoveries } from "./connection-tools.ts";
 import { connectionIcon, removeConnectionIcon, settleIcons, startDueIcons } from "./connection-icons.ts";
@@ -80,7 +80,9 @@ export function publicConnection(entry: ConnectionEntry): PublicConnection {
     lastError: status?.lastError ?? null,
     checkedAt: status?.checkedAt ?? index?.fetchedAt ?? null,
     toolCount: status?.toolCount ?? (index && !index.failed ? index.tools.length : null),
-    tools: (index?.tools ?? []).map((tool) => ({ name: tool.name, description: oneLine(tool.description, 200), risk: mcpToolRisk(tool.name) })),
+    // Every MCP tool is a write here, whatever its name: `mcpToolGate` asks for all of them in Auto,
+    // so the page must not promise a `read_*` tool runs without asking.
+    tools: (index?.tools ?? []).map((tool) => ({ name: tool.name, description: oneLine(tool.description, 200), risk: "write" as const })),
     icon: connectionIcon(entry.id),
   };
 }

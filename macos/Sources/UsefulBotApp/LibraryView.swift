@@ -110,11 +110,26 @@ struct LibraryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             await load()
-            if let id = model.libraryFocusId {
-                model.libraryFocusId = nil
-                selected = items.first { $0.id == id }
+            focusPicked()
+        }
+        // A palette hit while Library is already open: the page is not loaded
+        // again, so the pick is read here.
+        .onChange(of: model.libraryFocusId) { _, id in
+            guard id != nil else { return }
+            Task {
+                // An item made since the page loaded is not in the list yet.
+                if !items.contains(where: { $0.id == id }) { await load() }
+                focusPicked()
             }
         }
+    }
+
+    /// Open the detail of the item the palette picked, and drop the pick
+    /// whether or not it resolved, so a missing item is not kept for later.
+    private func focusPicked() {
+        guard let id = model.libraryFocusId else { return }
+        model.libraryFocusId = nil
+        if let item = items.first(where: { $0.id == id }) { selected = item }
     }
 
     private var toolbar: some View {

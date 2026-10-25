@@ -75,8 +75,10 @@ private struct InstructionsSection: View {
     private var limit: Int { context?.max ?? InstructionsLimit.max }
     private var dirty: Bool { draft != base }
     /// The stored text moved since the draft started (another window or the
-    /// bot edited it), so a plain Save would overwrite that change.
-    private var changedElsewhere: Bool { seeded && dirty && bot.description != base }
+    /// bot edited it), so a plain Save would overwrite that change. A stored
+    /// text that is the draft itself (a save that landed while Settings was
+    /// closed) is not a change by someone else.
+    private var changedElsewhere: Bool { seeded && dirty && bot.description != base && bot.description != draft }
     private var over: Bool { !InstructionsLimit.canSave(draft, max: limit) }
 
     private var restoreText: String? {

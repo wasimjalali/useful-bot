@@ -277,6 +277,10 @@ struct ChatView: View {
                         .accessibilityIdentifier("approval-open-chat")
                     Spacer(minLength: 0)
                 }
+            } else if model.approvalFromUnlistedChat(item) {
+                Text("From another chat")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkFaint)
             }
             // The preview is what the owner is approving; a single truncated
             // line hides the end of a command or an instruction they are

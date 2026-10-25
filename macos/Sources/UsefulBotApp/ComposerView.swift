@@ -328,7 +328,10 @@ struct ComposerView: View {
                 canSend: { canSend },
                 pending: { model.pending },
                 onSend: { send() },
-                onFocusChange: { focused = $0 },
+                onFocusChange: {
+                    focused = $0
+                    model.composerFocused = $0
+                },
                 onDropFiles: { model.addAttachments($0) },
                 focusToken: model.composerFocusToken
             )

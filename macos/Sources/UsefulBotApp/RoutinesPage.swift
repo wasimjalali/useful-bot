@@ -297,6 +297,7 @@ struct RoutineEditorView: View {
                             }
                             .accessibilityIdentifier("routine-save")
                             NativeButton("Cancel", kind: .secondary, small: true) {
+                                model.routineDraft = nil
                                 model.closeRoutineDetail()
                             }
                             .accessibilityIdentifier("routine-cancel")
@@ -314,7 +315,14 @@ struct RoutineEditorView: View {
             .uvScroll()
         }
         .onAppear(perform: seed)
+        .onDisappear {
+            // Leaving the page with an edit in a focused field saves it.
+            if let loadedId { commitEdits(id: loadedId) }
+        }
         .onChange(of: routine?.id) { _, _ in seed() }
+        .onChange(of: name) { _, _ in keepDraft() }
+        .onChange(of: instruction) { _, _ in keepDraft() }
+        .onChange(of: schedules) { _, _ in keepDraft() }
         // A server-side turn can edit the routine while the pane is open.
         // The refreshed row reseeds the fields, unless the owner is typing
         // in one of them: a poll must never overwrite an edit in progress,
@@ -539,11 +547,32 @@ struct RoutineEditorView: View {
     private func seed() {
         let id = routine?.id ?? "new"
         guard loadedId != id else { return }
+        // Switching routines is not a blur: a click on another row leaves the
+        // field focused, so what was typed is saved before the fields reseed.
+        if let loadedId { commitEdits(id: loadedId) }
         loadedId = id
         confirmingDelete = false
-        name = routine?.name ?? ""
-        instruction = routine?.instruction ?? ""
-        schedules = routine?.schedules ?? [.weekly(days: [1], time: "09:00")]
+        let draft = routine == nil ? model.routineDraft : nil
+        name = routine?.name ?? draft?.name ?? ""
+        instruction = routine?.instruction ?? draft?.instruction ?? ""
+        schedules = routine?.schedules ?? draft?.schedules ?? [.weekly(days: [1], time: "09:00")]
+    }
+
+    /// The create form's text follows the owner out of the form (another row,
+    /// another page) and back; a created or cancelled routine clears it.
+    private func keepDraft() {
+        guard isNew, loadedId == "new" else { return }
+        model.routineDraft = AppModel.RoutineDraft(name: name, instruction: instruction, schedules: schedules)
+    }
+
+    /// Save the name and instruction typed for an existing routine, in one
+    /// write: a second write on a routine already being written is refused.
+    private func commitEdits(id: String) {
+        guard id != "new", let saved = model.routines.first(where: { $0.id == id }) else { return }
+        let nextName = trimmedName.isEmpty || trimmedName == saved.name ? nil : trimmedName
+        let nextInstruction = trimmedInstruction.isEmpty || trimmedInstruction == saved.instruction ? nil : trimmedInstruction
+        guard nextName != nil || nextInstruction != nil else { return }
+        model.updateRoutine(id: id, name: nextName, instruction: nextInstruction)
     }
 
     private func commitName() {

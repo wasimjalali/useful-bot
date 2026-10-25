@@ -91,7 +91,7 @@ test("the list carries state and tools and never a credential", async () => {
   ]);
   assert.equal(listed[0].toolCount, 2);
   assert.deepEqual(listed[0].tools, [
-    { name: "list_videos", description: "List the owner's videos", risk: "read" },
+    { name: "list_videos", description: "List the owner's videos", risk: "write" },
     { name: "create_video", description: "Create a video", risk: "write" },
   ]);
   const wire = JSON.stringify(listed);

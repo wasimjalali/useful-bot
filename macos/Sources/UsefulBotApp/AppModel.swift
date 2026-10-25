@@ -299,7 +299,8 @@ final class AppModel: ObservableObject {
     }
 
     /// A Library item the search palette picked: the page opens on its detail.
-    var libraryFocusId: String?
+    /// Published so a Library page already open picks it up too.
+    @Published var libraryFocusId: String?
 
     @Published var stage: Stage = .chat {
         didSet {
@@ -351,6 +352,19 @@ final class AppModel: ObservableObject {
     @Published var replyQuotes: [String: ReplyQuote] = [:]
     /// Bumped when Reply wants the caret in the composer.
     @Published private(set) var composerFocusToken: UInt64 = 0
+    /// A chat the owner picked while a reply is coming in; the root view asks
+    /// "Leave this chat?" before it opens.
+    @Published var leaveChatTarget: ChatEntry?
+    /// The composer's text view is the focused control (set by the composer).
+    @Published var composerFocused = false
+
+    /// ⌘↑ and ⌘↓ switch chats only from an empty, focused composer on the chat
+    /// stage and while no turn runs. Anywhere else (another text field, a
+    /// composer with text) the key goes to the field and moves its caret, and
+    /// a turn in progress is not cut off by a switch.
+    var chatSwitchKeysEnabled: Bool {
+        stage == .chat && composerFocused && draft.isEmpty && !pending
+    }
     @Published var attachments: [Attachment] = []
     @Published var attachError: String?
 
@@ -1557,9 +1571,11 @@ final class AppModel: ObservableObject {
                 // by an idle poll that knows nothing new.
             }
             await refreshComposer()
-            // Always: the sidebar's Routines badge reads it, and a run that
-            // lands mid-poll has to show up on the page without a reopen.
-            await loadRoutines(botId: bot.id)
+            // The sidebar's Routines badge reads it, so it stays fresh every
+            // 30 seconds; with the page open, a run that lands mid-poll has to
+            // show up on it without a reopen, so every tick.
+            if stage == .routines || routinesTick % 12 == 0 { await loadRoutines(botId: bot.id) }
+            routinesTick &+= 1
             pollConnectorStates()
             pollAuthFailures = 0
         } catch let error as BackendError where error == .unauthorized {
@@ -1580,6 +1596,7 @@ final class AppModel: ObservableObject {
     private var polledOpenProposalIds: Set<String> = []
     private var polledTranscriptDay: Date?
     private var polledRoutinesDay: Date?
+    private var routinesTick = 0
 
     /// Bots whose last session pointer this app could not save.
     private var unsavedSessionBots: Set<String> = []
@@ -3120,7 +3137,7 @@ final class AppModel: ObservableObject {
         connectorAppsLoading = true
         defer { connectorAppsLoading = false }
         guard let payload = try? await client.connectors(search: "", limit: 200) else { return }
-        connectorApps = payload.toolkits.filter(\.connected)
+        connectorApps = payload.toolkits.filter { $0.connected || $0.needsSignIn }
         connectorAppsFetched = true
     }
 
@@ -4872,10 +4889,20 @@ final class AppModel: ObservableObject {
         if let selectedBotId { await loadMemory(botId: selectedBotId) }
     }
 
-    /// Deletes an earlier bot's record and archives its notes.
-    func removeEarlierBot(_ botId: String) async throws {
-        let next = try await client.shellAction(ShellActions.removeArchivedBot(botId: botId))
-        applyStore(next)
+    /// An earlier bot that is removed but whose cleanup the server could not
+    /// finish. Its row is gone with the bot, so the group says it in a line.
+    struct UnfinishedRemoval: Identifiable, Equatable {
+        let id: String
+        let name: String
+    }
+    @Published var earlierBotsUnfinished: [UnfinishedRemoval] = []
+
+    /// Deletes an earlier bot's record and archives its notes. The removal
+    /// stands even when the server could not clear everything that hung off it.
+    func removeEarlierBot(_ bot: ShellBot) async throws {
+        let result = try await client.shellActionResult(ShellActions.removeArchivedBot(botId: bot.id))
+        applyStore(result.store)
+        if result.detachError != nil { earlierBotsUnfinished.append(UnfinishedRemoval(id: bot.id, name: bot.name)) }
     }
 
     /// The full text of a note the list shows cut short.
@@ -4918,12 +4945,23 @@ final class AppModel: ObservableObject {
         return routines.first { $0.id == openRoutineId }
     }
 
+    /// What the owner has typed into the New routine form. It is kept while
+    /// they look at another routine or page, and cleared by Create, Cancel or
+    /// a bot switch. Not published: the form owns what it shows.
+    struct RoutineDraft: Equatable {
+        var name: String
+        var instruction: String
+        var schedules: [RoutineSchedule]
+    }
+    var routineDraft: RoutineDraft?
+
     func closeRoutineDetail() {
         openRoutineId = nil
         routineCreating = false
     }
 
     private func clearRoutineState() {
+        routineDraft = nil
         closeRoutineDetail()
         routines = []
         routinesError = nil
@@ -4993,6 +5031,7 @@ final class AppModel: ObservableObject {
                 schedules: schedules
             )
             guard let self, botId == self.selectedBotId else { return }
+            self.routineDraft = nil
             self.routineCreating = false
             self.openRoutineId = created.id
         }
@@ -5076,7 +5115,8 @@ final class AppModel: ObservableObject {
         guard connectorStateTick % 48 == 0 else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.loadConnectors(search: self.connectorSearch, quiet: true)
+            // The page's own query only while the page is open.
+            await self.loadConnectors(search: self.stage == .connectors ? self.connectorSearch : "", quiet: true)
             await self.loadDirectConnections(quiet: true)
         }
     }
@@ -5084,9 +5124,11 @@ final class AppModel: ObservableObject {
     // MARK: - Chat shortcuts
 
     /// ⌘N and the pencil: an empty chat is already a new one, so it only gets
-    /// the caret.
+    /// the caret, from a page too. A chat whose rows are still loading is not
+    /// known to be empty.
     func newChatOrFocusComposer() {
-        if stage == .chat, !hasThreadContent, !pending {
+        if transcriptReady, !hasThreadContent, !pending {
+            stage = .chat
             composerFocusToken &+= 1
         } else {
             startNewChat(botId: Threads.defaultBotId)

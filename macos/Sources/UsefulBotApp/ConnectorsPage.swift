@@ -141,7 +141,8 @@ private struct ConnectorDetailPage: View {
         .task {
             // An error left from the list page is not about this tile.
             if tile.source.isApp { model.connectorsError = nil } else { model.directConnectionsError = nil }
-            if case .app(let row) = tile.source {
+            // A lapsed app has no tool list to ask for until it signs in again.
+            if case .app(let row) = tile.source, !tile.needsSignIn {
                 if let list = await model.connectorTools(row) { appTools = list } else { toolsFailed = true }
             }
         }
@@ -150,22 +151,29 @@ private struct ConnectorDetailPage: View {
     /// "48 tools · 31 read · 17 write"; a write count includes destructive tools.
     private var countsLine: String? {
         guard let tools, !tools.isEmpty else { return nil }
-        let reads = tools.filter { $0.risk == .read }.count
         let total = tools.count == 1 ? "1 tool" : "\(tools.count) tools"
+        // A server's tools all ask first in Auto, so there is no read count to give.
+        if !tile.source.isApp { return total }
+        let reads = tools.filter { $0.risk == .read }.count
         return "\(total) \u{00B7} \(reads) read \u{00B7} \(tools.count - reads) write"
     }
 
     @ViewBuilder
     private var toolsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let tools {
+            if tile.needsSignIn && tile.source.isApp {
+                Text("Sign in again to see its tools.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+            } else if let tools {
                 if tools.isEmpty {
                     Text("No tools")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.inkMuted)
                 } else {
                     HStack(spacing: 12) {
-                        ConnectorToolScopePicker(scope: $scope)
+                        // A server's tools are one group, so there is nothing to switch between.
+                        if tile.source.isApp { ConnectorToolScopePicker(scope: $scope) }
                         HStack(spacing: 8) {
                             Image(systemName: "magnifyingglass")
                                 .font(.system(size: 13))
@@ -202,41 +210,52 @@ private struct ConnectorDetailPage: View {
                 || tool.name.localizedCaseInsensitiveContains(query)
                 || (tool.description?.localizedCaseInsensitiveContains(query) ?? false)
         }
-        let reads = scope == .writes ? [] : shown.filter { $0.risk == .read }
-        let writes = scope == .reads ? [] : shown.filter { $0.risk != .read }
+        // `mcpToolGate` asks for every server tool in Auto, so a server's page has one group.
+        let isApp = tile.source.isApp
+        let reads = isApp && scope != .writes ? shown.filter { $0.risk == .read } : []
+        let writes = isApp ? (scope == .reads ? [] : shown.filter { $0.risk != .read }) : shown
         if reads.isEmpty && writes.isEmpty {
             Text("No tools match.")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.C.inkMuted)
         } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    toolGroup("Reads", "Run without asking", reads)
-                    toolGroup("Writes", "Ask you first in Auto", writes)
+                VStack(spacing: 0) {
+                    toolGroup("Reads", "Run without asking", reads, first: true)
+                    toolGroup("Writes", "Ask you first in Auto", writes, first: reads.isEmpty)
                 }
-                .padding(.vertical, 2)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                )
+                .padding(1)
             }
             .uvScroll()
         }
     }
 
     @ViewBuilder
-    private func toolGroup(_ title: String, _ note: String, _ tools: [DirectConnectionTool]) -> some View {
+    private func toolGroup(_ title: String, _ note: String, _ tools: [DirectConnectionTool], first: Bool) -> some View {
         if !tools.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(spacing: 0) {
+                if !first { Hairline() }
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.C.ink)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Spacer(minLength: 8)
                     Text(note)
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.C.inkMuted)
                 }
-                VStack(spacing: 0) {
-                    ForEach(Array(tools.enumerated()), id: \.offset) { index, tool in
-                        if index > 0 { Hairline() }
-                        toolRow(tool)
-                    }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Theme.C.sunken)
+                ForEach(Array(tools.enumerated()), id: \.offset) { _, tool in
+                    Hairline()
+                    toolRow(tool)
+                        .padding(.horizontal, 12)
                 }
             }
         }
@@ -259,12 +278,14 @@ private struct ConnectorDetailPage: View {
                 }
             }
             Spacer(minLength: 8)
-            Text(tool.risk == .read ? "Read" : "Asks first")
+            // A write is the warning tint; a read stays grey.
+            let asks = tool.risk != .read
+            Text(asks ? "Asks first" : "Read")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Theme.C.inkMuted)
+                .foregroundStyle(asks ? Theme.C.warning : Theme.C.inkMuted)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 1)
-                .background(Theme.C.sunken)
+                .background(asks ? Theme.C.warningSoft : Theme.C.sunken)
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous))
         }
         .padding(.vertical, 8)
@@ -343,6 +364,8 @@ struct ConnectorsPage: View {
     /// What the owner has typed into the own-app form, by field name. Cleared
     /// when the form closes; it never outlives the page.
     @State private var ownAppDraft: [String: String] = [:]
+    /// The debounced search load, cancelled when the page goes.
+    @State private var searchTask: Task<Void, Never>?
     @FocusState private var keyFocused: Bool
     @FocusState private var searchFocused: Bool
     @FocusState private var ownAppFocused: String?
@@ -391,9 +414,10 @@ struct ConnectorsPage: View {
         }
         .onChange(of: search) { _, value in
             model.connectorSearch = value
-            Task {
+            searchTask?.cancel()
+            searchTask = Task {
                 try? await Task.sleep(for: .milliseconds(150))
-                guard value == search else { return }
+                guard !Task.isCancelled, value == search else { return }
                 await model.loadConnectors(search: value, quiet: true)
             }
         }
@@ -404,9 +428,16 @@ struct ConnectorsPage: View {
         // draft typed for one app must not prefill the next app's form.
         .onChange(of: model.connectorOwnApp?.toolkit) { _, _ in ownAppDraft = [:] }
         .onDisappear {
+            searchTask?.cancel()
             model.stopConnectorPoll()
             model.stopDirectConnectionPoll()
             model.dismissOwnApp()
+            // The query dies with the page: the quiet polls and the sidebar dot
+            // read the whole list, not what was last typed.
+            if !model.connectorSearch.isEmpty {
+                model.connectorSearch = ""
+                Task { await model.loadConnectors(search: "", quiet: true) }
+            }
         }
     }
 
@@ -627,7 +658,7 @@ struct ConnectorsPage: View {
                    let row = payload.toolkits.first(where: { $0.slug == form.toolkit }) {
                     ownAppCard(row, form)
                 }
-                let rest = payload.toolkits.filter { !$0.connected }
+                let rest = payload.toolkits.filter { !$0.connected && !$0.needsSignIn }
                 if !query.isEmpty {
                     catalogueSection("Results", payload.toolkits.map(rowTile))
                 } else {
@@ -667,7 +698,7 @@ struct ConnectorsPage: View {
             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 18) {
                 ForEach(tiles) { tile in
                     switch tile.source {
-                    case .app(let row) where !row.connected:
+                    case .app(let row) where !row.connected && !row.needsSignIn:
                         connectorTile(row)
                     default:
                         addedTile(tile)

@@ -306,7 +306,7 @@ struct AppSettingsView: View {
                 }
             }
 
-            if !model.earlierBots.isEmpty {
+            if !model.earlierBots.isEmpty || !model.earlierBotsUnfinished.isEmpty {
                 section("Earlier bots") {
                     EarlierBotsGroup()
                 }
@@ -1301,12 +1301,25 @@ private struct EarlierBotsGroup: View {
 
     var body: some View {
         let bots = model.earlierBots
+        let unfinished = model.earlierBotsUnfinished
         VStack(spacing: 0) {
             ForEach(Array(bots.enumerated()), id: \.element.id) { index, bot in
                 row(bot)
                     .overlay(alignment: .bottom) {
-                        if index < bots.count - 1 { Hairline().padding(.horizontal, 12) }
+                        if index < bots.count - 1 || !unfinished.isEmpty { Hairline().padding(.horizontal, 12) }
                     }
+            }
+            ForEach(Array(unfinished.enumerated()), id: \.element.id) { index, removed in
+                Text("Removed \(removed.name), but some of its data is still being cleared up.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.danger)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .overlay(alignment: .bottom) {
+                        if index < unfinished.count - 1 { Hairline().padding(.horizontal, 12) }
+                    }
+                    .accessibilityIdentifier("earlier-unfinished-\(removed.id)")
             }
         }
         .background(Theme.C.sunken)
@@ -1314,6 +1327,8 @@ private struct EarlierBotsGroup: View {
         .task(id: bots.map(\.id)) {
             for bot in bots { await loadCount(bot.id) }
         }
+        // The notes belong to this visit to Settings.
+        .onDisappear { model.earlierBotsUnfinished = [] }
     }
 
     private func row(_ bot: ShellBot) -> some View {
@@ -1420,7 +1435,7 @@ private struct EarlierBotsGroup: View {
         errors[bot.id] = nil
         Task {
             do {
-                try await model.removeEarlierBot(bot.id)
+                try await model.removeEarlierBot(bot)
             } catch {
                 errors[bot.id] = "Couldn't remove \(bot.name)."
             }

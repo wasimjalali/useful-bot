@@ -158,7 +158,7 @@ the owner name), new `App/RoutinesPage.swift` (`UI.md` 5, built from the routine
 routing; `ConnectorsDialog` and `ConnectorDetailPage` polish of `UI.md` 8b), `App/PickerViews.swift`
 (Chats, Library, Routines tabs), `App/SettingsPaneView.swift` (its instructions and memory sections
 move into the new Settings tab; the pane and its toggle go), `App/AppSettingsView.swift` (the
-Instructions and memory tab of `UI.md` 6, notify and Earlier bots in General, 220pt nav),
+Instructions and memory tab of `UI.md` 6, notify and Earlier bots in General, 244pt nav so "Instructions and memory" fits on one line),
 `App/ChatView.swift` (empty header, logo empty chat, dots working row, "From another chat"
 approval label), `App/UsefulBotApp.swift` (⌘N and the other shortcuts of `UI.md` 11),
 `Core/BackendModels.swift` (`needsSignIn` on connected apps, `risk` on tools), and the Swift tests

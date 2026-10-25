@@ -664,16 +664,21 @@ extension AppModel {
     var chatEntries: [ChatEntry] {
         guard let store, let bot = store.activeBots.first(where: { $0.id == Threads.defaultBotId }) else { return [] }
         var entries: [ChatEntry] = []
-        if let sessionId = bot.sessionId, !sessionId.isEmpty {
+        let openSession = bot.sessionId.flatMap { $0.isEmpty ? nil : $0 }
+        if let sessionId = openSession {
             entries.append(ChatEntry(
                 id: "current-\(sessionId)",
                 recentId: nil,
                 title: ChatEntry.title(stored: "", preview: bot.lastPreview, botName: bot.name),
                 preview: ChatEntry.plain(bot.lastPreview),
-                updatedAt: bot.lastAt.flatMap(RailClock.date(from:)) ?? Date()
+                // A chat with no message yet is the newest, and keeps one stamp
+                // rather than a new date on every read.
+                updatedAt: bot.lastAt.flatMap(RailClock.date(from:)) ?? .distantFuture
             ))
         }
-        for recent in store.recents where recent.botId == bot.id && recent.sessionId != bot.sessionId {
+        // A legacy recent with no session still lists when the bot has none open.
+        let listed = store.recents.filter { $0.botId == bot.id && (openSession == nil || $0.sessionId != openSession) }
+        for recent in listed.sorted(by: { (RailClock.date(from: $0.updatedAt) ?? .distantPast) > (RailClock.date(from: $1.updatedAt) ?? .distantPast) }).prefix(40) {
             entries.append(ChatEntry(
                 id: recent.id,
                 recentId: recent.id,
@@ -695,13 +700,32 @@ extension AppModel {
         return chatEntries.first { $0.recentId == recent.id }
     }
 
+    /// An approval raised in a chat that is not open and not in the list: the
+    /// card says "From another chat" with no title and no Open chat link.
+    func approvalFromUnlistedChat(_ item: ApprovalItem) -> Bool {
+        guard let sessionId = item.sessionId, !sessionId.isEmpty,
+              let bot = store?.activeBots.first(where: { $0.id == Threads.defaultBotId }),
+              bot.sessionId != sessionId else { return false }
+        return otherChat(for: item) == nil
+    }
+
     /// The open chat is working. Other chats show no mark until the engine
     /// reports them (PR 3).
     var currentChatWorking: Bool {
         selectedBotId.map(isWorking) ?? false
     }
 
+    /// Open a chat. Opening another one stops a reply still coming in, so
+    /// that asks first (the alert on the root view calls `openNow`).
     func open(_ entry: ChatEntry) {
+        if pending, !entry.isCurrent {
+            leaveChatTarget = entry
+            return
+        }
+        openNow(entry)
+    }
+
+    func openNow(_ entry: ChatEntry) {
         if let recentId = entry.recentId {
             openRecent(recentId)
         } else {
@@ -710,12 +734,12 @@ extension AppModel {
     }
 
     /// ⌘↑ and ⌘↓: the previous or next chat in the sidebar's order. With no
-    /// chat open (an empty new chat) the first press lands on the newest.
+    /// chat open (an empty new chat, or a page) either key lands on the newest.
     func openAdjacentChat(_ step: Int) {
         let entries = chatEntries
         guard !entries.isEmpty else { return }
         let index = stage == .chat ? entries.firstIndex(where: \.isCurrent) : nil
-        let target = index.map { $0 + step } ?? (step > 0 ? 0 : entries.count - 1)
+        let target = index.map { $0 + step } ?? 0
         guard entries.indices.contains(target) else { return }
         open(entries[target])
     }

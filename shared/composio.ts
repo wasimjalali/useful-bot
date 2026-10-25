@@ -102,8 +102,8 @@ export interface ComposioLike {
     use(id: string): Promise<ComposioSessionLike>;
   };
   connectedAccounts: {
-    list(query: { userIds: string[]; limit?: number; cursor?: string }): Promise<{
-      items: Array<{ id: string; toolkit?: { slug: string } }>;
+    list(query: { userIds: string[]; limit?: number; cursor?: string; statuses?: string[]; toolkitSlugs?: string[] }): Promise<{
+      items: Array<{ id: string; status?: string; toolkit?: { slug: string } }>;
       nextCursor?: string | null | undefined;
     }>;
     delete(id: string): Promise<unknown>;
@@ -407,8 +407,49 @@ async function connectedRows(session: ComposioSessionLike, path: string): Promis
     if (!cursor || connected.items.length === 0) break;
   }
   const connectedSlugs = rows.filter((row) => row.connected).map((row) => row.slug);
+  rows.push(...(await lapsedRows(session, path, new Set(rows.map((row) => row.slug)))));
   updateConnectorsStore((store) => setConnectedToolkits(store, connectedSlugs), path);
   connectedMemo = { at: Date.now(), sessionId: session.sessionId, rows };
+  return rows;
+}
+
+/**
+ * Apps whose account lapsed (EXPIRED, FAILED, INACTIVE) and have no active one.
+ * `isConnected` is documented as "connected toolkits only", so the lapsed
+ * accounts are asked for by status. They list beside the connected apps with
+ * `needsSignIn`, and stay out of the store's connected set so the agent never
+ * offers their tools.
+ */
+async function lapsedRows(session: ComposioSessionLike, path: string, have: Set<string>): Promise<ConnectorToolkit[]> {
+  const store = readConnectorsStore(path);
+  const client = factory(requireKey(store));
+  const accounts = new Map<string, { id: string; status: string }>();
+  let cursor: string | undefined;
+  for (let page = 0; page < ACCOUNT_PAGE_MAX; page += 1) {
+    const mine = await client.connectedAccounts.list({
+      userIds: [store.userId],
+      statuses: [...SIGN_IN_AGAIN_STATUSES],
+      limit: ACCOUNT_PAGE,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const item of mine.items) {
+      const slug = item.toolkit?.slug;
+      if (slug && !have.has(slug) && !accounts.has(slug)) accounts.set(slug, { id: item.id, status: item.status ?? "EXPIRED" });
+    }
+    if (!mine.nextCursor || mine.nextCursor === cursor) break;
+    cursor = mine.nextCursor;
+  }
+  const slugs = [...accounts.keys()];
+  const rows: ConnectorToolkit[] = [];
+  for (let at = 0; at < slugs.length; at += PAGE_MAX) {
+    const found = await session.toolkits({ toolkits: slugs.slice(at, at + PAGE_MAX), limit: PAGE_MAX });
+    for (const item of found.items) {
+      const account = accounts.get(item.slug);
+      if (!account) continue;
+      // The listing names the app and its logo; the sign-in state is what the account list said.
+      rows.push({ ...toRow(item), connected: false, accountId: account.id, status: account.status, needsSignIn: true });
+    }
+  }
   return rows;
 }
 
@@ -453,7 +494,7 @@ export async function listConnectorToolkits(
       (row) => !row.noAuth && (!search || score(row, search) > 0),
     );
     const rank = new Map(FEATURED_TOOLKITS.map((slug, index) => [slug, index]));
-    const tier = (row: ConnectorToolkit) => (row.connected ? 0 : rank.has(row.slug) ? 1 : 2);
+    const tier = (row: ConnectorToolkit) => (row.connected || row.needsSignIn ? 0 : rank.has(row.slug) ? 1 : 2);
     list.sort((a, b) => {
       if (search) {
         const byScore = score(b, search) - score(a, search);
@@ -491,7 +532,7 @@ function score(row: ConnectorToolkit, search: string): number {
     if (words.length > 1 && words.every((word) => name.includes(word) || slug.includes(word))) base = 15;
   }
   if (base === 0) return 0;
-  return base + (row.connected ? 5 : 0) + (FEATURED_TOOLKITS.includes(row.slug) ? 2 : 0);
+  return base + (row.connected || row.needsSignIn ? 5 : 0) + (FEATURED_TOOLKITS.includes(row.slug) ? 2 : 0);
 }
 
 /**
@@ -770,7 +811,16 @@ export async function listToolkitTools(
 ): Promise<Array<{ name: string; description: string; risk: ConnectorRisk }>> {
   if (!isToolkitSlug(slug)) throw new Error("toolkit_invalid");
   const store = readConnectorsStore(path);
-  if (!store.connectedToolkits.includes(slug)) throw new Error("not_connected");
+  if (!store.connectedToolkits.includes(slug)) {
+    // A lapsed account is not a missing one: the page offers Sign in again.
+    const lapsed = await factory(requireKey(store)).connectedAccounts.list({
+      userIds: [store.userId],
+      statuses: [...SIGN_IN_AGAIN_STATUSES],
+      toolkitSlugs: [slug],
+      limit: 1,
+    });
+    throw new Error(lapsed.items.length > 0 ? "needs_sign_in" : "not_connected");
+  }
   const hit = toolListCache.get(slug);
   if (hit && Date.now() - hit.at < TOOL_LIST_TTL_MS) return hit.tools;
   const client = factory(requireKey(store));

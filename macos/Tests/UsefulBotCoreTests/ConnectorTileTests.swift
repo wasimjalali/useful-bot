@@ -50,6 +50,17 @@ import Testing
         #expect(tile.id == "app:gmail")
     }
 
+    @Test func appWhoseSignInLapsedStaysAddedWithSignInAgain() throws {
+        let lapsed = ConnectorToolkit(slug: "gmail", name: "Gmail", logo: nil, noAuth: false, connected: false, accountId: "ca_gmail", status: "EXPIRED", needsSignIn: true)
+        let tile = ConnectorTile(app: lapsed)
+        #expect(tile.needsSignIn)
+        #expect(tile.mark == .added)
+        #expect(tile.status == "Sign-in expired")
+        // An app that is neither connected nor lapsed is still left out of the added list.
+        let tiles = ConnectorTile.merge(apps: [lapsed, app("notion", name: "Notion", connected: false)], servers: [])
+        #expect(tiles.map(\.id) == ["app:gmail"])
+    }
+
     @Test func mergeListsReadyFirstThenByNameAndSkipsUnconnectedApps() throws {
         let tiles = ConnectorTile.merge(
             apps: [app("slack", name: "slack"), app("notion", name: "Notion", connected: false), app("gmail", name: "Gmail")],

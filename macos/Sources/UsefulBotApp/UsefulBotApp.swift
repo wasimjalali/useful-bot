@@ -57,17 +57,13 @@ struct UsefulBotDesktopApp: App {
                     model.openAdjacentChat(-1)
                 }
                 .keyboardShortcut(.upArrow, modifiers: .command)
-                // Disabled with text in the composer, so the key reaches the text view and
-                // moves the caret as macOS does.
-                .disabled(!model.draft.isEmpty)
+                .disabled(!model.chatSwitchKeysEnabled)
 
                 Button("Next chat") {
                     model.openAdjacentChat(1)
                 }
                 .keyboardShortcut(.downArrow, modifiers: .command)
-                // Disabled with text in the composer, so the key reaches the text view and
-                // moves the caret as macOS does.
-                .disabled(!model.draft.isEmpty)
+                .disabled(!model.chatSwitchKeysEnabled)
             }
         }
     }

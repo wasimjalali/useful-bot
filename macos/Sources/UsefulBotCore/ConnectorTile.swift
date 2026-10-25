@@ -43,7 +43,7 @@ public struct ConnectorTile: Identifiable, Equatable, Sendable {
         id = Self.appId(app.slug)
         name = app.name
         source = .app(app)
-        status = "Ready to use"
+        status = app.needsSignIn ? "Sign-in expired" : "Ready to use"
         mark = .added
         logoURL = app.logo
         iconData = nil
@@ -90,7 +90,8 @@ public struct ConnectorTile: Identifiable, Equatable, Sendable {
 
     /// Ready tiles first, then by name, ignoring case; ties keep the apps before the servers.
     public static func merge(apps: [ConnectorToolkit], servers: [DirectConnection]) -> [ConnectorTile] {
-        let tiles = apps.filter(\.connected).map(ConnectorTile.init(app:)) + servers.map(ConnectorTile.init(server:))
+        // An app whose sign-in lapsed stays added, with Sign in again.
+        let tiles = apps.filter { $0.connected || $0.needsSignIn }.map(ConnectorTile.init(app:)) + servers.map(ConnectorTile.init(server:))
         return tiles.enumerated().sorted { a, b in
             if a.element.isReady != b.element.isReady { return a.element.isReady }
             let order = a.element.name.compare(b.element.name, options: [.caseInsensitive, .diacriticInsensitive])

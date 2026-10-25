@@ -210,7 +210,7 @@ Tabs **All**, **Chats**, **Library**, **Routines**:
 ## 8. Settings (app)
 
 - Tabs: **General, Instructions and memory** (section 6), **Providers, Computer, Usage, Feedback,
-  About**. The nav is 220pt so every label fits on one line. Providers drops the reviewer role row.
+  About**. The nav is 244pt (not 220) so "Instructions and memory" fits on one line. Providers drops the reviewer role row.
 - **Earlier bots** (new, in General, shown only if the migration archived any): one row per earlier
   bot with its name and memory-note count, and three buttons in fixed columns: **Copy instructions**,
   **Move notes** (hidden but holding its place when the bot has no notes) and **Remove** (confirm; deletes that archived bot's record and archives its notes, so they leave memory). This is the
@@ -226,13 +226,20 @@ the Composio key line. Polish only:
 - Added tiles show a state chip instead of "Added": **Connected**, or **Sign in again** (warning) when
   a sign-in expired; the whole tile opens the app's page (chevron on the right, hover tone).
 - **App page** (today's `ConnectorDetailPage`, inside the Connectors page): back to Connectors; logo, name and a
-  line "App · Composio · connected as ACCOUNT"; **Reconnect** and **Disconnect** beside the name.
+  line "App · Composio" (the connectors payload carries only an opaque account id, no account label,
+  so "connected as ACCOUNT" waits until one is added); **Reconnect** and **Disconnect** beside the name.
   Below: the state chip, "48 tools · 31 read · 17 write", a segmented **All / Reads / Writes** and
   a **Filter tools** field, then the tools grouped under **Reads** ("Run without asking") and
   **Writes** ("Ask you first in Auto"; destructive tools sit here too), each row the tool slug in mono, a one-line description and
   a Read or Asks first chip. The split follows today's connector risk rules
   (`agent/lib/connector-risk.ts`). A direct MCP server's page has the same shape (Refresh instead
-  of Reconnect where today's has it).
+  of Reconnect where today's has it), except the tools: `mcpToolGate` asks for every MCP tool in
+  Auto, whatever its name, so the server's page shows one **Writes** group ("Ask you first in Auto"),
+  with no All / Reads / Writes segment and no read count (the filter field stays).
+- An app whose sign-in lapsed (Composio EXPIRED, FAILED or INACTIVE) stays under **Added** with
+  **Sign in again**, and its page puts **Reconnect** first and says "Sign in again to see its tools."
+  in place of the tool list (`/api/connectors/tools` answers `needs_sign_in`, not `not_connected`).
+  It is not listed again under All apps.
 
 ## 9. Contract: UI element to backend
 
