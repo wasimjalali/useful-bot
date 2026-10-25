@@ -213,7 +213,7 @@ struct RootView: View {
     private var ready: some View {
         HStack(spacing: 0) {
             RailView(
-                onSearch: { model.searchOpen = true },
+                onSearch: { model.searchOpen.toggle() },
                 onNewChat: { model.newChatOrFocusComposer() },
                 onOpenAppSettings: { model.openAppSettings($0) },
                 fullScreen: windowFullScreen

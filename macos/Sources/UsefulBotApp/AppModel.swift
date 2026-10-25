@@ -192,7 +192,9 @@ final class AppModel: ObservableObject {
     /// Operator identity plus build info for the settings dialog.
     @Published private(set) var appStatus: AppStatus?
     /// App settings dialog, opened from the rail account row or the composer.
-    @Published var appSettingsOpen = false
+    @Published var appSettingsOpen = false {
+        didSet { if appSettingsOpen { searchOpen = false } }
+    }
     @Published var appSettingsTab: AppSettingsTab = .general
     @Published private(set) var providers: [ProviderPublic]?
     @Published var providersError: String?
@@ -304,6 +306,9 @@ final class AppModel: ObservableObject {
 
     @Published var stage: Stage = .chat {
         didSet {
+            // Every write is a navigation (a sidebar row, a page, a chat, New
+            // chat), the same stage included: the palette gives way to it.
+            searchOpen = false
             guard stage != oldValue else { return }
             // The page opens on the list, never on the row it showed last time.
             if oldValue == .routines { closeRoutineDetail() }
@@ -368,9 +373,13 @@ final class AppModel: ObservableObject {
     }
     /// A chat the owner picked while a reply is coming in; the root view asks
     /// "Leave this chat?" before it opens.
-    @Published var leaveChatTarget: ChatEntry?
+    @Published var leaveChatTarget: ChatEntry? {
+        didSet { if leaveChatTarget != nil { searchOpen = false } }
+    }
     /// The same ask for a new chat (⌘N, the pencil, the palette) while a reply is coming in.
-    @Published var leaveForNewChat = false
+    @Published var leaveForNewChat = false {
+        didSet { if leaveForNewChat { searchOpen = false } }
+    }
     /// The composer's text view is the focused control (set by the composer).
     @Published var composerFocused = false
 

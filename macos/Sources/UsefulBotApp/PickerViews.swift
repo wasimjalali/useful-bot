@@ -19,6 +19,7 @@ struct SearchPaletteView: View {
     @State private var active = 0
     @State private var media: [MediaItem] = []
     @State private var mediaFailed = false
+    @State private var escapeMonitor: Any?
     @FocusState private var focused: Bool
 
     enum SearchTab: String, CaseIterable {
@@ -142,10 +143,6 @@ struct SearchPaletteView: View {
                             .font(.system(size: 15))
                             .foregroundStyle(Theme.C.ink)
                             .focused($focused)
-                        .onKeyPress(.escape) {
-                            onClose()
-                            return .handled
-                        }
                         .onKeyPress(.downArrow) {
                                 active = (active + 1) % max(hits.count, 1)
                                 return .handled
@@ -191,12 +188,23 @@ struct SearchPaletteView: View {
                 mediaFailed = true
             }
         }
-        .onExitCommand {
-            if query.isEmpty {
+        // Esc closes the palette wherever the window's first responder is.
+        // A key handler on the field or `onExitCommand` here only sees Esc
+        // while the field holds focus, and the composer's text view can keep
+        // it: Esc then went to the composer and the palette stayed open.
+        .onAppear {
+            guard escapeMonitor == nil else { return }
+            escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 53, NSApp.modalWindow == nil else { return event }
+                // Esc during an input method's composition cancels that first.
+                if let editor = event.window?.firstResponder as? NSTextView, editor.hasMarkedText() { return event }
                 onClose()
-            } else {
-                query = ""
+                return nil
             }
+        }
+        .onDisappear {
+            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+            escapeMonitor = nil
         }
         .onChange(of: query) { _, _ in active = 0 }
         .onChange(of: tab) { _, _ in active = 0 }
