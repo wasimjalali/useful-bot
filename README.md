@@ -2,19 +2,17 @@
 
 Useful Bot is the free, open-source alternative to Grok Bot. Your own AI bot on your computer, on the AI plan you already pay for.
 
-Give each bot one job: writing, research, your inbox or your files. They run on the model you already
-pay for, work in the apps you connect and ask before they touch anything you haven't allowed.
+One bot for writing, research, your inbox and your files. It runs on the model you already pay for,
+works in the apps you connect and asks before it touches anything you haven't allowed.
 
 **[bot.usefulbuild.com](https://bot.usefulbuild.com)** · Open source under the [AGPL-3.0](LICENSE)
 
-![The Generalist bot explains what it can do, that it can set up other bots, where your data goes and that you can use any model.](site/public/shots/chat.png)
+![Useful Bot in a chat on a Mac.](site/public/shots/chat.png)
 
 ## What you get
 
-**One bot for every job.** Make a bot for each part of your work and group them the way your week
-runs. Each keeps its own chat, instructions and memory, and can hand work to another.
-
-![The new chat picker: New Bot, Create group chat and a list of bots with their jobs.](site/public/shots/bots.png)
+**One bot, all your chats.** Every chat is in the sidebar, by day. Your instructions and its memory
+carry across all of them.
 
 **Bring the model you already pay for.** Sign in with ChatGPT, add a coding plan or
 an API key, or point it at a model running on your own Mac. Pick the model per chat.
@@ -22,11 +20,11 @@ an API key, or point it at a model running on your own Mac. Pick the model per c
 ![Model settings with connected providers.](site/public/shots/models.png)
 
 **Your apps, on your terms.** Connect Gmail, Calendar, Drive and hundreds more. Read only, Auto or
-Full access decides what a bot may do on its own. In Auto, anything else waits for your yes.
+Full access decides what the bot may do on its own. In Auto, anything else waits for your yes.
 
-![Connectors, with apps a bot can use.](site/public/shots/connectors.png)
+![Connectors, with the apps the bot can use.](site/public/shots/connectors.png)
 
-**Work that runs while you're busy.** Give a bot a routine, like a morning brief or a weekly
+**Work that runs while you're busy.** Give it a routine, like a morning brief or a weekly
 cleanup, and it runs on schedule. Try it first with Test run. Web search is built in.
 
 ![A routine called Downloads triage: its schedule, instructions and Test run button.](site/public/shots/routines.png)
@@ -37,8 +35,8 @@ cleanup, and it runs on schedule. Try it first with Test run. Web search is buil
 |---|---|
 | Works on | macOS 14 or later, Apple silicon |
 | Models | ChatGPT, Claude, Gemini, OpenRouter and more, or a local model |
-| Stays on your Mac | Your chats, bots, memory and the files they make |
-| Leaves your Mac | What you ask goes to the model provider you connect, and to the apps a bot uses for you |
+| Stays on your Mac | Your chats, memory and the files the bot makes |
+| Leaves your Mac | What you ask goes to the model provider you connect, and to the apps the bot uses for you |
 | Tracking | None. No analytics, no crash reports, no ads |
 
 **[Download for Mac](https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.dmg)**, or
