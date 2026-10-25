@@ -183,6 +183,13 @@ fi
 # -isysroot until the driver fix ships (swiftlang/swift-driver#2158, #2240).
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 swift build -c release -Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "$SDK_PATH"
+# Never ship a binary that records another SDK than the one it was built with.
+BUILT_SDK="$(vtool -show-build .build/release/UsefulBotApp | awk '$1 == "sdk" { print $2; exit }')"
+WANT_SDK="$(xcrun --sdk macosx --show-sdk-version)"
+if [ "$BUILT_SDK" != "$WANT_SDK" ]; then
+  echo "build-app.sh: the app binary records sdk ${BUILT_SDK:-none}, expected $WANT_SDK" >&2
+  exit 1
+fi
 if [ "$VARIANT" = dev ]; then
   APP="dist/Useful Bot Dev.app"
   EXE="UsefulBotDevApp"
