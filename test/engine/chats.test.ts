@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ChatIndex, TITLE_MAX, TRASH_DAYS } from "../../agent/engine/chats.ts";
 import { EngineError } from "../../agent/engine/protocol.ts";
+import { defaultShellPath, peekShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { makeWorld } from "./helpers.ts";
 
@@ -174,6 +175,41 @@ test("a session file that cannot be read shows one unreadable row and the engine
     await world.idle(other);
     assert.equal((world.engine.rows(other, {}).rows.at(-1) as { text: string }).text, "still fine");
   } finally {
+    await world.close();
+  }
+});
+
+test("review 1: a shell lock held by someone else delays the write of the open chat, never the engine", async () => {
+  const world = await makeWorld();
+  const lock = `${defaultShellPath()}.lock`;
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const before = world.newChat();
+    assert.equal(peekShell()?.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.chatId, before);
+    mkdirSync(lock);
+    const started = Date.now();
+    const { chatId } = world.engine.createChat(DEFAULT_BOT_ID);
+    assert.ok(Date.now() - started < 1_500, `createChat took ${Date.now() - started} ms with the lock held`);
+    // The engine already answers with the new chat; the file catches up.
+    assert.equal(world.engine.listChats({ botId: DEFAULT_BOT_ID }).current, chatId);
+    assert.equal(peekShell()?.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.chatId, before);
+
+    // A turn that settles while the lock is held is not held up by it either.
+    world.router.enqueue({ kind: "text", text: "fine" });
+    world.send(chatId, "hello");
+    await world.idle(chatId, 2_000);
+    assert.equal(world.engine.listChats({ botId: DEFAULT_BOT_ID }).current, chatId);
+
+    rmdirSync(lock);
+    const deadline = Date.now() + 3_000;
+    while (peekShell()?.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.chatId !== chatId && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    const bot = peekShell()?.bots.find((item) => item.id === DEFAULT_BOT_ID);
+    assert.equal(bot?.chatId, chatId, "the parked write landed once the lock was free");
+    assert.equal(bot?.lastPreview, "fine", "and so did the newest preview");
+  } finally {
+    console.error = logged;
+    rmSync(lock, { recursive: true, force: true });
     await world.close();
   }
 });

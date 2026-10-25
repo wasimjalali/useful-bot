@@ -114,12 +114,17 @@ export class RouterProvider {
     this.options = options;
   }
 
-  /** The Pi model for a selection, registered on first use. */
+  /**
+   * The Pi model for a selection, registered on first use and again whenever its
+   * facts change (a refreshed model list can move the window or drop vision); a
+   * new object makes the next turn rebuild its session.
+   */
   modelFor(selection: ModelSelection): Model<Api> {
     const key = modelKey(selection);
     const known = this.models.get(key);
-    if (known) return known;
     const facts = factsFor(selection);
+    if (known && known.contextWindow === facts.windowTokens && known.maxTokens === facts.maxTokens
+      && known.input.includes("image") === (facts.vision !== false)) return known;
     const model: Model<"openai-completions"> = {
       id: key,
       name: selection.modelId,

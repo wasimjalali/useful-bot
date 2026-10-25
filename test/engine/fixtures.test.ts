@@ -237,6 +237,9 @@ test("every kind of row and the page around them", async () => {
     world.router.enqueue({ kind: "stall", text: "Working on a shorter" });
     world.send(chatId, "Then a longer one");
     await waitForRequests(world, world.router.requests.length + 1);
+    // The page names the streaming row only once the first delta has arrived.
+    const streaming = Date.now() + 5_000;
+    while (!world.engine.host.chat(chatId).turn?.streamRowId && Date.now() < streaming) await new Promise((resolve) => setTimeout(resolve, 5));
     world.send(chatId, "Then list three next steps");
 
     const page = world.engine.rows(chatId, {});

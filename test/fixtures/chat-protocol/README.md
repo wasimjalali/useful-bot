@@ -43,8 +43,12 @@ advancing it (they are not stored in the ring buffer). Types and fields are SPEC
 fixtures pin these details:
 
 - `stream.ready {tailSeq, resync, running: {turnId}|null}` is always the first line.
-- `turn.started {origin, clientId?, retry?}`; `message.user {rowId, clientId?, text, attachments}`
-  follows it for owner turns. Routine and system turns have no `message.user`; their prompt is
+- `turn.started {origin, clientId?, retry?, resync?}`; `message.user {rowId, clientId?, text, attachments}`
+  follows it for owner turns. `resync: true` comes with `retry: true` only: a Retry moves the chat
+  back to before the failed attempt, so that attempt's rows (`<failedTurn>:u`, `<failedTurn>:f`) are
+  gone from the rows page. The app refetches `GET /rows` (the newest page) when it sees `resync`, and
+  its copy of the failed attempt's rows is replaced by the page.
+  Routine and system turns have no `message.user`; their prompt is
   hidden context and a `row` note precedes the turn.
 - `message.delta {rowId, delta}` and `message.final {rowId, text}` (the final text is
   authoritative and replaces the streamed one).

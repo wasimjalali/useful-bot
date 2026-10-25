@@ -182,8 +182,9 @@ s.emit("row", T2, row=failure_row)
 s.emit("turn.failed", T2, code="upstream_unavailable", detail="The provider didn't answer.",
        retryAfterMs=4000, messageKept=True, rowId=f"{T2}:f")
 s.ping()
-# Retry: the same clientId, a new turn; the app drops the failure row and keeps the owner bubble.
-s.emit("turn.started", T3, origin="owner", clientId=C2, retry=True)
+# Retry: the same clientId, a new turn. The failed attempt's rows (owner bubble, failure row) are gone
+# from the engine's rows page, so resync=True tells the app to refetch it.
+s.emit("turn.started", T3, origin="owner", clientId=C2, retry=True, resync=True)
 s.emit("message.user", T3, rowId=f"{T3}:u", clientId=C2, text="Desktop", attachments=[])
 s.emit("message.delta", T3, rowId=f"{T3}:a0", delta="Saved to the Desktop.")
 s.emit("message.final", T3, rowId=f"{T3}:a0", text="Saved to the Desktop.")
