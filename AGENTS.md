@@ -94,6 +94,14 @@ budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-r
 breach. The fixture chats ("Perf ...", synthetic Pi session files from `scripts/perf-fixtures.mjs`,
 hidden from the sidebar) are frozen: never send to them. See `perf/README.md`.
 
+## Pi SDK updates
+
+A weekly cloud routine ("Useful Bot: weekly Pi SDK update", Mondays 09:00 Berlin, set up
+2026-10-25) checks for a newer `@earendil-works/pi-coding-agent`. When there is one, it bumps the
+exact pin, restamps the registry, runs the tests and opens a `pi-update` + `needs-local` PR (pick
+it up like any `needs-local` PR). Pi ships about three releases a week, so don't bump it by hand
+in feature PRs: keep all Pi calls behind `agent/engine/` so a bump stays an adapter change.
+
 ## Code traps
 
 - **A worktree resolves missing packages from the main checkout.** Worktrees sit under
