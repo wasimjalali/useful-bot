@@ -33,10 +33,10 @@ const EXCLUDE = [
   /^docs\/plan\/pi-engine\/mockups\//,
 ];
 
-// Top-level entries of the public clone the snapshot never replaces.
-const PUBLIC_ONLY = new Set([".git", ".github"]);
-if (execFileSync("git", ["ls-files", ".github"], { cwd: ROOT, encoding: "utf8" }).trim()) {
-  throw new Error(".github is tracked here too: decide which copy the public repo keeps");
+// The public repo's own CI, added there: the snapshot never replaces it.
+const PUBLIC_ONLY = ".github/workflows";
+if (execFileSync("git", ["ls-files", PUBLIC_ONLY], { cwd: ROOT, encoding: "utf8" }).trim()) {
+  throw new Error(`${PUBLIC_ONLY} is tracked here too: decide which copy the public repo keeps`);
 }
 
 const { values } = parseArgs({
@@ -75,9 +75,17 @@ if (secrets.length) throw new Error(`refusing to publish files that look like se
 const stage = mkdtempSync(path.join(tmpdir(), "ub-source-"));
 try {
   for (const file of files) cpSync(path.join(ROOT, file), path.join(stage, file), { verbatimSymlinks: true });
-  // The public tree is exactly the stage, except what lives only in the public
-  // repo: its own CI (`.github/`, added there) would otherwise be deleted.
-  for (const entry of readdirSync(clone)) if (!PUBLIC_ONLY.has(entry)) rmSync(path.join(clone, entry), { recursive: true, force: true });
+  // The public tree is exactly the stage, except the public repo's own CI.
+  for (const entry of readdirSync(clone)) {
+    if (entry === ".git") continue;
+    if (entry === ".github") {
+      for (const inner of readdirSync(path.join(clone, entry))) {
+        if (path.join(entry, inner) !== PUBLIC_ONLY) rmSync(path.join(clone, entry, inner), { recursive: true, force: true });
+      }
+      continue;
+    }
+    rmSync(path.join(clone, entry), { recursive: true, force: true });
+  }
   cpSync(stage, clone, { recursive: true, verbatimSymlinks: true });
 } finally {
   rmSync(stage, { recursive: true, force: true });
