@@ -120,6 +120,7 @@ export default defineTool({
         model,
         botId,
         botName,
+        chatId: ctx.chatId,
       }).path;
     } catch (err) {
       console.error(`[media] could not save image ${imageId} to the media folder`, err);

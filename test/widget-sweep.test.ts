@@ -131,7 +131,7 @@ test("the sweep keeps the widgets of chats whose session file exists, and drops 
 test("the sweep keeps a drawing the Library holds, whatever became of its chat", () => {
   sweepWorld(({ widgets, chats }) => {
     chats({ schemaVersion: 1, chats: [] });
-    saveDrawing({ id: "keptdrawing1", elements: "[]", title: "Drawing", botId: "bot-useful", botName: "Useful Bot", provider: "excalidraw" });
+    saveDrawing({ id: "keptdrawing1", elements: "[]", title: "Drawing", botId: "bot-useful", botName: "Useful Bot", provider: "excalidraw", chatId: null });
     writeWidget(chatWidget("keptdrawing1", "chat-gone"), widgets);
     writeWidget(chatWidget("plainwidget1", "chat-gone"), widgets);
     age(widgets, "keptdrawing1", WIDGET_ORPHAN_GRACE_MS * 2);

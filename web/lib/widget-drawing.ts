@@ -34,6 +34,7 @@ export function saveWidgetDrawing(record: WidgetRecord, botId: string, botName: 
     botId,
     botName,
     provider: record.connectionId,
+    chatId: record.chatId ?? null,
     createdAt: when,
   });
 }

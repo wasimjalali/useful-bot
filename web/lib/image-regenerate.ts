@@ -112,6 +112,8 @@ async function redraw(id: string): Promise<{ path: string }> {
       provider,
       botId: from.botId,
       botName: bot?.name ?? from.botName ?? "Useful Bot",
+      // A redraw keeps the chat its entry already names.
+      chatId: null,
       replace: true,
       revive,
     });
