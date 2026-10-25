@@ -9,7 +9,7 @@ import {
 } from "../../shared/composio.ts";
 import { isToolkitSlug, readConnectorsStore } from "../../shared/connectors-store.ts";
 import { createProposal, listPendingProposals, threadIdFor } from "../../shared/agent-store.ts";
-import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { clipUtf8, wrapUntrusted } from "../../shared/untrusted.ts";
 import { sessionPermission } from "../lib/permission.ts";
 import { connectorGate, connectorRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
@@ -218,12 +218,7 @@ function shape(tool: string, raw: unknown): Record<string, unknown> {
   if (rec.successful === false || (typeof rec.error === "string" && rec.error)) {
     return { status: "error", tool, error: wrapUntrusted(`connector:${tool} error`, String(rec.error ?? "failed")) };
   }
-  let text = JSON.stringify(rec.data ?? raw ?? null);
-  let truncated = false;
-  if (text.length > RESULT_MAX_BYTES) {
-    text = text.slice(0, RESULT_MAX_BYTES);
-    truncated = true;
-  }
+  const { text, cut: truncated } = clipUtf8(JSON.stringify(rec.data ?? raw ?? null), RESULT_MAX_BYTES);
   return {
     status: "ok",
     tool,

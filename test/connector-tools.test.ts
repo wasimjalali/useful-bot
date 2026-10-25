@@ -474,6 +474,14 @@ test("a failed upstream call is an error, and a huge result is truncated", async
     assert.equal(big.status, "ok");
     assert.equal(big.truncated, true);
     assert.equal(big.result.length < 26_000, true);
+    box.result = { successful: true, data: { blob: "é".repeat(40_000) } };
+    const wide = await run<{ truncated: boolean; result: string }>(
+      connectorExecute,
+      { tool: "GMAIL_FETCH_EMAILS", arguments: {} },
+      fakeCtx({ chatId: "sess-conn" }),
+    );
+    assert.equal(wide.truncated, true);
+    assert.ok(Buffer.byteLength(wide.result) < 26 * 1024, `result is ${Buffer.byteLength(wide.result)} bytes`);
   } finally {
     box.restore();
   }
