@@ -15,6 +15,8 @@ struct RailView: View {
     var fullScreen = false
 
     @State private var accountOpen = false
+    /// The chat whose title is being edited in its row.
+    @State private var renamingChatId: String?
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
     @ObservedObject private var updater = AppUpdater.shared
     /// The footer row (photo and name), in rail space. The account menu opens
@@ -75,6 +77,21 @@ struct RailView: View {
         .onExitCommand {
             accountOpen = false
         }
+        .alert(
+            "Delete this chat?",
+            isPresented: Binding(
+                get: { model.chatPendingDelete != nil },
+                set: { if !$0 { model.chatPendingDelete = nil } }
+            )
+        ) {
+            Button("Delete", role: .destructive) {
+                if let id = model.chatPendingDelete { model.deleteChat(id) }
+                model.chatPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { model.chatPendingDelete = nil }
+        } message: {
+            Text("This can't be undone.")
+        }
     }
 
     // MARK: - Fixed rows
@@ -131,7 +148,7 @@ struct RailView: View {
     private var chatList: some View {
         let groups = ChatEntry.groups(model.chatEntries)
         if groups.isEmpty {
-            Text("No chats yet")
+            Text(model.chatsLoaded ? "No chats yet" : "")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.C.inkFaint)
                 .padding(.horizontal, 10)
@@ -150,10 +167,21 @@ struct RailView: View {
                     ForEach(group.entries) { entry in
                         ChatRowView(
                             entry: entry,
-                            selected: model.stage == .chat && entry.isCurrent,
-                            working: entry.isCurrent && model.currentChatWorking
-                        ) {
-                            model.open(entry)
+                            selected: model.stage == .chat && entry.id == model.currentChatId,
+                            mark: model.mark(for: entry.id),
+                            canDelete: model.canDeleteChat(entry.id),
+                            renaming: renamingChatId == entry.id,
+                            onSelect: { model.open(entry) },
+                            onStartRename: { renamingChatId = entry.id },
+                            onRename: { title in
+                                renamingChatId = nil
+                                if let title { model.renameChat(entry.id, to: title) }
+                            },
+                            onDelete: { model.chatPendingDelete = entry.id }
+                        )
+                        .onAppear {
+                            // The list loads 60 at a time; the last rows ask for more.
+                            if entry.id == model.chatEntries.last?.id { model.loadMoreChats() }
                         }
                     }
                 }
@@ -455,32 +483,106 @@ private struct RailNavRow<Trailing: View>: View {
     }
 }
 
-/// One chat: its title on a line, and on the right the working ring or the
-/// time it last moved.
+/// One chat: its title on a line, and on the right its state mark or the
+/// time it last moved. Hovering shows the row menu (Rename, Delete); a click
+/// elsewhere or Escape ends a rename.
 private struct ChatRowView: View {
     let entry: ChatEntry
     let selected: Bool
-    let working: Bool
+    let mark: ChatMark?
+    let canDelete: Bool
+    let renaming: Bool
     let onSelect: () -> Void
+    let onStartRename: () -> Void
+    /// Called with the new title, or nil when the edit is cancelled.
+    let onRename: (String?) -> Void
+    let onDelete: () -> Void
 
     @State private var hovering = false
+    @State private var draft = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 8) {
-                Text(entry.title)
-                    .font(.system(size: DesignTokens.FontSize.railName, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(Theme.C.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if working {
-                    // The three-dot loop at 60%, off the shared clock so every
-                    // working row moves together.
-                    AgentMark(phase: .thinking, scale: 0.6, arrives: false)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("Working")
-                } else if let updatedAt = entry.updatedAt {
+        Group {
+            if renaming {
+                renameField
+            } else {
+                Button(action: onSelect) { rowContent }
+                    .buttonStyle(.plain)
+                    .pointerOnHover()
+                    .accessibilityLabel(entry.title)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityIdentifier("chat-row")
+                    .contextMenu { menuItems }
+            }
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: DesignTokens.Space.botRow)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // The open chat lifts off the rail as a small card; hover is a
+        // tone shift only.
+        .background(selected ? Theme.C.surface : (hovering ? Theme.C.sunken : .clear))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
+        .shadow(color: Theme.C.shadow.opacity(selected ? 0.06 : 0), radius: 2, x: 0, y: 1)
+        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
+        .onHover { hovering = $0 }
+    }
+
+    private var rowContent: some View {
+        HStack(spacing: 8) {
+            if entry.isRoutine {
+                Image(systemName: "clock")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .accessibilityLabel("Routine")
+            }
+            Text(entry.title)
+                .font(.system(size: DesignTokens.FontSize.railName, weight: selected ? .semibold : .regular))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            trailing
+        }
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        if hovering {
+            Menu { menuItems } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Chat options")
+            .accessibilityIdentifier("chat-row-menu")
+        } else {
+            switch mark {
+            case .working:
+                // The three-dot loop at 60%, off the shared clock so every
+                // working row moves together.
+                AgentMark(phase: .thinking, scale: 0.6, arrives: false)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Working")
+            case .waiting:
+                Circle().fill(Theme.C.warning).frame(width: 8, height: 8)
+                    .accessibilityLabel("Waiting on you")
+            case .replyReady:
+                Circle().fill(Theme.C.ink).frame(width: 8, height: 8)
+                    .accessibilityLabel("Reply ready")
+            case .failed:
+                Circle().fill(Theme.C.danger).frame(width: 8, height: 8)
+                    .accessibilityLabel("Failed")
+            case nil:
+                if let updatedAt = entry.updatedAt {
                     Text(ChatEntry.timeLabel(updatedAt))
                         .font(.system(size: 12).monospacedDigit())
                         .foregroundStyle(Theme.C.inkFaint)
@@ -488,23 +590,37 @@ private struct ChatRowView: View {
                         .fixedSize()
                 }
             }
-            .padding(.leading, 10)
-            .padding(.trailing, 8)
-            .frame(height: DesignTokens.Space.botRow)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // The open chat lifts off the rail as a small card; hover is a
-            // tone shift only.
-            .background(selected ? Theme.C.surface : (hovering ? Theme.C.sunken : .clear))
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
-            .shadow(color: Theme.C.shadow.opacity(selected ? 0.06 : 0), radius: 2, x: 0, y: 1)
-            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .onHover { hovering = $0 }
-        .accessibilityLabel(entry.title)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityIdentifier("chat-row")
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        Button("Rename", action: onStartRename)
+        Button("Delete", role: .destructive, action: onDelete)
+            .disabled(!canDelete)
+            .help(canDelete ? "" : "Stop the chat first")
+    }
+
+    /// Enter saves, Escape cancels, 60 characters.
+    private var renameField: some View {
+        TextField("Chat name", text: $draft)
+            .textFieldStyle(.plain)
+            .font(.system(size: DesignTokens.FontSize.railName))
+            .foregroundStyle(Theme.C.ink)
+            .focused($focused)
+            .onSubmit { onRename(draft) }
+            .onExitCommand { onRename(nil) }
+            .onChange(of: draft) { _, next in
+                if next.count > 60 { draft = String(next.prefix(60)) }
+            }
+            .onChange(of: focused) { _, now in
+                if !now { onRename(nil) }
+            }
+            .onAppear {
+                draft = entry.title
+                focused = true
+            }
+            .accessibilityIdentifier("chat-row-rename")
     }
 }
 
@@ -537,18 +653,16 @@ struct DotsRing: View {
 
 // MARK: - Chat list
 
-/// One row of the sidebar's chat list, on eve data: the chat the bot has open,
-/// then its recents.
+/// One row of the sidebar's chat list, from `GET /api/chats`.
 struct ChatEntry: Identifiable, Equatable {
+    /// The chat id.
     let id: String
-    /// The recent behind this row, nil for the chat that is open now.
-    let recentId: String?
     let title: String
     /// What the title was taken from, for search.
     let preview: String
+    /// A routine's chat, marked with a clock before its title.
+    let isRoutine: Bool
     let updatedAt: Date?
-
-    var isCurrent: Bool { recentId == nil }
 
     struct Bucket: Identifiable {
         let id: String
@@ -558,13 +672,11 @@ struct ChatEntry: Identifiable, Equatable {
 
     static let newChatTitle = "New chat"
 
-    /// The one-line title: the stored title unless it only repeats the bot's
-    /// name, else the first message, else "New chat". Markdown marks go.
-    @MainActor static func title(stored: String, preview: String, botName: String) -> String {
+    /// The one-line title: the stored title, else the first message, else
+    /// "New chat". Markdown marks go.
+    static func title(stored: String, preview: String) -> String {
         let storedText = plain(stored)
-        let previewText = plain(preview)
-        let useful = !storedText.isEmpty && storedText != "Chat" && storedText != botName
-        let text = useful ? storedText : previewText
+        let text = storedText.isEmpty || storedText == "Chat" ? plain(preview) : storedText
         return text.isEmpty ? newChatTitle : text
     }
 
@@ -572,8 +684,8 @@ struct ChatEntry: Identifiable, Equatable {
     /// their text, code ticks and paired emphasis drop their marks, and a
     /// heading or quote marker goes at the start of a line. "C#", "issue #42"
     /// and "clear_history" stay as written.
-    @MainActor static func plain(_ raw: String) -> String {
-        var text = AppModel.previewText(raw).replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
+    static func plain(_ raw: String) -> String {
+        var text = raw.replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
         text = text.replacingOccurrences(of: "(?m)^\\s*(#{1,6}\\s+|>\\s)", with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: "`+", with: "", options: .regularExpression)
         for mark in ["\\*\\*", "__", "\\*", "_", "~~"] {
@@ -661,89 +773,35 @@ struct ChatEntry: Identifiable, Equatable {
 }
 
 extension AppModel {
-    /// The chat list on eve data: the chat the bot has open, then the bot's
-    /// recents, newest first. A recent that points at the open session is the
-    /// same chat and is listed once.
+    /// The sidebar's rows, newest first.
     var chatEntries: [ChatEntry] {
-        guard let store, let bot = store.activeBots.first(where: { $0.id == Threads.defaultBotId }) else { return [] }
-        var entries: [ChatEntry] = []
-        let openSession = bot.sessionId.flatMap { $0.isEmpty ? nil : $0 }
-        if let sessionId = openSession {
-            entries.append(ChatEntry(
-                id: "current-\(sessionId)",
-                recentId: nil,
-                title: ChatEntry.title(stored: "", preview: bot.lastPreview, botName: bot.name),
-                preview: ChatEntry.plain(bot.lastPreview),
-                // A chat with no message yet is the newest, and keeps one stamp
-                // rather than a new date on every read.
-                updatedAt: bot.lastAt.flatMap(RailClock.date(from:)) ?? .distantFuture
-            ))
+        chats.map { chat in
+            ChatEntry(
+                id: chat.chatId,
+                title: ChatEntry.title(stored: chat.title, preview: chat.preview),
+                preview: ChatEntry.plain(chat.preview),
+                isRoutine: chat.routineId != nil,
+                updatedAt: chat.updatedAt
+            )
         }
-        // A legacy recent with no session still lists when the bot has none open.
-        let listed = store.recents.filter { $0.botId == bot.id && (openSession == nil || $0.sessionId != openSession) }
-        for recent in listed.sorted(by: { (RailClock.date(from: $0.updatedAt) ?? .distantPast) > (RailClock.date(from: $1.updatedAt) ?? .distantPast) }).prefix(40) {
-            entries.append(ChatEntry(
-                id: recent.id,
-                recentId: recent.id,
-                title: ChatEntry.title(stored: recent.title, preview: recent.preview, botName: bot.name),
-                preview: ChatEntry.plain(recent.preview),
-                updatedAt: RailClock.date(from: recent.updatedAt)
-            ))
-        }
-        return entries.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
     }
 
-    /// The chat an approval was raised in, when it is not the open one and the
-    /// session is one of the listed chats.
+    /// The chat an approval was raised in, when it is not the open one and
+    /// the list holds it.
     func otherChat(for item: ApprovalItem) -> ChatEntry? {
-        guard let sessionId = item.sessionId, !sessionId.isEmpty,
-              let bot = store?.activeBots.first(where: { $0.id == Threads.defaultBotId }),
-              bot.sessionId != sessionId,
-              let recent = store?.recents.first(where: { $0.sessionId == sessionId }) else { return nil }
-        return chatEntries.first { $0.recentId == recent.id }
+        guard let chatId = item.chatId, !chatId.isEmpty, chatId != currentChatId else { return nil }
+        return chatEntries.first { $0.id == chatId }
     }
 
     /// An approval raised in a chat that is not open and not in the list: the
     /// card says "From another chat" with no title and no Open chat link.
     func approvalFromUnlistedChat(_ item: ApprovalItem) -> Bool {
-        guard let sessionId = item.sessionId, !sessionId.isEmpty,
-              let bot = store?.activeBots.first(where: { $0.id == Threads.defaultBotId }),
-              bot.sessionId != sessionId else { return false }
+        guard let chatId = item.chatId, !chatId.isEmpty, chatId != currentChatId else { return false }
         return otherChat(for: item) == nil
     }
 
-    /// The open chat is working. Other chats show no mark until the engine
-    /// reports them (PR 3).
-    var currentChatWorking: Bool {
-        selectedBotId.map(isWorking) ?? false
-    }
-
-    /// Open a chat. Opening another one stops a reply still coming in, so
-    /// that asks first (the alert on the root view calls `openNow`).
+    /// Open a chat from the sidebar.
     func open(_ entry: ChatEntry) {
-        if pending, !entry.isCurrent {
-            leaveChatTarget = entry
-            return
-        }
-        openNow(entry)
-    }
-
-    func openNow(_ entry: ChatEntry) {
-        if let recentId = entry.recentId {
-            openRecent(recentId)
-        } else {
-            stage = .chat
-        }
-    }
-
-    /// ⌘↑ and ⌘↓: the previous or next chat in the sidebar's order. With no
-    /// chat open (an empty new chat, or a page) either key lands on the newest.
-    func openAdjacentChat(_ step: Int) {
-        let entries = chatEntries
-        guard !entries.isEmpty else { return }
-        let index = stage == .chat ? entries.firstIndex(where: \.isCurrent) : nil
-        let target = index.map { $0 + step } ?? 0
-        guard entries.indices.contains(target) else { return }
-        open(entries[target])
+        openChat(entry.id)
     }
 }

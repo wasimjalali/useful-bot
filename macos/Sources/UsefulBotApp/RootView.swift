@@ -157,6 +157,10 @@ struct RootView: View {
                         model.searchOpen = false
                         model.open(entry)
                     },
+                    onOpenMessage: { hit in
+                        model.searchOpen = false
+                        model.openChat(hit.chatId, highlight: hit.rowId)
+                    },
                     onOpenRoutine: { id in
                         model.searchOpen = false
                         model.showRoutine(id)
@@ -189,24 +193,6 @@ struct RootView: View {
                 .transition(.opacity)
             }
 
-        }
-        .alert(
-            "Leave this chat?",
-            isPresented: Binding(
-                get: { model.leaveChatTarget != nil || model.leaveForNewChat },
-                set: { if !$0 { model.leaveChatTarget = nil; model.leaveForNewChat = false } }
-            )
-        ) {
-            Button("Leave", role: .destructive) {
-                if let entry = model.leaveChatTarget {
-                    model.openNow(entry)
-                } else if model.leaveForNewChat {
-                    model.startNewChatNow()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The reply in progress stops.")
         }
     }
 

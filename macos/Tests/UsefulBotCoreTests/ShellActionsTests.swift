@@ -15,28 +15,6 @@ import Testing
         #expect(patch["avatarImage"] is NSNull)
     }
 
-    @Test func setSessionSendsNullToDropThePointer() throws {
-        let dropped = ShellActions.setSession(botId: "b1", sessionId: nil)
-        #expect(dropped["type"] as? String == "setSession")
-        #expect(dropped["sessionId"] is NSNull)
-        let set = ShellActions.setSession(botId: "b1", sessionId: "wrun_1")
-        #expect(set["sessionId"] as? String == "wrun_1")
-    }
-
-    /// The wire names are the contract with the server: a typo here is a
-    /// refused action, not a compile error. Neither carries anything extra,
-    /// so a stray field cannot widen what the server does.
-    @Test func moveNotesAndRemoveArchivedBotCarryOnlyTheBotId() {
-        let move = ShellActions.moveNotes(fromBotId: "bot-old")
-        #expect(move["type"] as? String == "moveNotes")
-        #expect(move["fromBotId"] as? String == "bot-old")
-        #expect(move.count == 2)
-        let remove = ShellActions.removeArchivedBot(botId: "bot-old")
-        #expect(remove["type"] as? String == "removeArchivedBot")
-        #expect(remove["botId"] as? String == "bot-old")
-        #expect(remove.count == 2)
-    }
-
     /// Every action the app can build must be one the server still takes. This
     /// reads the builders' own source, so a builder that comes back for a
     /// removed action fails here instead of as a refused write at run time.
@@ -51,26 +29,15 @@ import Testing
             Range(match.range(at: 1), in: text).map { String(text[$0]) }
         })
         #expect(types == [
-            "select", "renameBot", "clearThread", "setSession", "setWorkspace", "setPermission",
-            "openRecent", "updateBot", "moveNotes", "removeArchivedBot",
+            "renameBot", "setWorkspace", "setPermission", "updateBot",
             // The proposal confirms.
             "connectApp", "connectServer",
         ])
     }
 
-    /// An old record of a removed kind must decode and then be unconfirmable:
-    /// confirming it would send an action the server now refuses.
-    @Test func removedProposalKindsDecodeAsRetiredAndCannotBeConfirmed() throws {
-        for kind in ["createBot", "createGroup", "updateBotProfile", "fanout"] {
-            let proposal = try JSONDecoder().decode(Proposal.self, from: Data("""
-            {"id":"p1","kind":"\(kind)","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-             "name":"Scout","memberIds":["b1","b2"],"botId":"b1","patch":{"name":"X","title":"Y"},
-             "message":"ship it","targetIds":["b1"],"groupId":"g1","sourceBotId":"b9","sectionId":"s1"}
-            """.utf8))
-            #expect(proposal.kind == .retired)
-            #expect(ProposalActions.confirm(proposal) == nil)
-        }
-        // A kind nobody has heard of is still the visible, unsupported one.
+    /// A kind nobody has heard of is still the visible, unsupported one, and
+    /// confirming it would send an action the server refuses.
+    @Test func anUnknownProposalKindCannotBeConfirmed() throws {
         let unknown = try JSONDecoder().decode(Proposal.self, from: Data("""
         {"id":"p2","kind":"somethingNew","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z"}
         """.utf8))
@@ -107,9 +74,6 @@ import Testing
                 == "That proposal is no longer available."
         )
         #expect(BackendError.shell("custom_thing").errorDescription == "Custom Thing")
-        #expect(BackendError.shell("shell_bot_archived").errorDescription == "That bot is archived and can't be used.")
-        #expect(BackendError.shell("shell_bot_forbidden").errorDescription == "That bot can't be opened.")
-        #expect(BackendError.shell("shell_bot_forbidden").shellCode == "shell_bot_forbidden")
         #expect(BackendError.shell("proposal_missing").shellCode == "proposal_missing")
     }
 

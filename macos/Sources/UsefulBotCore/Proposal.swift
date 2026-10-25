@@ -7,22 +7,12 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     public enum Kind: String, Sendable {
         case connectApp
         case connectServer
-        /// A bot, group, profile or fan-out proposal from before those went
-        /// away. Old records on disk may still carry one; it is never shown
-        /// and can never be confirmed.
-        case retired
         /// A kind this build does not know. It renders as unsupported and can
         /// never be confirmed; it must not collapse into a known action.
         case unknown
 
-        static let retiredKinds: Set<String> = ["createBot", "createGroup", "updateBotProfile", "fanout"]
-
         init(wire raw: String) {
-            if let known = Kind(rawValue: raw) {
-                self = known
-            } else {
-                self = Self.retiredKinds.contains(raw) ? .retired : .unknown
-            }
+            self = Kind(rawValue: raw) ?? .unknown
         }
     }
 

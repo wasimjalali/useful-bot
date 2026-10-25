@@ -166,9 +166,6 @@ struct ProposalCardView: View {
                     .padding(.top, 14)
                 }
             }
-        case .retired:
-            // A bot, group, profile or fan-out card from before those went away.
-            EmptyView()
         case .unknown:
             card(title: "Unsupported proposal", tone: .plain) {
                 Text("This app does not know how to confirm this proposal yet. Update Useful Bot and try again.")

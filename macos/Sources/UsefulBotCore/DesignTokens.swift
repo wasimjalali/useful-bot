@@ -118,7 +118,6 @@ public enum DesignTokens {
 
     public enum Space {
         public static let railWidth: CGFloat = 248
-        public static let settingsPaneWidth: CGFloat = 320
         public static let stageMargin: CGFloat = 10
         public static let chatHead: CGFloat = 52
         public static let chatColumnMax: CGFloat = 768

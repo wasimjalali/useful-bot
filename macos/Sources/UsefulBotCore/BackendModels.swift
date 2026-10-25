@@ -3,14 +3,15 @@ import Foundation
 /// Wire types for the local web server. Decoding is tolerant: a field a newer
 /// server adds is ignored, and a field this client doesn't know yet falls back
 /// to a safe default instead of failing the whole store.
-public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public let id: String
-    public let kind: String
+public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
+    public let id: String
     public var name: String
     public var petname: String?
     public var label: String
     public var description: String
     public var notify: Bool
-    public var sessionId: String?
+    /// The chat the bot has open (the engine's current chat), if any.
+    public var chatId: String?
     public var lastPreview: String
     public var lastAt: String?
     public var avatarShape: String
@@ -22,14 +23,6 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
     /// server's value survives the decode.
     public var permission: String
     public var workspace: BotWorkspace?
-    /// Set aside by the one-bot migration: out of the app, nothing deleted.
-    /// Settings lists the archived bots as Earlier bots.
-    public var archived: Bool
-    public var archivedAt: String?
-
-    /// A 1:1 bot that is not archived. Groups only survive as archived
-    /// legacy entries and are never active.
-    public var isActive: Bool { kind == "bot" && !archived }
 
     public var isReadOnly: Bool { permission == "read_only" }
     public var isFullAccess: Bool { permission == "full_access" }
@@ -43,31 +36,27 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, name, petname, label, description, notify
-        case sessionId, lastPreview, lastAt
+        case id, name, petname, label, description, notify
+        case chatId, lastPreview, lastAt
         case avatarShape, avatarColor, avatarImage, avatarCustom
-        case permission, workspace, archived, archivedAt
+        case permission, workspace
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
-        kind = (try? c.decode(String.self, forKey: .kind)) ?? "bot"
         name = (try? c.decode(String.self, forKey: .name)) ?? id
         petname = try? c.decodeIfPresent(String.self, forKey: .petname)
         label = (try? c.decode(String.self, forKey: .label)) ?? ""
         description = (try? c.decode(String.self, forKey: .description)) ?? ""
         notify = (try? c.decode(Bool.self, forKey: .notify)) ?? false
-        sessionId = try? c.decodeIfPresent(String.self, forKey: .sessionId)
+        chatId = try? c.decodeIfPresent(String.self, forKey: .chatId)
         lastPreview = (try? c.decode(String.self, forKey: .lastPreview)) ?? ""
         lastAt = try? c.decodeIfPresent(String.self, forKey: .lastAt)
         avatarShape = (try? c.decode(String.self, forKey: .avatarShape)) ?? "circle"
         avatarColor = (try? c.decode(String.self, forKey: .avatarColor)) ?? "ink"
         avatarImage = try? c.decodeIfPresent(String.self, forKey: .avatarImage)
         avatarCustom = (try? c.decode(Bool.self, forKey: .avatarCustom)) ?? false
-        // A store from before the archive flag has no archived bots.
-        archived = (try? c.decode(Bool.self, forKey: .archived)) ?? false
-        archivedAt = try? c.decodeIfPresent(String.self, forKey: .archivedAt)
         workspace = try? c.decodeIfPresent(BotWorkspace.self, forKey: .workspace)
         // An older server carried the permission on the folder only.
         let decoded = (try? c.decode(String.self, forKey: .permission)) ?? workspace?.permission ?? "auto"
@@ -160,31 +149,9 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
     }
 }
 
-public struct ShellRecent: Codable, Identifiable, Equatable, Sendable {
-    public let id: String
-    public var botId: String
-    public var title: String
-    public var sessionId: String?
-    public var preview: String
-    public var updatedAt: String
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        botId = (try? c.decode(String.self, forKey: .botId)) ?? ""
-        title = (try? c.decode(String.self, forKey: .title)) ?? "Chat"
-        sessionId = try? c.decodeIfPresent(String.self, forKey: .sessionId)
-        preview = (try? c.decode(String.self, forKey: .preview)) ?? ""
-        updatedAt = (try? c.decode(String.self, forKey: .updatedAt)) ?? ""
-    }
-
-    enum CodingKeys: String, CodingKey { case id, botId, title, sessionId, preview, updatedAt }
-}
-
 public struct ShellStore: Codable, Equatable, Sendable {
     public var selectedBotId: String?
     public var bots: [ShellBot]
-    public var recents: [ShellRecent]
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -192,53 +159,13 @@ public struct ShellStore: Codable, Equatable, Sendable {
         // An older store also carries sections and collapsed flags; they are
         // not read, so they cannot fail the decode.
         bots = (try? c.decode([ShellBot].self, forKey: .bots)) ?? []
-        recents = (try? c.decode([ShellRecent].self, forKey: .recents)) ?? []
     }
 
-    /// The active bots, in store order. In the dev stack that includes the
-    /// perf fixture bots.
-    public var activeBots: [ShellBot] { bots.filter(\.isActive) }
-
-    /// What the rail lists: the default bot alone. The perf fixture bots are
-    /// reached through `select` and never listed.
-    public var railBots: [ShellBot] { activeBots.filter { $0.id == Threads.defaultBotId } }
+    /// The one bot.
+    public var bot: ShellBot? { bots.first { $0.id == Threads.defaultBotId } ?? bots.first }
 
     enum CodingKeys: String, CodingKey {
-        case selectedBotId, bots, recents
-    }
-}
-
-public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
-    public let id: String
-    /// Server write time, ISO 8601. Older stores omit it, so it stays optional.
-    public let at: String?
-    public let kind: String
-    public let text: String
-    public let proposalId: String?
-    public let widgetId: String?
-    /// Generated image the row renders, fetched from `/api/agent/image/<id>`.
-    /// On a "page" row, the Library item of the HTML file.
-    public let imageId: String?
-    /// On the host's "connected" note: what was added, and its logo.
-    public let connectedName: String?
-    public let connectedLogo: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, at, kind, text, proposalId, widgetId, imageId
-        case connectedName, connectedLogo
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        at = try? c.decodeIfPresent(String.self, forKey: .at)
-        kind = try c.decode(String.self, forKey: .kind)
-        text = (try? c.decode(String.self, forKey: .text)) ?? ""
-        proposalId = try? c.decodeIfPresent(String.self, forKey: .proposalId)
-        widgetId = try? c.decodeIfPresent(String.self, forKey: .widgetId)
-        imageId = try? c.decodeIfPresent(String.self, forKey: .imageId)
-        connectedName = try? c.decodeIfPresent(String.self, forKey: .connectedName)
-        connectedLogo = try? c.decodeIfPresent(String.self, forKey: .connectedLogo)
+        case selectedBotId, bots
     }
 }
 
@@ -413,26 +340,15 @@ public struct ApprovalItem: Codable, Identifiable, Equatable, Sendable {
     public let actionSha256: String
     public let preview: String
     public let tool: String
-    /// Who raised it, when the server says (older servers do not).
     public let botId: String?
-    public let botName: String?
-    /// The session that raised it.
-    public let sessionId: String?
-
-    /// What the card says about where it came from: another bot's name when
-    /// the chat open is not that bot's. Nil for the open bot's own.
-    public func originLabel(openBotId: String?) -> String? {
-        let name = (botName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !name.isEmpty, let botId, botId != openBotId { return name }
-        return nil
-    }
+    /// The chat that raised it.
+    public let chatId: String?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         botId = try? c.decodeIfPresent(String.self, forKey: .botId)
-        botName = try? c.decodeIfPresent(String.self, forKey: .botName)
-        sessionId = try? c.decodeIfPresent(String.self, forKey: .sessionId)
+        chatId = try? c.decodeIfPresent(String.self, forKey: .chatId)
         actionSha256 = (try? c.decode(String.self, forKey: .actionSha256)) ?? ""
         preview = (try? c.decode(String.self, forKey: .preview)) ?? ""
         tool = (try? c.decode(String.self, forKey: .tool)) ?? ""
@@ -440,18 +356,17 @@ public struct ApprovalItem: Codable, Identifiable, Equatable, Sendable {
 
     public init(
         id: String, actionSha256: String, preview: String, tool: String,
-        botId: String? = nil, botName: String? = nil, sessionId: String? = nil
+        botId: String? = nil, chatId: String? = nil
     ) {
         self.botId = botId
-        self.botName = botName
-        self.sessionId = sessionId
+        self.chatId = chatId
         self.id = id
         self.actionSha256 = actionSha256
         self.preview = preview
         self.tool = tool
     }
 
-    enum CodingKeys: String, CodingKey { case id, actionSha256, preview, tool, botId, botName, sessionId }
+    enum CodingKeys: String, CodingKey { case id, actionSha256, preview, tool, botId, chatId }
 }
 
 /// `/api/providers` row, mirrored from `ProviderPublic`. Legacy shape, kept so
@@ -894,7 +809,7 @@ public struct UsagePayload: Codable, Equatable, Sendable {
 }
 
 /// `/api/status` identity plus build info for the settings dialog. S15 adds
-/// `apiVersion` and the calling session's `profile`; `eve` is the readiness
+/// `apiVersion` and the calling session's `profile`; `engine` is the readiness
 /// probe ("available" | "limited" | "unknown") that §7.2's `runtimeDown`
 /// level reads.
 public struct AppStatus: Codable, Equatable, Sendable {
@@ -904,21 +819,21 @@ public struct AppStatus: Codable, Equatable, Sendable {
     public let theme: String?
     public let apiVersion: Int?
     public let profile: String?
-    public let eve: String?
+    public let engine: String?
 
     public init(name: String?, initials: String?, version: String?, theme: String?,
-                apiVersion: Int? = nil, profile: String? = nil, eve: String? = nil) {
+                apiVersion: Int? = nil, profile: String? = nil, engine: String? = nil) {
         self.name = name
         self.initials = initials
         self.version = version
         self.theme = theme
         self.apiVersion = apiVersion
         self.profile = profile
-        self.eve = eve
+        self.engine = engine
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, initials, version, theme, apiVersion, profile, eve
+        case name, initials, version, theme, apiVersion, profile, engine
     }
 
     public init(from decoder: Decoder) throws {
@@ -930,11 +845,11 @@ public struct AppStatus: Codable, Equatable, Sendable {
         theme = try? c.decodeIfPresent(String.self, forKey: .theme)
         apiVersion = try? c.decodeIfPresent(Int.self, forKey: .apiVersion)
         profile = try? c.decodeIfPresent(String.self, forKey: .profile)
-        eve = try? c.decodeIfPresent(String.self, forKey: .eve)
+        engine = try? c.decodeIfPresent(String.self, forKey: .engine)
     }
 
     enum TopKeys: String, CodingKey {
-        case `operator`, version, theme, apiVersion, profile, eve
+        case `operator`, version, theme, apiVersion, profile, engine
     }
 }
 
