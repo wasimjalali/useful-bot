@@ -6,7 +6,7 @@ import { sharedMemoryStore } from "../lib/memory.ts";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
-import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { flatLine, wrapUntrusted } from "../../shared/untrusted.ts";
 import { markOutside, seenOutside } from "../lib/outside-content.ts";
 
 const PREVIEW_MAX = 300;
@@ -31,7 +31,7 @@ function noteExists(botId: string, id: string): boolean {
 
 /** Fit the body onto the approval card without hiding that it was cut. */
 function clipPreview(value: string): string {
-  const flat = value.replace(/\s+/g, " ").trim();
+  const flat = flatLine(value).replace(/\s+/g, " ");
   return flat.length > PREVIEW_MAX ? `${flat.slice(0, PREVIEW_MAX)}...` : flat;
 }
 
@@ -134,7 +134,7 @@ async function save(args: Input, ctx: ToolCtx) {
     actionSha256: hash,
     // The body is what the owner is actually authorising, so it goes on the
     // card next to the metadata the hash binds.
-    preview: `memory ${note.title} (${note.tags.length ? "tags: " + note.tags.join(", ") : "no tags"}${args.expiresAt ? ", expires " + args.expiresAt : ""}): ${clipPreview(note.body)}`,
+    preview: `memory ${flatLine(note.title)} (${note.tags.length ? "tags: " + flatLine(note.tags.join(", ")) : "no tags"}${args.expiresAt ? ", expires " + args.expiresAt : ""}): ${clipPreview(note.body)}`,
   });
   await settle(store, rec.id, hash, gate, ctx, permission);
   return executeIfApproved(store, rec.id, hash, () => {
