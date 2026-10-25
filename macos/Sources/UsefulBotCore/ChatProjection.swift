@@ -132,7 +132,9 @@ public struct ChatProjection: Equatable, Sendable {
     // MARK: - Events
 
     @discardableResult
-    public mutating func apply(_ event: ChatEvent) -> Applied {
+    /// `resumed` is a stream opened with `after`: its replay follows `stream.ready`,
+    /// so a tail past ours is not a gap there.
+    public mutating func apply(_ event: ChatEvent, resumed: Bool = false) -> Applied {
         if event.type == "ping" {
             // A ping past the tail means events were missed (a settle among them).
             return loaded && event.seq > tailSeq ? .gap : .ignored
@@ -140,7 +142,7 @@ public struct ChatProjection: Equatable, Sendable {
         if event.type == "stream.ready" {
             if event.resync { return .resync }
             if let epoch, !event.epoch.isEmpty, event.epoch != epoch { return .resync }
-            if loaded, let ready = event.tailSeq, ready > tailSeq { return .gap }
+            if loaded, !resumed, let ready = event.tailSeq, ready > tailSeq { return .gap }
             return .applied
         }
         guard loaded else { return .ignored }
@@ -190,6 +192,7 @@ public struct ChatProjection: Equatable, Sendable {
     private mutating func settle() {
         pending = false
         turnId = nil
+        turnStartedAt = nil
         activity = .thinking
         activityCall = nil
     }
@@ -204,9 +207,12 @@ public struct ChatProjection: Equatable, Sendable {
             // A retry sends the same message again: the bubble the first try
             // made takes the new row id.
             if let index = rows.firstIndex(where: { $0.clientId == clientId && $0.kind == .user }) {
+                let wasQueued = rows[index].queued
                 rows[index].rowId = rowId
                 rows[index].turnId = event.turnId
                 rows[index].queued = false
+                // A dequeued message belongs after the rows the running turn added.
+                if wasQueued, index != rows.count - 1 { rows.append(rows.remove(at: index)) }
                 return
             }
         }
