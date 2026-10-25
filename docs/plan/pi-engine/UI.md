@@ -321,10 +321,3 @@ chat. All in Useful Bot Dev with its one bot.
 | Your other bots | sidebar rows | Settings > General > Earlier bots |
 | Connectors | dialog with "Added" | same dialog, Connected / Sign in again |
 | An app's tools | plain list | Reconnect, Disconnect, reads and writes, filter |
-
-## 14. Open item for the orchestrator
-
-SPEC D5 says the default bot keeps its current name. The approved design shows no editable name and
-calls the bot Useful Bot everywhere, so SPEC 5.6's "You are NAME." should read "You are Useful Bot."
-Decide whether PR 2's migration renames the stored default bot or the UI just ignores the stored
-name; the `renameBot` and avatar fields on `/api/shell` can stay unused either way.

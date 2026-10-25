@@ -94,7 +94,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D2 | Where Pi runs | Separate plain Node process. Not inside Next (dev duplicates route modules and hot-reloads) |
 | D3 | Model path | Through the router. A registered native provider delegates to Pi's built-in `openai-completions` stream with our `routerFetch` |
 | D4 | Pi built-ins | All off: no built-in tools, no extensions from disk, no skill or context-file discovery, in-memory settings, nothing read under `~/.pi` |
-| D5 | Bots | One bot: the default (`bot-useful`, keeps its current name). No second bot, no bot switcher, no bot creation |
+| D5 | Bots | One bot: the default (`bot-useful`), named "Useful Bot" (PR 2b renames the stored bot; the name can't be edited). No second bot, no bot switcher, no bot creation |
 | D6 | Other existing bots | Archived ("earlier bots"): hidden, record and memory notes kept under their id; their routines move to the bot, paused; Settings > General > Earlier bots offers Copy instructions, Move notes and Remove. No restore |
 | D7 | Sub-agents | Removed |
 | D8 | Groups, sections, pins, hide, handoffs, fan-out, cross-bot send, bot and group proposals, profile proposals | Removed |
@@ -298,7 +298,7 @@ turn and `agent_settled` ends it. The host mints `turnId` (UUID v4).
 - **System prompt (static, cached):** `agent/instructions.md` rewritten for one all-round bot
   (under 950 words; `test/prompt-texts.test.ts` keeps the cap and its tool-name list becomes ours),
   then the skills list (name and one-line description of each skill in `agent/skills/`), then the
-  bot block: `You are NAME.` plus the owner's instructions fenced as today
+  bot block: `You are Useful Bot.` plus the owner's instructions fenced as today
   (`shared/context-blocks.ts` "Your bot"). It changes only when the owner edits the bot. Remove
   "Running the team", the group block, "another bot is a peer", sub-agent, handoff and reviewer
   text. Add `GENERALIST_SEED_V3` to `shared/shell-store.ts` (seeds are append-only) without team
