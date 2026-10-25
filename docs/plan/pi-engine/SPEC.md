@@ -540,7 +540,7 @@ Envelope `{seq, epoch, at, chatId, turnId?, type, ...}`. The **host** owns `seq`
 |---|---|---|
 | `stream.ready` | `tailSeq`, `resync`, `running: {turnId}|null` | history boundary |
 | `ping` | | keep-alive |
-| `turn.started` | `origin`, `clientId?`, `retry?` | working row on; with `retry` drop the newest failure row |
+| `turn.started` | `origin`, `clientId?`, `retry?`, `resync?` | working row on; with `retry` (and `resync`) the app re-reads the rows, since the failed attempt's rows are on an abandoned branch |
 | `message.user` | `rowId`, `clientId?`, `text`, `attachments` | binds or appends the owner bubble |
 | `message.queued` | `clientId`, `text` | queued tag |
 | `message.dropped` | `clientId` | unsent bubble with Send again |
@@ -550,6 +550,7 @@ Envelope `{seq, epoch, at, chatId, turnId?, type, ...}`. The **host** owns `seq`
 | `tool.call` | `callId`, `name`, `widget?` | live widget |
 | `tool.result` | `callId`, `searchResults?` | search chips |
 | `row` | full row | note, image, page, widget, card, unsent rows as written |
+| `row.removed` | `rowId` | drops an assistant bubble Pi retried and hid from the model (a cut stream or a length recovery); the answer streams under the next row id |
 | `input.requested` | `requestId`, `kind: "question"`, `prompt`, `options`, `allowFreeform` | question card |
 | `input.resolved` | `requestId` | card leaves |
 | `compaction.done` | `rowId` | note row |

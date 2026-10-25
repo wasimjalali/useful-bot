@@ -518,10 +518,6 @@ function backupIncompatible(path: string): void {
   } catch { /* ignore */ }
 }
 
-export function writeRoutinesStore(store: RoutinesStore, path = routinesStorePath()): void {
-  writeSerialized(JSON.stringify(plainRoutinesStore(parseRoutinesStore(store))), path);
-}
-
 function writeSerialized(json: string, path: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   backupIncompatible(path);

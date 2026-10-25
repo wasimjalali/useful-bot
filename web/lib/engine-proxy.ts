@@ -19,7 +19,9 @@ const WRITES_PER_MINUTE = 60;
 const CONTROL_PER_MINUTE = 600;
 
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
-const CURSOR = /^[A-Za-z0-9_:.-]{1,200}$/;
+// A row id is the cursor, and a widget row id carries the provider's call id: any
+// printable ASCII without spaces, as long as the engine's row keys can be.
+const CURSOR = /^[\x21-\x7e]{1,260}$/;
 
 /** A chat or bot id for a path segment or a query value, or null. */
 export function safeId(value: unknown): string | null {

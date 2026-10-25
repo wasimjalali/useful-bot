@@ -121,8 +121,3 @@ export function parseTurnBody(raw: unknown): TurnBody {
   if (rec.retry !== true && rec.text.trim() === "" && attachments.length === 0) throw new TurnBodyError("turn_empty");
   return { clientId: rec.clientId, text: rec.text, attachments, retry: rec.retry === true };
 }
-
-/** True when a turn carries a picture, so the model has to see images. */
-export function turnHasImages(turn: Pick<TurnBody, "attachments">): boolean {
-  return turn.attachments.some((item) => item.dataUrl !== undefined);
-}

@@ -262,7 +262,7 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Delete chat | `DELETE /api/chats/:id` (moves the file to `<stateRoot>/engine/trash/`, purged after 30 days) | 3 |
 | Open chat | `POST /api/chats/:id/open` (current chat, clears reply ready) | 2 (`openRecent`), 3 |
 | Transcript rows | `GET /api/chats/:id/rows` | 3 |
-| Live transcript | `GET /api/chats/:id/events`: `message.user`, `message.delta`, `message.final` (bubbles), `activity` (working row label), `tool.call` / `tool.result` (widgets, search chips), `row` (note, image, page, widget, card, unsent, failure rows), `compaction.done` (compaction note), `input.requested` / `input.resolved` (question card); `stream.ready` and `ping` are transport | 3 |
+| Live transcript | `GET /api/chats/:id/events`: `message.user`, `message.delta`, `message.final` (bubbles), `activity` (working row label), `tool.call` / `tool.result` (widgets, search chips), `row` (note, image, page, widget, card, unsent, failure rows), `row.removed` (drops a bubble Pi retried), `compaction.done` (compaction note), `input.requested` / `input.resolved` (question card); `stream.ready` and `ping` are transport | 3 |
 | Send, queue, retry | `POST /api/chats/:id/turns`; events `turn.started` (working row on; with `retry` the app re-reads rows), `message.queued` (queued tag), `message.dropped` (unsent bubble with Send again), `turn.completed` / `turn.cancelled` (working row off), `turn.failed` (failure row with Retry) | 3 |
 | Stop | `POST /api/chats/:id/cancel` | 3 |
 | Approval cards (+ "From another chat") | `GET /api/approvals` (`chatId`, `botId`), `POST /api/approvals/:id` | 3 (`chatId`) |

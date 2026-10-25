@@ -26,7 +26,6 @@ export const ROUTER_HOST = "127.0.0.1";
  * fixture (test/fixtures/router-index-pre-fix.ts.txt) that still imports it.
  */
 export const ROUTER_PORT = DAILY.routerPort;
-export const ENGINE_HOST = "127.0.0.1";
 export const BODY_LIMIT_BYTES = 1_048_576;
 /**
  * A completion body carries the conversation, and a conversation with images

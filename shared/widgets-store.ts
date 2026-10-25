@@ -82,10 +82,6 @@ export function listWidgets(dir = widgetsDir()): WidgetRecord[] {
   return out;
 }
 
-export function deleteWidget(id: string, dir = widgetsDir()): void {
-  try { unlinkSync(pathFor(id, dir)); } catch { /* ignore */ }
-}
-
 /** How long a record is kept before a sweep may call it an orphan. */
 export const WIDGET_ORPHAN_GRACE_MS = 10 * 60 * 1000;
 

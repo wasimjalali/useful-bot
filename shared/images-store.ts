@@ -39,7 +39,8 @@ export const IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/;
 export const IMAGE_BYTES_MAX = 12 * 1024 * 1024;
 /** A 4k PNG lands around 12 MB base64; anything past this is not one of ours. */
 const RECORD_MAX = 20_000_000;
-const PROMPT_MAX = 2_000;
+// The media index keeps 4,000 (Regenerate redraws from it), so a held image keeps as much.
+const PROMPT_MAX = 4_000;
 
 export function imagesDir(root = process.env.UB_IMAGES_DIR): string {
   if (root) return root;
