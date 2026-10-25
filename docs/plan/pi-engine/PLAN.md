@@ -315,5 +315,8 @@ the engine's eve-listener kill at boot, once every install has run the PR 3 rele
 - Approved the UI mockups on 2026-10-25 (`UI.md`, `mockups/chat-first-useful-bot.html`); the UI
   lands in PR 2b.
 - Approve the golden-eval spend (two runs of 10 tasks on his subscriptions).
+- Before the PR 3 release deploys the site (`site/public/`, its copy is already one-bot in the repo since #218),
+  retake its screenshots from the one-bot app (`/shots/chat.png`, `models.png`, `connectors.png`,
+  `routines.png`) and delete the unused `/shots/bots.png`.
 - Ship the PR 3 release when he decides (`npm run release:mac`); its notes say old chats are not
   carried over.
