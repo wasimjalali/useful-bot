@@ -88,7 +88,11 @@ public struct ChatProjection: Equatable, Sendable {
                 ?? rows.last { $0.turnId == running.turnId && $0.kind == .user }.flatMap { ChatClock.date(from: $0.at) }
                 ?? turnStartedAt ?? Date()
             activity = running.activity ?? .thinking
-            if !running.partialText.isEmpty, !rows.contains(where: { $0.turnId == running.turnId && $0.kind == .assistant }) {
+            // With `rowId` the partial row is added when that row is missing; without it
+            // the turn's first assistant row is the fallback.
+            let missing = running.rowId.map { id in !rows.contains { $0.rowId == id } }
+                ?? !rows.contains { $0.turnId == running.turnId && $0.kind == .assistant }
+            if !running.partialText.isEmpty, missing {
                 var partial = ChatRow(rowId: running.rowId ?? "\(running.turnId):a0", kind: .assistant, turnId: running.turnId)
                 partial.text = running.partialText
                 rows.append(partial)
@@ -129,16 +133,23 @@ public struct ChatProjection: Equatable, Sendable {
 
     @discardableResult
     public mutating func apply(_ event: ChatEvent) -> Applied {
-        if event.type == "ping" { return .ignored }
+        if event.type == "ping" {
+            // A ping past the tail means events were missed (a settle among them).
+            return loaded && event.seq > tailSeq ? .gap : .ignored
+        }
         if event.type == "stream.ready" {
             if event.resync { return .resync }
             if let epoch, !event.epoch.isEmpty, event.epoch != epoch { return .resync }
+            if loaded, let ready = event.tailSeq, ready > tailSeq { return .gap }
             return .applied
         }
         guard loaded else { return .ignored }
         if let epoch, !event.epoch.isEmpty, event.epoch != epoch { return .resync }
         if event.seq <= tailSeq { return .ignored }
         if event.seq > tailSeq + 1 { return .gap }
+        // The engine drops a failed attempt's rows when the owner retries: read
+        // the rows again so the view and the fetched rows agree.
+        if event.type == "turn.started", event.retry || event.resync { return .resync }
         tailSeq = event.seq
         switch event.type {
         case "turn.started": turnStarted(event)
@@ -174,10 +185,6 @@ public struct ChatProjection: Equatable, Sendable {
         activity = .thinking
         activityCall = nil
         searchHits = []
-        // A retry keeps the owner's bubble and replaces the failure it answers.
-        if event.retry, let index = rows.lastIndex(where: { $0.kind == .failure }) {
-            rows.remove(at: index)
-        }
     }
 
     private mutating func settle() {

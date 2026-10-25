@@ -90,8 +90,13 @@ private func event(_ json: String) -> ChatEvent {
         let events = try ChatFixtures.events("events-failure.ndjson")
         var retryTargetAfterFailure: (clientId: String, text: String)?
         var retryableRow: String?
+        var retryResync = false
         for line in events {
-            projection.apply(line)
+            if projection.apply(line) == .resync {
+                // The retry's turn.started: the rows are read again.
+                retryResync = true
+                break
+            }
             if line.type == "turn.failed" {
                 retryTargetAfterFailure = projection.retryTarget
                 retryableRow = projection.retryableFailureRowId
@@ -102,12 +107,23 @@ private func event(_ json: String) -> ChatEvent {
         #expect(retryableRow == "7a1e0001-0000-4000-8000-00000000a002:f")
         #expect(retryTargetAfterFailure?.clientId == "c1c1c1c1-0000-4000-8000-0000000000c2")
         #expect(retryTargetAfterFailure?.text == "Desktop")
-        // After the retry: one owner bubble under the retry turn's id, no failure row, the answer.
-        #expect(projection.rows.map(\.rowId) == [
-            "7a1e0001-0000-4000-8000-00000000a003:u",
-            "7a1e0001-0000-4000-8000-00000000a003:a0",
-        ])
-        #expect(projection.rows.filter { $0.kind == .user }.count == 1)
+        #expect(retryResync)
+    }
+
+    @Test func aRetryReadsTheRowsAgainAndTheFailedAttemptsRowsAreGone() throws {
+        let failedPage = #"{"rows":[{"rowId":"t1:u","kind":"user","turnId":"t1","text":"Draw it","clientId":"c1"},{"rowId":"t1:a0","kind":"assistant","turnId":"t1","text":"Here."},{"rowId":"image:img-1","kind":"image","turnId":"t1"},{"rowId":"t1:f","kind":"failure","turnId":"t1"}],"tailSeq":6,"epoch":"\#(epoch)"}"#
+        var projection = ChatProjection()
+        projection.load(try JSONDecoder().decode(RowsPage.self, from: Data(failedPage.utf8)))
+        #expect(projection.rows.count == 4)
+        // The retry is a new turn on the same owner message: the stream asks for a re-read.
+        let started = event(#"{"seq":7,"epoch":"\#(epoch)","chatId":"c","turnId":"t2","type":"turn.started","origin":"owner","clientId":"c1","retry":true}"#)
+        #expect(projection.apply(started) == .resync)
+        // The engine's rows no longer hold the abandoned branch; the bubble is bound by clientId.
+        let retryPage = #"{"rows":[{"rowId":"t2:u","kind":"user","turnId":"t2","text":"Draw it","clientId":"c1"}],"tailSeq":7,"epoch":"\#(epoch)","running":{"turnId":"t2","partialText":""}}"#
+        projection.load(try JSONDecoder().decode(RowsPage.self, from: Data(retryPage.utf8)))
+        #expect(projection.rows.map(\.rowId) == ["t2:u"])
+        #expect(projection.rows.first?.clientId == "c1")
+        #expect(projection.pending)
         #expect(projection.retryableFailureRowId == nil)
     }
 
@@ -182,6 +198,22 @@ private func event(_ json: String) -> ChatEvent {
         // The newest turn's web results are the chips; the question is closed.
         #expect(projection.openQuestion == nil)
         #expect(projection.nextBefore == "compaction:e-0042")
+    }
+
+    @Test func aLaterStreamingMessageKeepsItsPartialTextOnAReload() throws {
+        let json = #"{"rows":[{"rowId":"t1:u","kind":"user","turnId":"t1","text":"Hi"},{"rowId":"t1:a0","kind":"assistant","turnId":"t1","text":"First."}],"tailSeq":9,"epoch":"\#(epoch)","running":{"turnId":"t1","partialText":"Second so far","rowId":"t1:a1"}}"#
+        var projection = ChatProjection()
+        projection.load(try JSONDecoder().decode(RowsPage.self, from: Data(json.utf8)))
+        #expect(projection.rows.map(\.rowId) == ["t1:u", "t1:a0", "t1:a1"])
+        #expect(projection.rows.last?.text == "Second so far")
+    }
+
+    @Test func aSettleTheStreamNeverDeliveredShowsAsAGap() {
+        var projection = empty(tailSeq: 5)
+        #expect(projection.apply(event(#"{"seq":9,"epoch":"\#(epoch)","chatId":"c","type":"ping"}"#)) == .gap)
+        #expect(projection.apply(event(#"{"seq":5,"epoch":"\#(epoch)","chatId":"c","type":"ping"}"#)) == .ignored)
+        #expect(projection.apply(event(#"{"epoch":"\#(epoch)","chatId":"c","type":"stream.ready","tailSeq":8,"resync":false}"#)) == .gap)
+        #expect(projection.apply(event(#"{"epoch":"\#(epoch)","chatId":"c","type":"stream.ready","tailSeq":5,"resync":false}"#)) == .applied)
     }
 
     // MARK: Sending
