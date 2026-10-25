@@ -476,7 +476,10 @@ struct ChatView: View {
                                     // row's equality, so the turn finishing
                                     // moves its final text into the shared
                                     // cache even when no delta follows.
-                                    streaming: streaming && model.latestReplyRunIds.contains(row.id)
+                                    streaming: streaming && model.latestReplyRunIds.contains(row.id),
+                                    // Only the newest finished reply offers
+                                    // its follow-ups; older ones drop them.
+                                    showsFollowUps: !streaming && model.latestReplyRunIds.contains(row.id)
                                 )
                                 .equatable()
                                 // One turn can post several bubbles; they
@@ -532,19 +535,15 @@ struct ChatView: View {
                             runningModel: model.runningModelNote(for: bot.id)
                         )
                         .frame(height: WorkingRow.height, alignment: .leading)
-                        if !model.searchHits.isEmpty {
-                            SearchChipsRow(chips: model.searchHits)
-                        }
                         // Spacing only: the scroll target is the marker below,
                         // at the very bottom of the content.
                         Color.clear
                             .frame(height: 1)
                     }
-                    // The transcript spans the pane, not a centered column:
-                    // the owner's bubbles sit flush right and the bot's flush
-                    // left, however wide the window, with `bubbleMax` keeping
-                    // the far side empty.
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // A centered column as wide as the composer's: the owner's
+                    // bubbles sit at its right edge and the bot's at its left,
+                    // so a wide window doesn't push them to the pane's edges.
+                    .frame(maxWidth: DesignTokens.Space.chatColumnMax, alignment: .leading)
                     .background(
                         GeometryReader { proxy in
                             Color.clear.preference(key: ChatColumnWidthKey.self, value: proxy.size.width)
@@ -1320,6 +1319,9 @@ struct TranscriptRowView: View, Equatable {
     /// The bubble of a turn still running: its markdown is parsed into a
     /// transient slot instead of the shared cache, one entry per delta.
     var streaming = false
+    /// Draw the reply's closing "Follow-ups:" list under the bubble. Off, the
+    /// list is left out.
+    var showsFollowUps = false
 
     var body: some View {
         switch row.kind {
@@ -1412,10 +1414,14 @@ struct TranscriptRowView: View, Equatable {
 
     /// One message from a bot, in its own bubble.
     private var replyRow: some View {
-        HStack(alignment: .top, spacing: 10) {
+        // While the reply streams a half-written list stays out of the bubble;
+        // it shows under the reply once the turn ends.
+        let followUps = FollowUps.split(row.text, partial: streaming)
+        let shown = followUps?.body ?? row.text
+        return HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                MessageHoverActions(text: row.text, botId: bot.id, enabled: !streaming) {
-                    ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
+                MessageHoverActions(text: shown, botId: bot.id, enabled: !streaming) {
+                    ChatMarkdownView(text: shown, expandsWidth: false, streamingKey: streaming ? row.id : nil)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(Theme.C.bubbleBot)
@@ -1428,11 +1434,73 @@ struct TranscriptRowView: View, Equatable {
                 // block scrolls or wraps inside it rather than going full
                 // column.
                 .frame(maxWidth: max(160, maxBubbleWidth) + MessageHoverActionsWidth.value, alignment: .leading)
+                if showsFollowUps, let questions = followUps?.questions, !questions.isEmpty {
+                    FollowUpList(questions: questions)
+                        .frame(maxWidth: max(160, maxBubbleWidth), alignment: .leading)
+                        .padding(.top, 6)
+                }
             }
             Spacer(minLength: 0)
         }
     }
 
+}
+
+/// Questions the bot suggests asking next, under its newest reply: one per
+/// line in the muted ink, so they read as an offer, not part of the answer.
+/// Each sends itself. Only this view reads the model, so the transcript's
+/// other rows don't redraw with it.
+private struct FollowUpList: View {
+    @EnvironmentObject private var model: AppModel
+    let questions: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Follow-ups")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.C.inkFaint)
+                .padding(.bottom, 4)
+            // By position: the model can repeat a question.
+            ForEach(Array(questions.enumerated()), id: \.offset) { _, question in
+                // Sent on its own: a draft or files waiting in the composer stay there.
+                FollowUpRow(question: question, enabled: !model.pending) { model.sendFromCard(question) }
+            }
+        }
+        .padding(.leading, 16)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Follow-ups")
+    }
+}
+
+private struct FollowUpRow: View {
+    let question: String
+    let enabled: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.C.inkFaint)
+                // Code marks read as noise in a one-line suggestion; the
+                // question is sent as written.
+                Text(question.replacingOccurrences(of: "`", with: ""))
+                    .font(.system(size: 13))
+                    .foregroundStyle(hovering && enabled ? Theme.C.ink : Theme.C.inkMuted)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
+        .accessibilityLabel(question)
+    }
 }
 
 /// The working row while a turn runs, and for the 50 ms the dots take to
@@ -1603,59 +1671,6 @@ private struct WorkingRow: View {
     }
 }
 
-/// `.search-chip` row: wrapped pills that open the result in the browser.
-struct SearchChipsRow: View {
-    let chips: [SearchChip]
-
-    var body: some View {
-        WrapHStack(spacing: 8) {
-            // Two results can share a URL, so identity is by position.
-            ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
-                SearchChipView(chip: chip)
-            }
-        }
-        .accessibilityElement(children: .contain)
-    }
-}
-
-private struct SearchChipView: View {
-    let chip: SearchChip
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button {
-            open(chip.url)
-        } label: {
-            Text(chip.title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Theme.C.ink)
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(hovering ? Theme.C.sunken : Theme.C.surface)
-                .overlay(Capsule().strokeBorder(Theme.C.borderStrong, lineWidth: 1))
-                .clipShape(Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .onHover { hovering = $0 }
-        .help(chip.snippet.isEmpty ? chip.url : chip.snippet)
-    }
-
-    /// Tool output must not be able to send the browser at the local server
-    /// with its session cookie, so loopback and private hosts stay unopened.
-    private func open(_ string: String) {
-        guard
-            let url = URL(string: string),
-            let scheme = url.scheme?.lowercased(),
-            scheme == "http" || scheme == "https",
-            !LocalHost.isLocal(url.host)
-        else { return }
-        NSWorkspace.shared.open(url)
-    }
-}
 
 /// A minimal wrapping row so chips flow onto the next line like `flex-wrap`.
 struct WrapHStack: Layout {

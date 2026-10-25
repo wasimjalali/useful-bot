@@ -91,13 +91,28 @@ class Driver:
             raise Fail(f"no button {label!r}")
         return self.click(e)
 
+    def field(self, role):
+        """The composer by its id, else the lowest text area: a reply block with a link is a text area too.
+        cua-driver lists an unlabelled element's id as its label, and can drop it for a moment after a set_value."""
+        fields = [e for e in self.els() if e.get("role") == role and e.get("element_token")]
+        if role != "AXTextArea" or not fields:
+            return fields[0] if fields else None
+        named = [e for e in fields if "composer-input" in (e.get("identifier"), e.get("label"))]
+        if named:
+            return named[0]
+        if len(fields) == 1:
+            return fields[0]
+        if not all((e.get("frame") or {}).get("y") is not None for e in fields):
+            raise Fail("text areas without frames: can't tell the composer")
+        return max(fields, key=lambda e: e["frame"]["y"])
+
     def type(self, text, role="AXTextArea"):
         """Replace the field's text: clear it, then type (the composer keeps a draft between steps)."""
-        e = self.find(lambda e: e.get("role") == role)
+        e = self.field(role)
         if not e:
             raise Fail(f"no {role}")
         self.call("set_value", {"pid": self.pid, "element_token": e["element_token"], "value": ""})
-        e = self.find(lambda e: e.get("role") == role)
+        e = self.field(role)
         r = self.call("type_text", {"pid": self.pid, "window_id": self.wid, "session": self.session,
                                     "element_token": e["element_token"], "text": text})
         if r.get("effect") != "confirmed":

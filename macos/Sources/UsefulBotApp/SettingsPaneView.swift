@@ -67,9 +67,8 @@ private struct InstructionsSection: View {
     @State private var seeded = false
     @State private var saving = false
     @State private var saveFailed = false
-    @State private var textHeight: CGFloat = 0
 
-    private static let minBox: CGFloat = 66
+    private static let minBox: CGFloat = 96
     private static let maxBox: CGFloat = 260
 
     private var limit: Int { context?.max ?? InstructionsLimit.max }
@@ -95,34 +94,15 @@ private struct InstructionsSection: View {
                     .monospacedDigit()
                     .accessibilityIdentifier("settings-instructions-count")
             }
-            InstructionsTextView(
+            TextBox(
                 text: $draft,
-                height: $textHeight,
+                placeholder: "Useful Bot works as a general assistant until you tell it its job, its limits and how to report.",
+                minHeight: Self.minBox,
+                maxHeight: Self.maxBox,
                 editable: !saving,
-                focusOnAppear: false,
-                // Esc leaves the field first; a second Esc closes Settings.
-                onCancel: { NSApp.keyWindow?.makeFirstResponder(nil) }
+                accessibilityLabel: "Instructions",
+                accessibilityIdentifier: "instructions-editor"
             )
-            .frame(height: min(Self.maxBox, max(Self.minBox, textHeight)))
-            .padding(.top, 12)
-            .padding(.horizontal, 14)
-            .overlay(alignment: .topLeading) {
-                if draft.isEmpty {
-                    Text("Useful Bot works as a general assistant until you tell it its job, its limits and how to report.")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.C.inkFaint)
-                        .padding(.top, 12)
-                        .padding(.horizontal, 14)
-                        .allowsHitTesting(false)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.C.sunken.opacity(0.5))
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    .strokeBorder(Theme.C.edge, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
             .accessibilityIdentifier("settings-instructions-box")
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 status

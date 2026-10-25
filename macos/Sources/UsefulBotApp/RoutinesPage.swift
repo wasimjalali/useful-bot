@@ -217,8 +217,16 @@ struct RoutineEditorView: View {
     @State private var loadedId: String?
     @State private var confirmingDelete = false
     @FocusState private var focus: Field?
+    /// The instruction box holds the caret (it's AppKit, outside `focus`).
+    @State private var instructionFocused = false
+    /// A name or instruction edit the server refused: kept on screen, not
+    /// reseeded by a poll, and sent again on the next blur.
+    @State private var unsavedEdit = false
+    /// Why the last name or instruction save failed, shown until one lands.
+    /// The page's own: a poll's good read clears the shared error.
+    @State private var editError: String?
 
-    private enum Field: Hashable { case name, instruction }
+    private enum Field: Hashable { case name }
 
     /// The zone the server reads this routine's wall clock in. A new routine
     /// has none yet, and the server stamps the host's, so that is what the
@@ -272,7 +280,8 @@ struct RoutineEditorView: View {
                             .accessibilityIdentifier("routine-cancel")
                         }
                     }
-                    if let error = model.routinesError {
+                    // The edit's own refusal and any other routine error, each once.
+                    ForEach(Array(Set([editError, model.routinesError].compactMap { $0 })).sorted(), id: \.self) { error in
                         Text(error)
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.C.danger)
@@ -302,10 +311,16 @@ struct RoutineEditorView: View {
                 seed()
                 return
             }
+            // A kept edit the server now holds (saved by a queued write, or
+            // typed back to the stored text) is no longer unsaved.
+            if unsavedEdit, editError == nil, let current = routine,
+               current.name == trimmedName, current.instruction == trimmedInstruction {
+                unsavedEdit = false
+            }
             // A write of this routine still in flight owns the rows: a poll
             // that lands between the edit and its echo would put the old
             // server copy back over it.
-            guard focus == nil, let current = routine, !model.routineBusy.contains(current.id) else { return }
+            guard focus == nil, !instructionFocused, !unsavedEdit, let current = routine, !model.routineBusy.contains(current.id) else { return }
             name = current.name
             instruction = current.instruction
             seedName = current.name
@@ -322,8 +337,12 @@ struct RoutineEditorView: View {
             schedules = routine.schedules
         }
         .onChange(of: focus) { _, next in
-            // One write for both fields: a second one on the routine is queued behind the first.
-            if next == nil, let loadedId { commitEdits(id: loadedId) }
+            // Leaving both fields saves; moving between them can send two
+            // writes, the second queued behind the first.
+            if next == nil, !instructionFocused, let loadedId { commitEdits(id: loadedId) }
+        }
+        .onChange(of: instructionFocused) { _, next in
+            if !next, focus == nil, let loadedId { commitEdits(id: loadedId) }
         }
     }
 
@@ -371,32 +390,15 @@ struct RoutineEditorView: View {
     }
 
     private var instructionEditor: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $instruction)
-                .font(.system(size: DesignTokens.FontSize.fieldInput))
-                .foregroundStyle(Theme.C.ink)
-                .scrollContentBackground(.hidden)
-                .scrollIndicators(.never)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .frame(minHeight: 96)
-                .focused($focus, equals: .instruction)
-                .accessibilityIdentifier("routine-instruction")
-            if instruction.isEmpty {
-                Text("What \(bot.name) should do each time")
-                    .font(.system(size: DesignTokens.FontSize.fieldInput))
-                    .foregroundStyle(Theme.C.inkFaint)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .allowsHitTesting(false)
-            }
-        }
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                .strokeBorder(focus == .instruction ? Theme.C.ink : Theme.C.borderStrong, lineWidth: 1)
+        TextBox(
+            text: $instruction,
+            placeholder: "What \(bot.name) should do each time",
+            minHeight: 96,
+            maxHeight: 220,
+            accessibilityLabel: "Instruction",
+            accessibilityIdentifier: "routine-instruction",
+            focused: $instructionFocused
         )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
     }
 
     // MARK: Schedules
@@ -542,6 +544,8 @@ struct RoutineEditorView: View {
         if let loadedId { commitEdits(id: loadedId) }
         loadedId = id
         confirmingDelete = false
+        unsavedEdit = false
+        editError = nil
         let draft = routine == nil ? model.routineDraft : nil
         name = routine?.name ?? draft?.name ?? ""
         instruction = routine?.instruction ?? draft?.instruction ?? ""
@@ -559,15 +563,50 @@ struct RoutineEditorView: View {
 
     /// Save the name and instruction typed for an existing routine, in one
     /// write. Only a field typed in since the last seed goes out.
+    /// Sends what changed in the name or instruction. The seeds move only once
+    /// the server takes it: a refusal keeps the typed text, says why, and the
+    /// next blur sends it again.
     private func commitEdits(id: String) {
         guard id != "new", let saved = model.routines.first(where: { $0.id == id }) else { return }
         let nextName = trimmedName.isEmpty || trimmedName == seedName || trimmedName == saved.name ? nil : trimmedName
         let nextInstruction = trimmedInstruction.isEmpty || trimmedInstruction == seedInstruction || trimmedInstruction == saved.instruction
             ? nil : trimmedInstruction
-        guard nextName != nil || nextInstruction != nil else { return }
+        guard nextName != nil || nextInstruction != nil else {
+            // `saved` is stale while a write is in flight: only an idle routine
+            // that holds the typed text clears the flags.
+            if !model.routineBusy.contains(id), trimmedName == saved.name, trimmedInstruction == saved.instruction {
+                unsavedEdit = false
+                editError = nil
+            }
+            return
+        }
+        let previous = (name: seedName, instruction: seedInstruction)
         if let nextName { seedName = nextName }
         if let nextInstruction { seedInstruction = nextInstruction }
-        model.updateRoutine(id: id, name: nextName, instruction: nextInstruction)
+        // Until the write answers no poll puts the server copy over the text.
+        unsavedEdit = true
+        model.updateRoutine(id: id, name: nextName, instruction: nextInstruction) { failure in
+            // The page moved on to another routine: the model's error says it.
+            guard loadedId == id else { return }
+            if let failure {
+                if nextName != nil, seedName == nextName { seedName = previous.name }
+                if nextInstruction != nil, seedInstruction == nextInstruction { seedInstruction = previous.instruction }
+                // Kept even when an earlier write's success cleared the flag.
+                unsavedEdit = true
+                // Back on this routine after a switch, the fields show the
+                // server copy: nothing is left to send or warn about.
+                let current = model.routines.first(where: { $0.id == id })
+                editError = current.map { $0.name == trimmedName && $0.instruction == trimmedInstruction } == true
+                    ? nil : "Not saved. \(failure)"
+            } else {
+                // An empty field is never sent, so it doesn't count as unsaved:
+                // the next poll puts the stored text back.
+                let pending = (!trimmedName.isEmpty && trimmedName != seedName)
+                    || (!trimmedInstruction.isEmpty && trimmedInstruction != seedInstruction)
+                unsavedEdit = pending
+                if !pending { editError = nil }
+            }
+        }
     }
 
     private func commitSchedules() {

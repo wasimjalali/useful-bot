@@ -59,6 +59,8 @@ struct ComposerTextView: NSViewRepresentable {
         // after it mounted should move the caret.
         context.coordinator.focusToken = focusToken
         let textView = FocusReportingTextView()
+        // Reply blocks with a link are text views too: scripts find this one by id.
+        textView.setAccessibilityIdentifier("composer-input")
         textView.onFocusChange = { [weak coordinator = context.coordinator] focused in
             coordinator?.onFocusChange(focused)
         }

@@ -342,7 +342,7 @@ struct RailView: View {
                 selection: $appearance,
                 height: 30,
                 accessibilityLabel: "Appearance",
-                label: { option in AnyView(Image(systemName: Self.appearanceIcon(option)).font(.system(size: 12))) },
+                label: { option in AnyView(Image(systemName: option.systemImage).font(.system(size: 12))) },
                 name: { $0.label }
             )
             .frame(width: 76)
@@ -351,14 +351,6 @@ struct RailView: View {
         .padding(.leading, 10)
         .padding(.trailing, 8)
         .frame(minHeight: 40)
-    }
-
-    private static func appearanceIcon(_ option: AppAppearance) -> String {
-        switch option {
-        case .system: return "desktopcomputer"
-        case .light: return "sun.max"
-        case .dark: return "moon"
-        }
     }
 
     private var popDivider: some View {

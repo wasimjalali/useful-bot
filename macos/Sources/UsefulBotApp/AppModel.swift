@@ -137,8 +137,6 @@ final class AppModel: ObservableObject {
     /// Recently decided approvals, briefly hidden from a racing poll.
     private var decidedApprovals: [String: Date] = [:]
     @Published private(set) var approvalError: String?
-    /// Web results the newest turn surfaced, shown as chips under the transcript.
-    @Published private(set) var searchHits: [SearchChip] = []
     /// The question the open chat's bot is waiting on the owner to answer.
     @Published private(set) var openQuestions: [OwnerQuestion] = []
 
@@ -891,7 +889,6 @@ final class AppModel: ObservableObject {
         projection = ChatProjection()
         transcript = []
         transcriptBlocks = []
-        searchHits = []
         openQuestions = []
         activity = .thinking
         activityCall = nil
@@ -2063,7 +2060,6 @@ final class AppModel: ObservableObject {
             transcript = rows
             transcriptBlocks = blocks
         }
-        if searchHits != projection.searchHits { searchHits = projection.searchHits }
         let questions = projection.openQuestion.map { [$0] } ?? []
         if openQuestions != questions { openQuestions = questions }
         publishActivity()
@@ -3382,6 +3378,7 @@ final class AppModel: ObservableObject {
     /// Apply one routine write and fold the server's row back into the list.
     private func routineWrite(
         id: String?,
+        onResult: ((String?) -> Void)? = nil,
         _ work: @escaping @MainActor (BackendClient) async throws -> Void
     ) {
         if let id {
@@ -3391,27 +3388,38 @@ final class AppModel: ObservableObject {
         let botId = selectedBotId
         enqueue { [weak self] in
             guard let self else { return }
+            var failure: String?
             do {
                 try await work(self.client)
                 self.routinesError = nil
             } catch {
-                self.routinesError = (error as? LocalizedError)?.errorDescription ?? "That routine change failed."
+                failure = (error as? LocalizedError)?.errorDescription ?? "That routine change failed."
+                self.routinesError = failure
             }
             if let id { self.routineBusy.remove(id) }
             // Re-read rather than trusting the local copy: a scheduled run may
             // have appended history while this write was in flight.
             if let botId, botId == self.selectedBotId { await self.loadRoutines(botId: botId) }
+            // A good re-read clears the error; the failed write still says so.
+            if let failure { self.routinesError = failure }
+            // The caller hears its own write's outcome: a shared error string
+            // can't tell a second identical refusal from the first.
+            onResult?(failure)
             // An edit made while this write ran goes out now, unless the routine
             // is gone (this write deleted it, or it was deleted elsewhere).
-            if let id, let queued = self.queuedRoutineEdits.removeValue(forKey: id),
-               self.routines.contains(where: { $0.id == id }) {
-                self.updateRoutine(
-                    id: id,
-                    name: queued.name,
-                    instruction: queued.instruction,
-                    schedules: queued.schedules,
-                    active: queued.active
-                )
+            if let id, let queued = self.queuedRoutineEdits.removeValue(forKey: id) {
+                if self.routines.contains(where: { $0.id == id }) {
+                    self.updateRoutine(
+                        id: id,
+                        name: queued.name,
+                        instruction: queued.instruction,
+                        schedules: queued.schedules,
+                        active: queued.active,
+                        onResult: { result in queued.results.forEach { $0(result) } }
+                    )
+                } else {
+                    queued.results.forEach { $0("That routine is gone.") }
+                }
             }
         }
     }
@@ -3441,6 +3449,8 @@ final class AppModel: ObservableObject {
         var instruction: String?
         var schedules: [RoutineSchedule]?
         var active: Bool?
+        /// Whoever asked for these edits, told how the write went.
+        var results: [(String?) -> Void] = []
     }
     private var queuedRoutineEdits: [String: QueuedRoutineEdit] = [:]
 
@@ -3449,7 +3459,8 @@ final class AppModel: ObservableObject {
         name: String? = nil,
         instruction: String? = nil,
         schedules: [RoutineSchedule]? = nil,
-        active: Bool? = nil
+        active: Bool? = nil,
+        onResult: ((String?) -> Void)? = nil
     ) {
         if routineBusy.contains(id) {
             var queued = queuedRoutineEdits[id] ?? QueuedRoutineEdit()
@@ -3457,10 +3468,11 @@ final class AppModel: ObservableObject {
             if let instruction { queued.instruction = instruction }
             if let schedules { queued.schedules = schedules }
             if let active { queued.active = active }
+            if let onResult { queued.results.append(onResult) }
             queuedRoutineEdits[id] = queued
             return
         }
-        routineWrite(id: id) { client in
+        routineWrite(id: id, onResult: onResult) { client in
             try await client.updateRoutine(
                 id: id,
                 name: name,
