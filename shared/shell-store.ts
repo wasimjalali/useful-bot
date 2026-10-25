@@ -145,41 +145,6 @@ function isId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 80;
 }
 
-/**
- * Every description the shipped Generalist (`bot-useful`) has carried, so an
- * untouched one can be recognised and moved to the current text. Append only:
- * when a new text ships, the one it replaces goes here. Found with
- * `git log -p -S` on shared/shell-store.ts, which is the only file that ever
- * seeded it:
- *  - 1f7b7e1, 322f22b, 950dfd7 (2026-09-13): the first shell, "Local personal
- *    agent on this Mac." (name "Useful Bot")
- *  - bd41eed (2026-09-13, #20): added "Creates other bots with a name and
- *    instructions." (name "Useful Bot")
- *  - 3d25c70, 6413804 (2026-09-28, #145): "The starter bot. ..." (name
- *    "Generalist"; 6413804 carries the same change after a rebase)
- *  - generalist-v2 (`GENERALIST_SEED_V2` below): the text that talked about
- *    building a team of bots, replaced when the team features were removed
- */
-/** The Generalist's shipped instructions until the team features were removed (`generalist-v2`). */
-export const GENERALIST_SEED_V2 = `You're the owner's main assistant on this Mac: research, writing, files, small scripts, diagrams and work in their connected apps. You also help them build a small team of bots for jobs that recur.
-
-How to help:
-- Start by doing. Ask one question only when the goal or the target is unclear.
-- On longer work, keep the owner posted in short lines, then give the result on its own.
-- Be direct and brief. Say plainly when something failed or isn't possible, and what would help.
-
-Preferences:
-- Show a draft before anything goes out in the owner's name.
-- Say what you'll change before a large edit.
-- When the owner is new, explain the app only as far as their task needs.`;
-
-export const GENERALIST_SEEDS: readonly string[] = [
-  "Local personal agent on this Mac.",
-  "Local personal agent on this Mac. Creates other bots with a name and instructions.",
-  "The starter bot. General work on this Mac, and creates other bots with a name and instructions.",
-  GENERALIST_SEED_V2,
-];
-
 /** The Generalist's shipped instructions today (`generalist-v3`). Owner-editable. */
 export const GENERALIST_SEED_V3 = `You're the owner's main assistant on this Mac: research, writing, files, small scripts, diagrams and work in their connected apps.
 
@@ -193,23 +158,8 @@ Preferences:
 - Say what you'll change before a large edit.
 - When the owner is new, explain the app only as far as their task needs.`;
 
-const squash = (text: string) => text.replace(/\s+/g, " ").trim();
-
 /** The one bot's name. It is fixed: the owner can't rename it. */
 export const DEFAULT_BOT_NAME = "Useful Bot";
-
-/**
- * A pure overlay for the one bot only: it always reads as "Useful Bot", and a description that is still one of the
- * shipped seeds reads as the current text. Nothing is written here; the
- * change persists with the next normal write.
- */
-function overlaySeed(bot: ShellBot): ShellBot {
-  if (bot.id !== DEFAULT_BOT_ID) return bot;
-  const named = bot.name === DEFAULT_BOT_NAME ? bot : { ...bot, name: DEFAULT_BOT_NAME };
-  const wanted = squash(bot.description);
-  if (!GENERALIST_SEEDS.some((seed) => squash(seed) === wanted)) return named;
-  return { ...named, description: GENERALIST_SEED_V3 };
-}
 
 function assertNameNotFixed(botId: string): void {
   if (botId === DEFAULT_BOT_ID) throw new Error("shell_bot_name_fixed");
@@ -407,8 +357,7 @@ export function parseShell(raw: unknown): ShellStore {
   const rec = raw as Record<string, unknown>;
   if (rec.schemaVersion !== SHELL_SCHEMA) throw new Error("shell_schema");
   if (!Array.isArray(rec.bots)) throw new Error("shell_shape");
-  const parsed = rec.bots.map(parseBot);
-  const bots = parsed.map((bot) => overlaySeed(bot));
+  const bots = rec.bots.map(parseBot);
   if (bots.length === 0) throw new Error("shell_empty");
   const botIds = new Set(bots.map((bot) => bot.id));
   if (botIds.size !== bots.length) throw new Error("shell_bot_duplicate");

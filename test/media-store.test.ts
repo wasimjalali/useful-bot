@@ -14,11 +14,10 @@ import {
   saveImage,
   titleFromPrompt,
 } from "../shared/media-store.ts";
-import { readImage, writeImage } from "../shared/images-store.ts";
-import { appendAgentEvent } from "../shared/agent-store.ts";
-import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
-import { isExcalidrawWidget, migrateDrawings, migrateLegacyImages } from "../web/lib/media-migrate.ts";
-import { writeWidget } from "../shared/widgets-store.ts";
+import { deleteImage, readImage } from "../shared/images-store.ts";
+import { readShell } from "../shared/shell-io.ts";
+import { isExcalidrawWidget, saveWidgetDrawing } from "../web/lib/widget-drawing.ts";
+import type { WidgetRecord } from "../shared/widgets-store.ts";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
@@ -147,66 +146,32 @@ test("titles come from the prompt's first clause", () => {
   assert.equal(titleFromPrompt("...", "Image"), "Image");
 });
 
-test("legacy base64 records move into the media folder under their bot, keeping their ids", () => {
+test("a widget saves as a drawing dated when it was first drawn, and only an Excalidraw scene does", () => {
   const { root, index, dir } = box();
-  const previous = {
-    media: process.env.UB_MEDIA_DIR, index: process.env.UB_MEDIA_INDEX_PATH, images: process.env.UB_IMAGES_DIR,
-    agents: process.env.UB_AGENT_STORE_PATH, shell: process.env.UB_SHELL_PATH,
-  };
-  process.env.UB_MEDIA_DIR = root;
-  process.env.UB_MEDIA_INDEX_PATH = index;
-  process.env.UB_IMAGES_DIR = join(dir, "legacy");
-  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
-  process.env.UB_SHELL_PATH = join(dir, "shell.json");
-  try {
-    const shell = readShell();
-    const bot = shell.bots[0]!;
-    writeFixtureShell(shell);
-    writeImage({ id: "imglegacy001", mime: "image/png", b64: PNG.toString("base64"), prompt: "old sunset", provider: "openai", model: "gpt-image-1" });
-    appendAgentEvent(bot.id, { kind: "image", text: "old sunset", imageId: "imglegacy001", id: "img_imglegacy001" });
-    assert.deepEqual(migrateLegacyImages(), { moved: 1, failed: 0 });
-    const item = findMedia("imglegacy001", index);
-    assert.equal(item?.botId, bot.id);
-    assert.ok(item?.path.startsWith(join(root, bot.name.replace(/[/\\:]/g, " "))));
-    assert.deepEqual(readFileSync(item!.path), PNG);
-    assert.equal(existsSync(join(dir, "legacy", "imglegacy001.json")), false);
-    assert.deepEqual(migrateLegacyImages(), { moved: 0, failed: 0 });
-  } finally {
-    for (const [key, value] of Object.entries({
-      UB_MEDIA_DIR: previous.media, UB_MEDIA_INDEX_PATH: previous.index, UB_IMAGES_DIR: previous.images,
-      UB_AGENT_STORE_PATH: previous.agents, UB_SHELL_PATH: previous.shell,
-    })) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-});
-
-test("drawings still in a chat backfill into the Library, dated when first drawn, Excalidraw only", () => {
-  const { root, index, dir } = box();
-  const keys = ["UB_MEDIA_DIR", "UB_MEDIA_INDEX_PATH", "UB_WIDGETS_DIR", "UB_AGENT_STORE_PATH", "UB_SHELL_PATH"] as const;
+  const keys = ["UB_MEDIA_DIR", "UB_MEDIA_INDEX_PATH", "UB_SHELL_PATH"] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   process.env.UB_MEDIA_DIR = root;
   process.env.UB_MEDIA_INDEX_PATH = index;
-  process.env.UB_WIDGETS_DIR = join(dir, "widgets");
-  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
   process.env.UB_SHELL_PATH = join(dir, "shell.json");
   try {
-    const shell = readShell();
-    const bot = shell.bots[0]!;
-    writeFixtureShell(shell);
-    const drawing = { connectionId: "excalidraw", toolName: "excalidraw__create_view", resourceUri: null, result: null, createdAt: new Date().toISOString() };
-    writeWidget({ ...drawing, id: "call_old00001", arguments: { elements: JSON.stringify([{ type: "rectangle", label: { text: "Old" } }]) } });
-    writeWidget({ ...drawing, id: "call_chart0001", connectionId: "charts", toolName: "charts__plot", arguments: { elements: [] } });
-    appendAgentEvent(bot.id, { kind: "widget", text: "Drawing", widgetId: "call_old00001", id: "wgt_call_old00001" });
-    appendAgentEvent(bot.id, { kind: "widget", text: "Drawing", widgetId: "call_chart0001", id: "wgt_call_chart0001" });
-    assert.deepEqual(migrateDrawings(), { saved: 1, failed: 0 });
+    const bot = readShell().bots[0]!;
+    const base = { chatId: "chat-1", resourceUri: null, result: null, createdAt: "2026-10-01T09:30:00.000Z" };
+    const scene: WidgetRecord = { ...base, id: "call_old00001", connectionId: "excalidraw", toolName: "excalidraw__create_view", arguments: { elements: JSON.stringify([{ type: "rectangle", label: { text: "Old" } }]) } };
+    const chart: WidgetRecord = { ...base, id: "call_chart0001", connectionId: "charts", toolName: "charts__plot", arguments: { elements: [] } };
+    saveWidgetDrawing(scene, bot.id, bot.name, scene.createdAt);
+    saveWidgetDrawing(chart, bot.id, bot.name, chart.createdAt);
     const item = findMedia("call_old00001", index)!;
     assert.equal(item.title, "Drawing - Old");
     assert.equal(item.botId, bot.id);
+    assert.equal(item.createdAt, "2026-10-01T09:30:00.000Z");
     assert.equal(findMedia("call_chart0001", index), null);
-    assert.deepEqual(migrateDrawings(), { saved: 0, failed: 0 });
+    // Posted again whenever the app replays the widget: still one file.
+    saveWidgetDrawing(scene, bot.id, bot.name, "2026-10-25T00:00:00.000Z");
+    assert.equal(listMedia({ kind: "drawing" }, index).length, 1);
+    assert.equal(findMedia("call_old00001", index)?.createdAt, "2026-10-01T09:30:00.000Z");
     assert.equal(isExcalidrawWidget({ connectionId: "other", toolName: "other__x", arguments: { elements: [] } }), false);
+    assert.equal(isExcalidrawWidget({ connectionId: "other", toolName: "excalidraw__create_view", arguments: { elements: [] } }), true);
+    assert.equal(isExcalidrawWidget({ connectionId: "excalidraw", toolName: "x", arguments: {} }), false);
   } finally {
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];
@@ -217,20 +182,19 @@ test("drawings still in a chat backfill into the Library, dated when first drawn
 
 test("Regenerate redraws a lost image from the stored prompt under the same id, and refuses one that is there", async () => {
   const { root, index, dir } = box();
-  const keys = ["UB_MEDIA_DIR", "UB_MEDIA_INDEX_PATH", "UB_IMAGES_DIR", "UB_AGENT_STORE_PATH", "UB_SHELL_PATH", "UB_ROUTER_DESKTOP_TOKEN"] as const;
+  const keys = ["UB_MEDIA_DIR", "UB_MEDIA_INDEX_PATH", "UB_IMAGES_DIR", "UB_SHELL_PATH", "UB_ROUTER_DESKTOP_TOKEN"] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const realFetch = globalThis.fetch;
   process.env.UB_MEDIA_DIR = root;
   process.env.UB_MEDIA_INDEX_PATH = index;
   process.env.UB_IMAGES_DIR = join(dir, "legacy");
-  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
   process.env.UB_SHELL_PATH = join(dir, "shell.json");
   process.env.UB_ROUTER_DESKTOP_TOKEN = "router-token-test";
   try {
-    const shell = readShell();
-    const bot = shell.bots[0]!;
-    writeFixtureShell(shell);
-    appendAgentEvent(bot.id, { kind: "image", text: "a red kite over dunes", imageId: "imglost00001", id: "img_imglost00001" });
+    const bot = readShell().bots[0]!;
+    // The Library entry holds the prompt; the file is then lost.
+    const lost = saveImage({ id: "imglost00001", mime: "image/png", bytes: PNG, prompt: "a red kite over dunes", model: "flux", provider: "openrouter", botId: bot.id, botName: bot.name });
+    renameSync(lost.path, join(dir, "lost.png"));
     const sent: Array<{ url: string; body: Record<string, unknown> }> = [];
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       sent.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
@@ -284,7 +248,7 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
     await assert.rejects(() => regenerateImage("imglost00001"), /regenerate_timeout/);
 
     // The folder cannot take the file: the paid bytes land in the app's own
-    // store under the same id, and the next migration puts them back.
+    // store under the same id, and the image route serves them from there.
     globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }))) as typeof fetch;
     const blocked = join(dir, "blocked");
     writeFileSync(blocked, "not a folder");
@@ -292,9 +256,10 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
     assert.deepEqual(await regenerateImage("imglost00001"), { path: "" });
     assert.equal(readImage("imglost00001")?.prompt, "a red kite over dunes");
     await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
+    // The folder works again: the owner asks for it once more, and it goes back there.
     process.env.UB_MEDIA_DIR = root;
-    assert.equal(migrateLegacyImages().moved, 1);
-    assert.equal(readImage("imglost00001"), null);
+    deleteImage("imglost00001");
+    await regenerateImage("imglost00001");
     assert.equal(readMediaBytes("imglost00001", index).status, "ok");
 
     // What the owner does while it is drawn wins. A file put back at its

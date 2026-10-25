@@ -106,10 +106,10 @@ function readReseedMark(path: string): ReseedMark | "unreadable" | null {
 export function shellWasReseeded(path = defaultShellPath()): boolean {
   const mark = readReseedMark(path);
   if (!mark) return false;
-  // No age ends this. The earlier bots exist only on the backup, and nothing
-  // says how long the owner will take to restore it; their threads and
-  // routines must outlive that. The orphan sweep skips the two stores that
-  // hold them for as long as the mark stands (see `sweepOrphanState`).
+  // No age ends this. The owner's bots exist only on the backup, and nothing
+  // says how long the owner will take to restore it; their routines must
+  // outlive that. The orphan sweep skips the routines for as long as the mark
+  // stands (see `sweepOrphanState`).
   // A mark that exists but says nothing legible still says a reseed happened.
   if (mark === "unreadable") return true;
   const shell = peekShell(path);

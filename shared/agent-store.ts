@@ -135,7 +135,7 @@ function emptyStore(): AgentStore {
   return { schemaVersion: 1, proposals: [], reserves: [] };
 }
 
-/** Cards of any other kind (bot, group, profile, fan-out) are from before they were removed: ignored, never rendered or confirmable. */
+/** A card of any other kind is ignored: never listed, never confirmable. */
 function isProposalKind(value: unknown): value is ProposalKind {
   return value === "connectApp" || value === "connectServer";
 }
@@ -240,8 +240,8 @@ export function readAgentStore(path = agentStorePath()): AgentStore {
 
 /**
  * If the file on disk cannot be parsed as the current schema, move it aside
- * before the next write. A crash during migration must never destroy the only
- * copy of every open card.
+ * before the next write, so a crash never destroys the only copy of every open
+ * card.
  */
 function backupIncompatible(path: string): void {
   if (!existsSync(path)) return;

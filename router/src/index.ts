@@ -399,9 +399,8 @@ function validateMessages(messages: unknown[]): void {
 }
 
 /**
- * Sampling knobs the router accepts and throws away. eve's compaction call
- * sends `temperature: 0`, and eve ends the whole session, not the turn, on
- * any 4xx from here: refusing it retired every chat that grew past its
+ * Sampling knobs the router accepts and throws away. A compaction call sends
+ * `temperature: 0`, and refusing it would fail every chat that grew past its
  * model's window. Neither key moves spend, effort or where the call goes,
  * and several upstream models refuse them, so they never travel on.
  */

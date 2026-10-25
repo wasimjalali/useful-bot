@@ -250,7 +250,7 @@ export async function startConnectionConfirm(
       // The owner already approved this exact URL under another id. Settle
       // this card against the row that is there and let the bot resume.
       //
-      // Not a second row: eve would mount the server twice, so the model would
+      // Not a second row: the server would be offered twice, so the model would
       // see every one of its tools twice and both copies would count against
       // the tool cap. And not this card's id either: keychainSet writes with
       // `security add-generic-password -U`, so writing this card's secret

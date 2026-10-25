@@ -181,7 +181,7 @@ function lockOwner(lock: string): string | null {
 }
 
 /**
- * Cross-process read/merge/write: eve saves images, the web service saves
+ * Cross-process read/merge/write: the engine saves images, the web service saves
  * drawings. The lock is a directory holding its owner's token. A lock left by
  * a process that died is moved aside whole (a rename, so two waiters cannot
  * both take it) and removed. A holder checks the token is still its own just

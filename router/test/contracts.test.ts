@@ -781,8 +781,8 @@ test("ops sees every registry model", async () => {
 });
 
 test("compaction's temperature and top_p are accepted and never reach the upstream", async () => {
-  // eve's compaction sends temperature: 0, and eve retires the session on any
-  // 4xx from here: every chat past its model's window died this way.
+  // A compaction call sends temperature: 0, and a 4xx from here fails the
+  // turn: every chat past its model's window would die this way.
   let forwarded: Record<string, unknown> = {};
   await withRouter(async (base, tokens) => {
     const res = await fetch(`${base}/v1/chat/completions`, {
@@ -998,8 +998,8 @@ test("three protocol failures open the alias circuit", async () => {
     assert.equal(opened.status, 503);
     const body = (await opened.json()).error;
     assert.equal(body.code, "circuit_open");
-    // eve keeps only the message of a failed call, so the wait has to be
-    // readable there for the app's countdown.
+    // A client may keep only the message of a failed call, so the wait has to
+    // be readable there for the app's countdown.
     const waited = Number(/retry_after_ms=(\d+)/.exec(body.message)?.[1]);
     assert.ok(waited > 0 && waited <= body.retry_after_ms + 5);
   }, (_req, res) => {

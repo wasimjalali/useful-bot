@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROVIDER_CATALOG, providerMode, retiredRouteMessage } from "../shared/provider-catalog.ts";
@@ -27,8 +27,6 @@ import { readShell, updateShell } from "../shared/shell-io.ts";
 import { withBotSelection } from "../shared/shell-store.ts";
 import { modelSelectionRefusal } from "../web/lib/agent-exec.ts";
 import { applyProvidersDelete, applyProvidersPut, oauthStartRetired, oauthStartVerdict } from "../web/lib/providers-write.ts";
-import { dropLegacyDeviceFlowFile } from "../shared/provider-oauth.ts";
-import { statePath } from "../shared/stack.ts";
 
 // Ways UB-015 can fail, written before the code:
 // 1. a retired route still shows in the Connect list or a picker;
@@ -209,15 +207,6 @@ test("the sign-in start route's check names a retired route and passes the live 
   assert.equal(oauthStartRetired(""), null);
 });
 
-test("the old pending device-flow file is removed once, a missing one is fine", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-device-flow-"));
-  const file = join(dir, "provider-oauth.json");
-  writeFileSync(file, "{}");
-  dropLegacyDeviceFlowFile(file);
-  assert.equal(existsSync(file), false);
-  dropLegacyDeviceFlowFile(file);
-});
-
 test("a turn on a retired route is refused with its own code and sentence, never substituted", () => {
   const store = parseProviderStore(raw(null), {});
   for (const row of RETIRED) {
@@ -374,28 +363,4 @@ test("the sign-in start verdict is 409 with the sentence for a retired route, 40
   assert.deepEqual(oauthStartVerdict("anthropic"), { status: 400, error: "provider_mode_unknown" });
 });
 
-test("the old pending device-flow file is removed from its default state location", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-device-flow-default-"));
-  const saved = process.env.UB_STATE_ROOT;
-  process.env.UB_STATE_ROOT = dir;
-  try {
-    const file = statePath("provider-oauth.json");
-    assert.equal(file, join(dir, "provider-oauth.json"));
-    writeFileSync(file, "{}");
-    dropLegacyDeviceFlowFile();
-    assert.equal(existsSync(file), false);
-    dropLegacyDeviceFlowFile();
-  } finally {
-    if (saved === undefined) delete process.env.UB_STATE_ROOT;
-    else process.env.UB_STATE_ROOT = saved;
-  }
-});
-
 // Round 2, item 6: the cleanup is housekeeping, so a missing agent credential must not skip it.
-test("the tick runs the legacy device-flow cleanup before the agent-credential gate", () => {
-  const source = readFileSync(new URL("../web/app/api/agent/tick/route.ts", import.meta.url), "utf8");
-  const post = source.slice(source.indexOf("export async function POST"));
-  const dropAt = post.indexOf("dropLegacyDeviceFlowFile()");
-  const gateAt = post.indexOf("agent_credential_missing");
-  assert.ok(dropAt > 0 && gateAt > 0 && dropAt < gateAt);
-});

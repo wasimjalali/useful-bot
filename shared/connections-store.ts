@@ -115,7 +115,7 @@ function parseEntry(raw: unknown): ConnectionEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
   if (!isConnectionId(rec.id)) return null;
-  // A row of any other kind (an OpenAPI server from an earlier build) is not read.
+  // A row of any other kind is not read.
   if (rec.kind !== "mcp") return null;
   const name = clip(rec.name, 80);
   if (!name) return null;

@@ -16,7 +16,7 @@ import { statePath } from "./stack.ts";
 
 /**
  * Routines: recurring instructions one bot runs on a schedule. Both the Next
- * server (owner actions, the tick scheduler) and the eve agent process (agent
+ * server (owner actions) and the engine (the scheduler, agent
  * tools) write here, so every mutation is a locked read/merge/write onto one
  * atomically replaced JSON document.
  *

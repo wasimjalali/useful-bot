@@ -3,7 +3,7 @@ import { mountedSchemaBytes } from "./json-schema-zod.ts";
 
 /**
  * Tiny Streamable HTTP JSON-RPC client for listing tools and reading UI
- * resources. Tool execution stays in eve. Tests inject fetch.
+ * resources. Tool execution stays in the engine. Tests inject fetch.
  */
 
 export type McpToolInfo = {
@@ -688,5 +688,3 @@ export async function callMcpTool(
   if (JSON.stringify(rec).length > TOOL_RESULT_MAX) throw new Error("mcp_tool_result_too_large");
   return rec;
 }
-
-
