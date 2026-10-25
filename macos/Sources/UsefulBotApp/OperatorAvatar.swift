@@ -124,8 +124,10 @@ struct OperatorAvatarView: View {
     var size: CGFloat = DesignTokens.Control.operatorAvatar
     @ObservedObject private var store = OperatorAvatarStore.shared
 
-    private static let disc = Theme.adaptive(DesignTokens.Hex.ink, DesignTokens.DarkHex.sunken)
-    private static let initialsInk = Theme.adaptive(DesignTokens.Hex.white, DesignTokens.DarkHex.ink)
+    // The brand pair inverts per mode (ink disc in light, light disc in dark),
+    // so the initials read on the rail and on a sunken Settings card alike.
+    private static let disc = Theme.adaptive(DesignTokens.Hex.brand, DesignTokens.DarkHex.brand)
+    private static let initialsInk = Theme.adaptive(DesignTokens.Hex.brandInk, DesignTokens.DarkHex.brandInk)
 
     var body: some View {
         Group {

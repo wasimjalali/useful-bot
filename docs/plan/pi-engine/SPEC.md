@@ -766,7 +766,9 @@ folder and ask for a multi-step job that runs bash (one command needs approval, 
 writes an HTML page, searches the web, draws with Excalidraw (widget), generates an image and saves
 a memory note; switch the model mid-chat; send two more messages while the first turn runs; cancel
 one turn with a card pending; force a router 5xx (fake upstream connection) and Retry; push the
-chat past a 32k window so it compacts; kill the engine mid-turn and relaunch; run a routine
+chat past a 32k window so it compacts; kill the engine mid-turn and relaunch; start a new chat,
+then reopen the first one from the sidebar and check its note rows, connect cards and images are
+all still there (on eve, New chat wiped them: PR 2b live pass, 2026-10-25); run a routine
 manually while another chat is open (its row marks and the notification); rename, delete and
 search for a chat; open a 15k-entry synthetic
 chat. Artifact: a JSON report of every step with timings, the session files, screenshots, frame

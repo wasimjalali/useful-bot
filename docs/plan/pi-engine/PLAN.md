@@ -289,7 +289,8 @@ builds.
    `perf/config.json`, `perf/runner/perfguard.py` (rows marks, snapshot cases out, fixture check by
    entry count), `perf/README.md`, re-lock.
 3. `npm run build:dev-app`, `npm run install:dev-app` (shared resource, orchestrator only).
-4. E2E scenario of SPEC 14 through the heavy lock; artifacts in `verify/feat/pi-engine/`.
+4. E2E scenario of SPEC 14 through the heavy lock; artifacts in `verify/feat/pi-engine/`. It
+   includes reopening an older chat and finding its note rows and connect cards intact.
 5. Golden eval: the eve baseline runs on main before step 1, the Pi run here (owner approves the
    spend first). Write-up in `evals/results/`.
 6. `perf:check` baseline on the new engine; review budgets; commit the records.
