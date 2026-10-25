@@ -45,7 +45,7 @@ script in cloud sessions. What this repo adds:
 ## Verification
 
 A UI change is verified with a real screenshot of the running macOS app, not with tests
-alone. Drive it with the `mac-app-verify` skill and save artifacts under `verify/<branch>/`.
+alone. Drive it with the `mac-computer-use` skill and save artifacts under `verify/<branch>/`.
 **Every live check runs in Useful Bot Dev, never the daily app** (decided 2026-10-01,
 UB-004). `/Applications/Useful Bot.app` is the owner's daily install with his real chats: agents
 never launch, quit, screenshot-test or send to it. Useful Bot Dev is a separate identity

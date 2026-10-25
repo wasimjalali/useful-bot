@@ -158,6 +158,8 @@ async function run(args: Input, ctx: ToolCtx) {
   if (gate === "ask" && argsText.length > CARD_ARGS_MAX) {
     return { status: "blocked", error: "arguments_too_long_for_approval", max: CARD_ARGS_MAX };
   }
+  // Bounded even when no card is shown: the record is written either way.
+  const previewArgs = argsText.length > CARD_ARGS_MAX ? `${argsText.slice(0, CARD_ARGS_MAX)}…` : argsText;
   const hash = actionSha256({
     tool: "connector",
     canonicalArgs,
@@ -171,7 +173,7 @@ async function run(args: Input, ctx: ToolCtx) {
     ...approvalActor(ctx),
     tool: "connector",
     actionSha256: hash,
-    preview: preview(toolkit, tool, argsText, risk),
+    preview: preview(toolkit, tool, previewArgs, risk),
   });
   if (gate === "run") {
     approvals.decide(rec.id, "approve", hash);
@@ -183,7 +185,7 @@ async function run(args: Input, ctx: ToolCtx) {
   }
   return executeIfApproved(approvals, rec.id, hash, async () => {
     try {
-      const raw = await executeConnectorTool(tool, toolArgs);
+      const raw = await executeConnectorTool(tool, toolArgs, undefined, ctx.abortSignal);
       return shape(tool, raw);
     } catch (err) {
       const failed = err as Error & { toolkit?: string };

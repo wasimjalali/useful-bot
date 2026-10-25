@@ -59,6 +59,17 @@ class Refuse(Exception):
 
 # --------------------------------------------------------------------------- cua-driver
 
+def refusal_code(r):
+    """The refusal code of an action result, or None. cua-driver 0.38 puts it at the top level next to
+    effect "refused"; older versions nested it under "refusal" or set status "refused"."""
+    if r.get("refusal"):
+        ref = r["refusal"]
+        return (ref.get("code") if isinstance(ref, dict) else None) or "refused"
+    if r.get("effect") == "refused" or r.get("status") == "refused":
+        return r.get("code") or "refused"
+    return None
+
+
 class Driver:
     def __init__(self, session):
         self.session = session
@@ -86,7 +97,8 @@ class Driver:
 
     def snapshot(self, shot=None, tries=5):
         args = {"pid": self.pid, "window_id": self.window_id, "session": self.session,
-                "max_elements": 30000, "include_screenshot": False, "timeout_ms": 8000}
+                "max_elements": 30000, "include_screenshot": False, "timeout_ms": 8000,
+                "tree_format": "both"}  # since cua-driver 0.38 a read returns only the markdown unless asked
         if shot:
             args["screenshot_out_file"] = shot
             args["max_image_dimension"] = 1400
@@ -117,9 +129,9 @@ class Driver:
             if el is None:
                 raise RuntimeError(f"no {role} labelled {label!r} in the window")
             r = self.click(snap, el)
-            if r.get("refusal", {}).get("code") == "stale_element_token":
+            if refusal_code(r) == "stale_element_token":
                 continue
-            if r.get("status") == "refused" or r.get("refusal"):
+            if refusal_code(r):
                 raise RuntimeError(f"click {label!r} refused: {r}")
             return r
         raise RuntimeError(f"click {label!r}: token kept going stale")
@@ -507,7 +519,7 @@ def type_prompt(drv, text):
     snap = drv.snapshot()
     el = composer(snap)
     r = drv.type_text(snap, el, text)
-    if r.get("refusal") or r.get("status") == "refused":
+    if refusal_code(r):
         raise RuntimeError(f"type_text refused: {r}")
     time.sleep(0.5)
     snap = drv.snapshot()
@@ -522,6 +534,8 @@ def clear_composer(drv):
     snap = drv.snapshot()
     el = composer(snap)
     r = drv.set_value(el, "")
+    if refusal_code(r):
+        raise RuntimeError(f"set_value refused: {r}")
     time.sleep(0.4)
     snap = drv.snapshot()
     el2 = composer(snap)

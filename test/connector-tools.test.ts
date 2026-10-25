@@ -378,6 +378,37 @@ test("full access runs a write and a delete without a card", async () => {
   }
 });
 
+test("a run-gated call with huge arguments keeps its approval record small", async () => {
+  const box = sandbox(["gmail"]);
+  try {
+    grant(box.dir, "auto");
+    const out = await run<{ status: string }>(
+      connectorExecute,
+      { tool: "GMAIL_FETCH_EMAILS", arguments: { query: "x".repeat(200_000) } },
+      fakeCtx({ chatId: "sess-conn" }),
+    );
+    assert.equal(out.status, "ok");
+    const [record] = [...box.approvals.records.values()];
+    assert.ok(record.preview.length < 4200, `preview is ${record.preview.length} chars`);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a Stop before the call reaches Composio runs nothing", async () => {
+  const box = sandbox(["gmail"]);
+  try {
+    grant(box.dir, "full_access");
+    const ctx = fakeCtx({ chatId: "sess-conn" });
+    ctx.abort();
+    const out = await run<{ status: string }>(connectorExecute, { tool: "GMAIL_SEND_EMAIL", arguments: { to: "a@b.c" } }, ctx);
+    assert.notEqual(out.status, "ok");
+    assert.equal(box.executed.length, 0);
+  } finally {
+    box.restore();
+  }
+});
+
 test("read only refuses writes and runs reads", async () => {
   const box = sandbox(["gmail"]);
   try {

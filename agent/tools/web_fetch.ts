@@ -24,6 +24,8 @@ const ALLOWED_PORTS = new Set([80, 443, 8080, 8443]);
 /** What is downloaded, and what the model is shown of it. */
 const DOWNLOAD_MAX_BYTES = 5 * 1024 * 1024;
 const OUTPUT_MAX_BYTES = 50 * 1024;
+/** How much of a page is converted: the model sees at most 50 KB, and conversion runs on the engine's one event loop. */
+const CONVERT_MAX_CHARS = 100_000;
 const TIMEOUT_MS = 30_000;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
@@ -114,8 +116,25 @@ function parseTarget(raw: string, base?: URL): URL {
   return url;
 }
 
+/** The call's own abort wins over a lookup that is still running. */
+function abortable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) {
+    work.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (err) => { signal.removeEventListener("abort", onAbort); reject(err); },
+    );
+  });
+}
+
 /** Where to connect: the address written in the URL, or the first public answer for its name. */
-async function resolvePublic(url: URL, lookup: Lookup): Promise<{ address: string; family: 4 | 6 }> {
+async function resolvePublic(url: URL, lookup: Lookup, signal?: AbortSignal): Promise<{ address: string; family: 4 | 6 }> {
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const literal = isIP(host);
   if (literal) {
@@ -124,8 +143,9 @@ async function resolvePublic(url: URL, lookup: Lookup): Promise<{ address: strin
   }
   let answers: { address: string; family: number }[];
   try {
-    answers = await lookup(host);
-  } catch {
+    answers = await abortable(lookup(host), signal);
+  } catch (err) {
+    if (signal?.aborted) throw err;
     throw new WebFetchError("url_resolve");
   }
   if (answers.length === 0) throw new WebFetchError("url_resolve");
@@ -137,6 +157,9 @@ async function resolvePublic(url: URL, lookup: Lookup): Promise<{ address: strin
 }
 
 const TEXT_TYPE = /^(text\/|application\/(json|xml|xhtml\+xml|javascript|ld\+json)|application\/[\w.+-]*\+(json|xml))/i;
+
+/** The only form of the server's content type that is echoed back to the model. */
+const MEDIA_TYPE = /^[a-z0-9][\w.+-]{0,126}\/[\w.+-]{1,127}$/i;
 
 function decode(bytes: Buffer, contentType: string): string {
   const label = /charset=["']?([\w.:-]+)/i.exec(contentType)?.[1] ?? "utf-8";
@@ -166,7 +189,7 @@ export async function fetchPage(
   const transport = deps.transport ?? defaultTransport;
   let current = parseTarget(rawUrl);
   for (let hop = 0; ; hop += 1) {
-    const { address, family } = await resolvePublic(current, lookup);
+    const { address, family } = await resolvePublic(current, lookup, signal);
     const reply = await transport({ url: current, address, family, signal });
     if (REDIRECTS.has(reply.status)) {
       reply.destroy?.();
@@ -214,17 +237,47 @@ function toMarkdown(html: string): string {
   return turndown.turndown(html);
 }
 
+const RAW_TEXT = new Set(["script", "style", "noscript", "template", "head"]);
+
+/** One pass with indexOf and no backtracking: a page built to stall a regex costs the same as any other. */
 function toPlainText(html: string): string {
-  return html
-    .replace(/<(script|style|noscript|template|head)\b[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n\s*\n+/g, "\n\n")
-    .trim();
+  const lower = html.toLowerCase();
+  const out: string[] = [];
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      out.push(html.slice(i));
+      break;
+    }
+    out.push(html.slice(i, lt));
+    const name = /^[a-z][a-z0-9]*/.exec(lower.slice(lt + 1, lt + 33))?.[0];
+    if (name && RAW_TEXT.has(name)) {
+      // An element that never closes swallows the rest, as a browser would.
+      const end = lower.indexOf(`</${name}`, lt + 1);
+      if (end === -1) break;
+      const close = html.indexOf(">", end);
+      if (close === -1) break;
+      out.push(" ");
+      i = close + 1;
+      continue;
+    }
+    const gt = html.indexOf(">", lt + 1);
+    if (gt === -1) {
+      // No later ">" exists, so the rest is text.
+      out.push(html.slice(lt));
+      break;
+    }
+    out.push(" ");
+    i = gt + 1;
+  }
+  const kept: string[] = [];
+  for (const raw of out.join("").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").split("\n")) {
+    const line = raw.replace(/[ \t]+/g, " ").trim();
+    if (line === "" && kept[kept.length - 1] === "") continue;
+    kept.push(line);
+  }
+  return kept.join("\n").trim();
 }
 
 /** The most the model is shown, cut on a character boundary. */
@@ -257,14 +310,15 @@ export default defineTool({
     }
     const isHtml = /html/i.test(page.contentType) || (!page.contentType && /^\s*<(!doctype|html)/i.test(page.text));
     const format = input.format ?? "markdown";
-    const converted = !isHtml || format === "html" ? page.text : format === "text" ? toPlainText(page.text) : toMarkdown(page.text);
+    const source = page.text.length > CONVERT_MAX_CHARS ? page.text.slice(0, CONVERT_MAX_CHARS) : page.text;
+    const converted = !isHtml || format === "html" ? source : format === "text" ? toPlainText(source) : toMarkdown(source);
     const capped = capOutput(converted);
     return {
       status: page.httpStatus >= 200 && page.httpStatus < 300 ? "ok" : "http_error",
       url: page.url,
       httpStatus: page.httpStatus,
-      contentType: page.contentType,
-      truncated: page.truncated || capped.cut,
+      contentType: MEDIA_TYPE.exec(page.contentType.split(";")[0].trim())?.[0] ?? "",
+      truncated: page.truncated || source.length < page.text.length || capped.cut,
       content: wrapUntrusted(`web page ${page.url}`, capped.text),
     };
   },

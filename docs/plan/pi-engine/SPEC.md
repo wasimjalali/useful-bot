@@ -772,7 +772,7 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
 14. Seq survives session eviction; a reconnect with an old `after` gets `resync: true`.
 
 **E2E** (Useful Bot Dev and its one bot, through the heavy lock, artifacts in `verify/<branch>/`, a
-repeatable script plus mac-app-verify screenshots and 30 fps recordings): in one chat, attach a
+repeatable script plus mac-computer-use screenshots and 30 fps recordings): in one chat, attach a
 folder and ask for a multi-step job that runs bash (one command needs approval, approve it),
 writes an HTML page, searches the web, draws with Excalidraw (widget), generates an image and saves
 a memory note; switch the model mid-chat; send two more messages while the first turn runs; cancel
