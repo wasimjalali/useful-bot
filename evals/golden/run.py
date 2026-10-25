@@ -650,6 +650,10 @@ def run_turn(drv, prompt, policy, shot, turn_no, dry=False):
                 handled.add(key)
                 rec["questions"].append({"t": round(now - t0, 1), **q})
         card_busy = False
+        # A card key counts as handled only while that card is still on screen, so the same
+        # command raised again later (a retry) is clicked and recorded as a second card.
+        showing = {("c", c["tool"], c["preview"]) for c in cards}
+        handled = {k for k in handled if k[0] != "c" or k in showing}
         for c in cards:
             card_busy = True
             key = ("c", c["tool"], c["preview"])
@@ -974,6 +978,10 @@ def main():
                 shot = os.path.join(run_dir, "shots", f"{tid}-turn{i + 1}.png")
                 log(f"  turn {i + 1}/{len(prompts)}: {prompt[:80]!r}")
                 tr = run_turn(drv, prompt, task["approvals"]["policy"], shot, i)
+                # The bot may work anywhere under home: flag any approved card that doesn't name
+                # this task's scratch folder, so the judge and the write-up can see it.
+                for c in tr["cards"]:
+                    c["names_scratch"] = scratch in (c.get("preview") or "")
                 turns.append(tr)
                 ctx["turns"] = turns
                 ctx["cards"] += tr["cards"]

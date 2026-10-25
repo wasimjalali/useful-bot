@@ -96,6 +96,17 @@ and a card that isn't expected is clicked the same way and recorded.
 
 ## Known gaps and traps
 
+- **What the Pi run depends on.** The harness assumes these stay the same after PR 3. Each one fails
+  loud if it changes:
+  - `shell.json` keeps `selectedBotId` and the bot's `permission` and `model`;
+  - memory notes stay under `memory/notes`;
+  - routines keep the `kind`/`days`/`time` schedule shape;
+  - the router logs `deepseek-flash` under provider `deepseek` (`cost.py`);
+  - the accessibility labels the harness reads (`chat-row`, `starter-prompt`, "Needs approval",
+    `approval-deny`, "Effort, speed, and model", the Stop button) stay.
+
+  Working-row labels may differ on Pi. The Stop button remains the main busy signal.
+
 - Tasks 5 and 6 use a made-up codename derived from the run id (`{codeword}` in `tasks.json`), so
   recall can only pass on the note task 5 saved, never on older notes in the dev memory store.
 - The judge sees reply text and activity labels, not tool arguments. A tool the UI never names

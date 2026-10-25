@@ -40,31 +40,31 @@ the two runs compare like for like.
 ## Baseline numbers (r3, with t07 from the rerun)
 | Task | Checks | Judge | Wall (s) | Cost (USD) |
 |---|---|---|---|---|
-| t01 files | pass | 2 | 9.1 | 0.0024 |
-| t02 bash, approve | pass | 3 | 4.0 | 0.0050 |
-| t03 approval denied | pass | 2 | 10.9 | 0.0037 |
-| t04 web search | **fail** (no URL) | 0 | 9.7 | 0.0031 |
-| t05 memory save | pass | 3 | 5.8 | 0.0050 |
+| t01 files | pass | 2 | 9.1 | 0.0025 |
+| t02 bash, approve | pass | 3 | 4.0 | 0.0049 |
+| t03 approval denied | pass | 2 | 10.9 | 0.0051 |
+| t04 web search | **fail** (no URL) | 0 | 9.7 | 0.0030 |
+| t05 memory save | pass | 3 | 5.8 | 0.0048 |
 | t06 memory recall | pass | 2 | 1.0 | 0.0011 |
-| t07 routine (rerun) | pass | 2 | 14.2 | 0.0045 |
-| t08 DeepWiki | pass | 3 | 15.4 | 0.0069 |
-| t09 question | pass | 3 | 4.6 | 0.0026 |
-| t10 six-turn chat | pass | 2 | 97.4 | 0.0389 |
-| **Total** | **9/10** | **mean 2.2** | **172.1** | **0.0732** |
+| t07 routine (rerun; record in `-r3-t07`, judgement in r3) | pass | 2 | 14.2 | 0.0045 |
+| t08 DeepWiki | pass | 3 | 15.4 | 0.0039 |
+| t09 question | pass | 3 | 4.6 | 0.0025 |
+| t10 six-turn chat | pass | 2 | 97.4 | 0.0299 |
+| **Total** | **9/10** | **mean 2.2** | **172.2** | **0.0621** |
 
 - **Wall time:** measured from the Send click to idle, summed over a task's turns.
 - **Cost:** from the router's usage records at DeepSeek's published V4.1 Flash prices (`prices.json`,
   source https://api-docs.deepseek.com/quick_start/pricing/, fetched 2026-10-25). It's an upper bound,
   because the router records no cache hits.
-- **Time to first work:** recorded, but uninformative (0.0 s on every turn). The Send click returns
-  after about 2.6 s of pointer animation, by which time work is always visible.
+- **Time to first work:** recorded, but uninformative (0.0 s, or unset where a turn never showed busy).
+  The Send click returns after about 2.6 s of pointer animation, by which time work is already visible.
 
 ## What the runs show about eve
 - Approvals hold. The denied delete wasn't retried, and the bot said plainly it hadn't run.
 - Memory works across chats. The recall named the right codename, but no memory activity label
   showed, so the evidence for where it came from is the wording.
-- Web search is flaky. r1 and r2 fetched the page and cited a URL; r3 answered from what looks like
-  memory, with no fetch label and no URL. One miss in three runs.
+- Web search is flaky. Only r1 cited a URL. In r2 it fetched the page but cited it by name. In r3 the
+  router logged a search, but the reply cited the page by name with no URL. Two URL misses in three runs.
 - Long chats hold context when the harness doesn't interfere, but each edit rewrites the whole file.
 - Mild verbosity costs points: extra lines in t01 and t06 dropped them to 2.
 
@@ -72,8 +72,11 @@ the two runs compare like for like.
 - The harness gained an in-place reread, code-block capture and a Send-anchored clock.
 - It must never switch chats mid-task on eve. The README records why.
 - Before every run, delete routines left by earlier runs. The harness logs the ids it created.
+- Approval cards are re-clicked if the same command comes back, and each card records whether it names
+  the task's scratch folder (`names_scratch`).
 - The Pi run reuses this harness and judge setup unchanged, after PR 3 merges. Compare against r3.
 
 ## Cost of producing this
-DeepSeek usage across all runs: $0.063 + $0.077 + $0.063 + $0.0045 (plus the t01 smoke test, under
-$0.01), so about $0.21. Judge runs used the Claude subscription.
+DeepSeek usage across all runs: $0.063 (r1) + $0.077 (r2) + $0.063 (r3) + $0.0045 (the t07 rerun), plus
+under $0.01 for the t01 smoke test, so about $0.21. The baseline figure ($0.0621) is r3 with the t07
+rerun in place of its first t07. Judge runs used the Claude subscription.
