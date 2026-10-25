@@ -6,7 +6,7 @@ import { join } from "node:path";
 import connectServer from "../agent/tools/connect_server.ts";
 import { listPendingProposals, readProposal, updateProposal } from "../shared/agent-store.ts";
 import { seedDefaultConnections, upsertConnection, EXCALIDRAW_CONNECTION } from "../shared/connections-store.ts";
-import { writeFixtureShell } from "../shared/shell-io.ts";
+import { writeShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 import { fakeCtx, type TestCtx } from "./tools/ctx.ts";
 
@@ -25,7 +25,7 @@ function box() {
   process.env.UB_SHELL_PATH = join(dir, "shell.json");
   process.env.UB_CONNECTIONS_PATH = join(dir, "connections.json");
   const shell = seedStore();
-  writeFixtureShell(shell);
+  writeShell(shell);
   return {
     dir,
     restore() {

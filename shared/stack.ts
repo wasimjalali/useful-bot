@@ -54,10 +54,10 @@ export const APP_STATE_DIR = DAILY.stateDir;
  */
 export const STORE_OVERRIDE_VARS = [
   "UB_ROUTER_CONFIG", "UB_ROUTER_DB", "UB_AGENT_STORE_PATH", "UB_SHELL_PATH", "UB_APPROVALS_PATH",
-  "UB_WORKSPACE_STORE_PATH", "UB_ROUTINES_PATH", "UB_WEB_SESSIONS_PATH", "UB_HANDOFF_DIR", "UB_MEMORY_ROOT",
+  "UB_WORKSPACE_STORE_PATH", "UB_ROUTINES_PATH", "UB_WEB_SESSIONS_PATH", "UB_MEMORY_ROOT",
   "UB_WIDGETS_DIR", "UB_IMAGES_DIR", "UB_MEDIA_INDEX_PATH", "UB_PROVIDERS_PATH",
   "UB_MODELS_CACHE_PATH", "UB_CONNECTORS_PATH", "UB_CONNECTIONS_PATH", "UB_CONNECTION_TOOLS_PATH",
-  "UB_OAUTH_PENDING_PATH", "UB_CATALOGUE_PATH", "UB_LIMITS_PATH", "UB_SESSION_OWNERS_PATH", "UB_CHATGPT_SIGNIN_PATH",
+  "UB_OAUTH_PENDING_PATH", "UB_CATALOGUE_PATH", "UB_LIMITS_PATH", "UB_CHATGPT_SIGNIN_PATH",
 ] as const;
 
 /** Base-URL overrides. On the dev stack none may aim at a loopback host on a daily port. */
@@ -538,9 +538,10 @@ export function isAppStateSegment(segment: string): boolean {
 }
 
 /**
- * The runtime install roots, one per stack: the service code and the `.eve/`
- * session transcripts live under them, so a bot may not read or write there
- * any more than in the state folders. Whole folders, compared case-insensitively
+ * The runtime install roots, one per stack: the service code lives under them
+ * (the engine's session files sit under the state root, `engine/pi/sessions`,
+ * which the app-state rule already covers), so a bot may not read or write
+ * there any more than in the state folders. Whole folders, compared case-insensitively
  * (APFS folds case). Other `Application Support` folders are not covered, and
  * neither is `Useful Botany`.
  */
