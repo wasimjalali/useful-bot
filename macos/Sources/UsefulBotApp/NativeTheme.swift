@@ -20,28 +20,15 @@ enum Theme {
 
     /// One token, resolved against the drawing view's appearance.
     static func adaptive(_ light: String, _ dark: String) -> Color {
-        Color(nsColor: adaptiveNS(light, dark))
-    }
-
-    /// The same token as an AppKit color. AppKit views take this, never
-    /// `NSColor(Theme.C...)`: that conversion freezes the color against the
-    /// system appearance, so a Light app on a Dark Mac drew white text on the
-    /// composer's white field.
-    static func adaptiveNS(_ light: String, _ dark: String) -> NSColor {
         let lightColor = nsColor(light)
         let darkColor = nsColor(dark)
-        return NSColor(name: nil) { appearance in
+        return Color(nsColor: NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
-        }
+        })
     }
 
     private typealias L = DesignTokens.Hex
     private typealias D = DesignTokens.DarkHex
-
-    /// AppKit colors for NSView-backed controls.
-    enum NS {
-        static let ink = adaptiveNS(L.ink, D.ink)
-    }
 
     enum C {
         static let canvas = adaptive(L.canvas, D.canvas)

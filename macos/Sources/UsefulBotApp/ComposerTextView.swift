@@ -71,6 +71,11 @@ struct ComposerTextView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
+        // The text view starts at zero width and has to follow the clip view.
+        // Only newer SDKs make NSTextView do that by itself; a binary that
+        // records an older SDK (SwiftPM writes 14.0) kept it 0 pt wide, so
+        // nothing drew and clicks landed on the clip view.
+        textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -79,11 +84,11 @@ struct ComposerTextView: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = false
         textView.isGrammarCheckingEnabled = false
         textView.font = .systemFont(ofSize: DesignTokens.FontSize.chatBody)
-        textView.textColor = Theme.NS.ink
-        textView.insertionPointColor = Theme.NS.ink
+        textView.textColor = NSColor(Theme.C.ink)
+        textView.insertionPointColor = NSColor(Theme.C.ink)
         textView.typingAttributes = [
             .font: NSFont.systemFont(ofSize: DesignTokens.FontSize.chatBody),
-            .foregroundColor: Theme.NS.ink,
+            .foregroundColor: NSColor(Theme.C.ink),
         ]
         textView.minSize = NSSize(width: 0, height: Self.minHeight)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
