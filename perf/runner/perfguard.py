@@ -712,7 +712,9 @@ def plan(quick):
     runs = CONFIG["runs"]
     cold = 2 if quick else runs["cold"]
     warm_short, warm_long = (4, 6) if quick else (runs["warmShort"], runs["warmLong"])
-    launches = []
+    # Untimed: parks the app on the short fixture, so the first cold launch
+    # opens there and not on the owner's chat the last run restored.
+    launches = [("prep", park())]
     for i in range(cold):
         for key, case in (("longTools", "cold_first_open_tools"), ("longReplies", "cold_first_open_replies")):
             launches.append((f"cold-{case}-{i + 1}", [step("pause", ms=CONFIG["pauseMs"])] + select(key, case) + park()))
@@ -760,6 +762,11 @@ def measure(args, quick, lock):
                 selects = sum(1 for st in steps if st["op"] == "select")
                 launch.execute(timeout_s=max(300, selects * 45))
             except RuntimeError as err:
+                # Already open on Perf Short A is what prep was for; the abort
+                # restores nothing (prep has no restore), so it stays parked.
+                if name == "prep" and "is already open, a select would be a no-op" in str(err):
+                    print("  prep: already on Perf Short A")
+                    continue
                 launch_peak = getattr(launch, "peak_cpu", 0.0)
                 peak, peak_top = (launch_peak, launch.peak_top) if launch_peak > before else (before, before_top)
                 loads.append((name, round(peak), peak_top))
