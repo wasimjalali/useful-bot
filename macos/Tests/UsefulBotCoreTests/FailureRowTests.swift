@@ -76,11 +76,9 @@ private func loaded(_ rows: [ChatRow]) -> ChatProjection {
             userRow(turn: "t1", text: "First", clientId: "c1"),
             failureRow(turn: "t1"),
         ])
-        projection.apply(ChatEvent.parse(line: #"{"seq":11,"epoch":"\#(epoch)","chatId":"c","turnId":"t2","type":"turn.started","origin":"owner","clientId":"c1","retry":true}"#)!)
-        #expect(projection.pending)
-        #expect(projection.retryableFailureRowId == nil)
-        // The retry took the failure row away and kept the one bubble.
-        #expect(projection.rows.map(\.rowId) == ["t1:u"])
+        // A retry makes the stream ask for the rows again (the engine drops the failed attempt's rows).
+        #expect(projection.apply(ChatEvent.parse(line: #"{"seq":11,"epoch":"\#(epoch)","chatId":"c","turnId":"t2","type":"turn.started","origin":"owner","clientId":"c1","retry":true}"#)!) == .resync)
+        #expect(projection.retryableFailureRowId == "t1:f")
     }
 
     @Test func aFailureRowNeverCountsTheSecondsAfterTheMoment() {

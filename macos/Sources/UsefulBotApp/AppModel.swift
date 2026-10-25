@@ -424,6 +424,13 @@ final class AppModel: ObservableObject {
     private var loadSucceeded = false
     /// A message was sent and the engine has not started its turn yet.
     private var awaitingStart = false
+    /// Sends whose answer has not come back. While one is out, the first rows
+    /// load of a new chat must not drop `awaitingStart`.
+    private var sendsInFlight = 0
+    /// The chat creation the first message started; a second message waits on it.
+    private var chatCreation: Task<String, Error>?
+    /// The load error text on screen, so a later good load clears only that one.
+    private var loadErrorText: String?
     /// When the router's cool-down lifts, for the failed turn's Retry.
     private var retryNotBefore: Date?
     /// Chats the engine said it does not have.
@@ -432,7 +439,9 @@ final class AppModel: ObservableObject {
     /// notification. Nil until the first read, which only sets the baseline.
     private var lastTurnIds: [String: String]?
     /// Messages the engine handed back unsent that the owner dismissed.
-    private var hiddenEngineUnsent = Set(UserDefaults.standard.stringArray(forKey: "hiddenUnsentClientIds") ?? [])
+    /// Oldest first, no repeats: the newest 200 are kept.
+    private var hiddenEngineUnsentOrder = (UserDefaults.standard.stringArray(forKey: "hiddenUnsentClientIds") ?? []).suffix(200).map { $0 }
+    private var hiddenEngineUnsent: Set<String> { Set(hiddenEngineUnsentOrder) }
     /// A send that never reached the engine, on a chat the owner had already
     /// left. The composer was cleared when the message was committed, so the
     /// text and its files wait here and go back when that chat is opened again.
@@ -917,7 +926,11 @@ final class AppModel: ObservableObject {
                     needRows = false
                     transcriptReady = true
                     loadSucceeded = true
-                    awaitingStart = false
+                    if sendsInFlight == 0 { awaitingStart = false }
+                    if let shown = loadErrorText {
+                        if threadError == shown { threadError = nil }
+                        loadErrorText = nil
+                    }
                     publishTranscript(force: true)
                     PerfHarness.shared?.mark("rows_first_paint", ["chat": chatId, "rows": projection.rows.count])
                     loadProposalsSoon()
@@ -951,7 +964,9 @@ final class AppModel: ObservableObject {
                 // under rows already on screen just reconnects.
                 if needRows, !loadSucceeded {
                     transcriptReady = true
-                    threadError = stickyThreadError ?? (error as? LocalizedError)?.errorDescription ?? "Chat failed to load."
+                    let message = stickyThreadError ?? (error as? LocalizedError)?.errorDescription ?? "Chat failed to load."
+                    threadError = message
+                    loadErrorText = stickyThreadError == nil ? message : nil
                 }
                 delay = backoff
             }
@@ -978,6 +993,9 @@ final class AppModel: ObservableObject {
                 threadError = nil
             }
             if event.type == "turn.failed" { armRetryClock(event) }
+            if ["turn.started", "turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
+                awaitingStart = false
+            }
             publishTranscript()
             return true
         }
@@ -1329,9 +1347,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Chats waiting on the owner or holding a reply. The Dock badge shows the count.
+    /// Chats waiting on the owner (UI.md 3.5). The Dock badge shows the count.
     private func updateDockBadge() {
-        let count = chatMarks.values.filter { $0.mark == .waiting || $0.mark == .replyReady }.count
+        let count = chatMarks.values.filter { $0.mark == .waiting }.count
         let label = count > 0 ? String(count) : ""
         if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
     }
@@ -1643,8 +1661,10 @@ final class AppModel: ObservableObject {
     /// Dismiss for an engine-held unsent message is local: the engine keeps
     /// the row, this app stops drawing it.
     private func hideEngineUnsent(_ id: String) {
-        hiddenEngineUnsent.insert(id)
-        UserDefaults.standard.set(Array(hiddenEngineUnsent.suffix(200)), forKey: Self.hiddenUnsentKey)
+        hiddenEngineUnsentOrder.removeAll { $0 == id }
+        hiddenEngineUnsentOrder.append(id)
+        hiddenEngineUnsentOrder = Array(hiddenEngineUnsentOrder.suffix(200))
+        UserDefaults.standard.set(hiddenEngineUnsentOrder, forKey: Self.hiddenUnsentKey)
         rebuildTranscript()
     }
 
@@ -1707,8 +1727,10 @@ final class AppModel: ObservableObject {
         // An explicit send is an explicit request to watch the answer, so the
         // transcript follows it whatever the reader was doing before.
         sendTick &+= 1
+        sendsInFlight += 1
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.sendsInFlight -= 1 }
             var recordKey = key
             do {
                 let chatId = try await self.ensureChat(title: message)
@@ -1779,6 +1801,14 @@ final class AppModel: ObservableObject {
     /// message the way the engine will title it.
     private func ensureChat(title: String) async throws -> String {
         if let id = currentChatId { return id }
+        if let creation = chatCreation { return try await creation.value }
+        let creation = Task { @MainActor [self] in try await createFirstChat(title: title) }
+        chatCreation = creation
+        defer { chatCreation = nil }
+        return try await creation.value
+    }
+
+    private func createFirstChat(title: String) async throws -> String {
         guard let botId = selectedBotId else { throw BackendError.shell("shell_bot_forbidden") }
         let id = try await client.createChat(botId: botId)
         if currentChatId == nil {
