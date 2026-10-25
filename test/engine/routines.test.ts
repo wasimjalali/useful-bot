@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdirSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
-import { appendRoutineRun, claimManualRun, createRoutine, pendingRoutines, readRoutine, requestRoutineRun } from "../../shared/routines-store.ts";
+import { EngineError } from "../../agent/engine/protocol.ts";
+import { appendRoutineRun, claimManualRun, createRoutine, pendingRoutines, readRoutine, requestRoutineRun, routinesStorePath, tryReadRoutinesStore } from "../../shared/routines-store.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { assertShapes, fixtureLines } from "./shapes.ts";
 import { makeWorld, waitForRequests, type World } from "./helpers.ts";
@@ -255,6 +257,106 @@ test("review 1: a routine store that fails does not take the engine down", async
     console.error = logged;
     process.off("uncaughtException", onUncaught);
     process.off("unhandledRejection", onUncaught);
+    await world.close();
+  }
+});
+
+test("review 2: an unreadable routines store unlinks nothing", async () => {
+  const { world } = await routineWorld();
+  try {
+    const made = routine("Linked");
+    world.router.enqueue({ kind: "text", text: "ok" });
+    const started = world.engine.routines.runNow(made.id);
+    await world.idle(started.chatId);
+    assert.equal(world.engine.host.index.require(started.chatId).routineId, made.id);
+
+    writeFileSync(routinesStorePath(), "{ this is not json");
+    world.engine.sweepRoutineLinks();
+    assert.equal(world.engine.host.index.require(started.chatId).routineId, made.id, "the link survives a store that cannot be read");
+
+    // A store that reads fine and no longer has the routine does unlink it.
+    writeFileSync(routinesStorePath(), JSON.stringify({ schemaVersion: 1, routines: [] }));
+    assert.equal(tryReadRoutinesStore()?.routines.length, 0);
+    world.engine.sweepRoutineLinks();
+    assert.equal(world.engine.host.index.require(started.chatId).routineId, null);
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 2: a busy routines store skips the tick and refuses Run now fast, instead of stalling the engine", async () => {
+  const { world } = await routineWorld();
+  const lock = `${routinesStorePath()}.lock`;
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const made = routine("Locked out");
+    assert.ok(requestRoutineRun(made.id));
+    mkdirSync(lock);
+    const started = Date.now();
+    assert.deepEqual(world.engine.routines.tick(), []);
+    assert.throws(
+      () => world.engine.routines.runNow(made.id),
+      (error: unknown) => error instanceof EngineError && error.status === 503 && error.code === "routines_store_busy",
+    );
+    assert.ok(Date.now() - started < 1_500, `took ${Date.now() - started} ms`);
+    rmdirSync(lock);
+    world.router.enqueue({ kind: "text", text: "done" });
+    assert.deepEqual(world.engine.routines.tick(), [made.id], "the next tick runs it");
+    await world.idle(chatOf(world, made.id) as string);
+  } finally {
+    console.error = logged;
+    rmSync(lock, { recursive: true, force: true });
+    await world.close();
+  }
+});
+
+test("review 2: a finished run is still recorded when the store is busy at that moment", async () => {
+  const { world } = await routineWorld({ engine: { routines: { recordRetryMs: 20 } } });
+  const lock = `${routinesStorePath()}.lock`;
+  try {
+    const made = routine("Recorded late");
+    world.router.enqueue({ kind: "stall", text: "working" });
+    const started = world.engine.routines.runNow(made.id);
+    await waitForRequests(world, 1);
+    mkdirSync(lock);
+    world.router.release();
+    await world.idle(started.chatId);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(readRoutine(made.id)?.runHistory.length, 0, "not recorded while the lock is held");
+    rmdirSync(lock);
+    const deadline = Date.now() + 3_000;
+    while (readRoutine(made.id)?.runHistory.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(readRoutine(made.id)?.runHistory.at(-1)?.status, "ok");
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+    await world.close();
+  }
+});
+
+test("review 2: the run's note is filed when its own turn starts, with that turn's id, and never for a run that is dropped", async () => {
+  const { world } = await routineWorld();
+  try {
+    const made = routine("Behind the owner");
+    world.router.enqueue({ kind: "text", text: "first run" });
+    const first = world.engine.routines.runNow(made.id);
+    await world.idle(first.chatId);
+    const noteOf = (id: string) => world.engine.rows(id, {}).rows.filter((row) => row.kind === "note");
+    assert.equal(noteOf(first.chatId).length, 1);
+    const firstNote = noteOf(first.chatId)[0];
+    assert.ok(firstNote.turnId, "the note belongs to the run's own turn");
+    assert.equal(world.engine.rows(first.chatId, {}).rows.find((row) => row.kind === "assistant")?.turnId, firstNote.turnId);
+
+    // Queued behind an owner turn and then stopped: no note.
+    world.router.enqueue({ kind: "stall", text: "owner is typing here" });
+    world.send(first.chatId, "something else");
+    await waitForRequests(world, world.router.requests.length + 1);
+    world.engine.routines.runNow(made.id);
+    assert.equal(noteOf(first.chatId).length, 1, "nothing filed while it waits");
+    world.engine.cancel(first.chatId);
+    await world.idle(first.chatId);
+    assert.equal(noteOf(first.chatId).length, 1, "and nothing for a run that was dropped");
+  } finally {
     await world.close();
   }
 });

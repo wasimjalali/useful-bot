@@ -62,7 +62,7 @@ export type RunningTurn = {
   /** The turn's own abort, for the routine budget; Stop goes through `session.abort()`. */
   abort: AbortController;
   cancelRequested: boolean;
-  abortReason: "cancelled" | "budget" | "idle" | null;
+  abortReason: "cancelled" | "budget" | "idle" | "shutdown" | null;
   startedAt: number;
   partialText: string;
   streamRowId: string | null;
@@ -91,6 +91,8 @@ export type QueuedTurn = {
   spec: TurnSpec;
   /** Owner messages are persisted as `ub.queued`; routine and system ones live in memory only. */
   persisted: boolean;
+  /** A row filed when this turn starts (a routine run's "ran" note). */
+  startNote?: RowInput;
   done: Promise<TurnResult>;
   finish: (result: TurnResult) => void;
 };
@@ -265,7 +267,9 @@ export class ChatRuntime {
     for (let at = fresh.length - 1; at >= 0; at -= 1) changes.push(...live.rows.push(fresh[at]));
     live.syncedLeaf = leaf;
     for (const change of changes) {
-      if (!NO_ROW_EVENT.has(change.row.kind) && change.type !== "updated") {
+      // The app already streamed this row (message.delta, message.final): it is told to drop it.
+      if (change.type === "removed") this.bus.emit({ type: "row.removed", rowId: change.row.rowId }, change.row.turnId ?? undefined);
+      else if (!NO_ROW_EVENT.has(change.row.kind) && change.type !== "updated") {
         this.bus.emit({ type: "row", row: change.row }, change.row.turnId ?? undefined);
       }
     }
@@ -320,6 +324,21 @@ export class ChatRuntime {
       }
     }
     this.host.deps.restoreTodos(this.chatId, todos);
+  }
+
+  /**
+   * Writes the session file now. Pi creates it only once a user or assistant
+   * message exists, so a new chat's first turn marker (and the owner's words in
+   * it) would be lost to a refusal or a crash before then. Pi 1.4.0 has no public
+   * call for this; the guard fails loudly if an upgrade moves what it relies on
+   * (the first-message test in contract-turns.test.ts then fails too).
+   */
+  flushSession(): void {
+    const sm = this.ensureLive().sm as unknown as { flushed?: boolean; persist?: boolean; _rewriteFile?: () => void };
+    if (sm.flushed || sm.persist === false) return;
+    if (typeof sm._rewriteFile !== "function") throw new Error("pi_session_flush_unavailable");
+    sm._rewriteFile();
+    sm.flushed = true;
   }
 
   /** Appends a custom entry to the session and syncs the rows. Returns the entry id. */
@@ -443,6 +462,8 @@ export class ChatRuntime {
   evict(): void {
     this.disposeSession();
     this.live = null;
+    // The event ring lives as long as someone can use it: nobody attached, nothing to replay.
+    if (this.bus.subscriberCount === 0) this.bus.dropRing();
   }
 
   /** Registers the MCP tools `find_tools` picked since the session started. */
@@ -576,6 +597,10 @@ export class EngineHost {
       this.chats.set(chatId, runtime);
     }
     return runtime;
+  }
+
+  hasRuntime(chatId: string): boolean {
+    return this.chats.has(chatId);
   }
 
   /** The runtimes touched since boot (the status poll walks these). */

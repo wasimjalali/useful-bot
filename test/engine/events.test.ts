@@ -19,6 +19,43 @@ test("seq counts from 1 per chat, and the envelope carries the epoch, chat and t
   assert.equal("turnId" in events.emit({ type: "row" }), false, "a chat-level event has no turn");
 });
 
+test("review 2: dropping the ring keeps seq and epoch, and an old reconnect is told to refetch", () => {
+  const events = bus();
+  for (let i = 0; i < 5; i += 1) events.emit({ type: "message.delta", rowId: "t:a0", delta: "x" });
+  events.dropRing();
+  assert.equal(events.tailSeq, 5, "seq carries on");
+  assert.equal(events.bufferedEvents, 0);
+  const stale = events.subscribe(() => undefined, { after: 2, epoch: EPOCH, running: null });
+  assert.equal(stale.initial[0].resync, true);
+  assert.equal(stale.initial.length, 1, "no replay");
+  const current = events.subscribe(() => undefined, { after: 5, epoch: EPOCH, running: null });
+  assert.equal(current.initial[0].resync, false, "a client that is fully caught up needs nothing");
+  assert.equal(events.emit({ type: "row" }).seq, 6);
+});
+
+test("review 2: a chat that is evicted with nobody watching drops its event ring, and keeps it while a client is attached", async () => {
+  const world = await makeWorld();
+  try {
+    const chatId = world.newChat();
+    world.router.enqueue({ kind: "text", text: "one" });
+    world.send(chatId, "go");
+    await world.idle(chatId);
+    const chat = world.engine.host.chat(chatId);
+    assert.ok(chat.bus.bufferedEvents > 0);
+    const watcher = world.record(chatId);
+    chat.evict();
+    assert.ok(chat.bus.bufferedEvents > 0, "a subscriber is attached");
+    watcher.stop();
+    chat.evict();
+    assert.equal(chat.bus.bufferedEvents, 0);
+    const reconnect = world.engine.subscribe(chatId, () => undefined, { after: 1, epoch: world.engine.epoch });
+    assert.equal(reconnect.initial[0].resync, true);
+    reconnect.unsubscribe();
+  } finally {
+    await world.close();
+  }
+});
+
 test("stream.ready and ping carry the current seq and are never stored or counted", () => {
   const events = bus();
   events.emit({ type: "turn.started" });

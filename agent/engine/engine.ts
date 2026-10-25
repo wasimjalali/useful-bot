@@ -6,7 +6,7 @@ import { installEngineApi } from "./api.ts";
 import { clip, PREVIEW_MAX, type ChatMeta } from "./chats.ts";
 import { admission } from "../../shared/admission.ts";
 import { TurnBodyError } from "../../shared/turn-input.ts";
-import { readRoutinesStore } from "../../shared/routines-store.ts";
+import { tryReadRoutinesStore } from "../../shared/routines-store.ts";
 import { estimateTokens } from "../../shared/context-blocks.ts";
 import { basePromptFor } from "./context.ts";
 import type { Subscription } from "./events.ts";
@@ -51,6 +51,7 @@ export class Engine {
   readonly host: EngineHost;
   readonly turns: TurnRunner;
   readonly routines: RoutineScheduler;
+  private routinesUnreadable = false;
 
   private constructor(host: EngineHost, options: EngineOptions) {
     this.host = host;
@@ -91,7 +92,8 @@ export class Engine {
   async close(): Promise<void> {
     this.routines.stop();
     for (const chat of this.host.runtimes()) {
-      if (chat.turn) this.turns.cancel(chat.chatId);
+      // Not Stop: a shutdown is an interruption, recorded as one by the next boot.
+      if (chat.turn) this.turns.shutdown(chat.chatId);
     }
     // Give the aborted turns a moment to write their last entries.
     const deadline = Date.now() + 5_000;
@@ -136,7 +138,15 @@ export class Engine {
   sweepRoutineLinks(): void {
     const linked = this.host.index.all().filter((meta) => meta.routineId !== null);
     if (linked.length === 0) return;
-    const alive = new Set(readRoutinesStore().routines.map((routine) => routine.id));
+    // A store that cannot be read says nothing about which routines exist: unlink nothing.
+    const store = tryReadRoutinesStore();
+    if (!store) {
+      if (!this.routinesUnreadable) console.error(JSON.stringify({ event: "routines_unreadable_sweep_skipped" }));
+      this.routinesUnreadable = true;
+      return;
+    }
+    this.routinesUnreadable = false;
+    const alive = new Set(store.routines.map((routine) => routine.id));
     for (const meta of linked) {
       if (!alive.has(meta.routineId as string)) this.host.index.update(meta.chatId, { routineId: null }, { touch: false });
     }
@@ -194,57 +204,65 @@ export class Engine {
    * first, within a time budget. Every hit names a row: the matching one, or the
    * chat's last row when only the title or preview matched.
    */
-  searchChats(query: string, limit = 50): { hits: { chatId: string; rowId: string; title: string; snippet: string; at: string }[] } {
+  searchChats(query: string, limit = 50, budgetMs = SEARCH_BUDGET_MS): { hits: { chatId: string; rowId: string; title: string; snippet: string; at: string }[] } {
     const needle = query.trim().toLowerCase();
     if (needle === "") return { hits: [] };
     const cap = Math.min(Math.max(limit, 1), 200);
     const hits: { chatId: string; rowId: string; title: string; snippet: string; at: string }[] = [];
     const chats = this.host.index.all().filter((meta) => !meta.fixture).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const deadline = Date.now() + SEARCH_BUDGET_MS;
-    const lastRowOf = (chatId: string): Row | undefined => {
-      const rows = this.host.chat(chatId).ensureCurrent().rows.rows;
-      return rows[rows.length - 1];
-    };
+    const deadline = Date.now() + budgetMs;
     const seen = new Set<string>();
     for (const meta of chats) {
-      if (hits.length >= cap) break;
+      if (hits.length >= cap || Date.now() >= deadline) break;
       const inTitle = meta.title.toLowerCase().includes(needle);
       if (!inTitle && !meta.preview.toLowerCase().includes(needle)) continue;
       try {
-        const chat = this.host.chat(meta.chatId);
-        const wasLive = chat.live !== null;
-        const last = lastRowOf(meta.chatId);
+        const last = this.peekRows(meta.chatId, (rows) => rows[rows.length - 1]);
         if (!last) continue;
         hits.push({ chatId: meta.chatId, rowId: last.rowId, title: meta.title, snippet: clip(inTitle ? meta.title : meta.preview, PREVIEW_MAX), at: meta.updatedAt });
         seen.add(meta.chatId);
-        if (!wasLive && !chat.turn) chat.evict();
       } catch {
         // A chat that cannot be read has nothing to search; it shows as unreadable when opened.
       }
     }
     for (const meta of chats) {
-      if (hits.length >= cap || Date.now() > deadline) break;
+      if (hits.length >= cap || Date.now() >= deadline) break;
       if (seen.has(meta.chatId)) continue;
       try {
-        const chat = this.host.chat(meta.chatId);
-        const wasLive = chat.live !== null;
-        const live = chat.ensureCurrent();
-        let row: Row | undefined;
-        for (let at = live.rows.rows.length - 1; at >= 0 && !row; at -= 1) {
-          const candidate = live.rows.rows[at];
-          if ((candidate.kind === "user" || candidate.kind === "assistant") && candidate.text.toLowerCase().includes(needle)) row = candidate;
-        }
+        const row = this.peekRows(meta.chatId, (rows) => {
+          for (let at = rows.length - 1; at >= 0; at -= 1) {
+            const candidate = rows[at];
+            if ((candidate.kind === "user" || candidate.kind === "assistant") && candidate.text.toLowerCase().includes(needle)) return candidate;
+          }
+          return undefined;
+        });
         if (row && (row.kind === "user" || row.kind === "assistant")) {
           const at = row.text.toLowerCase().indexOf(needle);
           const start = Math.max(0, at - 40);
           hits.push({ chatId: meta.chatId, rowId: row.rowId, title: meta.title, snippet: clip(row.text.slice(start, start + PREVIEW_MAX), PREVIEW_MAX), at: row.at });
         }
-        if (!wasLive && !chat.turn) chat.evict();
       } catch {
         // As above.
       }
     }
     return { hits };
+  }
+
+  /**
+   * Reads a chat's rows and leaves the engine as it found it: a chat that was
+   * not loaded is evicted again, and one that had no runtime at all loses the
+   * runtime it got for the read.
+   */
+  private peekRows<T>(chatId: string, read: (rows: Row[]) => T): T {
+    const hadRuntime = this.host.hasRuntime(chatId);
+    const chat = this.host.chat(chatId);
+    const wasLive = chat.live !== null;
+    try {
+      return read(chat.ensureCurrent().rows.rows);
+    } finally {
+      if (!wasLive && !chat.turn) chat.evict();
+      if (!hadRuntime && !chat.turn && chat.queue.length === 0 && chat.bus.subscriberCount === 0) this.host.forget(chatId);
+    }
   }
 
   // --- rows and events ---------------------------------------------------------------
@@ -313,9 +331,10 @@ export class Engine {
     for (const card of this.host.approvals.listPending()) pending.set(card.chatId, (pending.get(card.chatId) ?? 0) + 1);
     const now = this.host.now().getTime();
     const chats: StatusChat[] = [];
+    const runtimes = new Map(this.host.runtimes().map((item) => [item.chatId, item]));
     for (const meta of this.host.index.all()) {
       if (meta.fixture) continue;
-      const runtime = this.host.runtimes().find((item) => item.chatId === meta.chatId);
+      const runtime = runtimes.get(meta.chatId);
       const running = runtime?.turn ? { turnId: runtime.turn.turnId, activity: runtime.turn.activity ?? { kind: "thinking" as const } } : null;
       const waitingOnOwner = meta.questionOpen ? "question" : pending.has(meta.chatId) ? "approval" : null;
       const replyReadySince = runtime?.replyReadySince ?? null;

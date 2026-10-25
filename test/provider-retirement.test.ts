@@ -25,7 +25,7 @@ import {
 import type { ModelSelection } from "../shared/session-selection.ts";
 import { readShell, updateShell } from "../shared/shell-io.ts";
 import { withBotSelection } from "../shared/shell-store.ts";
-import { modelSelectionRefusal } from "../web/lib/agent-exec.ts";
+import { selectionRefusal } from "../agent/engine/selection-refusal.ts";
 import { applyProvidersDelete, applyProvidersPut, oauthStartRetired, oauthStartVerdict } from "../web/lib/providers-write.ts";
 
 // Ways UB-015 can fail, written before the code:
@@ -163,12 +163,11 @@ test("a retired chat connection read from disk answers its sentence, with the en
       ), alias);
     }
     // A bot with no model of its own follows the default and is refused before the engine with the sentence.
-    const refusal = modelSelectionRefusal(readShell().bots[0], store);
+    const refusal = selectionRefusal(readShell().bots[0], store);
     assert.ok(refusal);
     assert.equal(refusal.status, 409);
-    const body = await refusal.json() as { error: string; message: string };
-    assert.equal(body.error, "provider_route_retired");
-    assert.equal(body.message, sentence);
+    assert.equal(refusal.code, "provider_route_retired");
+    assert.equal(refusal.message, sentence);
   });
 });
 
@@ -257,18 +256,17 @@ test("a bot pinned to a retired route is refused before the engine with the rout
     const pick: ModelSelection = { connectionId: "alibaba:plan", modelId: "qwen3.7-max", effort: null, speed: "standard" };
     updateShell((current) => withBotSelection(current, bot.id, pick));
     const pinned = readShell().bots[0];
-    const refusal = modelSelectionRefusal(pinned, readProviderStore());
+    const refusal = selectionRefusal(pinned, readProviderStore());
     assert.ok(refusal);
     assert.equal(refusal.status, 409);
-    const body = await refusal.json() as { error: string; message: string };
-    assert.equal(body.error, "provider_route_retired");
-    assert.equal(body.message, retiredRouteMessage("alibaba:plan"));
+    assert.equal(refusal.code, "provider_route_retired");
+    assert.equal(refusal.message, retiredRouteMessage("alibaba:plan"));
     // Removing the connection resets the pin to inherit the default. The default itself
     // is on a retired route here, so removing that one too is what lets the bot run again.
     applyProvidersDelete({ connectionId: "alibaba:plan" });
     applyProvidersDelete({ connectionId: "zai:plan" });
     assert.equal(readShell().bots[0].model, null);
-    assert.equal(modelSelectionRefusal(readShell().bots[0], readProviderStore()), null);
+    assert.equal(selectionRefusal(readShell().bots[0], readProviderStore()), null);
   });
 });
 
@@ -301,7 +299,7 @@ test("removing an unrelated connection keeps a retired chat connection, so turns
     assert.throws(() => resolveUpstream(store, "workhorse", env), (error: unknown) => (
       error instanceof ProviderRouteRetiredError && error.message === retiredRouteMessage("zai:plan")
     ));
-    const refusal = modelSelectionRefusal(readShell().bots[0], store);
+    const refusal = selectionRefusal(readShell().bots[0], store);
     assert.ok(refusal);
     assert.equal(refusal.status, 409);
     // Removing the retired one itself repoints, as before.

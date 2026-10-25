@@ -7,16 +7,15 @@ import { peekShell, readShell, shellWasReseeded, updateShell } from "../../share
 import { readWorkspaceStore, removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V3, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
-import { retiredRouteMessage } from "../../shared/provider-catalog.ts";
-import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
+import { effectiveDefault, readProviderStore, type ProviderStore } from "../../shared/providers.ts";
 import { seedFor, windowFor } from "../../shared/admission.ts";
 import { statePath } from "../../shared/stack.ts";
 import { engineBotContext } from "../../shared/engine-client.ts";
 
 /**
  * What the web service still does for the engine's chats: re-stamp a grant
- * when the owner changes the folder or the permission, check that a bot's
- * model can carry a turn, report the Settings counter, and sweep the state a
+ * when the owner changes the folder or the permission, report the Settings
+ * counter, and sweep the state a
  * deleted chat or bot leaves behind. The turns themselves, routines and the
  * resume after a connect card all run in the engine now.
  */
@@ -135,36 +134,6 @@ export function ensureBotSelections(providerStore: ProviderStore = readProviderS
   const pick = effectiveDefault(providerStore);
   if (!pick) return;
   updateShell((current) => freezeNullSelections(current, pick));
-}
-
-/**
- * The refusal for a send to a bot whose selection cannot carry a turn, or null
- * when it can. Never a quiet switch to another model.
- */
-export function modelSelectionRefusal(bot: ShellBot, store: ProviderStore): Response | null {
-  const retired = retiredRouteMessage(botSelection(bot, store).connectionId);
-  if (retired) {
-    return Response.json({ ok: false, error: "provider_route_retired", message: retired }, { status: 409 });
-  }
-  if (botSelectionUsable(bot, store)) return null;
-  return Response.json(
-    {
-      ok: false,
-      error: "model_selection_unavailable",
-      message: "This bot's model or its connection is no longer available. Pick a model for it again.",
-    },
-    { status: 409 },
-  );
-}
-
-/**
- * Whether the bot's selection can carry a turn: its connection is live and its
- * model is still listed. The caller reads `store` BEFORE the roster the bot
- * came from (the order the freeze and the stamps use), so a fresh store never
- * pairs with an older roster.
- */
-export function botSelectionUsable(bot: ShellBot, store: ProviderStore): boolean {
-  return selectionAvailability(store, botSelection(bot, store)).available;
 }
 
 /**

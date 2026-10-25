@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -176,6 +176,34 @@ test("a session file that cannot be read shows one unreadable row and the engine
     assert.equal((world.engine.rows(other, {}).rows.at(-1) as { text: string }).text, "still fine");
   } finally {
     await world.close();
+  }
+});
+
+test("review 2: search reads chats without leaving runtimes behind, and stops at its budget", async () => {
+  const world = await makeWorld();
+  const copy = `${world.root}-copy`;
+  let second: Awaited<ReturnType<typeof makeWorld>> | null = null;
+  try {
+    for (const word of ["alpha", "bravo", "charlie"]) {
+      const chatId = world.newChat();
+      world.router.enqueue({ kind: "text", text: `the needle is in ${word}` });
+      world.send(chatId, `look for ${word}`);
+      await world.idle(chatId);
+    }
+    cpSync(world.root, copy, { recursive: true });
+    second = await makeWorld({ root: copy, router: world.router });
+    assert.equal(second.engine.host.runtimes().length, 0, "a fresh engine has touched nothing");
+    const found = second.engine.searchChats("needle");
+    assert.equal(found.hits.length, 3);
+    assert.equal(second.engine.host.runtimes().length, 0, "reading three chats left no runtime");
+    // Title and preview hits take the same path.
+    assert.ok(second.engine.searchChats("look for alpha").hits.length >= 1);
+    assert.equal(second.engine.host.runtimes().length, 0);
+    assert.deepEqual(second.engine.searchChats("needle", 50, 0).hits, [], "a spent budget stops both passes");
+  } finally {
+    await second?.close();
+    await world.close();
+    rmSync(copy, { recursive: true, force: true });
   }
 });
 

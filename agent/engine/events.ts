@@ -39,6 +39,19 @@ export class ChatBus {
     return this.subscribers.size;
   }
 
+  get bufferedEvents(): number {
+    return this.ring.length;
+  }
+
+  /**
+   * Forgets the stored events and keeps `seq` and the epoch. A client that
+   * reconnects with an `after` older than the tail then gets `resync: true`,
+   * which is right: the chat was evicted and nothing is left to replay.
+   */
+  dropRing(): void {
+    this.ring.length = 0;
+  }
+
   /** Stamps the envelope, stores the event and hands it to every subscriber. */
   emit(body: EventBody, turnId?: string): EngineEvent {
     this.seq += 1;
