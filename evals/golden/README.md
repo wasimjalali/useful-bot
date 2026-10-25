@@ -86,10 +86,8 @@ and a card that isn't expected is clicked the same way and recorded.
 
 ## Known gaps and traps
 
-- The dev memory store (`~/.useful-bot-dev-app/memory/notes`) already holds jasmine tea notes from
-  earlier work. Task 5's check counts only a note created or changed during the task, and task 6
-  (recall) would pass from the old notes alone. For a clean baseline, archive those notes before the
-  run (the orchestrator's call) or accept that task 6 doesn't prove task 5's note.
+- Tasks 5 and 6 use a made-up codename derived from the run id (`{codeword}` in `tasks.json`), so
+  recall can only pass on the note task 5 saved, never on older notes in the dev memory store.
 - The judge sees reply text and activity labels, not tool arguments. A tool the UI never names
   (Auto-approved, no card, a generic label) shows only through its effect on the checks.
 - The working row's accessibility role isn't documented; matching it by label was verified only on an

@@ -828,6 +828,12 @@ def main():
     drv = Driver(f"golden-{run_id}-{int(time.time())}")  # an ended session label cannot be reused
     try:
         tasks = load_tasks(args.only)
+        # One made-up fact per run, so the memory tasks can't pass on notes
+        # an earlier run (or the owner) left behind. Seeded by the run id, so a
+        # rerun of the same id asks the same thing.
+        words = ["amber", "cobalt", "juniper", "saffron", "quartz", "tamarind", "obsidian", "marigold"]
+        codeword = words[int(hashlib.sha256(run_id.encode()).hexdigest(), 16) % len(words)] + "-" + hashlib.sha256(run_id.encode()).hexdigest()[:4]
+        tasks = json.loads(json.dumps(tasks).replace("{codeword}", codeword))
         if not scratch_root.startswith(HOME + os.sep):
             raise Refuse(f"scratch {scratch_root} is outside {HOME}: the bot's file tools stop at the owner's home "
                          "(agent/lib/workspace.ts path_escape), so every file task would fail")
