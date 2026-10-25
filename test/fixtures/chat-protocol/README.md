@@ -81,7 +81,8 @@ fixtures pin these details:
 | `events-queue.ndjson` | three quick sends (two queue), the second runs, cancel drops the third |
 | `events-compaction.ndjson` | a turn that compacts in the middle |
 | `events-resync.ndjson` | a reconnect with an `after` older than the ring buffer |
-| `events-routine.ndjson` | a routine run in its own chat: a note row, then a turn with no `message.user` |
+| `events-routine.ndjson` | a routine run in its own chat: a note row (carrying the run's turn id), then a turn with no `message.user` |
+| `events-auto-retry.ndjson` | Pi retried a cut answer by itself: the streamed partial row is dropped with `row.removed`, the answer streams under the next row id |
 | `engine-status.json` | `GET /api/engine/status` |
 | `chats-list.json` | `GET /api/chats` |
 | `chats-search.json` | `GET /api/chats/search` |

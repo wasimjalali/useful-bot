@@ -619,6 +619,88 @@ test("review 2: the first owner message of a new chat is in the session file bef
   }
 });
 
+test("review 3: a turn that died before Pi wrote the message can be retried from its marker, unless it had attachments", async () => {
+  const world = await makeWorld();
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const chatId = world.newChat();
+    const chat = world.engine.host.chat(chatId);
+    chat.ensureSession = async () => { throw new Error("session could not be built"); };
+    const clientId = crypto.randomUUID();
+    world.send(chatId, "Write the plan", { clientId });
+    await world.idle(chatId);
+    assert.deepEqual(world.engine.rows(chatId, {}).rows.map((row) => row.kind), ["user", "failure"]);
+    Reflect.deleteProperty(chat, "ensureSession");
+    world.router.enqueue({ kind: "text", text: "Here is the plan." });
+    world.send(chatId, "Write the plan", { clientId, retry: true });
+    await world.idle(chatId);
+    const rows = world.engine.rows(chatId, {}).rows;
+    assert.deepEqual(rows.map((row) => row.kind), ["user", "assistant"]);
+    assert.equal((rows[0] as { text: string }).text, "Write the plan");
+
+    // Attachments are not in the marker (only their names), so that message cannot be sent again.
+    chat.ensureSession = async () => { throw new Error("session could not be built"); };
+    const withFile = crypto.randomUUID();
+    world.send(chatId, "Read this", { clientId: withFile, attachments: [{ name: "a.txt", mediaType: "text/plain", size: 3, text: "abc" }] });
+    await world.idle(chatId);
+    Reflect.deleteProperty(chat, "ensureSession");
+    assert.throws(
+      () => world.send(chatId, "Read this", { clientId: withFile, retry: true }),
+      (error: unknown) => error instanceof EngineError && error.status === 409 && error.code === "retry_attachments_lost",
+    );
+  } finally {
+    console.error = logged;
+    await world.close();
+  }
+});
+
+test("review 3: a queued message whose start finds the workspace store busy waits at the head of the queue, and is dropped only after the bound", async () => {
+  const world = await makeWorld();
+  const lock = `${defaultWorkspacePath()}.lock`;
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const chatId = world.newChat();
+    world.engine.turns.busyRetry = { ms: 20, tries: 40 };
+    world.router.enqueue({ kind: "stall", text: "one" }, { kind: "text", text: "second answer" });
+    world.send(chatId, "first");
+    await waitForRequests(world, 1);
+    world.send(chatId, "second");
+    mkdirSync(lock);
+    world.router.release();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const chat = world.engine.host.chat(chatId);
+    assert.equal(chat.turn, null);
+    assert.equal(chat.queue.length, 1, "still waiting, not dropped");
+    // A new send goes behind it, not ahead of it.
+    world.send(chatId, "third");
+    assert.equal(chat.queue.length, 2);
+    assert.ok(!world.engine.rows(chatId, {}).rows.some((row) => row.kind === "unsent"));
+    rmdirSync(lock);
+    await world.idle(chatId, 4_000);
+    const rows = world.engine.rows(chatId, {}).rows;
+    assert.deepEqual(rows.filter((row) => row.kind === "user").map((row) => (row as { text: string }).text), ["first", "second", "third"], "in order");
+    assert.ok(rows.some((row) => row.kind === "assistant" && row.text === "second answer"));
+
+    // Held past the bound: the message comes back as an unsent bubble.
+    world.engine.turns.busyRetry = { ms: 5, tries: 3 };
+    world.router.enqueue({ kind: "stall", text: "four" });
+    world.send(chatId, "fourth");
+    await waitForRequests(world, world.router.requests.length + 1);
+    const lost = crypto.randomUUID();
+    world.send(chatId, "fifth", { clientId: lost });
+    mkdirSync(lock);
+    world.router.release();
+    await world.idle(chatId, 4_000);
+    assert.ok(world.engine.rows(chatId, {}).rows.some((row) => row.kind === "unsent" && row.clientId === lost));
+  } finally {
+    console.error = logged;
+    rmSync(lock, { recursive: true, force: true });
+    await world.close();
+  }
+});
+
 test("review 2: a busy workspace store fails the turn start fast with a typed error, and the chat stays usable", async () => {
   const world = await makeWorld();
   const lock = `${defaultWorkspacePath()}.lock`;

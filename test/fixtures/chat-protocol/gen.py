@@ -238,14 +238,32 @@ s.write("events-resync.ndjson")
 # routine chat: a routine turn has no message.user; a note row precedes it
 s = Stream(chat=ROUTINE_CHAT)
 s.ready(0, False)
-routine_note = {"rowId": "note:routine-run-r1-0001", "kind": "note", "turnId": None, "at": at(1),
+# The note is filed when the run's own turn starts, so it carries that turn's id.
+routine_note = {"rowId": "note:routine-run-r1-0001", "kind": "note", "turnId": T1, "at": at(1),
                 "text": "Routine Morning summary ran.", "source": "routine"}
-s.emit("row", None, row=routine_note)
+s.emit("row", T1, row=routine_note)
 s.emit("turn.started", T1, origin="routine")
 s.emit("message.delta", T1, rowId=f"{T1}:a0", delta="Good morning. Three things today.")
 s.emit("message.final", T1, rowId=f"{T1}:a0", text="Good morning. Three things today.")
 s.emit("turn.completed", T1)
 s.write("events-routine.ndjson")
+
+# events-auto-retry.ndjson: the stream was cut mid-answer and Pi retried by itself. The app had
+# already streamed the partial answer as a row; row.removed drops it, and the answer that follows
+# streams under the next row id.
+s = Stream(seq=60)
+s.ready(60, False)
+s.emit("turn.started", T1, origin="owner", clientId=C1)
+s.emit("message.user", T1, rowId=f"{T1}:u", clientId=C1, text="Tell me", attachments=[])
+s.emit("activity", T1, kind="thinking")
+s.emit("message.delta", T1, rowId=f"{T1}:a0", delta="Half an ans")
+s.emit("message.final", T1, rowId=f"{T1}:a0", text="Half an ans")
+s.emit("activity", T1, kind="retrying", detail="Retrying")
+s.emit("row.removed", T1, rowId=f"{T1}:a0")
+s.emit("message.delta", T1, rowId=f"{T1}:a1", delta="The whole answer.")
+s.emit("message.final", T1, rowId=f"{T1}:a1", text="The whole answer.")
+s.emit("turn.completed", T1)
+s.write("events-auto-retry.ndjson")
 
 write_json("engine-status.json", {
     "epoch": EPOCH,

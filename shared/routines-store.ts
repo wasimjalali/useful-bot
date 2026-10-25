@@ -495,7 +495,10 @@ export function readRoutinesStore(path = routinesStorePath()): RoutinesStore {
 export function tryReadRoutinesStore(path = routinesStorePath()): RoutinesStore | null {
   if (!existsSync(path)) return emptyStore();
   try {
-    return parseRoutinesStore(JSON.parse(readFileSync(path, "utf8")));
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> | null;
+    // Another schema version reads as empty everywhere else; here it is "cannot read", not "no routines".
+    if (!raw || typeof raw !== "object" || raw.schemaVersion !== ROUTINES_SCHEMA) return null;
+    return parseRoutinesStore(raw);
   } catch {
     return null;
   }

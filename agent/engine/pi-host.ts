@@ -93,6 +93,8 @@ export type QueuedTurn = {
   persisted: boolean;
   /** A row filed when this turn starts (a routine run's "ran" note). */
   startNote?: RowInput;
+  /** Starts that found the workspace store busy (see TurnRunner.startNext). */
+  busyTries?: number;
   done: Promise<TurnResult>;
   finish: (result: TurnResult) => void;
 };
@@ -523,6 +525,8 @@ export class EngineHost {
   /** The chat the app named in its newest `POST /open` since boot. */
   openChatId: string | null = null;
   onSessionEvent: SessionEventHandler | null = null;
+  /** Set when shutdown begins: no turn starts, and nothing waiting is started in place of a running one. */
+  stopping = false;
   private readonly chats = new Map<string, ChatRuntime>();
   private sweepTimer: NodeJS.Timeout | null = null;
 

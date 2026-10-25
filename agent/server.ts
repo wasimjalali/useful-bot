@@ -28,7 +28,10 @@ async function stop(): Promise<void> {
   stopping = true;
   // Exit within 10 s whatever is still running (SPEC 5.1).
   setTimeout(() => process.exit(1), 10_000).unref();
-  await service.stop().catch(() => undefined);
+  await service.stop().catch((error: unknown) => {
+    // Still exit (the supervisor is waiting), but say why shutdown was not clean.
+    process.stderr.write(`${JSON.stringify({ service: "engine", event: "stop_failed", detail: error instanceof Error ? (error.stack ?? error.message) : String(error) })}\n`);
+  });
   process.exit(0);
 }
 process.on("SIGTERM", () => { void stop(); });

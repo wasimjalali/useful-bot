@@ -6,6 +6,7 @@ import test from "node:test";
 import { ChatIndex, TITLE_MAX, TRASH_DAYS } from "../../agent/engine/chats.ts";
 import { EngineError } from "../../agent/engine/protocol.ts";
 import { defaultShellPath, peekShell } from "../../shared/shell-io.ts";
+import { defaultWorkspacePath } from "../../shared/workspace-store.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { makeWorld } from "./helpers.ts";
 
@@ -175,6 +176,32 @@ test("a session file that cannot be read shows one unreadable row and the engine
     await world.idle(other);
     assert.equal((world.engine.rows(other, {}).rows.at(-1) as { text: string }).text, "still fine");
   } finally {
+    await world.close();
+  }
+});
+
+test("review 3: a busy workspace store refuses a chat delete before anything is removed", async () => {
+  const world = await makeWorld();
+  const lock = `${defaultWorkspacePath()}.lock`;
+  try {
+    const chatId = world.newChat();
+    world.router.enqueue({ kind: "text", text: "hello" });
+    world.send(chatId, "hi");
+    await world.idle(chatId);
+    mkdirSync(lock);
+    const started = Date.now();
+    assert.throws(
+      () => world.engine.deleteChat(chatId),
+      (error: unknown) => error instanceof EngineError && error.status === 503 && error.code === "workspace_store_busy" && error.fields.retryable === true,
+    );
+    assert.ok(Date.now() - started < 1_500, `took ${Date.now() - started} ms`);
+    assert.ok(world.engine.host.index.get(chatId), "still there");
+    assert.equal(world.engine.rows(chatId, {}).rows.length, 2, "with its rows");
+    rmdirSync(lock);
+    world.engine.deleteChat(chatId);
+    assert.equal(world.engine.host.index.get(chatId), undefined);
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
     await world.close();
   }
 });

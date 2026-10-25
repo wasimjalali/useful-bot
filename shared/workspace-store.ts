@@ -295,12 +295,12 @@ export function upsertSessionGrant(
 }
 
 /** Detaching a folder must revoke the capability, not just the bot field. */
-export function removeSessionGrant(chatId: string, path = defaultWorkspacePath()): void {
+export function removeSessionGrant(chatId: string, path = defaultWorkspacePath(), timeoutMs = LOCK_TIMEOUT_MS): void {
   if (!chatId) return;
   updateWorkspaceStore((store) => ({
     ...store,
     grants: store.grants.filter((item) => item.chatId !== chatId),
-  }), path);
+  }), path, timeoutMs);
 }
 
 export function projectIdFor(path: string): string {
