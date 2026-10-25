@@ -1,26 +1,6 @@
 import SwiftUI
 import UsefulBotCore
 
-/// What the old Bot pane's Settings held, now a body for Settings > Instructions
-/// and memory. The type stays until the shell stops showing the pane.
-struct SettingsPaneView: View {
-    @EnvironmentObject private var model: AppModel
-    let bot: ShellBot
-
-    var body: some View {
-        ScrollView {
-            InstructionsMemoryContent(bot: bot)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 20)
-        }
-        .uvScroll()
-        .frame(width: DesignTokens.Space.settingsPaneWidth)
-        .frame(maxHeight: .infinity)
-        .background(Theme.C.surface)
-        .overlay(alignment: .leading) { VerticalHairline() }
-    }
-}
-
 /// Instructions, then memory, for the one bot.
 struct InstructionsMemoryContent: View {
     @EnvironmentObject private var model: AppModel
@@ -81,61 +61,169 @@ private struct InstructionsSection: View {
     let bot: ShellBot
 
     @State private var context: BotContextInfo?
+    @State private var draft = ""
+    /// The stored description this draft started from.
+    @State private var base = ""
+    @State private var seeded = false
+    @State private var saving = false
+    @State private var saveFailed = false
+    @State private var textHeight: CGFloat = 0
 
-    private var isEmpty: Bool {
-        bot.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private static let minBox: CGFloat = 66
+    private static let maxBox: CGFloat = 260
+
+    private var limit: Int { context?.max ?? InstructionsLimit.max }
+    private var dirty: Bool { draft != base }
+    /// The stored text moved since the draft started (another window or the
+    /// bot edited it), so a plain Save would overwrite that change.
+    private var changedElsewhere: Bool { seeded && dirty && bot.description != base }
+    private var over: Bool { !InstructionsLimit.canSave(draft, max: limit) }
+
+    private var restoreText: String? {
+        guard bot.id == Threads.defaultBotId, let seed = context?.seed, draft != seed.text else { return nil }
+        return seed.text
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             SettingsSectionHeader(title: "Instructions") {
-                if isEmpty {
-                    NativeButton("Write instructions", kind: .primary, small: true, action: open)
-                        .accessibilityIdentifier("settings-instructions-edit")
-                } else {
-                    NativeButton("Edit", kind: .secondary, small: true, action: open)
-                        .accessibilityIdentifier("settings-instructions-edit")
+                Text("\(Self.grouped(InstructionsLimit.count(draft))) of \(Self.grouped(limit))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(over ? Theme.C.danger : Theme.C.inkMuted)
+                    .monospacedDigit()
+                    .accessibilityIdentifier("settings-instructions-count")
+            }
+            InstructionsTextView(
+                text: $draft,
+                height: $textHeight,
+                editable: !saving,
+                focusOnAppear: false,
+                // Esc leaves the field first; a second Esc closes Settings.
+                onCancel: { NSApp.keyWindow?.makeFirstResponder(nil) }
+            )
+            .frame(height: min(Self.maxBox, max(Self.minBox, textHeight)))
+            .padding(.top, 12)
+            .padding(.horizontal, 14)
+            .overlay(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text("Useful Bot works as a general assistant until you tell it its job, its limits and how to report.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.inkFaint)
+                        .padding(.top, 12)
+                        .padding(.horizontal, 14)
+                        .allowsHitTesting(false)
                 }
             }
-            if isEmpty {
-                Text("Useful Bot works as a general assistant until you tell it its job, its limits and how to report.")
-                    .font(.system(size: 13))
-                    .lineSpacing(3)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .settingsQuietCard()
-            } else {
-                Text(bot.description)
-                    .font(.system(size: 13))
-                    .lineSpacing(3)
-                    .foregroundStyle(Theme.C.ink.opacity(0.85))
-                    .lineLimit(7)
-                    .truncationMode(.tail)
-                    .settingsQuietCard()
-                    .accessibilityIdentifier("settings-instructions-preview")
-            }
-            HStack(spacing: 8) {
-                Text("Useful Bot reads these at the start of every chat.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.inkMuted)
-                Spacer(minLength: 0)
-                if let context {
-                    Text("\(Self.grouped(context.descriptionChars)) of \(Self.grouped(context.max))")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .monospacedDigit()
-                        .accessibilityIdentifier("settings-instructions-count")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.C.sunken.opacity(0.5))
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .accessibilityIdentifier("settings-instructions-box")
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                status
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if dirty {
+                    if let restoreText, !saving {
+                        NativeButton("Restore default", kind: .ghost, small: true) { draft = restoreText }
+                            .accessibilityIdentifier("instructions-restore")
+                    }
+                    NativeButton("Cancel", kind: .secondary, small: true, enabled: !saving, action: cancel)
+                        .accessibilityIdentifier("instructions-cancel")
+                    if changedElsewhere {
+                        NativeButton("Reload", kind: .secondary, small: true, enabled: !saving, action: cancel)
+                            .accessibilityIdentifier("instructions-reload")
+                    }
+                    NativeButton(
+                        saveFailed ? "Try again" : (changedElsewhere ? "Save anyway" : "Save"),
+                        kind: .primary,
+                        small: true,
+                        enabled: !over && !saving,
+                        action: save
+                    )
+                    .accessibilityIdentifier("instructions-save")
                 }
             }
         }
-        // The cost follows the stored text, so a save refreshes the counter.
+        .onAppear(perform: seed)
+        // The cost follows the stored text, so a save refreshes the limit and the default.
         .task(id: bot.description) { context = await model.botContext(botId: bot.id) }
+        .onChange(of: bot.description) { _, live in
+            // A clean draft follows the stored text; only a dirty one has a
+            // change of its own to protect.
+            guard seeded, !saving, !dirty else { return }
+            if live != base { base = live; draft = live }
+        }
+        .onChange(of: draft) { _, next in
+            saveFailed = false
+            // Kept in the model until saved or discarded, so leaving Settings
+            // never loses it.
+            if seeded {
+                model.instructionDrafts[bot.id] = next == base ? nil : InstructionDraft(base: base, text: next)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if saveFailed {
+            Text("Couldn't save. Your text is kept here.")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.danger)
+        } else if changedElsewhere {
+            Text("This changed since you started editing.")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.warning)
+        } else if over, case .over(let text) = InstructionsLimit.footer(for: draft, max: limit) {
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.danger)
+                .monospacedDigit()
+        } else {
+            Text("Useful Bot reads these at the start of every chat.")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.inkMuted)
+        }
     }
 
     private static func grouped(_ value: Int) -> String {
         value.formatted(.number.locale(Locale(identifier: "en_US")))
     }
 
-    private func open() {
-        model.instructionsEditorBotId = bot.id
+    private func seed() {
+        guard !seeded else { return }
+        if let kept = model.instructionDrafts[bot.id] {
+            base = kept.base
+            draft = kept.text
+        } else {
+            base = bot.description
+            draft = bot.description
+        }
+        seeded = true
+    }
+
+    /// Cancel and Reload both take the stored text over the draft.
+    private func cancel() {
+        base = bot.description
+        draft = bot.description
+        model.instructionDrafts[bot.id] = nil
+    }
+
+    private func save() {
+        guard !saving, dirty else { return }
+        saving = true
+        saveFailed = false
+        let saved = draft
+        model.patchBot(botId: bot.id, ["description": saved]) { ok in
+            saving = false
+            if ok {
+                base = saved
+                model.instructionDrafts[bot.id] = nil
+            } else {
+                saveFailed = true
+            }
+        }
     }
 }

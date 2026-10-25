@@ -58,7 +58,7 @@ final class FirstRunController: ObservableObject {
     private let freshMac: Bool
     private let harnessRun: Bool
     /// Verification only: `--first-run-land <bot name>` lands in that bot
-    /// instead of Generalist, so a forced run can end in "Test Bot".
+    /// instead of Useful Bot, so a forced run can end in "Test Bot".
     private let landOverride: String?
     /// Verification only: `--first-run-preview signin-done|signin-expired`
     /// plays the sign-in step's end states without a real device flow;
@@ -176,8 +176,8 @@ final class FirstRunController: ObservableObject {
         active = false
     }
 
-    /// Where the first chat opens: the seeded default bot, else the owner's
-    /// Generalist, else the first bot on the rail.
+    /// Where the first chat opens: the one bot (`Threads.defaultBotId`), else
+    /// the first bot on the rail.
     func landingBotId(_ store: ShellStore?) -> String? {
         guard let store else { return nil }
         if let landOverride, let bot = store.bots.first(where: { $0.kind == "bot" && ($0.name == landOverride || $0.id == landOverride) }) {
@@ -185,7 +185,6 @@ final class FirstRunController: ObservableObject {
         }
         let bots = store.activeBots
         return bots.first { $0.id == Threads.defaultBotId }?.id
-            ?? bots.first { $0.name == "Generalist" }?.id
             ?? bots.first?.id
     }
 }
@@ -221,10 +220,6 @@ enum FirstRunCatalog {
 
 // MARK: - Environment
 
-private struct StarterBotKey: EnvironmentKey {
-    static let defaultValue: String? = nil
-}
-
 private struct ComposerRisenKey: EnvironmentKey {
     static let defaultValue = true
 }
@@ -238,12 +233,6 @@ private struct NoModelPreviewKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// The bot whose empty chat shows the starter prompts.
-    var starterBotId: String? {
-        get { self[StarterBotKey.self] }
-        set { self[StarterBotKey.self] = newValue }
-    }
-
     /// False while the entrance into the first chat holds the composer down.
     var composerRisen: Bool {
         get { self[ComposerRisenKey.self] }

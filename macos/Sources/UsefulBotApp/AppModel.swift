@@ -62,12 +62,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var selectedBotId: String? {
-        // Opening a chat is reading its reply.
         didSet {
-            if let id = selectedBotId, replyReady.contains(id) { replyReady.remove(id) }
-            // Leaving a chat means its end wasn't seen, so a handoff ending
-            // after the switch still counts as an unread reply.
-            if selectedBotId != oldValue { selectedAtLastTick = nil }
             // The chip is per bot: show this bot's last read at once (or the
             // placeholder) and read the server's, never keep the last bot's.
             if selectedBotId != oldValue {
@@ -295,29 +290,12 @@ final class AppModel: ObservableObject {
         connectorKeyRejected,
     ]
 
-    /// Which inline pane is open. One value, so settings and the details pane
-    /// can never fight over the 320pt sidebar.
-    enum Pane: Equatable {
-        case none
-        case settings
-        case details
-    }
-
-    @Published var pane: Pane = .none {
-        didSet {
-            // The pane opens on the list, never on the row it showed last time.
-            if pane != oldValue { closeRoutineDetail() }
-            if let botId = selectedBotId {
-                Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
-            }
-        }
-    }
-
-    /// What the stage shows: a chat, the Routines page or the Library page.
+    /// What the stage shows: a chat, or the Routines, Library or Connectors page.
     enum Stage: Equatable {
         case chat
         case routines
         case library
+        case connectors
     }
 
     /// A Library item the search palette picked: the page opens on its detail.
@@ -351,20 +329,6 @@ final class AppModel: ObservableObject {
     /// from. They outlive the editor and the window until saved or discarded.
     var instructionDrafts: [String: InstructionDraft] = [:]
 
-    /// The bot whose instructions the wide editor is open on, if any.
-    @Published var instructionsEditorBotId: String?
-
-    /// Inline settings pane, opened from the details pane's gear.
-    var settingsOpen: Bool {
-        get { pane == .settings }
-        set { pane = newValue ? .settings : (pane == .settings ? .none : pane) }
-    }
-
-    /// Inline chat details pane, toggled from the info button in the header.
-    var detailsOpen: Bool {
-        get { pane == .details }
-        set { pane = newValue ? .details : (pane == .details ? .none : pane) }
-    }
     /// ⌘K palette.
     @Published var searchOpen = false
     /// Composer draft is page-level on the web, so it survives a bot switch.
@@ -444,14 +408,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var workingBotIds: Set<String> = []
     /// Handoff deliveries in flight on bots the owner is not looking at.
     @Published private(set) var handoffWorkingIds: Set<String> = []
-    /// Live activity of working bots the owner is not looking at, published
-    /// only when it changes. The selected bot's is `activity`.
-    @Published private(set) var backgroundActivities: [String: TurnActivity] = [:]
-    /// Unselected bots whose turn finished with a reply the owner has not
-    /// opened yet. In memory only.
-    @Published private(set) var replyReady: Set<String> = []
-    /// Bumped once per finished reply; the rail face hops on each change.
-    @Published private(set) var railHops: [String: Int] = [:]
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
     /// The newest session this app started, scoped to its bot so a Stop on
@@ -1672,11 +1628,6 @@ final class AppModel: ObservableObject {
                         let moved = self.handoffStartMarks[botId].map { $0 != now } ?? !now.preview.isEmpty
                         self.notifyTurnFinished(botId, failed: false, hasReply: moved && !now.preview.isEmpty)
                     }
-                    for botId in ended where botId != self.selectedBotId
-                        && botId != self.selectedAtLastTick
-                        && !self.workingBotIds.contains(botId) {
-                        self.markReplyReady(botId)
-                    }
                 }
                 for botId in next.subtracting(self.handoffWorkingIds) {
                     let bot = self.store?.bots.first { $0.id == botId }
@@ -1689,7 +1640,6 @@ final class AppModel: ObservableObject {
                 if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             }
             self.lastTickFailed = polled == nil
-            self.selectedAtLastTick = self.selectedBotId
             self.tickInFlight = false
         }
     }
@@ -2574,23 +2524,11 @@ final class AppModel: ObservableObject {
         if next != workingBotIds { workingBotIds = next }
         if running, !wasWorking { turnStartedAt[botId] = Date() }
         if !running, runningModelLabels[botId] != nil { runningModelLabels[botId] = nil }
-        if running {
-            if replyReady.contains(botId) { replyReady.remove(botId) }
-        } else {
-            if backgroundActivities[botId] != nil { backgroundActivities[botId] = nil }
+        if !running {
             if wasWorking {
                 let proj = botId == selectedBotId ? projection : backgroundProjections[botId]
                 let hasReply = proj?.pending == false && proj?.messages.last?.role == .assistant
                 notifyTurnFinished(botId, failed: proj?.failed ?? false, hasReply: hasReply)
-            }
-            // A turn that ended with an assistant message and no failure. A
-            // stopped send drops its projection first, so it never counts; a
-            // stream that died mid-turn is still pending, so it doesn't either.
-            // A cancel that already streamed partial text still would.
-            if wasWorking, botId != selectedBotId,
-               let proj = backgroundProjections[botId],
-               !proj.pending, !proj.failed, proj.messages.last?.role == .assistant {
-                markReplyReady(botId)
             }
         }
     }
@@ -2621,30 +2559,9 @@ final class AppModel: ObservableObject {
         TurnNotifier.shared.post(botId: botId, botName: bot.name)
     }
 
-    /// A reply is waiting in a chat the owner isn't looking at: the rail face
-    /// hops once and the row reads "REPLY READY" until the chat is opened.
-    private func markReplyReady(_ botId: String) {
-        // One hop per unread reply: a second one landing before the chat is
-        // opened doesn't hop again.
-        guard replyReady.insert(botId).inserted else { return }
-        railHops[botId, default: 0] += 1
-    }
-
-    /// The chat on screen at the previous tick, cleared when the owner
-    /// switches. A handoff that ends between two ticks was seen if its bot
-    /// was open at the first and still is.
-    private var selectedAtLastTick: String?
     /// Whether the previous tick failed. The service being down shows as
     /// failed ticks, and its in-flight set comes back empty after a restart.
     private var lastTickFailed = false
-
-    /// The current step of a working bot, for the rail face and subtitle.
-    /// Nil when it is not tracked; the face then reads as thinking.
-    func railActivity(_ botId: String) -> TurnActivity? {
-        guard isWorking(botId) else { return nil }
-        if botId == selectedBotId { return activity }
-        return backgroundActivities[botId] ?? backgroundProjections[botId]?.activity
-    }
 
     func isWorking(_ botId: String) -> Bool {
         workingBotIds.contains(botId)
@@ -2667,9 +2584,6 @@ final class AppModel: ObservableObject {
         backgroundProjections[botId] = proj
         cacheUse[botId] = Date()
         persistNewWidgets(proj.widgets, botId: botId)
-        if proj.pending, backgroundActivities[botId] != proj.activity {
-            backgroundActivities[botId] = proj.activity
-        }
         markWorking(botId, proj.pending)
     }
 
@@ -2920,7 +2834,7 @@ final class AppModel: ObservableObject {
 
     /// How many blocks a restored chat mounts for its first frame. Building
     /// the full 60-block window is most of what a switch costs once the rows
-    /// come from a snapshot (about 150 ms on Generalist); the newest turn is
+    /// come from a snapshot (about 150 ms on a long chat); the newest turn is
     /// always whole whatever this says.
     private static let firstPaintBlocks = 14
     /// The first frame's share of history text: about one long answer above
@@ -4317,8 +4231,6 @@ final class AppModel: ObservableObject {
             self.memoryNotes = nil
             self.memoryError = nil
             self.rebuildTranscript()
-            self.settingsOpen = false
-            self.detailsOpen = false
             self.closeRoutineDetail()
             // Reload outside the chain: an SSE replay must not block writes.
             self.startReload()
