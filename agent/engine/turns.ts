@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSession, AgentSessionEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { admission, descriptionTooLong, DESCRIPTION_TOO_LONG_TEXT } from "../../shared/admission.ts";
-import { readProviderStore, selectionAvailability } from "../../shared/providers.ts";
+import { readProviderStore } from "../../shared/providers.ts";
 import { botSelection } from "../../shared/session-selection.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
@@ -9,12 +9,14 @@ import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { forgetRouterError, lastRouterError } from "../lib/router-fetch.ts";
 import { routerIds } from "../lib/router-identity.ts";
+import type { RowInput } from "../lib/tool.ts";
 import { buildSnapshot } from "../lib/turn-snapshot.ts";
 import { clip, PREVIEW_MAX, TITLE_MAX } from "./chats.ts";
 import { basePromptFor, systemPromptFor, turnContextText } from "./context.ts";
 import type { TurnBody } from "./deps.ts";
 import { type ChatRuntime, type EngineHost, type QueuedTurn, type RunningTurn, type TurnResult, type TurnSpec } from "./pi-host.ts";
 import { factsFor, turnBindings } from "./provider.ts";
+import { selectionRefusal } from "./selection-refusal.ts";
 import {
   EngineError,
   UB,
@@ -34,6 +36,9 @@ import { toolDetail } from "./tool-labels.ts";
  * retry and the settle that closes a turn. One `session.prompt()` is exactly
  * one turn because the host never uses Pi's follow-up queue.
  */
+
+/** How long a turn start waits for the workspace store's lock. */
+const GRANT_WAIT_MS = 50;
 
 export type SubmitResult = { turnId: string; queued: boolean; done: Promise<TurnResult> };
 
@@ -152,18 +157,19 @@ export class TurnRunner {
     const bot = shell.bots.find((item) => item.id === chat.botId);
     if (!bot) throw new EngineError(409, "bot_missing");
     const selection = botSelection(bot, store);
-    const available = selectionAvailability(store, selection);
-    if (!available.available) {
-      if (available.reason === "route_retired") throw new EngineError(409, "provider_route_retired", { message: available.message });
-      throw new EngineError(409, "model_selection_unavailable", {
-        message: "This bot's model or its connection is no longer available. Pick a model for it again.",
-      });
-    }
+    const refusal = selectionRefusal(bot, store);
+    if (refusal) throw new EngineError(refusal.status, refusal.code, { message: refusal.message });
     const facts = factsFor(selection);
     if (spec.images.length > 0 && facts.vision === false) throw new EngineError(400, "model_no_vision");
     if (descriptionTooLong(bot)) throw new EngineError(409, "description_too_long", { message: DESCRIPTION_TOO_LONG_TEXT });
     if (options.stampGrant) {
-      upsertSessionGrant({ chatId: chat.chatId, path: bot.workspace?.path ?? null, permission: bot.permission, selection });
+      try {
+        // A short wait: a lock held for seconds fails the start (retryable) instead of stalling every chat.
+        upsertSessionGrant({ chatId: chat.chatId, path: bot.workspace?.path ?? null, permission: bot.permission, selection }, undefined, undefined, GRANT_WAIT_MS);
+      } catch (error) {
+        if (error instanceof Error && error.message === "workspace_locked") throw new EngineError(503, "workspace_store_busy", { retryable: true });
+        throw error;
+      }
     }
     const firstChat = !this.host.index.all().some((meta) => meta.botId === bot.id && meta.lastTurn !== null);
     const snapshot = buildSnapshot(bot.id, chat.chatId, undefined, { firstChat });
@@ -200,16 +206,15 @@ export class TurnRunner {
   }
 
   /** A routine run or a system turn. Same admission; the prompt is not an owner bubble. */
-  submitInternal(chatId: string, origin: Exclude<TurnOrigin, "owner">, clientId: string, text: string, admitted?: () => void): SubmitResult {
+  submitInternal(chatId: string, origin: Exclude<TurnOrigin, "owner">, clientId: string, text: string, startNote?: RowInput): SubmitResult {
     const chat = this.host.chat(chatId);
     chat.ensureLive();
     const existing = this.existing(chat, clientId);
     if (existing) return existing;
     const spec: TurnSpec = { text, promptText: text, images: [], attachments: [] };
     this.prepare(chat, spec, { stampGrant: false });
-    // Only a run that passed admission gets its note: `admitted` runs here, before the turn starts.
-    admitted?.();
-    return this.accept(chat, { origin, clientId, spec, persisted: false });
+    // `startNote` is filed when this turn starts, not now: a turn that waits and is dropped never ran.
+    return this.accept(chat, { origin, clientId, spec, persisted: false, ...(startNote ? { startNote } : {}) });
   }
 
   /** The original answer for a clientId this chat already knows (SPEC 5.5.1). */
@@ -229,7 +234,7 @@ export class TurnRunner {
     return null;
   }
 
-  private accept(chat: ChatRuntime, input: { origin: TurnOrigin; clientId: string; spec: TurnSpec; persisted: boolean }): SubmitResult {
+  private accept(chat: ChatRuntime, input: { origin: TurnOrigin; clientId: string; spec: TurnSpec; persisted: boolean; startNote?: RowInput }): SubmitResult {
     const turnId = randomUUID();
     if (chat.turn) return this.enqueue(chat, { turnId, ...input, ...deferred() });
     return this.start(chat, { turnId, ...input, ...deferred() });
@@ -311,7 +316,12 @@ export class TurnRunner {
       }
       chat.appendCustom(UB.turnStart, startData);
       marked = true;
+      // A new chat's file does not exist until Pi has a message: write it now, so the owner's first message survives a refusal or a crash.
+      chat.flushSession();
+      // The list orders by `updatedAt`: a turn that starts moves its chat to the top at once.
+      this.host.index.update(chat.chatId, {});
       this.titleFrom(chat, turn);
+      if (input.startNote) chat.appendRow(input.startNote);
       chat.bus.emit({
         type: "turn.started",
         origin: turn.origin,
@@ -352,7 +362,7 @@ export class TurnRunner {
     let prompting = false;
     try {
       const session = await chat.ensureSession(turn);
-      if (turn.cancelRequested) return;
+      if (turn.cancelRequested || turn.abortReason === "shutdown") return;
       const binding = { chatId: chat.chatId, turnId: turn.turnId, selection: turn.snapshot.selection };
       await turnBindings.run(binding, async () => {
         prompting = true;
@@ -379,6 +389,14 @@ export class TurnRunner {
 
   private settle(chat: ChatRuntime, turn: RunningTurn, thrown: { error: unknown; refused: boolean } | null): void {
     const ids = routerIds(chat.chatId, turn.turnId);
+    if (turn.abortReason === "shutdown") {
+      // The engine is stopping: write nothing. The running record stays, so the next boot closes this turn as
+      // interrupted (with Retry) and turns what waited behind it into unsent rows (SPEC D15, 5.5.10).
+      forgetRouterError(ids.turnId);
+      chat.turn = null;
+      turn.finish({ turnId: turn.turnId, outcome: "failed", failure: { code: "interrupted", detail: "The app stopped while this was running." } });
+      return;
+    }
     let result: TurnResult;
     let failure: FailureData | null = null;
     const last = turn.lastAssistant;
@@ -442,7 +460,7 @@ export class TurnRunner {
     });
     turn.finish(result);
     this.settleStep(chat, turn, "sweep", () => this.host.sweep());
-    this.startNext(chat);
+    this.settleStep(chat, turn, "next", () => this.startNext(chat));
   }
 
   private settleStep(chat: ChatRuntime, turn: RunningTurn, step: string, run: () => void): void {
@@ -506,14 +524,38 @@ export class TurnRunner {
   }
 
   private dropQueued(chat: ChatRuntime, queued: QueuedTurn, reason: QueuedDropData["reason"], failure?: { code: string; detail: string }): void {
-    // A message whose turn was already written (its start failed afterwards) is no longer waiting: nothing to drop.
-    if (queued.persisted && chat.ensureLive().rows.isPending(`${queued.turnId}:u`)) {
-      const data: QueuedDropData = { turnId: queued.turnId, clientId: queued.clientId, reason };
-      chat.appendCustom(UB.queuedDrop, data);
-      this.host.ledger.messageDequeued(chat.chatId, queued.clientId);
-      chat.bus.emit({ type: "message.dropped", clientId: queued.clientId });
+    try {
+      // A message whose turn was already written (its start failed afterwards) is no longer waiting: nothing to drop.
+      if (queued.persisted && chat.ensureLive().rows.isPending(`${queued.turnId}:u`)) {
+        const data: QueuedDropData = { turnId: queued.turnId, clientId: queued.clientId, reason };
+        chat.appendCustom(UB.queuedDrop, data);
+        this.host.ledger.messageDequeued(chat.chatId, queued.clientId);
+        chat.bus.emit({ type: "message.dropped", clientId: queued.clientId });
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ event: "drop_queued_failed", chatId: chat.chatId, turnId: queued.turnId, error: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      // Whatever the writes did, the sender's promise resolves and the queue behind it moves on.
+      queued.finish(failure ? { turnId: queued.turnId, outcome: "failed", failure } : { turnId: queued.turnId, outcome: "cancelled" });
     }
-    queued.finish(failure ? { turnId: queued.turnId, outcome: "failed", failure } : { turnId: queued.turnId, outcome: "cancelled" });
+  }
+
+  /**
+   * The engine is stopping (SIGTERM, an update relaunch): abort the running turn
+   * but record nothing. Unlike Stop it leaves the queue and the running record
+   * alone, so the next boot closes the turn as interrupted and turns what
+   * waited into unsent rows.
+   */
+  shutdown(chatId: string): void {
+    const chat = this.host.chat(chatId);
+    const turn = chat.turn;
+    if (!turn || turn.abortReason) return;
+    turn.abortReason = "shutdown";
+    this.host.approvals.expireSession(chatId);
+    turn.abort.abort();
+    void chat.live?.session?.abort().catch((error: unknown) => {
+      console.error(JSON.stringify({ event: "abort_failed", chatId, error: error instanceof Error ? error.message : String(error) }));
+    });
   }
 
   /** Stops a routine run that overran its budget (SPEC 5.11). */
@@ -528,11 +570,31 @@ export class TurnRunner {
     });
   }
 
+  /** The retry turn this clientId already got on the active branch, when there is one. */
+  private finishedRetry(live: ReturnType<ChatRuntime["ensureLive"]>, clientId: string): SubmitResult | null {
+    const known = live.rows.clients.get(clientId);
+    if (!known || known.queued) return null;
+    let retried = false;
+    for (const entry of live.sm.getBranch()) {
+      if (entry.type === "custom" && entry.customType === UB.turnStart && (entry.data as TurnStartData).turnId === known.turnId) {
+        retried = (entry.data as TurnStartData).retry === true;
+      }
+    }
+    if (!retried) return null;
+    return { turnId: known.turnId, queued: false, done: Promise.resolve({ turnId: known.turnId, outcome: "completed" }) };
+  }
+
   private retry(chat: ChatRuntime, body: TurnBody): SubmitResult {
+    // The same Retry posted again (a lost response, a double tap) gets the retry's turn back, as a duplicate send does.
+    if (chat.turn?.retry && chat.turn.clientId === body.clientId) return { turnId: chat.turn.turnId, queued: false, done: chat.turn.done };
     if (chat.turn || chat.queue.length > 0) throw new EngineError(409, "chat_busy");
-    const live = chat.ensureLive();
+    const live = chat.ensureCurrent();
     const target = findRetryTarget(live.sm.getBranch());
-    if (!target || target.clientId !== body.clientId) throw new EngineError(409, "retry_not_available");
+    if (!target || target.clientId !== body.clientId) {
+      const done = this.finishedRetry(live, body.clientId);
+      if (done) return done;
+      throw new EngineError(409, "retry_not_available");
+    }
     const remaining = (target.failure.retryAfterMs ?? 0) - (this.host.now().getTime() - target.failedAt);
     if (remaining > 0) throw new EngineError(429, "retry_too_soon", { retryAfterMs: Math.ceil(remaining) });
     // The exact message again: text and images as the model saw them, the owner text as the row shows it.
@@ -566,6 +628,8 @@ export class TurnRunner {
         this.activity(chat, turn, { kind: "thinking" }, true);
         return;
       case "turn_end":
+      case "entry_appended":
+        // `entry_appended` is how Pi announces entries it adds outside a message, such as the context edit that hides a retried attempt.
         chat.syncRows();
         return;
       case "message_start": {
@@ -604,14 +668,21 @@ export class TurnRunner {
         if (message.role === "assistant") {
           turn.lastAssistant = { stopReason: message.stopReason, errorMessage: message.errorMessage };
           const text = textOfBlocks(message.content);
-          if (text.trim() !== "") {
-            const rowId = turn.streamRowId ?? `${turn.turnId}:a${turn.assistantCount}`;
-            chat.bus.emit({ type: "message.final", rowId, text }, turn.turnId);
-            turn.assistantCount += 1;
-            this.host.index.update(chat.chatId, { preview: clip(text, PREVIEW_MAX) });
-          }
+          const counted = text.trim() !== "";
+          const rowId = turn.streamRowId ?? `${turn.turnId}:a${turn.assistantCount}`;
+          // The streaming state resets first: whatever fails below, the next message gets its own row id.
+          if (counted) turn.assistantCount += 1;
           turn.streamRowId = null;
           turn.partialText = "";
+          try {
+            if (counted) {
+              chat.bus.emit({ type: "message.final", rowId, text }, turn.turnId);
+              this.host.index.update(chat.chatId, { preview: clip(text, PREVIEW_MAX) });
+            }
+          } finally {
+            chat.syncRows();
+          }
+          return;
         }
         chat.syncRows();
         return;

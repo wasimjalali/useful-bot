@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { cpSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { EngineError } from "../../agent/engine/protocol.ts";
+import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
+import { defaultWorkspacePath } from "../../shared/workspace-store.ts";
 import { makeWorld, types, waitForRequests, type World } from "./helpers.ts";
 
 /**
@@ -435,6 +437,209 @@ test("review 1: a routine budget abort whose session.abort() fails is logged, no
     await world.idle(chatId);
   } finally {
     console.error = logged;
+    await world.close();
+  }
+});
+
+test("review 2: a shutdown records the running turn as interrupted and leaves queued sends for boot", async () => {
+  const world = await makeWorld();
+  const restartRoot = `${world.root}-restart`;
+  let second: World | null = null;
+  try {
+    const chatId = world.newChat();
+    const clientId = crypto.randomUUID();
+    const waiting = crypto.randomUUID();
+    world.router.enqueue({ kind: "stall", text: "Working on it" });
+    world.send(chatId, "first", { clientId });
+    await waitForRequests(world, 1);
+    world.send(chatId, "second", { clientId: waiting });
+    await world.engine.close();
+    cpSync(world.root, restartRoot, { recursive: true });
+
+    second = await makeWorld({ root: restartRoot, router: world.router });
+    const rows = second.engine.rows(chatId, {}).rows;
+    const failure = rows.find((row) => row.kind === "failure") as { code: string } | undefined;
+    assert.equal(failure?.code, "interrupted", "not a quiet owner cancel");
+    const unsent = rows.find((row) => row.kind === "unsent") as { clientId: string; reason: string } | undefined;
+    assert.deepEqual([unsent?.clientId, unsent?.reason], [waiting, "interrupted"]);
+    assert.equal(second.engine.status().chats.find((chat) => chat.chatId === chatId)?.lastTurn?.outcome, "failed");
+
+    second.router.enqueue({ kind: "text", text: "Here you go." });
+    second.send(chatId, "first", { clientId, retry: true });
+    await second.idle(chatId);
+    assert.equal((second.engine.rows(chatId, {}).rows.at(-1) as { text?: string }).text, "Here you go.");
+  } finally {
+    await second?.close();
+    await world.close();
+    rmSync(restartRoot, { recursive: true, force: true });
+  }
+});
+
+test("review 2: a started turn moves its chat to the top of the list at once", async () => {
+  const world = await makeWorld();
+  try {
+    const older = world.newChat();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const newer = world.newChat();
+    assert.deepEqual(world.engine.listChats({ botId: DEFAULT_BOT_ID }).chats.map((chat) => chat.chatId), [newer, older]);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    world.router.enqueue({ kind: "stall", text: "working" });
+    world.send(older, "go");
+    assert.deepEqual(world.engine.listChats({ botId: DEFAULT_BOT_ID }).chats.map((chat) => chat.chatId), [older, newer]);
+    world.engine.cancel(older);
+    await world.idle(older);
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 2: a queued message whose start and drop both fail still resolves, and the queue moves on", async () => {
+  const world = await makeWorld();
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const chatId = world.newChat();
+    world.router.enqueue({ kind: "stall", text: "one" }, { kind: "text", text: "three" });
+    world.send(chatId, "first");
+    await waitForRequests(world, 1);
+    const body = (text: string) => world.engine.host.deps.parseTurnBody({ clientId: crypto.randomUUID(), text, attachments: [] });
+    const second = world.engine.turns.submitOwner(chatId, body("second"));
+    const third = world.engine.turns.submitOwner(chatId, body("third"));
+    assert.equal(second.queued && third.queued, true);
+    failOnce(world.engine.host.ledger, "turnStarted", "ledger write failed");
+    const chat = world.engine.host.chat(chatId);
+    const append = chat.appendCustom.bind(chat);
+    let failed = false;
+    chat.appendCustom = ((type: string, data: unknown) => {
+      if (!failed && type === "ub.queued-drop") {
+        failed = true;
+        throw new Error("drop write failed");
+      }
+      return append(type, data);
+    }) as typeof chat.appendCustom;
+    world.router.release();
+    const settled = await Promise.race([second.done, new Promise<null>((resolve) => setTimeout(() => resolve(null), 4_000))]);
+    assert.equal(settled?.outcome, "failed", "the stranded message's promise resolved");
+    await world.idle(chatId, 4_000);
+    const answers = world.engine.rows(chatId, {}).rows.filter((row) => row.kind === "assistant").map((row) => (row as { text: string }).text);
+    assert.ok(answers.includes("three"), `the next one ran: ${answers.join(" | ")}`);
+  } finally {
+    console.error = logged;
+    await world.close();
+  }
+});
+
+test("review 2: the next message streams under a fresh row even when the index update after the last one throws", async () => {
+  const world = await makeWorld();
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const chatId = world.newChat();
+    const recorder = world.record(chatId);
+    world.router.enqueue({ kind: "tools", text: "Let me check.", calls: [{ name: "echo", args: { text: "x" } }] }, { kind: "text", text: "All done." });
+    // The preview update that follows the first message's end throws, once.
+    const index = world.engine.host.index;
+    const update = index.update.bind(index);
+    let failed = false;
+    index.update = ((chat: string, patch: Record<string, unknown>, options?: { touch?: boolean }) => {
+      if (!failed && patch.preview !== undefined) {
+        failed = true;
+        throw new Error("index write failed");
+      }
+      return update(chat, patch, options);
+    }) as typeof index.update;
+    world.send(chatId, "go");
+    await world.idle(chatId);
+    assert.equal(failed, true, "the failure was injected");
+    const deltas = recorder.events.filter((event) => event.type === "message.delta");
+    const ids = [...new Set(deltas.map((event) => String(event.rowId)))];
+    assert.equal(ids.length, 2, `two messages, two rows: ${ids.join(", ")}`);
+    const rows = world.engine.rows(chatId, {}).rows.filter((row) => row.kind === "assistant");
+    assert.deepEqual(rows.map((row) => row.rowId), ids);
+  } finally {
+    console.error = logged;
+    await world.close();
+  }
+});
+
+test("review 2: a re-posted Retry gives the retry's turn back, running or finished, and runs nothing twice", async () => {
+  const world = await makeWorld();
+  try {
+    const chatId = world.newChat();
+    const clientId = crypto.randomUUID();
+    world.router.enqueue(
+      { kind: "error", status: 503, code: "upstream_unavailable" },
+      { kind: "error", status: 503, code: "upstream_unavailable" },
+      { kind: "error", status: 503, code: "upstream_unavailable" },
+      { kind: "stall", text: "Second try" },
+    );
+    world.send(chatId, "Summarise", { clientId });
+    await world.idle(chatId);
+    const retried = world.send(chatId, "Summarise", { clientId, retry: true });
+    assert.ok(retried.turnId);
+    await waitForRequests(world, 4);
+    const again = world.send(chatId, "Summarise", { clientId, retry: true });
+    assert.deepEqual(again, { turnId: retried.turnId }, "while it runs");
+    world.router.release();
+    await world.idle(chatId);
+    const afterwards = world.send(chatId, "Summarise", { clientId, retry: true });
+    assert.deepEqual(afterwards, { turnId: retried.turnId }, "after it finished");
+    assert.equal(world.router.requests.length, 4, "no request was made for the repeats");
+    assert.deepEqual(world.engine.rows(chatId, {}).rows.map((row) => row.kind), ["user", "assistant"]);
+  } finally {
+    await world.close();
+  }
+});
+
+test("review 2: the first owner message of a new chat is in the session file before anything can fail", async () => {
+  const world = await makeWorld();
+  const restartRoot = `${world.root}-restart`;
+  let second: World | null = null;
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const chatId = world.newChat();
+    world.engine.rows(chatId, {});
+    const chat = world.engine.host.chat(chatId);
+    chat.ensureSession = async () => { throw new Error("session could not be built"); };
+    world.send(chatId, "My very first message");
+    const file = world.engine.host.index.require(chatId).sessionFile;
+    assert.ok(file && existsSync(file), "the file exists as soon as the turn is accepted");
+    await world.idle(chatId);
+    cpSync(world.root, restartRoot, { recursive: true });
+    second = await makeWorld({ root: restartRoot, router: world.router });
+    const rows = second.engine.rows(chatId, {}).rows;
+    assert.deepEqual(rows.map((row) => row.kind), ["user", "failure"]);
+    assert.equal((rows[0] as { text: string }).text, "My very first message");
+  } finally {
+    console.error = logged;
+    await second?.close();
+    await world.close();
+    rmSync(restartRoot, { recursive: true, force: true });
+  }
+});
+
+test("review 2: a busy workspace store fails the turn start fast with a typed error, and the chat stays usable", async () => {
+  const world = await makeWorld();
+  const lock = `${defaultWorkspacePath()}.lock`;
+  try {
+    const chatId = world.newChat();
+    mkdirSync(lock);
+    const started = Date.now();
+    assert.throws(
+      () => world.send(chatId, "go"),
+      (error: unknown) => error instanceof EngineError && error.status === 503 && error.code === "workspace_store_busy" && error.fields.retryable === true,
+    );
+    assert.ok(Date.now() - started < 1_500, `took ${Date.now() - started} ms`);
+    assert.equal(world.engine.host.chat(chatId).turn, null);
+    assert.deepEqual(world.engine.host.ledger.leftovers().turns, []);
+    rmdirSync(lock);
+    world.router.enqueue({ kind: "text", text: "fine" });
+    world.send(chatId, "go again");
+    await world.idle(chatId);
+    assert.equal((world.engine.rows(chatId, {}).rows.at(-1) as { text?: string }).text, "fine");
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
     await world.close();
   }
 });

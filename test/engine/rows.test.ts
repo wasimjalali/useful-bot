@@ -254,3 +254,48 @@ test("review 1: leading whitespace is held back and sent with the first real tex
     await world.close();
   }
 });
+
+test("review 2: a context edit that drops a message takes its assistant row away, and the ids after it stay aligned", () => {
+  const partial = assistant("Half an ans");
+  const builder = RowBuilder.build([turnStart("t1"), partial]);
+  assert.deepEqual(builder.rows.map((row) => row.rowId), ["t1:u", "t1:a0"]);
+  const dropped = builder.push(entry({ type: "context_edit", targetId: partial.id, replacement: null }));
+  assert.deepEqual(dropped.map((change) => [change.type, change.row.rowId]), [["removed", "t1:a0"]]);
+  assert.deepEqual(builder.rows.map((row) => row.rowId), ["t1:u"]);
+  assert.equal(builder.has("t1:a0"), false);
+  builder.push(assistant("The whole answer."));
+  assert.deepEqual(builder.rows.map((row) => row.rowId), ["t1:u", "t1:a1"], "the next message keeps counting, as the live stream does");
+
+  // A rebuild from the same entries agrees.
+  const again = RowBuilder.build([turnStart("t2"), partial, entry({ type: "context_edit", targetId: partial.id, replacement: null }), assistant("Done.")]);
+  assert.deepEqual(again.rows.map((row) => row.rowId), ["t2:u", "t2:a1"]);
+  // An edit that replaces rather than drops, or one aimed at something that is not a row, changes nothing.
+  const kept = assistant("Kept.");
+  const other = RowBuilder.build([turnStart("t3"), kept, entry({ type: "context_edit", targetId: kept.id, replacement: { content: "x" } }), entry({ type: "context_edit", targetId: "nope", replacement: null })]);
+  assert.deepEqual(other.rows.map((row) => row.rowId), ["t3:u", "t3:a0"]);
+});
+
+test("review 2: an attempt Pi retried by itself leaves no row, live or rebuilt, and the app is told to drop the one it streamed", async () => {
+  const world = await makeWorld();
+  try {
+    const chatId = world.newChat();
+    const recorder = world.record(chatId);
+    world.router.enqueue({ kind: "cut", text: "Half an ans" }, { kind: "text", text: "The whole answer." });
+    world.send(chatId, "tell me");
+    await world.idle(chatId);
+    const rows = world.engine.rows(chatId, {}).rows;
+    assert.deepEqual(rows.map((row) => row.kind), ["user", "assistant"]);
+    assert.equal((rows[1] as { text: string }).text, "The whole answer.");
+    const live = world.engine.host.chat(chatId).live;
+    assert.ok(live);
+    assert.deepEqual(live.rows.view(), RowBuilder.build(live.sm.getBranch()).view(), "live and rebuilt agree");
+
+    const streamed = recorder.events.filter((event) => event.type === "message.delta").map((event) => String(event.rowId));
+    const removed = recorder.events.filter((event) => event.type === "row.removed");
+    assert.deepEqual(removed.map((event) => event.rowId), [streamed[0]], "the streamed partial row is dropped");
+    assert.equal(rows[1].rowId, recorder.events.filter((event) => event.type === "message.final").at(-1)?.rowId);
+    assert.notEqual(rows[1].rowId, streamed[0]);
+  } finally {
+    await world.close();
+  }
+});

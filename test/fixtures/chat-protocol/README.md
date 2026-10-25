@@ -56,6 +56,11 @@ fixtures pin these details:
 - `tool.call {callId, name, widget?: {connectionId, toolName, arguments}}`.
 - `tool.result {callId, name, isError, searchResults?}`.
 - `row {row}` carries a full row object as above.
+- `row.removed {rowId}`: drop that row. It names an assistant row the app already streamed
+  (`message.delta`, `message.final`) and that Pi then hid from the model: an attempt Pi retried by
+  itself after a cut stream or a length stop. It comes after the retry begins, and the answer that
+  follows streams under the next row id (`<turnId>:a<n+1>`), so ids never move. A rebuilt page
+  simply lacks the row. Nothing else removes a row.
 - `input.requested {requestId, kind: "question", prompt, options, allowFreeform}` and
   `input.resolved {requestId}`.
 - `compaction.done {rowId}` follows a `row` event carrying the compaction note.

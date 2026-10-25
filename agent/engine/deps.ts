@@ -45,12 +45,12 @@ export function currentChatInShell(botId: string): string | null {
   return peekShell()?.bots.find((item) => item.id === botId)?.chatId ?? null;
 }
 
-/** How long the engine waits for the shell lock before parking the write (see CurrentChat). */
-const SHELL_WAIT_MS = 50;
+/** How long the engine waits for a store lock (the shell file, the routines file) before failing or parking the write. */
+const LOCK_WAIT_MS = 50;
 
 /** Makes a chat the bot's current one (or none) under the shell lock. Throws `shell_store_busy` when the lock stays held. */
 export function setCurrentChatInShell(botId: string, chatId: string | null, preview: string): void {
-  const written = tryUpdateShell((store) => setBotChat(store, botId, chatId, preview, new Date().toISOString()), SHELL_WAIT_MS);
+  const written = tryUpdateShell((store) => setBotChat(store, botId, chatId, preview, new Date().toISOString()), LOCK_WAIT_MS);
   if (!written) throw new Error("shell_store_busy");
 }
 
@@ -79,7 +79,11 @@ export async function loadDeps(): Promise<Deps> {
     widgetForCall: await seam("widgetForCall", async () => (await import("../../shared/mcp-apps.ts")).widgetForCall),
     listSkills: await seam("listSkills", async () => (await import("../lib/skills.ts")).listSkills),
     notesBlockFor: await seam("notesBlockFor", async () => (await import("../../shared/notes-block.ts")).notesBlockFor),
-    setRoutineChat: await seam("setRoutineChat", async () => (await import("../../shared/routines-store.ts")).setRoutineChat),
+    // The same short lock wait as the scheduler's own store calls: a busy store throws `routines_locked` instead of stalling the engine.
+    setRoutineChat: await seam("setRoutineChat", async () => {
+      const set = (await import("../../shared/routines-store.ts")).setRoutineChat;
+      return set && ((routineId: string, chatId: string | null) => { set(routineId, chatId, undefined, LOCK_WAIT_MS); });
+    }),
     parseTurnBody: await seam("parseTurnBody", async () => (await import("../../shared/turn-input.ts")).parseTurnBody),
     currentChat: currentChatInShell,
     setCurrentChat: setCurrentChatInShell,

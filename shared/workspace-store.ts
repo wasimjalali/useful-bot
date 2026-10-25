@@ -203,14 +203,19 @@ function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Locked read-modify-write; the web server and the agent both write. */
+/**
+ * Locked read-modify-write; the web server and the agent both write. A caller
+ * that must not stall passes a short `timeoutMs`; a lock still held then throws
+ * `workspace_locked`.
+ */
 export function updateWorkspaceStore(
   mutate: (store: WorkspaceStore) => WorkspaceStore,
   path = defaultWorkspacePath(),
+  timeoutMs = LOCK_TIMEOUT_MS,
 ): WorkspaceStore {
   const lock = `${path}.lock`;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   let held = false;
   while (!held) {
     try {
@@ -258,6 +263,7 @@ export function upsertSessionGrant(
   input: { chatId: string; path: string | null; permission: WorkspacePermission; selection?: ModelSelection },
   at = new Date(),
   path = defaultWorkspacePath(),
+  timeoutMs = LOCK_TIMEOUT_MS,
 ): void {
   // The grant is a filesystem capability, so it is validated here and not
   // only at the route: the engine stamps it from shell fields verbatim.
@@ -285,7 +291,7 @@ export function upsertSessionGrant(
       .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
       .slice(-GRANTS_MAX);
     return { ...store, grants };
-  }, path);
+  }, path, timeoutMs);
 }
 
 /** Detaching a folder must revoke the capability, not just the bot field. */

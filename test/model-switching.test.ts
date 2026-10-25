@@ -29,7 +29,8 @@ import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
 import { readSessionGrant, removeSessionGrant } from "../shared/workspace-store.ts";
 import { exactModelOption, snapComposer } from "../shared/models.ts";
 import { catalogFor } from "../shared/live-models.ts";
-import { ensureBotSelections, modelSelectionRefusal, restampWorkspaceGrants, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
+import { ensureBotSelections, restampWorkspaceGrants, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
+import { selectionRefusal } from "../agent/engine/selection-refusal.ts";
 import { applyProvidersDelete, applyProvidersPut, CONNECTION_REMOVED_BOTS_PINNED } from "../web/lib/providers-write.ts";
 import { windowFor } from "../shared/admission.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../shared/policy.ts";
@@ -272,11 +273,10 @@ test("a missing model or a removed connection refuses with model_selection_unava
 
     // A turn for a bot in this state is refused with the typed code and its plain sentence, never run on another model.
     const { aId, bId } = twoBots(gone, orphan, shell);
-    const refused = modelSelectionRefusal(readShell(shell).bots.find((bot) => bot.id === bId)!, store);
-    assert.equal(refused?.status, 409);
-    assert.deepEqual(await refused!.json(), { ok: false, error: "model_selection_unavailable", message: PLAIN_UNAVAILABLE });
-    assert.equal((await modelSelectionRefusal(readShell(shell).bots.find((bot) => bot.id === aId)!, store)!.json()).error, "model_selection_unavailable");
-    assert.equal(modelSelectionRefusal(readShell(shell).bots[0], store), null, "a bot with a listed model is not refused");
+    const refused = selectionRefusal(readShell(shell).bots.find((bot) => bot.id === bId)!, store);
+    assert.deepEqual(refused, { code: "model_selection_unavailable", message: PLAIN_UNAVAILABLE, status: 409 });
+    assert.equal(selectionRefusal(readShell(shell).bots.find((bot) => bot.id === aId)!, store)?.code, "model_selection_unavailable");
+    assert.equal(selectionRefusal(readShell(shell).bots[0], store), null, "a bot with a listed model is not refused");
   });
 });
 
@@ -375,13 +375,12 @@ test("fresh install: connecting a provider leaves a null bot inheriting the new 
     const before = readShell(shell).bots[0];
     assert.equal(before.model, null);
     assert.equal(effectiveDefault(readProviderStore()), null, "nothing usable to pin to yet");
-    const refusal = modelSelectionRefusal(before, readProviderStore());
+    const refusal = selectionRefusal(before, readProviderStore());
     assert.ok(refusal, "no connection: refused");
-    assert.equal(refusal.status, 409);
-    assert.deepEqual(await refusal.json(), {
-      ok: false,
-      error: "model_selection_unavailable",
+    assert.deepEqual(refusal, {
+      code: "model_selection_unavailable",
       message: "This bot's model or its connection is no longer available. Pick a model for it again.",
+      status: 409,
     });
 
     // Connect OpenAI (no botId): no pin, the bot follows the new default.
@@ -390,7 +389,7 @@ test("fresh install: connecting a provider leaves a null bot inheriting the new 
     assert.equal(after.model, null, "connect does not pin");
     assert.equal(botSelection(after, store).connectionId, OA);
     assert.deepEqual(botSelection(after, store), effectiveDefault(store));
-    assert.equal(modelSelectionRefusal(after, readProviderStore()), null, "the send goes through");
+    assert.equal(selectionRefusal(after, readProviderStore()), null, "the send goes through");
   }, { connections: {}, cache: {} });
 });
 
@@ -423,7 +422,7 @@ test("upgrade: a stored model missing from a live list resolves to the substitut
     const a = readShell(shell).bots.find((item) => item.id === aId)!;
     assert.equal(botSelection(a, store).modelId, oldChip.modelId);
     assert.equal(botSelection(a, store).effort, oldChip.effort);
-    assert.equal(modelSelectionRefusal(a, readProviderStore()), null, "a null bot still runs on the substitute");
+    assert.equal(selectionRefusal(a, readProviderStore()), null, "a null bot still runs on the substitute");
 
     applyProvidersPut({ botId: bId, modelId: `${OA}::gpt-4.1` });
     const pinned = readShell(shell).bots.find((item) => item.id === aId)!;

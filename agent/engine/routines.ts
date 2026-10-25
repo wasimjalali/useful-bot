@@ -18,12 +18,19 @@ import type { TurnResult } from "./pi-host.ts";
  * a note row first, an hour of budget and ten minutes without events.
  */
 
-/** The routine store calls the scheduler makes, so a test can make one of them fail. */
+type Claimed = { routine: Routine };
+
+/**
+ * The routine store calls the scheduler makes (also the seam a test uses to make
+ * one fail). The real ones wait at most `LOCK_WAIT_MS` for the store's lock, so
+ * a lock held for seconds by another process never stalls the engine.
+ */
 export type RoutineStore = {
-  pending: typeof pendingRoutines;
-  claimManual: typeof claimManualRun;
-  claimDue: typeof claimDueRoutine;
-  appendRun: typeof appendRoutineRun;
+  pending(now: Date): Routine[];
+  claimManual(id: string): Claimed | null;
+  claimDue(id: string, now: Date): Claimed | null;
+  claimRunNow(id: string): Claimed | null;
+  appendRun(id: string, run: { status: "ok" | "failed"; chatId?: string | null; error?: string }): unknown;
 };
 
 export type RoutineOptions = {
@@ -32,12 +39,17 @@ export type RoutineOptions = {
   budgetMs?: number;
   idleMs?: number;
   checkMs?: number;
+  /** Pause between tries to record a finished run while the store's lock is busy. */
+  recordRetryMs?: number;
   store?: Partial<RoutineStore>;
 };
 
-type Claimed = { routine: Routine };
+const DEFAULTS = { tickMs: 20_000, maxRunning: 4, budgetMs: 60 * 60_000, idleMs: 10 * 60_000, checkMs: 5_000, recordRetryMs: 250 };
+const LOCK_WAIT_MS = 50;
+/** 40 tries at the default pause is ten seconds of a busy lock before a finished run is given up on. */
+const RECORD_TRIES = 40;
 
-const DEFAULTS = { tickMs: 20_000, maxRunning: 4, budgetMs: 60 * 60_000, idleMs: 10 * 60_000, checkMs: 5_000 };
+const isLockBusy = (error: unknown): boolean => error instanceof Error && error.message === "routines_locked";
 
 function logFailure(event: string, fields: Record<string, unknown>, error: unknown): void {
   console.error(JSON.stringify({ event, ...fields, error: error instanceof Error ? (error.stack ?? error.message) : String(error) }));
@@ -55,7 +67,14 @@ export class RoutineScheduler {
     this.engine = engine;
     const { store, ...rest } = options;
     this.options = { ...DEFAULTS, ...rest };
-    this.store = { pending: pendingRoutines, claimManual: claimManualRun, claimDue: claimDueRoutine, appendRun: appendRoutineRun, ...store };
+    this.store = {
+      pending: (now) => pendingRoutines(now),
+      claimManual: (id) => claimManualRun(id, undefined, LOCK_WAIT_MS),
+      claimDue: (id, now) => claimDueRoutine(id, now, undefined, LOCK_WAIT_MS),
+      claimRunNow: (id) => claimRunNow(id, undefined, LOCK_WAIT_MS),
+      appendRun: (id, run) => appendRoutineRun(id, run, undefined, undefined, LOCK_WAIT_MS),
+      ...store,
+    };
   }
 
   start(): void {
@@ -99,8 +118,9 @@ export class RoutineScheduler {
       try {
         claimed = this.store.claimManual(routine.id) ?? this.store.claimDue(routine.id, now);
       } catch (error) {
-        // One routine whose claim fails must not starve the others.
         logFailure("routine_tick_failed", { routineId: routine.id }, error);
+        // A busy lock is the same for every routine: skip the rest of this tick. Any other failure belongs to this routine alone.
+        if (isLockBusy(error)) break;
         continue;
       }
       if (!claimed) continue;
@@ -117,7 +137,13 @@ export class RoutineScheduler {
   /** The owner's Run now: claims the routine and runs it in its chat. */
   runNow(routineId: string): { chatId: string; turnId: string | null; queued: boolean } {
     if (this.running.has(routineId)) throw new EngineError(409, "routine_busy");
-    const claimed = claimRunNow(routineId);
+    let claimed: Claimed | null;
+    try {
+      claimed = this.store.claimRunNow(routineId);
+    } catch (error) {
+      if (isLockBusy(error)) throw new EngineError(503, "routines_store_busy", { retryable: true });
+      throw error;
+    }
     if (!claimed) throw new EngineError(404, "routine_missing");
     try {
       return this.begin(claimed.routine);
@@ -138,12 +164,14 @@ export class RoutineScheduler {
     } else if (routine.chatId !== chatId) {
       this.engine.host.deps.setRoutineChat(routine.id, chatId);
     }
-    const chat = this.engine.host.chat(chatId);
     const stamp = this.engine.host.now().toISOString();
     const prompt = `Scheduled run of the routine ${routine.name}. Nobody is watching: do not ask questions or wait for cards.\n\n${routine.instruction}`;
-    // The note goes in once the run is admitted (a refused run did not "run"), and still just before the turn starts.
-    const submitted = this.engine.turns.submitInternal(chatId, "routine", `routine:${routine.id}:${stamp}`, prompt, () => {
-      chat.appendRow({ key: `note:routine-run-${routine.id}-${stamp}`, kind: "note", text: `Routine ${routine.name} ran.`, source: "routine" });
+    // The note is filed when the run's own turn starts, so a run that waits and is dropped never "ran", and the note carries that turn's id.
+    const submitted = this.engine.turns.submitInternal(chatId, "routine", `routine:${routine.id}:${stamp}`, prompt, {
+      key: `note:routine-run-${routine.id}-${stamp}`,
+      kind: "note",
+      text: `Routine ${routine.name} ran.`,
+      source: "routine",
     });
     const finished = this.watch(routine, chatId, submitted.turnId, submitted.done);
     this.running.set(routine.id, finished);
@@ -165,10 +193,10 @@ export class RoutineScheduler {
     try {
       const result = await done;
       if (result.outcome === "completed") {
-        this.store.appendRun(routine.id, { status: "ok", chatId });
+        await this.record(routine, { status: "ok", chatId });
       } else {
         const error = result.failure?.detail ?? (result.outcome === "cancelled" ? "The run was stopped." : "The run failed.");
-        this.store.appendRun(routine.id, { status: "failed", chatId, error });
+        await this.record(routine, { status: "failed", chatId, error });
       }
     } catch (error) {
       // The run is over either way: a store that cannot record it is logged, not thrown into nowhere.
@@ -182,10 +210,25 @@ export class RoutineScheduler {
     const detail = error instanceof EngineError && typeof error.fields.message === "string"
       ? error.fields.message
       : error instanceof EngineError ? error.code : error instanceof Error ? error.message : String(error);
-    try {
-      this.store.appendRun(routine.id, { status: "failed", ...(chatId ? { chatId } : {}), error: detail });
-    } catch (recordError) {
+    this.record(routine, { status: "failed", ...(chatId ? { chatId } : {}), error: detail }).catch((recordError: unknown) => {
       logFailure("routine_run_record_failed", { routineId: routine.id, chatId }, recordError);
+    });
+  }
+
+  /**
+   * Writes a run into the routine's history. The first try is synchronous; a
+   * busy lock (another process holds the store) is retried without blocking the
+   * engine, because a finished run that is never recorded is a lost fact.
+   */
+  private async record(routine: Routine, run: { status: "ok" | "failed"; chatId?: string | null; error?: string }): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        this.store.appendRun(routine.id, run);
+        return;
+      } catch (error) {
+        if (!isLockBusy(error) || attempt >= RECORD_TRIES) throw error;
+        await new Promise<void>((resolve) => { setTimeout(resolve, this.options.recordRetryMs).unref(); });
+      }
     }
   }
 }

@@ -23,6 +23,8 @@ export type FakeReply =
   | { kind: "error"; status: number; code?: string; message?: string; retryAfterMs?: number; headers?: Record<string, string> }
   /** Streams `text`, then waits until the client goes away or `release()` is called. */
   | { kind: "stall"; text: string }
+  /** Streams `text`, then drops the connection mid-answer. */
+  | { kind: "cut"; text: string }
   /** Never answers until the client goes away. */
   | { kind: "hang" };
 
@@ -141,6 +143,12 @@ export async function startFakeRouter(): Promise<FakeRouter> {
     }
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
     sse(res, chunk({ role: "assistant", content: "" }));
+    if (next.kind === "cut") {
+      sse(res, chunk({ content: next.text }));
+      await sleep(30);
+      res.destroy();
+      return;
+    }
     if (next.kind === "text" || next.kind === "stall") {
       const parts = pieces(next.text, next.kind === "text" ? next.chunks ?? 1 : 2);
       for (const part of parts) {

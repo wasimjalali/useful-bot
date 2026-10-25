@@ -31,7 +31,9 @@ export const COMPACTION_NOTE = "Conversation compacted to fit the model's window
 /** What a pushed entry did to the row list, so the host can emit events. */
 export type RowChange =
   | { type: "added"; row: Row }
-  | { type: "updated"; row: Row };
+  | { type: "updated"; row: Row }
+  /** A row Pi hid from the model's context (an attempt it retried by itself): it leaves the rows too. */
+  | { type: "removed"; row: Row };
 
 type TurnState = {
   turnId: string;
@@ -73,6 +75,8 @@ export class RowBuilder {
   /** Rows in the order they happened. */
   readonly rows: Row[] = [];
   private readonly index = new Map<string, number>();
+  /** The session entry each assistant row came from, so a context edit that drops the entry can drop the row. */
+  private readonly entryRows = new Map<string, string>();
   /** Messages waiting behind a running turn: always shown last, and moved into `rows` when their turn starts. */
   private readonly pending: Row[] = [];
   private turn: TurnState | null = null;
@@ -132,6 +136,16 @@ export class RowBuilder {
     return { type: "added", row };
   }
 
+  private remove(rowId: string): RowChange[] {
+    const at = this.index.get(rowId);
+    if (at === undefined) return [];
+    const [row] = this.rows.splice(at, 1);
+    this.index.delete(rowId);
+    for (let next = at; next < this.rows.length; next += 1) this.index.set(this.rows[next].rowId, next);
+    for (const [entryId, mapped] of this.entryRows) if (mapped === rowId) this.entryRows.delete(entryId);
+    return [{ type: "removed", row }];
+  }
+
   push(entry: SessionEntry): RowChange[] {
     switch (entry.type) {
       case "message":
@@ -149,6 +163,11 @@ export class RowBuilder {
       }
       case "custom":
         return this.pushCustom(entry.customType, entry.data, entry.timestamp);
+      case "context_edit": {
+        // Only a drop (`replacement: null`) of an assistant message hides a row. The ids that follow keep counting, as the live stream does.
+        const rowId = entry.replacement === null ? this.entryRows.get(entry.targetId) : undefined;
+        return rowId ? this.remove(rowId) : [];
+      }
       default:
         return [];
     }
@@ -172,6 +191,7 @@ export class RowBuilder {
       turn.assistantCount += 1;
       turn.searchResults = [];
       const change = this.add(row);
+      if (change) this.entryRows.set(entry.id, row.rowId);
       return change ? [change] : [];
     }
     if (message.role === "toolResult" && turn && message.toolName === "web_search") {
