@@ -695,11 +695,6 @@ extension AppModel {
         return chatEntries.first { $0.recentId == recent.id }
     }
 
-    /// The open chat's title, for the header: "New chat" until it has a message.
-    var currentChatTitle: String {
-        chatEntries.first(where: \.isCurrent)?.title ?? ChatEntry.newChatTitle
-    }
-
     /// The open chat is working. Other chats show no mark until the engine
     /// reports them (PR 3).
     var currentChatWorking: Bool {

@@ -31,7 +31,7 @@ this file fixes structure, states and the contract with the backend.
 ```
 +-----------------+----------------------------------------------+
 | SIDEBAR 248pt   | STAGE                                        |
-|  search  new    |  header: chat title                          |
+|  search  new    |  header band (empty)                         |
 |  logo           |                                              |
 |  Routines       |  transcript                                  |
 |  Library        |                                              |
@@ -119,8 +119,8 @@ Library leaves this menu (3.2); the Connectors pill leaves the footer (3.2).
 
 ### 4.1 Header
 
-- Centered pill: the **chat title** only, no face ("New chat" in a new chat). Clicking the title
-  starts inline rename (same as the row menu).
+- Empty (owner, 2026-10-25): the chat title shows only in the sidebar, so the header band holds
+  nothing. It keeps its height for the window's top inset. Rename is in the row menu only.
 - No right-side control: the Bot pane toggle goes with the Bot pane.
 - The group avatar stack and group header go.
 
@@ -283,7 +283,7 @@ internal (SPEC 6.5) or as health and auth.
 ## 10. Removed UI (complete list)
 
 The Bot pane and its toggle; the Profile section (name, face color, role label); the mascot face
-in chat rows, the header pill, the working row and the empty chat; bot rail rows and pinned bot
+in chat rows, the header pill (the header is now empty), the working row and the empty chat; bot rail rows and pinned bot
 cards; sections, Unassigned and Hidden groups; row menu items Pin,
 Move, Hide, New section; New Bot button and the create-bot and create-group dialogs; group
 settings and members; the new-chat bot picker (`NewChatPickerView`); the onboarding "New bot" card;
@@ -309,10 +309,10 @@ chat. All in Useful Bot Dev with its one bot.
 
 | Screen | Before (today) | After (this spec) |
 |---|---|---|
-| Main window | bots in sections, bot in the header | chats by day with states, chat title in the header |
+| Main window | bots in sections, bot in the header | chats by day with states, empty header (the artboard's title pill is superseded by 4.1) |
 | Row menu | Pin, Move, Settings, Rename, Hide, Delete | Rename, Delete |
 | Delete confirm | "Delete bot" | "Delete this chat? This can't be undone." |
-| Rename | dialog | inline in the header |
+| Rename | dialog | inline in the sidebar row (the artboard's header rename is superseded by 4.1) |
 | Approval card | the other bot's name | "From another chat: TITLE", Open chat |
 | Routines | in each bot's pane | own page, one chat per routine, moved-routines notice |
 | Instructions and memory | the bot's Settings pane | Settings tab, no Profile |

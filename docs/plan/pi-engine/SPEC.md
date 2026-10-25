@@ -648,7 +648,7 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
   `SubagentCard.swift` (Core and App), `ChatAttribution.swift`, `AvatarStackView.swift`,
   `Threads.swift` except `defaultBotId`, and the eve-only tests (`app-map/swift.md` 7.1).
 - **UI:** everything in `UI.md`: the chat-first sidebar (fixed Routines, Library and Connectors
-  rows, chat list with per-chat state marks, row menu), chat header with the chat title, the
+  rows, chat list with per-chat state marks, row menu), an empty chat header, the
   Routines page on the stage, Settings > Instructions and memory in place of the Bot pane (notify
   moves to Settings > General), the search palette (Chats, Library, Routines), Settings > General >
   Earlier bots, the Connectors polish of `UI.md` 8b, and the removals of `UI.md` section 10.

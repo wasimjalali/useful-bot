@@ -399,25 +399,12 @@ struct ChatView: View {
 
     // MARK: - Header
 
-    /// The chat's title as a centered pill over a bare header. Renaming from
-    /// it comes with the engine swap.
+    /// An empty band over the transcript: the chat's title lives only in the
+    /// sidebar (owner, 2026-10-25). The band keeps the window's top inset.
     private func header(_ bot: ShellBot) -> some View {
-        Text(model.currentChatTitle)
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(Theme.C.ink)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .padding(.horizontal, 16)
-            .frame(height: 34)
-            .background(Theme.C.surface)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Theme.C.edge, lineWidth: 1))
-            .smShadow()
-            .padding(.horizontal, 56)
+        Color.clear
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 16)
             .frame(minHeight: DesignTokens.Space.chatHead)
-            .accessibilityIdentifier("chat-title")
     }
 
     // MARK: - Transcript
