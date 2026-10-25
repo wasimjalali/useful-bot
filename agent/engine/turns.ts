@@ -269,6 +269,7 @@ export class TurnRunner {
       assistantCount: 0,
       lastEventAt: Date.now(),
       thinkingEmittedAt: 0,
+      agentStarted: false,
       lastAssistant: null,
       userEmitted: false,
       done: input.done,
@@ -324,21 +325,22 @@ export class TurnRunner {
   // --- the run ------------------------------------------------------------------
 
   private async run(chat: ChatRuntime, turn: RunningTurn): Promise<void> {
-    let runError: unknown = null;
-    let runStarted = false;
+    let thrown: { error: unknown; refused: boolean } | null = null;
+    let prompting = false;
     try {
       const session = await chat.ensureSession(turn);
       if (turn.cancelRequested) return;
       const binding = { chatId: chat.chatId, turnId: turn.turnId, selection: turn.snapshot.selection };
       await turnBindings.run(binding, async () => {
-        runStarted = true;
+        prompting = true;
         await session.prompt(turn.spec.promptText, { images: turn.spec.images, expandPromptTemplates: false });
         await session.waitForIdle();
       });
     } catch (error) {
-      runError = { error, runStarted };
+      // Pi turned the prompt away before it ran anything: a refusal. Anything else is an engine error.
+      thrown = { error, refused: prompting && !turn.agentStarted };
     } finally {
-      await this.settle(chat, turn, runError as { error: unknown; runStarted: boolean } | null);
+      this.settle(chat, turn, thrown);
     }
   }
 
@@ -352,7 +354,7 @@ export class TurnRunner {
 
   // --- settle -------------------------------------------------------------------
 
-  private async settle(chat: ChatRuntime, turn: RunningTurn, thrown: { error: unknown; runStarted: boolean } | null): Promise<void> {
+  private settle(chat: ChatRuntime, turn: RunningTurn, thrown: { error: unknown; refused: boolean } | null): void {
     const ids = routerIds(chat.chatId, turn.turnId);
     let result: TurnResult;
     let failure: FailureData | null = null;
@@ -370,7 +372,7 @@ export class TurnRunner {
         : last?.errorMessage ?? "The turn failed.";
       const code = thrown && thrown.error instanceof EngineError
         ? thrown.error.code
-        : record?.code ?? (thrown && !thrown.runStarted ? "refused" : "engine_error");
+        : record?.code ?? (thrown?.refused ? "refused" : "engine_error");
       const detail = clip(record?.message ?? piMessage, 500) || "The turn failed.";
       failure = {
         turnId: turn.turnId,
@@ -388,7 +390,7 @@ export class TurnRunner {
     try {
       chat.syncRows();
       if (failure) chat.appendCustom(UB.failure, failure);
-      const outcome: TurnEndData["outcome"] = result.outcome === "failed" && thrown && !thrown.runStarted ? "refused" : result.outcome;
+      const outcome: TurnEndData["outcome"] = result.outcome === "failed" && thrown?.refused ? "refused" : result.outcome;
       chat.appendCustom(UB.turnEnd, { turnId: turn.turnId, outcome } satisfies TurnEndData);
     } catch (error) {
       console.error(JSON.stringify({ event: "settle_write_failed", chatId: chat.chatId, turnId: turn.turnId, error: error instanceof Error ? error.message : String(error) }));
@@ -522,6 +524,9 @@ export class TurnRunner {
     if (!turn) return;
     turn.lastEventAt = Date.now();
     switch (event.type) {
+      case "agent_start":
+        turn.agentStarted = true;
+        return;
       case "turn_start":
         this.activity(chat, turn, { kind: "thinking" }, true);
         return;

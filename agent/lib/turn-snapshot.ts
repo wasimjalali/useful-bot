@@ -50,9 +50,9 @@ export type SnapshotOptions = {
 
 /**
  * One consistent read for one turn: the providers store FIRST, then the
- * roster (the web process moves a pick in the shell before the default in the
+ * shell (the web process moves a pick in the shell before the default in the
  * store, so store-first never pairs a fresh default with a stale pin). Throws
- * when the roster is unreadable or no longer has the bot. The caller stamps the
+ * when the shell is unreadable or no longer has the bot. The caller stamps the
  * chat's workspace grant before this, because the grant is what the tools
  * enforce and so what the turn shows.
  */

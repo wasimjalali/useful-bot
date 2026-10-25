@@ -69,6 +69,8 @@ export type RunningTurn = {
   assistantCount: number;
   lastEventAt: number;
   thinkingEmittedAt: number;
+  /** Pi started the run (its `agent_start`): a rejection before this is a refusal, after it an engine error. */
+  agentStarted: boolean;
   lastAssistant: { stopReason?: string; errorMessage?: string } | null;
   userEmitted: boolean;
   done: Promise<TurnResult>;
@@ -254,6 +256,38 @@ export class ChatRuntime {
     return changes;
   }
 
+  /**
+   * The tool call with this id: from the calls seen since boot, else read off
+   * the branch (a widget row can be filed after a restart).
+   */
+  private callOf(callId: string): { turnId: string; widget: { connectionId: string; toolName: string } | null } | undefined {
+    const known = this.calls.get(callId);
+    if (known) return known;
+    const live = this.live;
+    if (!live) return undefined;
+    const branch = live.sm.getBranch();
+    for (let at = branch.length - 1; at >= 0; at -= 1) {
+      const entry = branch[at];
+      if (entry.type !== "message") continue;
+      const message = entry.message as unknown as { role?: string; content?: unknown };
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      const block = (message.content as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> }[])
+        .find((item) => item.type === "toolCall" && item.id === callId);
+      if (!block || typeof block.name !== "string") continue;
+      let turnId = "";
+      for (let back = at; back >= 0; back -= 1) {
+        const earlier = branch[back];
+        if (earlier.type === "custom" && earlier.customType === UB.turnStart) {
+          turnId = (earlier.data as { turnId: string }).turnId;
+          break;
+        }
+      }
+      const widget = this.host.deps.widgetForCall(block.name, block.arguments ?? {});
+      return { turnId, widget: widget ? { connectionId: widget.connectionId, toolName: widget.toolName } : null };
+    }
+    return undefined;
+  }
+
   /** The todo list follows the branch: it is the last `todo` result on it, or empty (Pi's pattern for tool state). */
   restoreTodos(): void {
     const live = this.live;
@@ -294,7 +328,8 @@ export class ChatRuntime {
   appendRow(row: RowInput): boolean {
     const live = this.ensureLive();
     if (live.rows.keys.has(row.key)) return false;
-    const call = row.kind === "widget" ? this.calls.get(row.callId) : undefined;
+    const call = row.kind === "widget" ? this.callOf(row.callId) : undefined;
+    if (row.kind === "widget" && !call?.widget && !("connectionId" in row)) throw new EngineError(404, "widget_call_unknown");
     const filedIn = this.turn?.turnId ?? call?.turnId ?? null;
     // The app names the widget by its call; the row also says which connection and tool drew it.
     const filed = row.kind === "widget" && call?.widget ? { ...call.widget, ...row } : row;
@@ -373,7 +408,14 @@ export class ChatRuntime {
     live.session = session;
     live.systemPrompt = turn.systemPrompt;
     live.model = model;
-    live.unsubscribe = session.subscribe((event) => this.host.onSessionEvent?.(this, event));
+    live.unsubscribe = session.subscribe((event) => {
+      // A fault in our own bookkeeping must not break Pi's loop in the middle of a turn: it is logged, loudly.
+      try {
+        this.host.onSessionEvent?.(this, event);
+      } catch (error) {
+        console.error(JSON.stringify({ event: "session_event_failed", chatId: this.chatId, type: event.type, error: error instanceof Error ? (error.stack ?? error.message) : String(error) }));
+      }
+    });
     return session;
   }
 

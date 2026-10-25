@@ -129,7 +129,7 @@ test("instructions over the cap and a window that cannot hold the envelope are r
   }
 });
 
-test("a bot that is not in the roster is refused, and so is a chat that is not in the index", async () => {
+test("a bot that does not exist is refused, and so is a chat that is not in the index", async () => {
   const world = await makeWorld();
   try {
     const chatId = world.newChat();

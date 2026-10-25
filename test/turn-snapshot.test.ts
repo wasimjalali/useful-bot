@@ -105,7 +105,7 @@ test("This chat shows the permission and folder the chat's grant gives, which is
   });
 });
 
-test("a bot that is gone, or a roster that cannot be read, is an error and never a guess", async () => {
+test("a bot that is gone, or a shell that cannot be read, is an error and never a guess", async () => {
   await withWorld(() => {
     assert.throws(() => buildSnapshot("bot-nobody", "chat-1", "t1"), /bot_missing/);
     assert.throws(() => buildSnapshot(DEFAULT_BOT_ID, "chat-1", "t1", { reads: { store: () => { throw new Error("store_unreadable"); }, shell: () => null } }), /store_unreadable/);

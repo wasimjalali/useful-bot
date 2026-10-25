@@ -108,7 +108,8 @@ const ROW_KINDS = {
   note: ["text"],
   image: ["imageId"],
   page: ["mediaId", "title", "path"],
-  widget: ["widgetId", "callId", "connectionId", "toolName"],
+  // The engine knows which connection and tool the call was; the web service names only the call.
+  widget: ["widgetId", "callId"],
   card: ["proposalId"],
 } as const;
 
