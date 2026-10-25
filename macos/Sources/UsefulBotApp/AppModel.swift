@@ -443,6 +443,8 @@ final class AppModel: ObservableObject {
     private var retryNotBefore: Date?
     /// Chats the engine said it does not have.
     private var goneChatIds: Set<String> = []
+    /// Chats whose delete was sent and not yet answered.
+    private var deletingChatIds: Set<String> = []
     /// Each chat's newest turn id as of the last status read, for the
     /// notification. Nil until the first read, which only sets the baseline.
     private var lastTurnIds: [String: String]?
@@ -852,7 +854,9 @@ final class AppModel: ObservableObject {
     /// New chat (⌘N, the pencil). An empty chat already is one, so it only
     /// gets the caret.
     func newChatOrFocusComposer() {
-        if stage == .chat, transcriptReady, !hasThreadContent, !pending {
+        // A gone chat looks empty, but it refuses every send.
+        let gone = currentChatId.map { goneChatIds.contains($0) } ?? false
+        if stage == .chat, transcriptReady, !hasThreadContent, !pending, !gone {
             requestComposerFocus()
         } else {
             startNewChatNow()
@@ -974,7 +978,11 @@ final class AppModel: ObservableObject {
                 // A gone chat refuses every send, and New chat on its empty
                 // screen only focused the composer: the owner was stuck. The
                 // screen becomes a new chat, so the next message starts one.
-                if chatId == currentChatId { openChat(nil) }
+                // Not off the chat screen (that would pull the owner off
+                // their page; New chat leaves a gone chat instead), and not
+                // while a delete of it is in flight: the delete opens the
+                // chat the engine picks next.
+                if chatId == currentChatId, stage == .chat, !deletingChatIds.contains(chatId) { openChat(nil) }
                 transcriptReady = true
                 threadError = BackendError.chatCopy(code)
                 return
@@ -1129,8 +1137,10 @@ final class AppModel: ObservableObject {
     func deleteChat(_ chatId: String) {
         guard canDeleteChat(chatId) else { return }
         let wasOpen = chatId == currentChatId
+        deletingChatIds.insert(chatId)
         enqueue { [weak self] in
             guard let self else { return }
+            defer { self.deletingChatIds.remove(chatId) }
             do {
                 let current = try await self.client.deleteChat(chatId)
                 self.chats.removeAll { $0.chatId == chatId }
