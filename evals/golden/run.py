@@ -63,7 +63,8 @@ def refusal_code(r):
     """The refusal code of an action result, or None. cua-driver 0.38 puts it at the top level next to
     effect "refused"; older versions nested it under "refusal" or set status "refused"."""
     if r.get("refusal"):
-        return r["refusal"].get("code") or "refused"
+        ref = r["refusal"]
+        return (ref.get("code") if isinstance(ref, dict) else None) or "refused"
     if r.get("effect") == "refused" or r.get("status") == "refused":
         return r.get("code") or "refused"
     return None
@@ -533,6 +534,8 @@ def clear_composer(drv):
     snap = drv.snapshot()
     el = composer(snap)
     r = drv.set_value(el, "")
+    if refusal_code(r):
+        raise RuntimeError(f"set_value refused: {r}")
     time.sleep(0.4)
     snap = drv.snapshot()
     el2 = composer(snap)
