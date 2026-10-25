@@ -158,8 +158,8 @@ the owner name), new `App/RoutinesPage.swift` (`UI.md` 5, built from the routine
 routing; `ConnectorsDialog` and `ConnectorDetailPage` polish of `UI.md` 8b), `App/PickerViews.swift`
 (Chats, Library, Routines tabs), `App/SettingsPaneView.swift` (its instructions and memory sections
 move into the new Settings tab; the pane and its toggle go), `App/AppSettingsView.swift` (the
-Instructions and memory tab of `UI.md` 6, notify and Earlier bots in General, 220pt nav),
-`App/ChatView.swift` (title-only header, logo empty chat, dots working row, "From another chat"
+Instructions and memory tab of `UI.md` 6, notify and Earlier bots in General, 244pt nav so "Instructions and memory" fits on one line),
+`App/ChatView.swift` (empty header, logo empty chat, dots working row, "From another chat"
 approval label), `App/UsefulBotApp.swift` (⌘N and the other shortcuts of `UI.md` 11),
 `Core/BackendModels.swift` (`needsSignIn` on connected apps, `risk` on tools), and the Swift tests
 that cover these.
@@ -289,7 +289,8 @@ builds.
    `perf/config.json`, `perf/runner/perfguard.py` (rows marks, snapshot cases out, fixture check by
    entry count), `perf/README.md`, re-lock.
 3. `npm run build:dev-app`, `npm run install:dev-app` (shared resource, orchestrator only).
-4. E2E scenario of SPEC 14 through the heavy lock; artifacts in `verify/feat/pi-engine/`.
+4. E2E scenario of SPEC 14 through the heavy lock; artifacts in `verify/feat/pi-engine/`. It
+   includes reopening an older chat and finding its note rows and connect cards intact.
 5. Golden eval: the eve baseline runs on main before step 1, the Pi run here (owner approves the
    spend first). Write-up in `evals/results/`.
 6. `perf:check` baseline on the new engine; review budgets; commit the records.

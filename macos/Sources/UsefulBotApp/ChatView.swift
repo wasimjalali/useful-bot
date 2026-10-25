@@ -6,19 +6,14 @@ import UsefulBotCore
 /// 768pt column, empty state, proposal cards, composer.
 struct ChatView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.starterBotId) private var starterBotId
     @Environment(\.composerRisen) private var composerRisen
     @Environment(\.connectModel) private var connectModel
     @Environment(\.noModelPreview) private var noModelPreview
-    /// Starters are for a first conversation: gone for good once the owner
-    /// has sent a message from this app.
-    @AppStorage(StarterPrompt.sentKey) private var firstMessageSent = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Measured width of the chat column, so user bubbles cap at 85% of the
     /// column rather than 85% of the wider scroll container.
     @State private var columnWidth: CGFloat = 720
-    @State private var infoButtonFrame = CGRect.zero
     /// True while the transcript rests at its newest turn. Auto-scroll only
     /// fires then: streaming replies append below and stay pinned, while a
     /// scroll-up into history never yanks the reader back down.
@@ -33,7 +28,7 @@ struct ChatView: View {
     /// durable reload changes the list underneath them.
     @State private var holdingReplyAnchor = false
     /// The chat whose transcript rests at its newest turn. Until it names the
-    /// open chat, the transcript lays out hidden under the mascot, so a chat
+    /// open chat, the transcript lays out hidden under the loader, so a chat
     /// never opens in the middle of its history while the replay settles.
     /// Keyed by chat rather than a flag, so a switch reads as not landed from
     /// its first frame instead of once the mount's task has run.
@@ -42,20 +37,20 @@ struct ChatView: View {
     /// plain object so the pin tracker's per-frame writes do not re-render
     /// the chat.
     @State private var scrollProbe = ScrollProbe()
-    /// The restored chat whose reload is slow to confirm its rows: the mascot
+    /// The restored chat whose reload is slow to confirm its rows: the loader
     /// comes back rather than a blank pane. Keyed by chat, so a chat left
-    /// before it landed cannot hand its mascot to the next one.
+    /// before it landed cannot hand its loader to the next one.
     @State private var slowRestoreBotId: String?
-    /// How long a stalled replay may keep the mascot up before the rows on
+    /// How long a stalled replay may keep the loader up before the rows on
     /// hand are shown anyway. A healthy replay lands well inside it: the
-    /// mascot stays until the newest turn is in, because rows shown before
+    /// loader stays until the newest turn is in, because rows shown before
     /// then are replaced underneath the reader.
     private static let landingCap: TimeInterval = 10
     /// How long a restored chat waits for its reload with nothing on screen.
     /// The reload's answer (a durable read, a one-file probe, whatever the
     /// session gained since the snapshot) takes about 70 ms, but its reply
     /// can queue behind the transcript's own build on the main thread; one
-    /// still missing after this gets the mascot until it is in, so a chat
+    /// still missing after this gets the loader until it is in, so a chat
     /// that gained a turn opens on it rather than showing it arrive.
     private static let resumeConfirmWait: TimeInterval = 0.6
     private static var fastLanding: Bool {
@@ -75,126 +70,108 @@ struct ChatView: View {
     @State private var gatingBotId: String?
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                if let bot = model.selectedBot {
-                    // The header floats: the transcript runs under it, and
-                    // only the bot's pill and the panel control sit on top.
-                    ZStack(alignment: .top) {
-                    if model.hasThreadContent || model.pending {
-                        // Put back from a snapshot or a stash: it lands within
-                        // a few frames, so the mascot would only flash and the
-                        // fade would only delay it. macOS 14 has no scroll
-                        // geometry to land it that fast and keeps both.
-                        let restored = model.restoredFromCache && Self.fastLanding
-                        // A chat known to be empty that the owner has just
-                        // sent into has nothing to wait for: its only rows are
-                        // the send's own. It shows them from its first frame,
-                        // with no mascot and no fade; the mascot used to wave
-                        // for a fifth of a second between the empty state and
-                        // the owner's message.
-                        // Decided when the chat mounted: a send made while a
-                        // first load's gate is running waits for that gate.
-                        // Read live, the load finishing mid-gate flipped it and
-                        // showed the rows before their geometry settled.
-                        let landed = landedBotId == bot.id || (sentIntoReadyChat && gatingBotId != bot.id)
-                        transcript(bot)
-                            // The landing belongs to this mount. Without this a
-                            // chat left for an empty one, or remounted before
-                            // its replay, came back shown before it landed.
-                            .onDisappear {
-                                if landedBotId == bot.id { landedBotId = nil }
-                                if gatingBotId == bot.id { gatingBotId = nil }
-                            }
-                            // A new chat gets a new scroll view. Reusing one
-                            // across bots hands the next chat the offset the
-                            // last one was left at, which then has to be
-                            // corrected on screen.
-                            .id(bot.id)
-                            // Only the opacity fades. An animation on the whole
-                            // transaction also animated any layout still moving
-                            // in it, and the rows drifted while they faded in.
-                            .animation(restored ? nil : .easeOut(duration: 0.15)) {
-                                $0.opacity(landed ? 1 : 0)
-                            }
-                            .accessibilityHidden(!landed)
-                            .overlay {
-                                ZStack { if !landed, !restored || slowRestoreBotId == bot.id { loadingState } }
-                                    // A restored chat's rows show at once, so
-                                    // its mascot must not fade out over them.
-                                    // A slow one fades, so a confirmation just past
-                                    // the wait does not pop the mascot for a frame.
-                                    .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landed)
-                            }
-                    } else if model.transcriptReady {
-                        emptyState(bot)
-                            // The transcript's landing never mounts for a chat
-                            // with no rows; the performance guard's wait ends here.
-                            .task(id: bot.id) {
-                                PerfHarness.shared?.landed(botId: bot.id, reason: "empty", stats: model.perfStats)
-                            }
-                    } else {
-                        loadingState
-                    }
-                        header(bot)
-                    }
-                    // While the first load is still in flight the mascot waves
-                    // in the middle of the chat: the empty copy belongs to a
-                    // chat that is known empty, and flashing it in front of a
-                    // history that arrives a moment later reads as a jump.
-                    // Anything the bot needs an answer to docks here, between
-                    // the transcript and the composer, so the question sits
-                    // where the reply is typed instead of scrolling away.
-                    // Hangs above the column from a line of no height, so it
-                    // floats over the transcript's bottom edge and never takes
-                    // the transcript's height the way the banner did.
-                    Color.clear
-                        .frame(height: 0)
-                        .frame(maxWidth: .infinity)
-                        .overlay(alignment: .bottom) {
-                            if let note = model.threadError ?? model.saveError {
-                                ComposerNote(
-                                    text: note,
-                                    // A rail write that failed has nothing to re-read.
-                                    reload: model.threadError != nil ? { model.reloadFromNote() } : nil
-                                ) { model.dismissNote() }
-                                    .frame(maxWidth: DesignTokens.Space.chatColumnMax)
-                                    .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
-                                    .padding(.bottom, 8)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .transition(.opacity)
-                            }
+        VStack(spacing: 0) {
+            if let bot = model.selectedBot {
+                // The header floats: the transcript runs under it, and
+                // only the bot's pill and the panel control sit on top.
+                ZStack(alignment: .top) {
+                if model.hasThreadContent || model.pending {
+                    // Put back from a snapshot or a stash: it lands within
+                    // a few frames, so the loader would only flash and the
+                    // fade would only delay it. macOS 14 has no scroll
+                    // geometry to land it that fast and keeps both.
+                    let restored = model.restoredFromCache && Self.fastLanding
+                    // A chat known to be empty that the owner has just
+                    // sent into has nothing to wait for: its only rows are
+                    // the send's own. It shows them from its first frame,
+                    // with no loader and no fade; the loader used to show
+                    // for a fifth of a second between the empty state and
+                    // the owner's message.
+                    // Decided when the chat mounted: a send made while a
+                    // first load's gate is running waits for that gate.
+                    // Read live, the load finishing mid-gate flipped it and
+                    // showed the rows before their geometry settled.
+                    let landed = landedBotId == bot.id || (sentIntoReadyChat && gatingBotId != bot.id)
+                    transcript(bot)
+                        // The landing belongs to this mount. Without this a
+                        // chat left for an empty one, or remounted before
+                        // its replay, came back shown before it landed.
+                        .onDisappear {
+                            if landedBotId == bot.id { landedBotId = nil }
+                            if gatingBotId == bot.id { gatingBotId = nil }
                         }
-                        .zIndex(1)
-                    askColumn(bot)
-                    composerColumn(bot)
-                } else if let note = model.threadError ?? model.saveError {
-                    // No bot to chat with (the last one was deleted, or the
-                    // first create failed): the note still says what went wrong.
-                    Spacer(minLength: 0)
-                    ComposerNote(text: note) { model.dismissNote() }
-                        .frame(maxWidth: DesignTokens.Space.chatColumnMax)
-                        .padding(DesignTokens.Space.chatColumnPadding)
+                        // A new chat gets a new scroll view. Reusing one
+                        // across bots hands the next chat the offset the
+                        // last one was left at, which then has to be
+                        // corrected on screen.
+                        .id(bot.id)
+                        // Only the opacity fades. An animation on the whole
+                        // transaction also animated any layout still moving
+                        // in it, and the rows drifted while they faded in.
+                        .animation(restored ? nil : .easeOut(duration: 0.15)) {
+                            $0.opacity(landed ? 1 : 0)
+                        }
+                        .accessibilityHidden(!landed)
+                        .overlay {
+                            ZStack { if !landed, !restored || slowRestoreBotId == bot.id { loadingState } }
+                                // A restored chat's rows show at once, so
+                                // its loader must not fade out over them.
+                                // A slow one fades, so a confirmation just past
+                                // the wait does not pop the loader for a frame.
+                                .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landed)
+                        }
+                } else if model.transcriptReady {
+                    emptyState
+                        // The transcript's landing never mounts for a chat
+                        // with no rows; the performance guard's wait ends here.
+                        .task(id: bot.id) {
+                            PerfHarness.shared?.landed(botId: bot.id, reason: "empty", stats: model.perfStats)
+                        }
+                } else {
+                    loadingState
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if model.settingsOpen, let bot = model.selectedBot {
-                SettingsPaneView(bot: bot)
-                    .dismissOnOutsideClick(triggers: { [infoButtonFrame] }) {
-                        model.settingsOpen = false
+                    header(bot)
+                }
+                // While the first load is still in flight the loader shows
+                // in the middle of the chat: the empty copy belongs to a
+                // chat that is known empty, and flashing it in front of a
+                // history that arrives a moment later reads as a jump.
+                // Anything the bot needs an answer to docks here, between
+                // the transcript and the composer, so the question sits
+                // where the reply is typed instead of scrolling away.
+                // Hangs above the column from a line of no height, so it
+                // floats over the transcript's bottom edge and never takes
+                // the transcript's height the way the banner did.
+                Color.clear
+                    .frame(height: 0)
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .bottom) {
+                        if let note = model.threadError ?? model.saveError {
+                            ComposerNote(
+                                text: note,
+                                // A rail write that failed has nothing to re-read.
+                                reload: model.threadError != nil ? { model.reloadFromNote() } : nil
+                            ) { model.dismissNote() }
+                                .frame(maxWidth: DesignTokens.Space.chatColumnMax)
+                                .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
+                                .padding(.bottom, 8)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .transition(.opacity)
+                        }
                     }
-                    .onExitCommand(perform: closePanes)
-            }
-
-            if model.detailsOpen, let bot = model.selectedBot {
-                ChatDetailsPaneView(bot: bot)
-                    .dismissOnOutsideClick(triggers: { [infoButtonFrame] }) {
-                        model.detailsOpen = false
-                    }
-                    .onExitCommand(perform: closePanes)
+                    .zIndex(1)
+                askColumn(bot)
+                composerColumn(bot)
+            } else if let note = model.threadError ?? model.saveError {
+                // No bot to chat with (the last one was deleted, or the
+                // first create failed): the note still says what went wrong.
+                Spacer(minLength: 0)
+                ComposerNote(text: note) { model.dismissNote() }
+                    .frame(maxWidth: DesignTokens.Space.chatColumnMax)
+                    .padding(DesignTokens.Space.chatColumnPadding)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.C.surface)
         .onReceive(NotificationCenter.default.publisher(for: .replyToMessage)) { note in
             guard let text = note.userInfo?["text"] as? String,
@@ -207,10 +184,6 @@ struct ChatView: View {
     /// visit. The transcript mounts on that send with its rows ready.
     private var sentIntoReadyChat: Bool {
         model.transcriptReady && model.pending && model.sentSinceOpen
-    }
-
-    private func closePanes() {
-        model.pane = .none
     }
 
     // MARK: - Asks
@@ -289,8 +262,23 @@ struct ChatView: View {
             // approval is the normal way this app works, and a yellow panel
             // over the composer reads as something having gone wrong.
             .foregroundStyle(Theme.C.inkMuted)
-            if let origin = item.originLabel(openBotId: model.selectedBotId) {
-                Text(origin)
+            if let origin = model.otherChat(for: item) {
+                HStack(spacing: 8) {
+                    Text("From another chat: \(origin.title)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkFaint)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Button("Open chat") { model.open(origin) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.C.ink)
+                        .pointerOnHover()
+                        .accessibilityIdentifier("approval-open-chat")
+                    Spacer(minLength: 0)
+                }
+            } else if model.approvalFromUnlistedChat(item) {
+                Text("From another chat")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkFaint)
             }
@@ -415,38 +403,12 @@ struct ChatView: View {
 
     // MARK: - Header
 
-    /// The bot as a centered pill over a bare header, and one quiet control
-    /// on the right that opens the bot's panel.
+    /// An empty band over the transcript: the chat's title lives only in the
+    /// sidebar (owner, 2026-10-25). The band keeps the window's top inset.
     private func header(_ bot: ShellBot) -> some View {
-        ZStack {
-            HStack(spacing: 8) {
-                BotAvatarView(bot: bot, size: 22)
-                Text(bot.name)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.C.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            .padding(.leading, 6)
-            .padding(.trailing, 14)
-            .frame(height: 34)
-            .background(Theme.C.surface)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Theme.C.edge, lineWidth: 1))
-            .smShadow()
-            .padding(.horizontal, 56)
-            HStack {
-                Spacer(minLength: 0)
-                NativeIconButton(systemImage: "sidebar.right", size: 32, iconSize: 15) {
-                    model.detailsOpen.toggle()
-                }
-                .help("Bot settings")
-                .accessibilityLabel("Bot settings")
-                .trackWindowFrame($infoButtonFrame)
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(minHeight: DesignTokens.Space.chatHead)
+        Color.clear
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: DesignTokens.Space.chatHead)
     }
 
     // MARK: - Transcript
@@ -523,7 +485,7 @@ struct ChatView: View {
         }
         pinnedToBottom = true
         // `slowRestoreBotId` stays set through the landing, so a slow
-        // chat's mascot fades out; the next landing clears it.
+        // chat's loader fades out; the next landing clears it.
         landedBotId = botId
         PerfHarness.shared?.landed(botId: botId, reason: reason, stats: model.perfStats)
         guard model.slimFirstPaint else { return }
@@ -746,7 +708,7 @@ struct ChatView: View {
                     probe: scrollProbe,
                     onDrift: { repinAfterBannerChange(proxy) }
                 ))
-                // The transcript lands hidden under the mascot and is shown
+                // The transcript lands hidden under the loader and is shown
                 // only once it rests at its newest turn. Rows on screen before
                 // the replay is in (the durable rows, a cached copy) are
                 // replaced by it, and the swap left the view mid-history, so
@@ -929,14 +891,11 @@ struct ChatView: View {
 
     // MARK: - Empty state
 
-    /// The brand wave while the first transcript load is in flight. The empty
-    /// copy is only for a chat known to be empty; before then the mascot marks
+    /// The loader while the first transcript load is in flight. The empty
+    /// copy is only for a chat known to be empty; before then the loader marks
     /// the wait so a cold open never reads as a blank pane.
     private var loadingState: some View {
-        ZStack {
-            LoadingRing(size: 84)
-            BrandMotionView(size: 56)
-        }
+        DotsRing(size: 28)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .transition(.opacity)
             .accessibilityElement(children: .ignore)
@@ -944,39 +903,36 @@ struct ChatView: View {
     }
 
     @ViewBuilder
-    private func emptyState(_ bot: ShellBot) -> some View {
+    private var emptyState: some View {
         // Not under the no-model bar: a tap would fill a composer that can't send.
-        if bot.id == starterBotId, !firstMessageSent,
-           !(model.noModelConnected || noModelPreview) {
-            starters(bot)
-        } else if model.noModelConnected || noModelPreview {
-            connectFirst(bot)
+        if model.noModelConnected || noModelPreview {
+            connectFirst
         } else {
-            plainEmptyState(bot)
+            starters
         }
     }
 
-    /// The first chat's empty state: six things a local Mac agent does that
-    /// people may not expect, two of them making more bots. A tap fills the
-    /// composer with the full prompt and sends nothing; the tiles step back
-    /// while the composer holds text.
-    private func starters(_ bot: ShellBot) -> some View {
+    /// A new chat: the logo, what Useful Bot does and three things to start
+    /// from. A tap fills the composer with the full prompt and sends nothing;
+    /// the chips step back while the composer holds text.
+    private var starters: some View {
         let typing = !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("What should we do first?")
-                    .font(.system(size: 22, weight: .semibold))
-                    .tracking(DesignTokens.Tracking.heading * 22)
-                    .foregroundStyle(Theme.C.ink)
-                Text("\(bot.name) can research, write and work with files for you.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.inkMuted)
-            }
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                ForEach(StarterPrompt.all) { prompt in
+        return VStack(spacing: 14) {
+            BrandAvatarView(size: 56)
+            Text("What should we do first?")
+                .font(.system(size: 22, weight: .semibold))
+                .tracking(DesignTokens.Tracking.heading * 22)
+                .foregroundStyle(Theme.C.ink)
+            Text("Useful Bot can research, write, work with files and run routines for you.")
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.C.inkMuted)
+                .multilineTextAlignment(.center)
+            WrapHStack(spacing: 8, centered: true) {
+                ForEach(StarterPrompt.first) { prompt in
                     StarterPromptButton(text: prompt.label) { model.fillDraft(prompt.prompt) }
                 }
             }
+            .padding(.top, 6)
             // Faded, not removed, so the heading above doesn't move.
             .opacity(typing ? 0 : 1)
             .allowsHitTesting(!typing)
@@ -985,19 +941,18 @@ struct ChatView: View {
         }
         .frame(maxWidth: DesignTokens.Space.bubbleMax)
         .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
+        .padding(.bottom, 40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// A chat with nothing to answer it yet: one thing to do, and what the bot
-    /// can do once it can. The tiles are a preview, not buttons: a tap would
+    /// can do once it can. The chips are a preview, not buttons: a tap would
     /// fill a composer that can't send.
-    private func connectFirst(_ bot: ShellBot) -> some View {
+    private var connectFirst: some View {
         VStack(spacing: 28) {
             VStack(spacing: 10) {
-                BotFaceView(color: BrandAssets.colorID(for: bot), size: 64)
-                    .frame(width: 64, height: 64)
+                BrandAvatarView(size: 56)
                     .padding(.bottom, 6)
-                    .accessibilityHidden(true)
                 Text(model.noModelRetiredSentence == nil ? "Connect a model to start" : "Your connection was turned off")
                     .font(.system(size: DesignTokens.FontSize.emptyTitle, weight: .semibold))
                     .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
@@ -1012,58 +967,22 @@ struct ChatView: View {
                 .padding(.top, 6)
                 .accessibilityIdentifier("no-model-connect")
             }
-            if bot.id == starterBotId {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Then try")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.C.inkFaint)
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                        ForEach(StarterPrompt.all) { prompt in
-                            StarterPromptButton(text: prompt.label) {}
-                        }
+            VStack(spacing: 10) {
+                Text("Then try")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.C.inkFaint)
+                WrapHStack(spacing: 8, centered: true) {
+                    ForEach(StarterPrompt.first) { prompt in
+                        StarterPromptButton(text: prompt.label) {}
                     }
-                    .allowsHitTesting(false)
-                    .opacity(0.6)
                 }
+                .allowsHitTesting(false)
+                .opacity(0.6)
             }
         }
         .frame(maxWidth: DesignTokens.Space.bubbleMax)
         .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func plainEmptyState(_ bot: ShellBot) -> some View {
-        VStack(spacing: 8) {
-            BotFaceView(color: BrandAssets.colorID(for: bot), size: 64)
-                .frame(width: 64, height: 64)
-                .padding(.bottom, 8)
-                .accessibilityHidden(true)
-            Text("What can I do for you?")
-                .font(.system(size: DesignTokens.FontSize.emptyTitle, weight: .semibold))
-                .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
-                .foregroundStyle(Theme.C.ink)
-            everydayPrompts
-                .padding(.top, 20)
-        }
-        .padding(.horizontal, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// Four everyday things to start from. A tap fills the composer and sends
-    /// nothing; like the first chat's starters, the tiles step back while the
-    /// composer holds text.
-    private var everydayPrompts: some View {
-        let typing = !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-            ForEach(StarterPrompt.everyday) { prompt in
-                StarterPromptButton(text: prompt.label) { model.fillDraft(prompt.prompt) }
-            }
-        }
-        .frame(maxWidth: 560)
-        .opacity(typing ? 0 : 1)
-        .allowsHitTesting(!typing)
-        .accessibilityHidden(typing)
-        .animation(Theme.ease(0.2), value: typing)
     }
 
     // MARK: - Composer column
@@ -1313,32 +1232,6 @@ private struct ChatColumnWidthKey: PreferenceKey {
     }
 }
 
-/// A spinner arc circling the mascot while a chat loads, so the wait reads
-/// as work in progress. Held still when the owner asks for reduced motion.
-private struct LoadingRing: View {
-    let size: CGFloat
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var spinning = false
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Theme.C.edge, lineWidth: 2)
-            Circle()
-                .trim(from: 0, to: 0.28)
-                .stroke(Theme.C.inkMuted, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .rotationEffect(.degrees(spinning ? 360 : 0))
-                .animation(
-                    reduceMotion ? nil : .linear(duration: 0.9).repeatForever(autoreverses: false),
-                    value: spinning
-                )
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
-        .onAppear { spinning = true }
-    }
-}
-
 /// The centered date rule from the Grok Bot reference: "Today 5:10 PM".
 /// The row above a windowed transcript. Mounts the next stretch of history;
 /// `defaultScrollAnchor(.bottom)` keeps what was on screen in place while
@@ -1514,16 +1407,11 @@ struct TranscriptRowView: View, Equatable {
         case .note where row.connectedName != nil:
             connectedCard(name: row.connectedName ?? "")
         case .note:
-            // An event, not something said: one centered line with the
-            // face of whoever did it.
+            // An event, not something said: one centered line.
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    BotAvatarView(bot: bot, size: 16)
-                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
-                    Text(row.text)
-                        .multilineTextAlignment(.center)
-                }
+                Text(row.text)
+                    .multilineTextAlignment(.center)
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(maxWidth: max(160, maxBubbleWidth))
@@ -1680,10 +1568,9 @@ private struct WorkingRow: View {
         // Sits where the reply will, so the text does not jump sideways
         // when the first token lands.
         HStack(alignment: .center, spacing: 10) {
-            // The face is drawn a shade larger than a reply avatar, but its
-            // box is not, so the label keeps the reply's left edge. Its eyes
-            // say what the bot is doing; the label holds still.
-            BotFaceView(color: BrandAssets.colorID(for: bot), size: 28, pose: BotFacePose(activity: activity))
+            // The ring sits in the same box a reply avatar used to, so the
+            // label keeps the reply's left edge.
+            DotsRing(size: 18)
                 .frame(width: Self.height, height: Self.height)
             HStack(spacing: 8) {
                 if let connector {
@@ -1781,7 +1668,10 @@ private struct SearchChipView: View {
 }
 
 /// A minimal wrapping row so chips flow onto the next line like `flex-wrap`.
-struct WrapHStack: Layout {    var spacing: CGFloat = 8
+struct WrapHStack: Layout {
+    var spacing: CGFloat = 8
+    /// Each row sits in the middle of the width rather than at its start.
+    var centered = false
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let maxWidth = proposal.width ?? .infinity
@@ -1802,19 +1692,27 @@ struct WrapHStack: Layout {    var spacing: CGFloat = 8
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        // Rows first, so a centered row knows its own width.
+        var rows: [[(index: Int, size: CGSize)]] = [[]]
         var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-        for subview in subviews {
+        for (index, subview) in subviews.enumerated() {
             let size = subview.sizeThatFits(.unspecified)
             if x > bounds.minX, x + size.width > bounds.maxX {
                 x = bounds.minX
-                y += rowHeight + spacing
-                rowHeight = 0
+                rows.append([])
             }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            rows[rows.count - 1].append((index, size))
             x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
+        }
+        var y = bounds.minY
+        for row in rows {
+            let width = row.reduce(0) { $0 + $1.size.width } + spacing * CGFloat(max(0, row.count - 1))
+            var x = centered ? bounds.minX + max(0, (bounds.width - width) / 2) : bounds.minX
+            for item in row {
+                subviews[item.index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(item.size))
+                x += item.size.width + spacing
+            }
+            y += (row.map(\.size.height).max() ?? 0) + spacing
         }
     }
 }
@@ -2169,11 +2067,16 @@ private struct StarterPromptButton: View {
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.C.ink)
                 .multilineTextAlignment(.leading)
-                .padding(14)
-                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                .background(hovering ? Self.hover : Theme.C.sunken,
-                            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(hovering ? Theme.C.sunken : Theme.C.surface,
+                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                )
+                .smShadow()
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerOnHover()
@@ -2181,8 +2084,6 @@ private struct StarterPromptButton: View {
         .animation(Theme.ease(0.15), value: hovering)
         .accessibilityIdentifier("starter-prompt")
     }
-
-    private static let hover = Theme.adaptive(DesignTokens.Hex.border, DesignTokens.DarkHex.borderStrong)
 }
 
 /// One starter: the short label on the tile and the fuller prompt it puts in
@@ -2222,26 +2123,8 @@ struct StarterPrompt: Identifiable {
         ),
     ]
 
-    /// Any empty chat's tiles: two jobs worth handing over, the first step to
-    /// connecting apps and a routine, so the owner sees what's possible.
-    static let everyday = [
-        StarterPrompt(
-            label: "Sum up my inbox every morning",
-            prompt: "Go through my email every morning, sum up what needs me and show me draft replies here to review. Ask me what to watch for first."
-        ),
-        StarterPrompt(
-            label: "Write my social posts",
-            prompt: "Write my social media posts in my voice. Ask me about my audience, my topics and a few posts I like first, then draft them."
-        ),
-        StarterPrompt(
-            label: "How do I connect my apps?",
-            prompt: "How do I connect my apps, like Gmail, Calendar and Drive, so you can work in them?"
-        ),
-        StarterPrompt(
-            label: "Get a morning news brief every day",
-            prompt: "Every day at 8:00, post a short news brief here with sources on topics I pick. Ask me the topics first, then set it up as a routine."
-        ),
-    ]
+    /// The three an empty chat shows.
+    static var first: [StarterPrompt] { Array(all.prefix(3)) }
 }
 
 /// What eve is waiting on that is not a question: a session limit, an

@@ -213,6 +213,7 @@ private struct ConnectorsErrorResponse: Decodable { let error: String? }
 private struct RoutinesResponse: Decodable { let routines: [Routine]? }
 private struct RoutineResponse: Decodable { let routine: Routine? }
 private struct MemoryResponse: Decodable { let notes: [MemoryNote] }
+private struct MemoryTotalResponse: Decodable { let total: Int }
 private struct AttachmentResponse: Decodable {
     let name: String?
     let bytes: Int?
@@ -1371,6 +1372,25 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         return decoded.notes
+    }
+
+    /// `GET /api/memory?botId=` `total`: how many live notes the bot has, not
+    /// just the page the list shows.
+    public func memoryTotal(botId: String) async throws -> Int {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/memory"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        try Self.expectOK(data, response)
+        guard let decoded = try? JSONDecoder().decode(MemoryTotalResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.total
     }
 
     /// The JSON body of `DELETE /api/memory`.

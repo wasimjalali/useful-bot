@@ -87,7 +87,7 @@ struct ComposerView: View {
     private var placeholder: String {
         if replying != nil { return "Reply…" }
         if model.pendingRequests.contains(where: { !$0.options.isEmpty }) { return "Your message waits until you answer the card" }
-        return "Message \(bot.name)"
+        return "Message Useful Bot"
     }
 
     /// The reply chip belongs to the chat it was started in.
@@ -328,9 +328,13 @@ struct ComposerView: View {
                 canSend: { canSend },
                 pending: { model.pending },
                 onSend: { send() },
-                onFocusChange: { focused = $0 },
+                onFocusChange: {
+                    focused = $0
+                    model.composerFocused = $0
+                },
                 onDropFiles: { model.addAttachments($0) },
-                focusToken: model.composerFocusToken
+                focusToken: model.composerFocusToken,
+                takePendingFocus: { model.takeComposerFocusPending() }
             )
             .accessibilityLabel(placeholder)
         }

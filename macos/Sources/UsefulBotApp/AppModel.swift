@@ -62,12 +62,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var selectedBotId: String? {
-        // Opening a chat is reading its reply.
         didSet {
-            if let id = selectedBotId, replyReady.contains(id) { replyReady.remove(id) }
-            // Leaving a chat means its end wasn't seen, so a handoff ending
-            // after the switch still counts as an unread reply.
-            if selectedBotId != oldValue { selectedAtLastTick = nil }
             // The chip is per bot: show this bot's last read at once (or the
             // placeholder) and read the server's, never keep the last bot's.
             if selectedBotId != oldValue {
@@ -197,7 +192,9 @@ final class AppModel: ObservableObject {
     /// Operator identity plus build info for the settings dialog.
     @Published private(set) var appStatus: AppStatus?
     /// App settings dialog, opened from the rail account row or the composer.
-    @Published var appSettingsOpen = false
+    @Published var appSettingsOpen = false {
+        didSet { if appSettingsOpen { searchOpen = false } }
+    }
     @Published var appSettingsTab: AppSettingsTab = .general
     @Published private(set) var providers: [ProviderPublic]?
     @Published var providersError: String?
@@ -295,26 +292,31 @@ final class AppModel: ObservableObject {
         connectorKeyRejected,
     ]
 
-    /// Which inline pane is open. One value, so settings and the details pane
-    /// can never fight over the 320pt sidebar.
-    enum Pane: Equatable {
-        case none
-        case settings
-        case details
+    /// What the stage shows: a chat, or the Routines, Library or Connectors page.
+    enum Stage: Equatable {
+        case chat
+        case routines
+        case library
+        case connectors
     }
 
-    @Published var pane: Pane = .none {
+    /// A Library item the search palette picked: the page opens on its detail.
+    /// Published so a Library page already open picks it up too.
+    @Published var libraryFocusId: String?
+
+    @Published var stage: Stage = .chat {
         didSet {
-            // The pane opens on the list, never on the row it showed last time.
-            if pane != oldValue { closeRoutineDetail() }
-            if routinesVisible, let botId = selectedBotId {
+            // Every write is a navigation (a sidebar row, a page, a chat, New
+            // chat), the same stage included: the palette gives way to it.
+            searchOpen = false
+            guard stage != oldValue else { return }
+            // The page opens on the list, never on the row it showed last time.
+            if oldValue == .routines { closeRoutineDetail() }
+            if stage == .routines, let botId = selectedBotId {
                 Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
             }
         }
     }
-
-    /// Both inline panes list the bot's routines.
-    private var routinesVisible: Bool { pane == .details || pane == .settings }
 
     /// Routines for the open bot, plus the pane's own navigation state.
     @Published private(set) var routines: [Routine] = []
@@ -333,20 +335,6 @@ final class AppModel: ObservableObject {
     /// from. They outlive the editor and the window until saved or discarded.
     var instructionDrafts: [String: InstructionDraft] = [:]
 
-    /// The bot whose instructions the wide editor is open on, if any.
-    @Published var instructionsEditorBotId: String?
-
-    /// Inline settings pane, opened from the details pane's gear.
-    var settingsOpen: Bool {
-        get { pane == .settings }
-        set { pane = newValue ? .settings : (pane == .settings ? .none : pane) }
-    }
-
-    /// Inline chat details pane, toggled from the info button in the header.
-    var detailsOpen: Bool {
-        get { pane == .details }
-        set { pane = newValue ? .details : (pane == .details ? .none : pane) }
-    }
     /// ⌘K palette.
     @Published var searchOpen = false
     /// Composer draft is page-level on the web, so it survives a bot switch.
@@ -369,6 +357,39 @@ final class AppModel: ObservableObject {
     @Published var replyQuotes: [String: ReplyQuote] = [:]
     /// Bumped when Reply wants the caret in the composer.
     @Published private(set) var composerFocusToken: UInt64 = 0
+    /// A focus was asked for and no composer has taken it yet. A composer that
+    /// mounts afterwards (New chat from a page) reads it and takes the caret.
+    private var composerFocusPending = false
+
+    /// Ask for the caret in the composer, whether it is on screen yet or not.
+    func requestComposerFocus() {
+        composerFocusToken &+= 1
+        composerFocusPending = true
+    }
+
+    func takeComposerFocusPending() -> Bool {
+        defer { composerFocusPending = false }
+        return composerFocusPending
+    }
+    /// A chat the owner picked while a reply is coming in; the root view asks
+    /// "Leave this chat?" before it opens.
+    @Published var leaveChatTarget: ChatEntry? {
+        didSet { if leaveChatTarget != nil { searchOpen = false } }
+    }
+    /// The same ask for a new chat (⌘N, the pencil, the palette) while a reply is coming in.
+    @Published var leaveForNewChat = false {
+        didSet { if leaveForNewChat { searchOpen = false } }
+    }
+    /// The composer's text view is the focused control (set by the composer).
+    @Published var composerFocused = false
+
+    /// ⌘↑ and ⌘↓ switch chats only from an empty, focused composer on the chat
+    /// stage and while no turn runs. Anywhere else (another text field, a
+    /// composer with text) the key goes to the field and moves its caret, and
+    /// a turn in progress is not cut off by a switch.
+    var chatSwitchKeysEnabled: Bool {
+        stage == .chat && composerFocused && draft.isEmpty && !pending
+    }
     @Published var attachments: [Attachment] = []
     @Published var attachError: String?
 
@@ -426,14 +447,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var workingBotIds: Set<String> = []
     /// Handoff deliveries in flight on bots the owner is not looking at.
     @Published private(set) var handoffWorkingIds: Set<String> = []
-    /// Live activity of working bots the owner is not looking at, published
-    /// only when it changes. The selected bot's is `activity`.
-    @Published private(set) var backgroundActivities: [String: TurnActivity] = [:]
-    /// Unselected bots whose turn finished with a reply the owner has not
-    /// opened yet. In memory only.
-    @Published private(set) var replyReady: Set<String> = []
-    /// Bumped once per finished reply; the rail face hops on each change.
-    @Published private(set) var railHops: [String: Int] = [:]
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
     /// The newest session this app started, scoped to its bot so a Stop on
@@ -956,6 +969,7 @@ final class AppModel: ObservableObject {
 
     func select(_ botId: String, persist: Bool = true) {
         selectTick &+= 1
+        stage = .chat
         localOnlySelection = persist ? nil : botId
         guard botId != selectedBotId else {
             guard persist else { return }
@@ -1582,9 +1596,12 @@ final class AppModel: ObservableObject {
                 // by an idle poll that knows nothing new.
             }
             await refreshComposer()
-            // Only while the pane is open: a routine run that lands mid-poll
-            // has to show up without the owner reopening the pane.
-            if routinesVisible { await loadRoutines(botId: bot.id) }
+            // The sidebar's Routines badge reads it, so it stays fresh every
+            // 30 seconds; with the page open, a run that lands mid-poll has to
+            // show up on it without a reopen, so every tick.
+            if stage == .routines || routinesTick % 12 == 0 { await loadRoutines(botId: bot.id) }
+            routinesTick &+= 1
+            pollConnectorStates()
             pollAuthFailures = 0
         } catch let error as BackendError where error == .unauthorized {
             // Never leave the shell silently stuck on a rejected session.
@@ -1604,6 +1621,7 @@ final class AppModel: ObservableObject {
     private var polledOpenProposalIds: Set<String> = []
     private var polledTranscriptDay: Date?
     private var polledRoutinesDay: Date?
+    private var routinesTick = 0
 
     /// Bots whose last session pointer this app could not save.
     private var unsavedSessionBots: Set<String> = []
@@ -1652,11 +1670,6 @@ final class AppModel: ObservableObject {
                         let moved = self.handoffStartMarks[botId].map { $0 != now } ?? !now.preview.isEmpty
                         self.notifyTurnFinished(botId, failed: false, hasReply: moved && !now.preview.isEmpty)
                     }
-                    for botId in ended where botId != self.selectedBotId
-                        && botId != self.selectedAtLastTick
-                        && !self.workingBotIds.contains(botId) {
-                        self.markReplyReady(botId)
-                    }
                 }
                 for botId in next.subtracting(self.handoffWorkingIds) {
                     let bot = self.store?.bots.first { $0.id == botId }
@@ -1669,7 +1682,6 @@ final class AppModel: ObservableObject {
                 if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             }
             self.lastTickFailed = polled == nil
-            self.selectedAtLastTick = self.selectedBotId
             self.tickInFlight = false
         }
     }
@@ -2407,7 +2419,7 @@ final class AppModel: ObservableObject {
     func fillDraft(_ text: String) {
         draft = text
         draftWriteToken &+= 1
-        composerFocusToken &+= 1
+        requestComposerFocus()
     }
 
     /// Reply to a bot message: the chip goes above the composer of this chat
@@ -2417,7 +2429,7 @@ final class AppModel: ObservableObject {
         // before a selection is stored.
         guard botId == selectedBot?.id else { return }
         replyQuotes[botId] = ReplyQuote(botId: botId, text: text)
-        composerFocusToken &+= 1
+        requestComposerFocus()
     }
 
     /// Clear the composer only for the text and files this send owned, so
@@ -2554,23 +2566,11 @@ final class AppModel: ObservableObject {
         if next != workingBotIds { workingBotIds = next }
         if running, !wasWorking { turnStartedAt[botId] = Date() }
         if !running, runningModelLabels[botId] != nil { runningModelLabels[botId] = nil }
-        if running {
-            if replyReady.contains(botId) { replyReady.remove(botId) }
-        } else {
-            if backgroundActivities[botId] != nil { backgroundActivities[botId] = nil }
+        if !running {
             if wasWorking {
                 let proj = botId == selectedBotId ? projection : backgroundProjections[botId]
                 let hasReply = proj?.pending == false && proj?.messages.last?.role == .assistant
                 notifyTurnFinished(botId, failed: proj?.failed ?? false, hasReply: hasReply)
-            }
-            // A turn that ended with an assistant message and no failure. A
-            // stopped send drops its projection first, so it never counts; a
-            // stream that died mid-turn is still pending, so it doesn't either.
-            // A cancel that already streamed partial text still would.
-            if wasWorking, botId != selectedBotId,
-               let proj = backgroundProjections[botId],
-               !proj.pending, !proj.failed, proj.messages.last?.role == .assistant {
-                markReplyReady(botId)
             }
         }
     }
@@ -2601,30 +2601,9 @@ final class AppModel: ObservableObject {
         TurnNotifier.shared.post(botId: botId, botName: bot.name)
     }
 
-    /// A reply is waiting in a chat the owner isn't looking at: the rail face
-    /// hops once and the row reads "REPLY READY" until the chat is opened.
-    private func markReplyReady(_ botId: String) {
-        // One hop per unread reply: a second one landing before the chat is
-        // opened doesn't hop again.
-        guard replyReady.insert(botId).inserted else { return }
-        railHops[botId, default: 0] += 1
-    }
-
-    /// The chat on screen at the previous tick, cleared when the owner
-    /// switches. A handoff that ends between two ticks was seen if its bot
-    /// was open at the first and still is.
-    private var selectedAtLastTick: String?
     /// Whether the previous tick failed. The service being down shows as
     /// failed ticks, and its in-flight set comes back empty after a restart.
     private var lastTickFailed = false
-
-    /// The current step of a working bot, for the rail face and subtitle.
-    /// Nil when it is not tracked; the face then reads as thinking.
-    func railActivity(_ botId: String) -> TurnActivity? {
-        guard isWorking(botId) else { return nil }
-        if botId == selectedBotId { return activity }
-        return backgroundActivities[botId] ?? backgroundProjections[botId]?.activity
-    }
 
     func isWorking(_ botId: String) -> Bool {
         workingBotIds.contains(botId)
@@ -2647,9 +2626,6 @@ final class AppModel: ObservableObject {
         backgroundProjections[botId] = proj
         cacheUse[botId] = Date()
         persistNewWidgets(proj.widgets, botId: botId)
-        if proj.pending, backgroundActivities[botId] != proj.activity {
-            backgroundActivities[botId] = proj.activity
-        }
         markWorking(botId, proj.pending)
     }
 
@@ -2900,7 +2876,7 @@ final class AppModel: ObservableObject {
 
     /// How many blocks a restored chat mounts for its first frame. Building
     /// the full 60-block window is most of what a switch costs once the rows
-    /// come from a snapshot (about 150 ms on Generalist); the newest turn is
+    /// come from a snapshot (about 150 ms on a long chat); the newest turn is
     /// always whole whatever this says.
     private static let firstPaintBlocks = 14
     /// The first frame's share of history text: about one long answer above
@@ -3186,7 +3162,7 @@ final class AppModel: ObservableObject {
         connectorAppsLoading = true
         defer { connectorAppsLoading = false }
         guard let payload = try? await client.connectors(search: "", limit: 200) else { return }
-        connectorApps = payload.toolkits.filter(\.connected)
+        connectorApps = payload.toolkits.filter { $0.connected || $0.needsSignIn }
         connectorAppsFetched = true
     }
 
@@ -3809,11 +3785,12 @@ final class AppModel: ObservableObject {
     /// True when the disconnect call itself went through, whatever the reload after it did.
     @discardableResult
     func disconnectConnector(_ row: ConnectorToolkit, search: String) async -> Bool {
-        guard let accountId = row.accountId else { return false }
+        let accountIds = row.accountIds.isEmpty ? (row.accountId.map { [$0] } ?? []) : row.accountIds
+        guard !accountIds.isEmpty else { return false }
         connectorBusy = row.slug
         connectorsError = nil
         do {
-            try await client.disconnectConnector(accountId: accountId)
+            for accountId in accountIds { try await client.disconnectConnector(accountId: accountId) }
         } catch {
             connectorsError = "Could not disconnect \(row.name)."
             connectorBusy = nil
@@ -4245,6 +4222,7 @@ final class AppModel: ObservableObject {
     /// New chat from the rail: clear the thread server-side and start fresh.
     func startNewChat(botId: String? = nil) {
         guard let id = botId ?? selectedBotId else { return }
+        stage = .chat
         // Any in-flight turn on this bot would repopulate the cleared thread.
         // Other bots keep working.
         let runningSession = inflightSessions[id] ?? (activeSession?.botId == id ? activeSession?.sessionId : nil)
@@ -4296,15 +4274,14 @@ final class AppModel: ObservableObject {
             self.memoryNotes = nil
             self.memoryError = nil
             self.rebuildTranscript()
-            self.settingsOpen = false
-            self.detailsOpen = false
-            self.clearRoutineState()
+            self.closeRoutineDetail()
             // Reload outside the chain: an SSE replay must not block writes.
             self.startReload()
         }
     }
 
     func openRecent(_ recentId: String) {
+        stage = .chat
         // Opening an old session replaces the live one for this bot; other
         // bots keep working.
         if let id = selectedBotId {
@@ -4919,6 +4896,41 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Earlier bots (Settings > General)
+
+    /// The bots the one-bot migration archived, oldest first as stored.
+    var earlierBots: [ShellBot] {
+        store?.bots.filter { $0.kind == "bot" && $0.archived } ?? []
+    }
+
+    /// The live note count of an earlier bot.
+    func earlierBotNoteCount(_ botId: String) async throws -> Int {
+        try await client.memoryTotal(botId: botId)
+    }
+
+    /// Moves every note of an earlier bot to the one bot, then re-reads its list.
+    func moveEarlierBotNotes(_ botId: String) async throws {
+        let next = try await client.shellAction(ShellActions.moveNotes(fromBotId: botId))
+        applyStore(next)
+        if let selectedBotId { await loadMemory(botId: selectedBotId) }
+    }
+
+    /// An earlier bot that is removed but whose cleanup the server could not
+    /// finish. Its row is gone with the bot, so the group says it in a line.
+    struct UnfinishedRemoval: Identifiable, Equatable {
+        let id: String
+        let name: String
+    }
+    @Published var earlierBotsUnfinished: [UnfinishedRemoval] = []
+
+    /// Deletes an earlier bot's record and archives its notes. The removal
+    /// stands even when the server could not clear everything that hung off it.
+    func removeEarlierBot(_ bot: ShellBot) async throws {
+        let result = try await client.shellActionResult(ShellActions.removeArchivedBot(botId: bot.id))
+        applyStore(result.store)
+        if result.detachError != nil { earlierBotsUnfinished.append(UnfinishedRemoval(id: bot.id, name: bot.name)) }
+    }
+
     /// The full text of a note the list shows cut short.
     func fullMemoryNote(botId: String, id: String) async -> MemoryNote? {
         try? await client.memoryNote(botId: botId, id: id)
@@ -4959,18 +4971,30 @@ final class AppModel: ObservableObject {
         return routines.first { $0.id == openRoutineId }
     }
 
+    /// What the owner has typed into the New routine form. It is kept while
+    /// they look at another routine or page, and cleared by Create, Cancel or
+    /// a bot switch. Not published: the form owns what it shows.
+    struct RoutineDraft: Equatable {
+        var name: String
+        var instruction: String
+        var schedules: [RoutineSchedule]
+    }
+    var routineDraft: RoutineDraft?
+
     func closeRoutineDetail() {
         openRoutineId = nil
         routineCreating = false
     }
 
     private func clearRoutineState() {
+        routineDraft = nil
         closeRoutineDetail()
         routines = []
         routinesError = nil
         routineBusy = []
-        // A pane left open on a bot switch would sit empty until the next poll.
-        if routinesVisible, let botId = selectedBotId {
+        queuedRoutineEdits = [:]
+        // The Routines page and the sidebar badge would sit empty until the next poll.
+        if let botId = selectedBotId {
             Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
         }
     }
@@ -5019,6 +5043,18 @@ final class AppModel: ObservableObject {
             // Re-read rather than trusting the local copy: a scheduled run may
             // have appended history while this write was in flight.
             if let botId, botId == self.selectedBotId { await self.loadRoutines(botId: botId) }
+            // An edit made while this write ran goes out now, unless the routine
+            // is gone (this write deleted it, or it was deleted elsewhere).
+            if let id, let queued = self.queuedRoutineEdits.removeValue(forKey: id),
+               self.routines.contains(where: { $0.id == id }) {
+                self.updateRoutine(
+                    id: id,
+                    name: queued.name,
+                    instruction: queued.instruction,
+                    schedules: queued.schedules,
+                    active: queued.active
+                )
+            }
         }
     }
 
@@ -5034,10 +5070,21 @@ final class AppModel: ObservableObject {
                 schedules: schedules
             )
             guard let self, botId == self.selectedBotId else { return }
+            self.routineDraft = nil
             self.routineCreating = false
             self.openRoutineId = created.id
         }
     }
+
+    /// Edits made while a write on the same routine was in flight, merged field
+    /// by field (the newer value wins) and sent when that write lands.
+    private struct QueuedRoutineEdit {
+        var name: String?
+        var instruction: String?
+        var schedules: [RoutineSchedule]?
+        var active: Bool?
+    }
+    private var queuedRoutineEdits: [String: QueuedRoutineEdit] = [:]
 
     func updateRoutine(
         id: String,
@@ -5046,6 +5093,15 @@ final class AppModel: ObservableObject {
         schedules: [RoutineSchedule]? = nil,
         active: Bool? = nil
     ) {
+        if routineBusy.contains(id) {
+            var queued = queuedRoutineEdits[id] ?? QueuedRoutineEdit()
+            if let name { queued.name = name }
+            if let instruction { queued.instruction = instruction }
+            if let schedules { queued.schedules = schedules }
+            if let active { queued.active = active }
+            queuedRoutineEdits[id] = queued
+            return
+        }
         routineWrite(id: id) { client in
             try await client.updateRoutine(
                 id: id,
@@ -5071,6 +5127,79 @@ final class AppModel: ObservableObject {
         routineWrite(id: id) { client in
             try await client.runRoutine(id: id)
         }
+    }
+
+    /// Routines whose newest run failed, for the sidebar badge.
+    var failedRoutineCount: Int {
+        routines.filter { $0.runHistory.last.map { !$0.succeeded } ?? false }.count
+    }
+
+    /// Routines the archive migration paused and the owner has not reviewed.
+    var movedRoutines: [Routine] {
+        routines.filter { $0.movedFrom != nil }
+    }
+
+    /// Dismiss on the moved-routines notice: one empty `PATCH` per routine.
+    /// Any edit clears `movedFrom` on the server, so none of them changes a field.
+    func dismissMovedRoutines() {
+        let ids = movedRoutines.map(\.id)
+        guard !ids.isEmpty else { return }
+        routineWrite(id: nil) { client in
+            for id in ids { _ = try await client.updateRoutine(id: id) }
+        }
+    }
+
+    /// Open the Routines page on one routine.
+    func showRoutine(_ id: String) {
+        stage = .routines
+        routineCreating = false
+        openRoutineId = id
+    }
+
+    // MARK: - Connector sign-in state
+
+    /// True when any added app or server needs signing in again, for the
+    /// sidebar's Connectors dot.
+    var connectorsNeedSignIn: Bool {
+        ConnectorTile.merge(apps: connectors?.toolkits ?? [], servers: directConnections).contains(where: \.needsSignIn)
+    }
+
+    private var connectorStateTick = 0
+
+    /// The dot reads state the Connectors dialog normally loads, so it is read
+    /// quietly here: on the first tick and then every two minutes.
+    private func pollConnectorStates() {
+        defer { connectorStateTick += 1 }
+        guard connectorStateTick % 48 == 0 else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // The page's own query only while the page is open.
+            await self.loadConnectors(search: self.stage == .connectors ? self.connectorSearch : "", quiet: true)
+            await self.loadDirectConnections(quiet: true)
+        }
+    }
+
+    // MARK: - Chat shortcuts
+
+    /// ⌘N and the pencil: an empty chat is already a new one, so it only gets
+    /// the caret, from a page too. A chat whose rows are still loading is not
+    /// known to be empty.
+    func newChatOrFocusComposer() {
+        if transcriptReady, !hasThreadContent, !pending {
+            stage = .chat
+            requestComposerFocus()
+        } else if pending {
+            // A new chat stops the reply in progress: ask first, as open() does.
+            leaveForNewChat = true
+        } else {
+            startNewChatNow()
+        }
+    }
+
+    /// The alert's Leave for a new chat, or the new chat itself when nothing is running.
+    func startNewChatNow() {
+        startNewChat(botId: Threads.defaultBotId)
+        requestComposerFocus()
     }
 
     // MARK: - Composer attachments

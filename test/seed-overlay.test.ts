@@ -43,17 +43,17 @@ function tempShell(store: ShellStore): string {
   return path;
 }
 
-test("a fresh store seeds the current Generalist text", () => {
+test("a fresh store seeds the current text under the name Useful Bot", () => {
   const [bot] = seedStore().bots;
   assert.equal(bot.description, GENERALIST_SEED_V3);
-  assert.equal(bot.name, "Generalist");
+  assert.equal(bot.name, "Useful Bot");
 });
 
 for (const [index, seed] of GENERALIST_SEEDS.entries()) {
-  test(`seed ${index + 1} of the shipped list becomes the current text and the new name`, () => {
+  test(`seed ${index + 1} of the shipped list becomes the current text`, () => {
     const [bot] = reread(oldStore({ description: seed })).bots;
     assert.equal(bot.description, GENERALIST_SEED_V3);
-    assert.equal(bot.name, "Generalist");
+    assert.equal(bot.name, "Useful Bot");
   });
 }
 
@@ -94,13 +94,13 @@ test("a store with no Generalist loads without an overlay or a throw", () => {
   assert.equal(loaded.bots[0].name, "Other");
 });
 
-test("the rename needs the name Useful Bot, a seed and an untouched avatar", () => {
+test("the one bot always reads as Useful Bot, whatever an older build stored", () => {
   const seed = GENERALIST_SEEDS[0];
   const custom = reread(oldStore({ description: seed, avatarCustom: true })).bots[0];
   assert.equal(custom.name, "Useful Bot");
   assert.equal(custom.description, GENERALIST_SEED_V3);
   const renamed = reread(oldStore({ name: "Jarvis", description: seed })).bots[0];
-  assert.equal(renamed.name, "Jarvis");
+  assert.equal(renamed.name, "Useful Bot");
   assert.equal(renamed.description, GENERALIST_SEED_V3);
 });
 
@@ -118,7 +118,7 @@ test("the overlay persists on the next normal write", () => {
   updateShell((shell) => applyShellAction(shell, { type: "select", botId: DEFAULT_BOT_ID }).store, path);
   const file = JSON.parse(readFileSync(path, "utf8")) as ShellStore;
   assert.equal(file.bots[0].description, GENERALIST_SEED_V3);
-  assert.equal(file.bots[0].name, "Generalist");
+  assert.equal(file.bots[0].name, "Useful Bot");
 });
 
 test("two processes reading the same old file agree and leave it untouched", () => {
@@ -135,6 +135,6 @@ test("two processes reading the same old file agree and leave it untouched", () 
   });
   const [first, second] = [run(), run()];
   assert.equal(first, second);
-  assert.deepEqual(JSON.parse(first), ["Generalist", GENERALIST_SEED_V3]);
+  assert.deepEqual(JSON.parse(first), ["Useful Bot", GENERALIST_SEED_V3]);
   assert.equal(readFileSync(path, "utf8"), before);
 });

@@ -219,7 +219,7 @@ test("every bot's context is Your bot then This turn, with no Running the team b
     const generalist = await text(DEFAULT_BOT_ID, "sess-gen");
     assert.ok(generalist.startsWith("# Your bot"));
     assert.doesNotMatch(generalist, /Running the team/);
-    assert.match(generalist, /You are Generalist\./);
+    assert.match(generalist, /You are Useful Bot\./);
     assert.match(generalist, /You're the owner's main assistant/);
     assert.match(generalist, /# This turn/);
     const other = await text(alpha, "sess-alpha");

@@ -94,7 +94,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D2 | Where Pi runs | Separate plain Node process. Not inside Next (dev duplicates route modules and hot-reloads) |
 | D3 | Model path | Through the router. A registered native provider delegates to Pi's built-in `openai-completions` stream with our `routerFetch` |
 | D4 | Pi built-ins | All off: no built-in tools, no extensions from disk, no skill or context-file discovery, in-memory settings, nothing read under `~/.pi` |
-| D5 | Bots | One bot: the default (`bot-useful`, keeps its current name). No second bot, no bot switcher, no bot creation |
+| D5 | Bots | One bot: the default (`bot-useful`), named "Useful Bot" (PR 2b renames the stored bot; the name can't be edited). No second bot, no bot switcher, no bot creation |
 | D6 | Other existing bots | Archived ("earlier bots"): hidden, record and memory notes kept under their id; their routines move to the bot, paused; Settings > General > Earlier bots offers Copy instructions, Move notes and Remove. No restore |
 | D7 | Sub-agents | Removed |
 | D8 | Groups, sections, pins, hide, handoffs, fan-out, cross-bot send, bot and group proposals, profile proposals | Removed |
@@ -298,7 +298,7 @@ turn and `agent_settled` ends it. The host mints `turnId` (UUID v4).
 - **System prompt (static, cached):** `agent/instructions.md` rewritten for one all-round bot
   (under 950 words; `test/prompt-texts.test.ts` keeps the cap and its tool-name list becomes ours),
   then the skills list (name and one-line description of each skill in `agent/skills/`), then the
-  bot block: `You are NAME.` plus the owner's instructions fenced as today
+  bot block: `You are Useful Bot.` plus the owner's instructions fenced as today
   (`shared/context-blocks.ts` "Your bot"). It changes only when the owner edits the bot. Remove
   "Running the team", the group block, "another bot is a peer", sub-agent, handoff and reviewer
   text. Add `GENERALIST_SEED_V3` to `shared/shell-store.ts` (seeds are append-only) without team
@@ -648,7 +648,7 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
   `SubagentCard.swift` (Core and App), `ChatAttribution.swift`, `AvatarStackView.swift`,
   `Threads.swift` except `defaultBotId`, and the eve-only tests (`app-map/swift.md` 7.1).
 - **UI:** everything in `UI.md`: the chat-first sidebar (fixed Routines, Library and Connectors
-  rows, chat list with per-chat state marks, row menu), chat header with the chat title, the
+  rows, chat list with per-chat state marks, row menu), an empty chat header, the
   Routines page on the stage, Settings > Instructions and memory in place of the Bot pane (notify
   moves to Settings > General), the search palette (Chats, Library, Routines), Settings > General >
   Earlier bots, the Connectors polish of `UI.md` 8b, and the removals of `UI.md` section 10.
@@ -766,7 +766,9 @@ folder and ask for a multi-step job that runs bash (one command needs approval, 
 writes an HTML page, searches the web, draws with Excalidraw (widget), generates an image and saves
 a memory note; switch the model mid-chat; send two more messages while the first turn runs; cancel
 one turn with a card pending; force a router 5xx (fake upstream connection) and Retry; push the
-chat past a 32k window so it compacts; kill the engine mid-turn and relaunch; run a routine
+chat past a 32k window so it compacts; kill the engine mid-turn and relaunch; start a new chat,
+then reopen the first one from the sidebar and check its note rows, connect cards and images are
+all still there (on eve, New chat wiped them: PR 2b live pass, 2026-10-25); run a routine
 manually while another chat is open (its row marks and the notification); rename, delete and
 search for a chat; open a 15k-entry synthetic
 chat. Artifact: a JSON report of every step with timings, the session files, screenshots, frame

@@ -92,7 +92,7 @@ test("the archive pass marks every bot but the default one, deletes nothing and 
   const group = withBot(b.store, "Desk", { kind: "group" });
   const out = archiveEarlierBots({ ...group.store, selectedBotId: a.id }, at);
   assert.equal(out.changed, true);
-  assert.deepEqual(out.store.bots.map((bot) => [bot.name, bot.archived]), [["Generalist", false], ["Alpha", true], ["Beta", true], ["Desk", true]]);
+  assert.deepEqual(out.store.bots.map((bot) => [bot.name, bot.archived]), [["Useful Bot", false], ["Alpha", true], ["Beta", true], ["Desk", true]]);
   assert.ok(out.store.bots.slice(1).every((bot) => bot.archivedAt === at.toISOString()));
   assert.equal(out.store.selectedBotId, DEFAULT_BOT_ID);
   assert.deepEqual(out.moved.map((bot) => bot.id), [a.id, b.id, group.id]);
@@ -129,7 +129,7 @@ test("perf fixtures stay unarchived in the dev stack only, and select reaches th
 
     process.env.UB_STACK = "dev";
     const dev = archiveEarlierBots(store);
-    assert.deepEqual(dev.store.bots.filter((bot) => !bot.archived).map((bot) => bot.name).sort(), ["Generalist", ...fixtures].sort());
+    assert.deepEqual(dev.store.bots.filter((bot) => !bot.archived).map((bot) => bot.name).sort(), ["Useful Bot", ...fixtures].sort());
     assert.equal(dev.store.bots.find((bot) => bot.id === helper)?.archived, true);
     assert.deepEqual(dev.moved.map((bot) => bot.id), [helper], "only the helper's routines move");
     // select: the harness reaches a fixture, nothing else but the default.
@@ -139,7 +139,7 @@ test("perf fixtures stay unarchived in the dev stack only, and select reaches th
 
     process.env.UB_STACK = "daily";
     const daily = archiveEarlierBots(store);
-    assert.deepEqual(daily.store.bots.filter((bot) => !bot.archived).map((bot) => bot.name), ["Generalist"], "the same names are ordinary bots in the daily stack");
+    assert.deepEqual(daily.store.bots.filter((bot) => !bot.archived).map((bot) => bot.name), ["Useful Bot"], "the same names are ordinary bots in the daily stack");
     assert.throws(() => applyShellAction(store, { type: "select", botId: fixtureIds[0] }), /shell_bot_forbidden/);
     // A fixture-looking name on the default bot's id, or a group, is never exempt.
     process.env.UB_STACK = "dev";
@@ -168,7 +168,7 @@ test("the first read archives the earlier bots, moves their routines paused, wri
 
     const store = readShell();
     assert.equal(existsSync(archiveMarkerPath(shell)), true);
-    assert.deepEqual(store.bots.map((bot) => [bot.name, bot.archived]), [["Generalist", false], ["Alpha", true], ["Beta", true]]);
+    assert.deepEqual(store.bots.map((bot) => [bot.name, bot.archived]), [["Useful Bot", false], ["Alpha", true], ["Beta", true]]);
     assert.equal(store.selectedBotId, DEFAULT_BOT_ID);
     // Nothing is deleted: the records, the chats, the recents and the instructions are still there.
     const alpha = store.bots.find((bot) => bot.id === ids.a)!;
@@ -460,8 +460,8 @@ test("an ordinary write cannot recreate a dropped marker, so a routine is never 
     writeShell(archived);
     assert.equal(existsSync(archiveMarkerPath(shell)), false, "writeShell does not create the marker");
     // An updateShell in that window finishes the migration first, then makes its change.
-    const next = updateShell((current) => applyShellAction(current, { type: "renameBot", botId: DEFAULT_BOT_ID, name: "Helper" }).store);
-    assert.equal(next.bots[0].name, "Helper");
+    const next = updateShell((current) => applyShellAction(current, { type: "touchChat", botId: DEFAULT_BOT_ID, preview: "Helper" }).store);
+    assert.equal(next.bots[0].lastPreview, "Helper");
     assert.equal(existsSync(archiveMarkerPath(shell)), true);
     const moved = readRoutine(job.id);
     assert.equal(moved?.botId, DEFAULT_BOT_ID);
@@ -559,8 +559,8 @@ test("updateShell migrates first, then applies its change to the migrated roster
       alpha = made.id;
       return { ...made.store, selectedBotId: made.id };
     });
-    const next = updateShell((current) => applyShellAction(current, { type: "renameBot", botId: DEFAULT_BOT_ID, name: "Helper" }).store);
-    assert.equal(next.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.name, "Helper");
+    const next = updateShell((current) => applyShellAction(current, { type: "touchChat", botId: DEFAULT_BOT_ID, preview: "Helper" }).store);
+    assert.equal(next.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.lastPreview, "Helper");
     assert.equal(next.bots.find((bot) => bot.id === alpha)?.archived, true);
     assert.equal(next.selectedBotId, DEFAULT_BOT_ID);
     assert.equal(existsSync(archiveMarkerPath(shell)), true);
@@ -586,7 +586,7 @@ test("two processes reading an old roster at the same moment migrate it once", a
     });
     const [first, second] = await Promise.all([spawn(), spawn(), spawn()]);
     assert.equal(first.stdout, second.stdout);
-    assert.deepEqual(JSON.parse(first.stdout), [["Generalist", false], ["Alpha", true]]);
+    assert.deepEqual(JSON.parse(first.stdout), [["Useful Bot", false], ["Alpha", true]]);
     const moved = readRoutinesStore().routines;
     assert.equal(moved.length, 5);
     assert.deepEqual(moved.map((item) => item.name).sort(), ["Job 0", "Job 1", "Job 2", "Job 3", "Job 4"], "no name got a suffix from a second run");
@@ -782,7 +782,7 @@ test("an archived bot refuses every per-bot write, and a read-only action still 
   // select is a different refusal: nothing but the default bot is selectable.
   assert.throws(() => applyShellAction(store, { type: "select", botId }), /shell_bot_forbidden/);
   // The default bot is untouched by all of this.
-  assert.equal(applyShellAction(store, { type: "renameBot", botId: DEFAULT_BOT_ID, name: "Helper" }).store.bots[0].name, "Helper");
+  assert.equal(applyShellAction(store, { type: "touchChat", botId: DEFAULT_BOT_ID, preview: "Helper" }).store.bots[0].lastPreview, "Helper");
   // An unknown bot still reads as missing, not archived.
   assert.throws(() => applyShellAction(store, { type: "setWorkspace", botId: "nope", workspace: null }), /shell_bot_missing/);
 });
@@ -839,7 +839,7 @@ test("removeArchivedBot drops the record and its recents, and touches no other b
     ],
   }).store;
   const out = applyShellAction(store, { type: "removeArchivedBot", botId: a.id }).store;
-  assert.deepEqual(out.bots.map((bot) => bot.name), ["Generalist", "Beta"]);
+  assert.deepEqual(out.bots.map((bot) => bot.name), ["Useful Bot", "Beta"]);
   assert.deepEqual(out.recents.map((item) => item.id), ["rec-b"]);
   assert.equal(out.selectedBotId, DEFAULT_BOT_ID);
 });

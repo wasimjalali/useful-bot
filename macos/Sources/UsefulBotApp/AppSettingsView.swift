@@ -5,6 +5,7 @@ import UsefulBotCore
 /// Settings sections.
 enum AppSettingsTab: String, CaseIterable, Identifiable {
     case general
+    case instructions
     case providers
     case computer
     case usage
@@ -16,6 +17,7 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .general: return "General"
+        case .instructions: return "Instructions and memory"
         case .providers: return "Providers"
         case .computer: return "Computer"
         case .usage: return "Usage"
@@ -27,6 +29,7 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .instructions: return "text.alignleft"
         case .providers: return "server.rack"
         case .computer: return "desktopcomputer"
         case .usage: return "chart.bar"
@@ -36,7 +39,7 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// `.settings-modal`: a 200pt nav rail and the scrolling pane, 860x640.
+/// `.settings-modal`: a 244pt nav rail (wide enough for "Instructions and memory" on one line) and the scrolling pane, 860x640.
 struct AppSettingsView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -162,6 +165,8 @@ struct AppSettingsView: View {
                             .frame(width: 16)
                         Text(item.label)
                             .font(.system(size: 13))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 10)
@@ -181,7 +186,7 @@ struct AppSettingsView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 16)
-        .frame(width: 200)
+        .frame(width: 244)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.C.canvas)
         .overlay(alignment: .trailing) { VerticalHairline() }
@@ -206,6 +211,7 @@ struct AppSettingsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     switch tab {
                     case .general: generalPane
+                    case .instructions: instructionsPane
                     case .providers: providersPane
                     case .computer: computerPane
                     case .usage: usagePane
@@ -293,6 +299,27 @@ struct AppSettingsView: View {
                     }
                 }
             }
+
+            if let bot = model.selectedBot {
+                section("Notifications") {
+                    NotifyGroup(bot: bot)
+                }
+            }
+
+            if !model.earlierBots.isEmpty || !model.earlierBotsUnfinished.isEmpty {
+                section("Earlier bots") {
+                    EarlierBotsGroup()
+                }
+            }
+        }
+    }
+
+    // MARK: - Instructions and memory
+
+    @ViewBuilder
+    private var instructionsPane: some View {
+        if let bot = model.selectedBot {
+            InstructionsMemoryContent(bot: bot)
         }
     }
 
@@ -1194,4 +1221,230 @@ final class FeedbackDraft: ObservableObject {
     @Published var message = ""
     @Published var email = ""
     @Published var includesDetails = true
+}
+
+// MARK: - Notifications
+
+/// "Notify when a chat finishes" for the one bot, and the note when the
+/// system has notifications off.
+private struct NotifyGroup: View {
+    @EnvironmentObject private var model: AppModel
+    let bot: ShellBot
+
+    @State private var denied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Notify when a chat finishes")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.ink)
+                    Text("Only while the window is in the background or the chat is closed")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                Spacer(minLength: 0)
+                NativeSwitch(isOn: bot.notify) {
+                    // Resolve the live flag so a double tap cannot send !old twice.
+                    let live = model.liveBot(bot)
+                    let next = !live.notify
+                    model.patchBot(botId: bot.id, ["notify": next])
+                    // The first time on is when the system asks.
+                    if next {
+                        Task { denied = !(await TurnNotifier.shared.requestAuthorization()) }
+                    }
+                }
+                .accessibilityLabel("Notify when a chat finishes")
+                .accessibilityValue(bot.notify ? "on" : "off")
+                .accessibilityIdentifier("notify-switch")
+            }
+            if bot.notify && denied {
+                Text("Notifications are off for Useful Bot in System Settings.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.danger)
+                NativeButton("Open Notifications settings", kind: .secondary, small: true) {
+                    TurnNotifier.shared.openSystemSettings()
+                }
+                .accessibilityIdentifier("notify-open-settings")
+            }
+            if let error = model.saveError {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.danger)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.C.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: bot.id) { denied = await TurnNotifier.shared.isDenied() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { denied = await TurnNotifier.shared.isDenied() }
+        }
+    }
+}
+
+// MARK: - Earlier bots
+
+/// One row per bot the one-bot migration archived: its notes and the three
+/// ways to take what matters from it. Buttons keep their columns.
+private struct EarlierBotsGroup: View {
+    @EnvironmentObject private var model: AppModel
+
+    @State private var counts: [String: Int] = [:]
+    @State private var errors: [String: String] = [:]
+    @State private var busy: Set<String> = []
+    @State private var confirming: String?
+    @State private var copied: String?
+
+    var body: some View {
+        let bots = model.earlierBots
+        let unfinished = model.earlierBotsUnfinished
+        VStack(spacing: 0) {
+            ForEach(Array(bots.enumerated()), id: \.element.id) { index, bot in
+                row(bot)
+                    .overlay(alignment: .bottom) {
+                        if index < bots.count - 1 || !unfinished.isEmpty { Hairline().padding(.horizontal, 12) }
+                    }
+            }
+            ForEach(Array(unfinished.enumerated()), id: \.element.id) { index, removed in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Removed \(removed.name), but couldn't clear all of its routines and history.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    NativeIconButton(systemImage: "xmark", size: 20, iconSize: 10) {
+                        model.earlierBotsUnfinished.removeAll { $0.id == removed.id }
+                    }
+                    .accessibilityLabel("Dismiss")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .overlay(alignment: .bottom) {
+                    if index < unfinished.count - 1 { Hairline().padding(.horizontal, 12) }
+                }
+                .accessibilityIdentifier("earlier-unfinished-\(removed.id)")
+            }
+        }
+        .background(Theme.C.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .task(id: bots.map(\.id)) {
+            for bot in bots { await loadCount(bot.id) }
+        }
+    }
+
+    private func row(_ bot: ShellBot) -> some View {
+        let count = counts[bot.id]
+        let working = busy.contains(bot.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(bot.name)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    if let count {
+                        Text(count == 0 ? "No notes" : (count == 1 ? "1 note" : "\(count) notes"))
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .monospacedDigit()
+                    }
+                }
+                Spacer(minLength: 0)
+                if confirming == bot.id {
+                    Text("Remove \(bot.name) and its notes?")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    NativeButton("Cancel", kind: .secondary, small: true) { confirming = nil }
+                    NativeButton("Remove", kind: .danger, small: true, enabled: !working) { remove(bot) }
+                        .accessibilityIdentifier("earlier-remove-confirm-\(bot.id)")
+                } else {
+                    NativeButton(kind: .secondary, small: true, action: { copy(bot) }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: copied == bot.id ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 12))
+                            Text(copied == bot.id ? "Copied" : "Copy instructions")
+                        }
+                        .lineLimit(1)
+                        .fixedSize()
+                    }
+                    .frame(width: 168)
+                    .accessibilityIdentifier("earlier-copy-\(bot.id)")
+                    NativeButton(kind: .secondary, small: true, enabled: !working, action: { move(bot) }) {
+                        Text("Move notes").lineLimit(1).fixedSize()
+                    }
+                        .frame(width: 108)
+                        .opacity(count == 0 ? 0 : 1)
+                        .allowsHitTesting(count != 0)
+                        .accessibilityHidden(count == 0)
+                        .accessibilityIdentifier("earlier-move-\(bot.id)")
+                    NativeButton(kind: .ghost, small: true, enabled: !working, action: { confirming = bot.id }) {
+                        Text("Remove").font(.system(size: 13, weight: .regular)).foregroundStyle(Theme.C.inkMuted).lineLimit(1).fixedSize()
+                    }
+                        .frame(width: 80)
+                        .accessibilityIdentifier("earlier-remove-\(bot.id)")
+                }
+            }
+            if let error = errors[bot.id] {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.danger)
+            }
+        }
+        .frame(minHeight: 44)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func loadCount(_ botId: String) async {
+        do {
+            counts[botId] = try await model.earlierBotNoteCount(botId)
+            errors[botId] = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            errors[botId] = "Couldn't count the notes."
+        }
+    }
+
+    private func copy(_ bot: ShellBot) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(bot.description, forType: .string)
+        copied = bot.id
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            if copied == bot.id { copied = nil }
+        }
+    }
+
+    private func move(_ bot: ShellBot) {
+        guard busy.insert(bot.id).inserted else { return }
+        errors[bot.id] = nil
+        Task {
+            do {
+                try await model.moveEarlierBotNotes(bot.id)
+                await loadCount(bot.id)
+            } catch {
+                errors[bot.id] = "Couldn't move the notes."
+            }
+            busy.remove(bot.id)
+        }
+    }
+
+    private func remove(_ bot: ShellBot) {
+        guard busy.insert(bot.id).inserted else { return }
+        errors[bot.id] = nil
+        Task {
+            do {
+                try await model.removeEarlierBot(bot)
+            } catch {
+                errors[bot.id] = "Couldn't remove \(bot.name)."
+            }
+            confirming = nil
+            busy.remove(bot.id)
+        }
+    }
 }

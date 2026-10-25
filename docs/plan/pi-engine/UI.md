@@ -31,7 +31,7 @@ this file fixes structure, states and the contract with the backend.
 ```
 +-----------------+----------------------------------------------+
 | SIDEBAR 248pt   | STAGE                                        |
-|  search  new    |  header: chat title                          |
+|  search  new    |  header band (empty)                         |
 |  logo           |                                              |
 |  Routines       |  transcript                                  |
 |  Library        |                                              |
@@ -45,7 +45,8 @@ this file fixes structure, states and the contract with the backend.
 +-----------------+----------------------------------------------+
 ```
 
-The stage shows one of: a chat, the Routines page, the Library page. Connectors stays a dialog.
+The stage shows one of: a chat, the Routines page, the Library page, the Connectors page (owner,
+2026-10-25: a page like the others, not a dialog).
 There is no right-hand pane: what the Bot pane held moves to Settings (section 6).
 
 ## 3. Sidebar
@@ -66,7 +67,7 @@ Three rows above the chat list, icon plus label, the active one highlighted:
 |---|---|---|
 | Routines | Routines page on the stage (section 5) | count of routines whose last run failed, if any |
 | Library | Library page on the stage (today's `LibraryView`) | none |
-| Connectors | Connectors dialog (today's) | a dot when a connection needs sign-in again |
+| Connectors | Connectors page on the stage (today's dialog layout, section 8b) | a dot when a connection needs sign-in again |
 
 Library moves out of the account menu. The Connectors footer pill goes (the row replaces it).
 
@@ -119,8 +120,8 @@ Library leaves this menu (3.2); the Connectors pill leaves the footer (3.2).
 
 ### 4.1 Header
 
-- Centered pill: the **chat title** only, no face ("New chat" in a new chat). Clicking the title
-  starts inline rename (same as the row menu).
+- Empty (owner, 2026-10-25): the chat title shows only in the sidebar, so the header band holds
+  nothing. It keeps its height for the window's top inset. Rename is in the row menu only.
 - No right-side control: the Bot pane toggle goes with the Bot pane.
 - The group avatar stack and group header go.
 
@@ -209,7 +210,7 @@ Tabs **All**, **Chats**, **Library**, **Routines**:
 ## 8. Settings (app)
 
 - Tabs: **General, Instructions and memory** (section 6), **Providers, Computer, Usage, Feedback,
-  About**. The nav is 220pt so every label fits on one line. Providers drops the reviewer role row.
+  About**. The nav is 244pt (not 220) so "Instructions and memory" fits on one line. Providers drops the reviewer role row.
 - **Earlier bots** (new, in General, shown only if the migration archived any): one row per earlier
   bot with its name and memory-note count, and three buttons in fixed columns: **Copy instructions**,
   **Move notes** (hidden but holding its place when the bot has no notes) and **Remove** (confirm; deletes that archived bot's record and archives its notes, so they leave memory). This is the
@@ -217,20 +218,28 @@ Tabs **All**, **Chats**, **Library**, **Routines**:
 
 ## 8b. Connectors
 
-The Connectors dialog keeps today's layout (`ConnectorsDialog`, 760pt): title and "N added" with
+The Connectors page opens on the stage like Routines and Library, and keeps the dialog's layout and
+design (`ConnectorsDialog`, a 760pt column): title and "N added" with
 the first logos, "Search 1,500 apps", the **Added** grid, the **All apps** grid with Add, Show more,
 the Composio key line. Polish only:
 
 - Added tiles show a state chip instead of "Added": **Connected**, or **Sign in again** (warning) when
   a sign-in expired; the whole tile opens the app's page (chevron on the right, hover tone).
-- **App page** (today's `ConnectorDetailPage`, same dialog): back to Connectors; logo, name and a
-  line "App · Composio · connected as ACCOUNT"; **Reconnect** and **Disconnect** beside the name.
+- **App page** (today's `ConnectorDetailPage`, inside the Connectors page): back to Connectors; logo, name and a
+  line "App · Composio" (the connectors payload carries only an opaque account id, no account label,
+  so "connected as ACCOUNT" waits until one is added); **Reconnect** and **Disconnect** beside the name.
   Below: the state chip, "48 tools · 31 read · 17 write", a segmented **All / Reads / Writes** and
   a **Filter tools** field, then the tools grouped under **Reads** ("Run without asking") and
   **Writes** ("Ask you first in Auto"; destructive tools sit here too), each row the tool slug in mono, a one-line description and
   a Read or Asks first chip. The split follows today's connector risk rules
   (`agent/lib/connector-risk.ts`). A direct MCP server's page has the same shape (Refresh instead
-  of Reconnect where today's has it).
+  of Reconnect where today's has it), except the tools: `mcpToolGate` asks for every MCP tool in
+  Auto, whatever its name, so the server's page shows one **Writes** group ("Ask you first in Auto"),
+  with no All / Reads / Writes segment and no read count (the filter field stays).
+- An app whose sign-in lapsed (Composio EXPIRED, FAILED, INACTIVE or REVOKED) stays under **Added** with
+  **Sign in again**, and its page puts **Reconnect** first and says "Sign in again to see its tools."
+  in place of the tool list (`/api/connectors/tools` answers `needs_sign_in`, not `not_connected`).
+  It is not listed again under All apps.
 
 ## 9. Contract: UI element to backend
 
@@ -260,7 +269,7 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Moved-routines notice | `routine.movedFrom` in `/api/routines`; `PATCH /api/routines/:id` clears it | 2 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
-| Connectors dialog, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b: direct MCP servers already carry it (connection state `authFailed` or `expired`); Composio apps gain `needsSignIn` on `/api/connectors` |
+| Connectors page, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b: direct MCP servers already carry it (connection state `authFailed` or `expired`); Composio apps gain `needsSignIn` on `/api/connectors` |
 | App page Reconnect and Disconnect (Refresh for a direct MCP server) | `/api/connectors` (Composio), `/api/connections` (MCP), the same calls as today | 2 |
 | Account row owner name | `GET /api/status` (operator name) | 2 |
 | App page tools grouped by reads and writes | `GET /api/connectors/tools?toolkit=` returning each tool's `risk` (`read`, `write` or `destructive`, the last two under Writes) from `connector-risk.ts` | 2b |
@@ -283,7 +292,7 @@ internal (SPEC 6.5) or as health and auth.
 ## 10. Removed UI (complete list)
 
 The Bot pane and its toggle; the Profile section (name, face color, role label); the mascot face
-in chat rows, the header pill, the working row and the empty chat; bot rail rows and pinned bot
+in chat rows, the header pill (the header is now empty), the working row and the empty chat; bot rail rows and pinned bot
 cards; sections, Unassigned and Hidden groups; row menu items Pin,
 Move, Hide, New section; New Bot button and the create-bot and create-group dialogs; group
 settings and members; the new-chat bot picker (`NewChatPickerView`); the onboarding "New bot" card;
@@ -294,7 +303,8 @@ cards; group avatar stack; reviewer role row; Bots and Groups in search; the rai
 ## 11. Keyboard
 
 ⌘N new chat, ⌘K search, ⌘R reload chat, ⌘. stop the running turn, ⌘⌫ delete the selected chat
-(with the confirm dialog), ⌘↑ / ⌘↓ previous and next chat in the list.
+(with the confirm dialog), ⌘↑ / ⌘↓ previous and next chat in the list while the composer is empty
+(with text in it they move the caret, as macOS does).
 
 ## 12. Verification
 
@@ -309,22 +319,15 @@ chat. All in Useful Bot Dev with its one bot.
 
 | Screen | Before (today) | After (this spec) |
 |---|---|---|
-| Main window | bots in sections, bot in the header | chats by day with states, chat title in the header |
+| Main window | bots in sections, bot in the header | chats by day with states, empty header (the artboard's title pill is superseded by 4.1) |
 | Row menu | Pin, Move, Settings, Rename, Hide, Delete | Rename, Delete |
 | Delete confirm | "Delete bot" | "Delete this chat? This can't be undone." |
-| Rename | dialog | inline in the header |
+| Rename | dialog | inline in the sidebar row (the artboard's header rename is superseded by 4.1) |
 | Approval card | the other bot's name | "From another chat: TITLE", Open chat |
 | Routines | in each bot's pane | own page, one chat per routine, moved-routines notice |
 | Instructions and memory | the bot's Settings pane | Settings tab, no Profile |
 | Search | Bots, Groups, New Bot | Chats, Library, Routines, message hits |
 | New chat | "To: Search or create bots" picker | empty chat with the logo and the first-launch note |
 | Your other bots | sidebar rows | Settings > General > Earlier bots |
-| Connectors | dialog with "Added" | same dialog, Connected / Sign in again |
+| Connectors | dialog with "Added" | the same layout as a stage page, Connected / Sign in again |
 | An app's tools | plain list | Reconnect, Disconnect, reads and writes, filter |
-
-## 14. Open item for the orchestrator
-
-SPEC D5 says the default bot keeps its current name. The approved design shows no editable name and
-calls the bot Useful Bot everywhere, so SPEC 5.6's "You are NAME." should read "You are Useful Bot."
-Decide whether PR 2's migration renames the stored default bot or the UI just ignores the stored
-name; the `renameBot` and avatar fields on `/api/shell` can stay unused either way.

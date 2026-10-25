@@ -2,17 +2,14 @@ import AppKit
 import SwiftUI
 import UsefulBotCore
 
-/// The 248pt rail: logo, search pill,
-/// New chat, the bot, account row.
+/// The 248pt rail: search and New chat on the traffic lights' band, the logo,
+/// three fixed rows (Routines, Library, Connectors), the chats by day and the
+/// account row.
 struct RailView: View {
     @EnvironmentObject private var model: AppModel
 
     var onSearch: () -> Void
     var onNewChat: () -> Void
-    var onOpenSettings: (String) -> Void
-    var onRenameRequest: (ShellBot) -> Void
-    var onConnectors: () -> Void
-    var onLibrary: () -> Void
     var onOpenAppSettings: (AppSettingsTab) -> Void
     /// This window is in full screen, where the traffic lights are hidden.
     var fullScreen = false
@@ -20,14 +17,11 @@ struct RailView: View {
     @State private var accountOpen = false
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
     @ObservedObject private var updater = AppUpdater.shared
-    /// The footer row (photo and Connectors pill), in rail space. The account
-    /// menu opens just above it.
+    /// The footer row (photo and name), in rail space. The account menu opens
+    /// just above it.
     @State private var accountDivider: CGRect = .zero
     @State private var accountMenuHeight: CGFloat = 0
     @State private var accountButtonFrame = CGRect.zero
-    @State private var rowMenuBot: ShellBot?
-    @State private var rowMenuAnchor: CGRect = .zero
-    @State private var rowMenuTrigger: CGRect = .zero
 
     var body: some View {
         VStack(spacing: 12) {
@@ -36,7 +30,9 @@ struct RailView: View {
             HStack(spacing: 10) {
                 Spacer(minLength: 0)
                 RoundRailButton(systemImage: "magnifyingglass", label: "Search", help: "Search (⌘K)", action: onSearch)
-                RoundRailButton(systemImage: "plus", label: "New chat", help: "New chat", action: onNewChat)
+                    .accessibilityIdentifier("rail-search")
+                RoundRailButton(systemImage: "square.and.pencil", label: "New chat", help: "New chat (⌘N)", action: onNewChat)
+                    .accessibilityIdentifier("rail-new-chat")
             }
             // Full screen hides the lights, so the band tightens.
             .padding(.top, fullScreen ? 4 : 10)
@@ -47,13 +43,11 @@ struct RailView: View {
             }
             .padding(.horizontal, 4)
 
+            fixedRows
+
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let store = model.store {
-                        botList(store)
-                    }
-                }
-                .padding(.trailing, 1)
+                chatList
+                    .padding(.trailing, 1)
             }
             .uvScroll()
 
@@ -65,23 +59,6 @@ struct RailView: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.C.rail)
         .coordinateSpace(name: "rail")
-        .overlay(alignment: .topLeading) {
-            if let bot = rowMenuBot {
-                RowMenuPopover(
-                    onSettings: {
-                        closeRowMenu()
-                        onOpenSettings(bot.id)
-                    },
-                    onRename: {
-                        closeRowMenu()
-                        onRenameRequest(bot)
-                    }
-                )
-                .frame(width: 200)
-                .offset(x: max(8, rowMenuAnchor.maxX - 200), y: rowMenuAnchor.maxY + 4)
-                .dismissOnOutsideClick(triggers: { [rowMenuTrigger] }) { closeRowMenu() }
-            }
-        }
         .overlay(alignment: .topLeading) {
             if accountOpen {
                 // As wide as the rail less its 12 pt margin on each side, so the
@@ -97,70 +74,122 @@ struct RailView: View {
         }
         .onExitCommand {
             accountOpen = false
-            closeRowMenu()
         }
     }
 
-    private func closeRowMenu() {
-        rowMenuBot = nil
-    }
+    // MARK: - Fixed rows
 
-    /// The ellipsis is a toggle: a second click on the same row's trigger
-    /// closes the menu rather than re-opening it.
-    private func toggleRowMenu(_ bot: ShellBot, frame: CGRect, trigger: CGRect) {
-        if rowMenuBot?.id == bot.id {
-            closeRowMenu()
-            return
+    private var fixedRows: some View {
+        VStack(spacing: 1) {
+            RailNavRow(
+                icon: "clock",
+                title: "Routines",
+                selected: model.stage == .routines,
+                id: "rail-routines"
+            ) {
+                model.stage = .routines
+            } trailing: {
+                let failed = model.failedRoutineCount
+                if failed > 0 {
+                    Text("\(failed)")
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(Theme.C.danger)
+                        .accessibilityLabel("\(failed) failed")
+                }
+            }
+            RailNavRow(
+                icon: "photo.on.rectangle",
+                title: "Library",
+                selected: model.stage == .library,
+                id: "rail-library"
+            ) {
+                model.stage = .library
+            } trailing: {
+                EmptyView()
+            }
+            RailNavRow(
+                icon: "powerplug",
+                title: "Connectors",
+                selected: model.stage == .connectors,
+                id: "rail-connectors"
+            ) {
+                model.stage = .connectors
+            } trailing: {
+                if model.connectorsNeedSignIn {
+                    Circle()
+                        .fill(Theme.C.warning)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel("A connection needs sign-in")
+                }
+            }
         }
-        rowMenuAnchor = frame
-        rowMenuTrigger = trigger
-        rowMenuBot = bot
     }
 
-    // MARK: - Bots
+    // MARK: - Chats
 
-    /// The default bot, one row. Archived bots, legacy groups and the dev
-    /// stack's perf fixtures are not listed.
-    private func botList(_ store: ShellStore) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(store.railBots) { bot in
-                BotRowView(
-                    bot: bot,
-                    selected: bot.id == model.selectedBotId,
-                    menuOpen: rowMenuBot?.id == bot.id,
-                    onSelect: { model.select(bot.id) },
-                    onOpenSettings: { onOpenSettings(bot.id) },
-                    onRenameRequest: { onRenameRequest(bot) },
-                    onMenu: { frame, trigger in
-                        toggleRowMenu(bot, frame: frame, trigger: trigger)
+    @ViewBuilder
+    private var chatList: some View {
+        let groups = ChatEntry.groups(model.chatEntries)
+        if groups.isEmpty {
+            Text("No chats yet")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkFaint)
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("rail-no-chats")
+        } else {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(groups) { group in
+                    Text(group.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.C.inkFaint)
+                        .padding(.horizontal, 10)
+                        .padding(.top, group.id == groups.first?.id ? 4 : 12)
+                        .padding(.bottom, 4)
+                    ForEach(group.entries) { entry in
+                        ChatRowView(
+                            entry: entry,
+                            selected: model.stage == .chat && entry.isCurrent,
+                            working: entry.isCurrent && model.currentChatWorking
+                        ) {
+                            model.open(entry)
+                        }
                     }
-                )
+                }
             }
         }
     }
 
     // MARK: - Account
 
-    /// The owner's face, which opens the account menu, beside one wide pill
-    /// for Connectors.
+    /// The owner's photo and name, which open the account menu.
     private var operatorRow: some View {
-        HStack(spacing: 10) {
-            Button {
-                accountOpen.toggle()
-                if accountOpen { Task { await model.loadUsage() } }
-            } label: {
-                OperatorAvatarView(initials: model.operatorInitials, size: 36)
-                    .contentShape(Circle())
+        Button {
+            accountOpen.toggle()
+            if accountOpen { Task { await model.loadUsage() } }
+        } label: {
+            HStack(spacing: 10) {
+                OperatorAvatarView(initials: model.operatorInitials, size: 30)
+                Text(model.operatorName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.C.inkFaint)
             }
-            .buttonStyle(.plain)
-            .pointerOnHover()
-            .trackWindowFrame($accountButtonFrame)
-            .help(model.operatorName)
-            .accessibilityLabel("Account")
-            .accessibilityIdentifier("account-row")
-            FooterPillButton(title: "Connectors", action: onConnectors)
-                .accessibilityIdentifier("rail-connectors")
+            .padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .trackWindowFrame($accountButtonFrame)
+        .accessibilityLabel("Account")
+        .accessibilityIdentifier("account-row")
         .background(
             GeometryReader { proxy in
                 Color.clear
@@ -179,11 +208,6 @@ struct RailView: View {
                 onOpenAppSettings(.usage)
             }
             .accessibilityIdentifier("account-usage")
-            popItem(icon: "photo.on.rectangle", title: "Library") {
-                accountOpen = false
-                onLibrary()
-            }
-            .accessibilityIdentifier("account-library")
             popItem(icon: "server.rack", title: "Providers") {
                 accountOpen = false
                 onOpenAppSettings(.providers)
@@ -363,31 +387,6 @@ struct RailView: View {
     }
 }
 
-/// The rail footer's wide pill.
-private struct FooterPillButton: View {
-    let title: String
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Theme.C.ink)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-                .background(hovering ? Theme.C.sunken : Theme.C.surface)
-                .clipShape(Capsule())
-                .overlay(Capsule().strokeBorder(Theme.C.edge, lineWidth: 1))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .onHover { hovering = $0 }
-    }
-}
-
 private struct RoundRailButton: View {
     let systemImage: String
     let label: String
@@ -415,150 +414,80 @@ private struct RoundRailButton: View {
     }
 }
 
-private struct AccountAnchorKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
-    }
-}
+/// One of the three fixed rows: icon, label, an optional mark on the right.
+/// The open page lifts off the rail as a small card, like the open chat.
+private struct RailNavRow<Trailing: View>: View {
+    let icon: String
+    let title: String
+    let selected: Bool
+    let id: String
+    let action: () -> Void
+    @ViewBuilder var trailing: Trailing
 
-/// The on-brand replacement for the system `Menu` on a bot row: the same
-/// white card, hairline border and sunken hover as every other popover.
-struct RowMenuPopover: View {
-    let onSettings: () -> Void
-    let onRename: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            item(icon: "gearshape", title: "Settings", action: onSettings)
-            item(icon: "pencil", title: "Rename", action: onRename)
-        }
-        .padding(6)
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.edge, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-        .popShadow()
-    }
-
-    private func item(
-        icon: String,
-        title: String,
-        danger: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        MenuRowButton(action: action) {
-            HStack(spacing: 8) {
+        Button(action: action) {
+            HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 13))
-                    .foregroundStyle(danger ? Theme.C.danger : Theme.C.ink)
-                    .frame(width: 16)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(width: 18)
                 Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(danger ? Theme.C.danger : Theme.C.ink)
+                    .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
                 Spacer(minLength: 0)
+                trailing
             }
             .padding(.horizontal, 10)
-            .frame(minHeight: 32)
+            .frame(height: 32)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Theme.C.surface : (hovering ? Theme.C.sunken : .clear))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
+            .shadow(color: Theme.C.shadow.opacity(selected ? 0.06 : 0), radius: 2, x: 0, y: 1)
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
         }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
+        .accessibilityIdentifier(id)
     }
 }
 
-// MARK: - Rows
-
-/// The right-click menu behind a rail row.
-@MainActor
-@ViewBuilder
-private func rowContextMenu(
-    onOpenSettings: @escaping () -> Void,
-    onRenameRequest: @escaping () -> Void
-) -> some View {
-    Button("Settings", action: onOpenSettings)
-    Button("Rename", action: onRenameRequest)
-}
-
-extension AppModel {
-    /// The uppercase line under a bot's name: what it is doing while it works,
-    /// "REPLY READY" when an answer is waiting, else the given fallback.
-    func railSubtitle(_ bot: ShellBot, fallback: String) -> String? {
-        if waitingBotIds.contains(bot.id) { return "WAITING ON YOU" }
-        if isWorking(bot.id) {
-            return (railActivity(bot.id) ?? .thinking).label.uppercased()
-        }
-        if replyReady.contains(bot.id) { return "REPLY READY" }
-        if fallback.isEmpty || sameAsName(fallback, bot.name) { return nil }
-        return fallback.uppercased()
-    }
-}
-
-/// A bot's head in the rail: the animated face, posed for what the bot is
-/// doing and hopping when a reply lands.
-private struct RailFaceView: View {
-    let bot: ShellBot
-    let size: CGFloat
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        let working = model.isWorking(bot.id)
-        // One view whether or not the bot works: swapping branches would
-        // rebuild the face in the same update that bumps its hop, and the
-        // hop would never play.
-        BotFaceView(
-            color: BrandAssets.colorID(for: bot),
-            size: size,
-            pose: working ? BotFacePose(activity: model.railActivity(bot.id) ?? .thinking) : .idle,
-            hop: model.railHops[bot.id] ?? 0
-        )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(working ? "\(bot.name) is working" : "")
-        .accessibilityHidden(!working)
-    }
-}
-
-private struct BotRowView: View {
-    let bot: ShellBot
+/// One chat: its title on a line, and on the right the working ring or the
+/// time it last moved.
+private struct ChatRowView: View {
+    let entry: ChatEntry
     let selected: Bool
-    var menuOpen = false
+    let working: Bool
     let onSelect: () -> Void
-    let onOpenSettings: () -> Void
-    let onRenameRequest: () -> Void
-    let onMenu: (CGRect, CGRect) -> Void
 
-    @EnvironmentObject private var model: AppModel
     @State private var hovering = false
 
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 8) {
-                RailFaceView(bot: bot, size: 36)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(bot.name)
-                        .font(.system(size: DesignTokens.FontSize.railName, weight: .semibold))
-                        .foregroundStyle(Theme.C.ink)
+                Text(entry.title)
+                    .font(.system(size: DesignTokens.FontSize.railName, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if working {
+                    DotsRing(size: 14)
+                        .accessibilityLabel("Working")
+                } else if let updatedAt = entry.updatedAt {
+                    Text(ChatEntry.timeLabel(updatedAt))
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(Theme.C.inkFaint)
                         .lineLimit(1)
-                        .truncationMode(.tail)
-                    // The label lives under the name; the row stays clean, so
-                    // no preview and no timestamp.
-                    if let subtitle = model.railSubtitle(bot, fallback: bot.label) {
-                        Text(subtitle)
-                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .regular))
-                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
-                            .foregroundStyle(Theme.C.inkFaint)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
+                        .fixedSize()
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.leading, 8)
-            .padding(.trailing, 28)
-            .padding(.vertical, 6)
-            // The web's 36pt row is a floor, not the height: the 36pt avatar
-            // plus this padding lands at 48.
-            .frame(minHeight: DesignTokens.Space.botRow)
+            .padding(.leading, 10)
+            .padding(.trailing, 8)
+            .frame(height: DesignTokens.Space.botRow)
             .frame(maxWidth: .infinity, alignment: .leading)
             // The open chat lifts off the rail as a small card; hover is a
             // tone shift only.
@@ -570,133 +499,248 @@ private struct BotRowView: View {
         .buttonStyle(.plain)
         .pointerOnHover()
         .onHover { hovering = $0 }
-        .overlay(alignment: .trailing) {
-            // Hover-only like the web rail: the pointer is already over the row
-            // when the control appears, and an open menu keeps it pinned.
-            RowActionsOverlay(
-                label: "Actions for \(bot.name)",
-                rowHovering: hovering,
-                menuOpen: menuOpen,
-                onTap: onMenu
-            )
-            .padding(.trailing, 2)
-        }
-        .contextMenu {
-            rowContextMenu(
-                onOpenSettings: onOpenSettings,
-                onRenameRequest: onRenameRequest
-            )
-        }
+        .accessibilityLabel(entry.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("chat-row")
     }
 }
 
-/// Keeps the ellipsis on screen long enough to be clicked.
-///
-/// The row and the button have separate tracking areas, so the pointer leaves
-/// one before it enters the other and the control used to vanish mid-travel.
-/// Visibility is the union of both hovers plus the open menu, and a short grace
-/// period covers the gap between them.
-private struct RowActionsOverlay: View {
-    let label: String
-    let rowHovering: Bool
-    let menuOpen: Bool
-    let onTap: (CGRect, CGRect) -> Void
-
-    @State private var state = RowActionsVisibility()
-    @State private var visible = false
-    @State private var hideTask: Task<Void, Never>?
+/// Four dots chasing round a ring, one turn a second. The work-in-progress
+/// mark that replaces the mascot face; held still when the owner asks for
+/// reduced motion.
+struct DotsRing: View {
+    var size: CGFloat = 14
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var turning = false
 
     var body: some View {
-        RowActionsButton(
-            label: label,
-            visible: visible,
-            onHoverChange: { inside in
-                state.controlHovering = inside
-                refresh()
-            },
-            onTap: onTap
+        let dot = size * 0.26
+        let reach = (size - dot) / 2
+        ZStack {
+            Circle().fill(Theme.C.ink).frame(width: dot, height: dot).offset(y: -reach)
+            Circle().fill(Theme.C.ink).frame(width: dot, height: dot).opacity(0.72).offset(x: reach)
+            Circle().fill(Theme.C.ink).frame(width: dot, height: dot).opacity(0.45).offset(y: reach)
+            Circle().fill(Theme.C.ink).frame(width: dot, height: dot).opacity(0.22).offset(x: -reach)
+        }
+        .frame(width: size, height: size)
+        .rotationEffect(.degrees(turning ? 360 : 0))
+        .animation(
+            reduceMotion ? nil : .linear(duration: 1).repeatForever(autoreverses: false),
+            value: turning
         )
-        .onAppear {
-            state.rowHovering = rowHovering
-            state.menuOpen = menuOpen
-            refresh()
-        }
-        .onChange(of: rowHovering) { _, next in
-            state.rowHovering = next
-            refresh()
-        }
-        .onChange(of: menuOpen) { _, next in
-            state.menuOpen = next
-            refresh()
-        }
-        .onDisappear { hideTask?.cancel() }
+        .onAppear { turning = true }
+    }
+}
+
+// MARK: - Chat list
+
+/// One row of the sidebar's chat list, on eve data: the chat the bot has open,
+/// then its recents.
+struct ChatEntry: Identifiable, Equatable {
+    let id: String
+    /// The recent behind this row, nil for the chat that is open now.
+    let recentId: String?
+    let title: String
+    /// What the title was taken from, for search.
+    let preview: String
+    let updatedAt: Date?
+
+    var isCurrent: Bool { recentId == nil }
+
+    struct Bucket: Identifiable {
+        let id: String
+        let label: String
+        let entries: [ChatEntry]
     }
 
-    private func refresh() {
-        hideTask?.cancel()
-        hideTask = nil
-        if state.isEngaged {
-            visible = true
+    static let newChatTitle = "New chat"
+
+    /// The one-line title: the stored title unless it only repeats the bot's
+    /// name, else the first message, else "New chat". Markdown marks go.
+    @MainActor static func title(stored: String, preview: String, botName: String) -> String {
+        let storedText = plain(stored)
+        let previewText = plain(preview)
+        let useful = !storedText.isEmpty && storedText != "Chat" && storedText != botName
+        let text = useful ? storedText : previewText
+        return text.isEmpty ? newChatTitle : text
+    }
+
+    /// A message as plain text: only markdown's own marks go. Links keep
+    /// their text, code ticks and paired emphasis drop their marks, and a
+    /// heading or quote marker goes at the start of a line. "C#", "issue #42"
+    /// and "clear_history" stay as written.
+    @MainActor static func plain(_ raw: String) -> String {
+        var text = AppModel.previewText(raw).replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?m)^\\s*(#{1,6}\\s+|>\\s)", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "`+", with: "", options: .regularExpression)
+        for mark in ["\\*\\*", "__", "\\*", "_", "~~"] {
+            text = text.replacingOccurrences(
+                of: "(?<![A-Za-z0-9])\(mark)(?=\\S)(.+?)(?<=\\S)\(mark)(?![A-Za-z0-9])",
+                with: "$1",
+                options: .regularExpression
+            )
+        }
+        text = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Today, Yesterday, Previous 7 days, Previous 30 days, then a group per
+    /// month ("September", "August 2025" when not this year), newest first.
+    static func groups(_ entries: [ChatEntry], now: Date = Date(), calendar: Calendar = .current) -> [Bucket] {
+        let today = calendar.startOfDay(for: now)
+        func day(_ offset: Int) -> Date { calendar.date(byAdding: .day, value: offset, to: today) ?? today }
+        let yesterday = day(-1)
+        let week = day(-7)
+        let month = day(-30)
+        let monthFormat = DateFormatter()
+        monthFormat.calendar = calendar
+        monthFormat.timeZone = calendar.timeZone
+        monthFormat.setLocalizedDateFormatFromTemplate("MMMM")
+        let yearFormat = DateFormatter()
+        yearFormat.calendar = calendar
+        yearFormat.timeZone = calendar.timeZone
+        yearFormat.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+        let thisYear = calendar.component(.year, from: now)
+
+        var out: [Bucket] = []
+        var currentKey = ""
+        var currentLabel = ""
+        var bucket: [ChatEntry] = []
+        func flush() {
+            if !bucket.isEmpty { out.append(Bucket(id: currentKey, label: currentLabel, entries: bucket)) }
+            bucket = []
+        }
+        for entry in entries.sorted(by: { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }) {
+            let key: String
+            let label: String
+            if let date = entry.updatedAt {
+                if date >= today { (key, label) = ("today", "Today") }
+                else if date >= yesterday { (key, label) = ("yesterday", "Yesterday") }
+                else if date >= week { (key, label) = ("week", "Previous 7 days") }
+                else if date >= month { (key, label) = ("month", "Previous 30 days") }
+                else {
+                    let year = calendar.component(.year, from: date)
+                    (key, label) = (
+                        "m-\(year)-\(calendar.component(.month, from: date))",
+                        year == thisYear ? monthFormat.string(from: date) : yearFormat.string(from: date)
+                    )
+                }
+            } else {
+                (key, label) = ("earlier", "Earlier")
+            }
+            if key != currentKey {
+                flush()
+                currentKey = key
+                currentLabel = label
+            }
+            bucket.append(entry)
+        }
+        flush()
+        return out
+    }
+
+    /// "now", "2m", "3h", "Tue" within a week, else "Oct 3".
+    static func timeLabel(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let seconds = max(0, now.timeIntervalSince(date))
+        if seconds < 60 { return "now" }
+        if seconds < 3600 { return "\(Int(seconds / 60))m" }
+        if seconds < 86_400 { return "\(Int(seconds / 3600))h" }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        if seconds < 7 * 86_400 {
+            formatter.setLocalizedDateFormatFromTemplate("EEE")
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        }
+        return formatter.string(from: date)
+    }
+}
+
+extension AppModel {
+    /// The chat list on eve data: the chat the bot has open, then the bot's
+    /// recents, newest first. A recent that points at the open session is the
+    /// same chat and is listed once.
+    var chatEntries: [ChatEntry] {
+        guard let store, let bot = store.activeBots.first(where: { $0.id == Threads.defaultBotId }) else { return [] }
+        var entries: [ChatEntry] = []
+        let openSession = bot.sessionId.flatMap { $0.isEmpty ? nil : $0 }
+        if let sessionId = openSession {
+            entries.append(ChatEntry(
+                id: "current-\(sessionId)",
+                recentId: nil,
+                title: ChatEntry.title(stored: "", preview: bot.lastPreview, botName: bot.name),
+                preview: ChatEntry.plain(bot.lastPreview),
+                // A chat with no message yet is the newest, and keeps one stamp
+                // rather than a new date on every read.
+                updatedAt: bot.lastAt.flatMap(RailClock.date(from:)) ?? .distantFuture
+            ))
+        }
+        // A legacy recent with no session still lists when the bot has none open.
+        let listed = store.recents.filter { $0.botId == bot.id && (openSession == nil || $0.sessionId != openSession) }
+        for recent in listed.sorted(by: { (RailClock.date(from: $0.updatedAt) ?? .distantPast) > (RailClock.date(from: $1.updatedAt) ?? .distantPast) }).prefix(40) {
+            entries.append(ChatEntry(
+                id: recent.id,
+                recentId: recent.id,
+                title: ChatEntry.title(stored: recent.title, preview: recent.preview, botName: bot.name),
+                preview: ChatEntry.plain(recent.preview),
+                updatedAt: RailClock.date(from: recent.updatedAt)
+            ))
+        }
+        return entries.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+    }
+
+    /// The chat an approval was raised in, when it is not the open one and the
+    /// session is one of the listed chats.
+    func otherChat(for item: ApprovalItem) -> ChatEntry? {
+        guard let sessionId = item.sessionId, !sessionId.isEmpty,
+              let bot = store?.activeBots.first(where: { $0.id == Threads.defaultBotId }),
+              bot.sessionId != sessionId,
+              let recent = store?.recents.first(where: { $0.sessionId == sessionId }) else { return nil }
+        return chatEntries.first { $0.recentId == recent.id }
+    }
+
+    /// An approval raised in a chat that is not open and not in the list: the
+    /// card says "From another chat" with no title and no Open chat link.
+    func approvalFromUnlistedChat(_ item: ApprovalItem) -> Bool {
+        guard let sessionId = item.sessionId, !sessionId.isEmpty,
+              let bot = store?.activeBots.first(where: { $0.id == Threads.defaultBotId }),
+              bot.sessionId != sessionId else { return false }
+        return otherChat(for: item) == nil
+    }
+
+    /// The open chat is working. Other chats show no mark until the engine
+    /// reports them (PR 3).
+    var currentChatWorking: Bool {
+        selectedBotId.map(isWorking) ?? false
+    }
+
+    /// Open a chat. Opening another one stops a reply still coming in, so
+    /// that asks first (the alert on the root view calls `openNow`).
+    func open(_ entry: ChatEntry) {
+        if pending, !entry.isCurrent {
+            leaveChatTarget = entry
             return
         }
-        guard visible else { return }
-        hideTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(RowActionsVisibility.hideGrace * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            visible = false
+        openNow(entry)
+    }
+
+    func openNow(_ entry: ChatEntry) {
+        if let recentId = entry.recentId {
+            openRecent(recentId)
+        } else {
+            stage = .chat
         }
     }
-}
 
-/// The rail's ellipsis affordance: invisible at rest, revealed on hover, and
-/// kept on screen while its popover is open.
-private struct RowActionsButton: View {
-    let label: String
-    let visible: Bool
-    let onHoverChange: (Bool) -> Void
-    let onTap: (CGRect, CGRect) -> Void
-
-    @State private var hovering = false
-    @State private var frame: CGRect = .zero
-    @State private var windowFrame: CGRect = .zero
-
-    var body: some View {
-        Button {
-            onTap(frame, windowFrame)
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(Theme.C.inkMuted)
-                .frame(width: 24, height: 24)
-                .background(hovering ? Theme.C.accentSoft : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
-                // The pill stays 24pt, but the target around it is the full row
-                // height, so an approach that is a few points off still lands.
-                .frame(width: 30, height: DesignTokens.Space.botRow)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .onHover { inside in
-            hovering = inside
-            onHoverChange(inside)
-        }
-        .opacity(visible ? 1 : 0)
-        // Fade, but take the hidden control out of the click and VoiceOver
-        // order too; the row's context menu stays as the keyboard path.
-        .allowsHitTesting(visible)
-        .accessibilityHidden(!visible)
-        .accessibilityLabel(label)
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { frame = proxy.frame(in: .named("rail")) }
-                    .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
-                        frame = next
-                    }
-            }
-        )
-        .trackWindowFrame($windowFrame)
-        .fixedSize()
+    /// ⌘↑ and ⌘↓: the previous or next chat in the sidebar's order. With no
+    /// chat open (an empty new chat, or a page) either key lands on the newest.
+    func openAdjacentChat(_ step: Int) {
+        let entries = chatEntries
+        guard !entries.isEmpty else { return }
+        let index = stage == .chat ? entries.firstIndex(where: \.isCurrent) : nil
+        let target = index.map { $0 + step } ?? 0
+        guard entries.indices.contains(target) else { return }
+        open(entries[target])
     }
 }
