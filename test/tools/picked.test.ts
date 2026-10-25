@@ -196,6 +196,36 @@ test("a Stop while a picked tool's card waits ends the call and retires the card
   }
 });
 
+test("a Stop reaches a picked tool's call that is already on the wire", async () => {
+  const env = world("full_access");
+  try {
+    resetRuntimeChecks();
+    connection();
+    pick(["notes__list_notes"]);
+    setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: number };
+      const json = (result: unknown) => new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), { headers: { "content-type": "application/json" } });
+      if (body.method === "initialize") return json({ protocolVersion: "2025-06-18" });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }) as typeof fetch);
+    const [tool] = pickedTools("chat-mcp");
+    const ctx = fakeCtx({ chatId: "chat-mcp" });
+    const started = Date.now();
+    const pending = tool.execute({}, ctx) as Promise<{ status: string }>;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    ctx.abort();
+    const out = await Promise.race([pending, new Promise<{ status: string }>((resolve) => setTimeout(() => resolve({ status: "still running" }), 2000))]);
+    assert.notEqual(out.status, "still running");
+    assert.notEqual(out.status, "ok");
+    assert.ok(Date.now() - started < 2000);
+  } finally {
+    env.restore();
+  }
+});
+
 test("arguments too long for a card are refused, not clipped; a result past 24 KB is cut and says so", async () => {
   const env = world("auto");
   try {

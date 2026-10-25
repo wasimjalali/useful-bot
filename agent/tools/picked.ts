@@ -15,7 +15,7 @@ import {
 } from "../../shared/connection-tools.ts";
 import { findConnectionById } from "../../shared/connections-store.ts";
 import { toolInputSchema } from "../../shared/json-schema-zod.ts";
-import { callMcpTool, McpError } from "../../shared/mcp-http.ts";
+import { callMcpTool, McpError, TOOL_CALL_TIMEOUT_MS } from "../../shared/mcp-http.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { mcpToolGate, mcpToolRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
@@ -165,7 +165,7 @@ async function callPicked(
     const callStamp = nextStamp();
     try {
       headers = await connectionHeaders(current);
-      const raw = await callMcpTool(url, toolName, args, headers);
+      const raw = await callMcpTool(url, toolName, args, headers, AbortSignal.any([AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS), ctx.abortSignal]));
       let text = JSON.stringify(raw);
       let truncated = false;
       if (text.length > RESULT_MAX_BYTES) {

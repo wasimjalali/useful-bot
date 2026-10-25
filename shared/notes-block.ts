@@ -119,15 +119,20 @@ export function notesBlockFor(botId: string, store: () => MemoryStore = sharedMe
     const delta = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
     return delta !== 0 ? delta : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
-  const cards: NoteCard[] = sorted.map((card, index) => ({
-    id: card.id,
-    title: card.title,
+  const cards: NoteCard[] = [];
+  sorted.forEach((card, index) => {
+    let body = card.body;
     // An outside-sourced note shows no body, so none is loaded for it.
-    body: index < NOTES_FULL_COUNT && card.source !== OUTSIDE_SOURCE
-      ? notes.readCard(card.id, botId).body
-      : card.body,
-    updatedAt: card.updatedAt,
-    source: card.source,
-  }));
+    if (index < NOTES_FULL_COUNT && card.source !== OUTSIDE_SOURCE) {
+      try {
+        body = notes.readCard(card.id, botId).body;
+      } catch (err) {
+        // Deleted between the list and the read: the owner's send goes on without it.
+        if (err instanceof Error && err.message === "memory_not_found") return;
+        throw err;
+      }
+    }
+    cards.push({ id: card.id, title: card.title, body, updatedAt: card.updatedAt, source: card.source });
+  });
   return renderNotesBlock(cards, notes.countLive(botId));
 }

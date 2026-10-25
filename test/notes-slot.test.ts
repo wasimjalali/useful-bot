@@ -76,6 +76,20 @@ test("the block names the merged memory tool, not the four it replaced", () => {
   assert.doesNotMatch(text, /memory_(read|search|upsert|delete)/);
 });
 
+test("a note deleted between the list and the read is skipped, not a failed send", () => {
+  const store = freshStore();
+  put(store, "bot-a", "Stays", "still here");
+  const gone = put(store, "bot-a", "Vanishes", "deleted meanwhile");
+  const racing = Object.create(store) as MemoryStore;
+  racing.readCard = (id: string, botId: string) => {
+    if (id === gone.id) throw new Error("memory_not_found");
+    return store.readCard(id, botId);
+  };
+  const text = notesBlockFor("bot-a", () => racing);
+  assert.match(text, /still here/);
+  assert.doesNotMatch(text, /Vanishes|deleted meanwhile/);
+});
+
 test("a store failure is not hidden: the call throws", () => {
   const broken = () => { throw new Error("index locked"); };
   assert.throws(() => notesBlockFor("bot-a", broken as never), /index locked/);
