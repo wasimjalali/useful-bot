@@ -48,6 +48,8 @@ const TRACKED = [
   "package.json",
   "package-lock.json",
   "scripts/service.mjs",
+  "scripts/service-secrets.mjs",
+  "scripts/secrets-preload.mjs",
   "scripts/setup-local.mjs",
   "scripts/web-mode.mjs",
   "shared",
