@@ -1,4 +1,5 @@
 import { Composio } from "@composio/core";
+import { connectorRisk, type ConnectorRisk } from "../agent/lib/connector-risk.ts";
 import { cataloguePath, catalogueSlugs, readCatalogue } from "./composio-catalogue.ts";
 import {
   connectorsPath,
@@ -30,6 +31,8 @@ export interface ConnectorToolkit {
   connected: boolean;
   accountId: string | null;
   status: string | null;
+  /** The account is connected but its sign-in is no longer valid; the owner has to sign in again. */
+  needsSignIn: boolean;
 }
 
 /** One credential the owner's own app supplies (client id, client secret, ...). */
@@ -491,6 +494,14 @@ function score(row: ConnectorToolkit, search: string): number {
   return base + (row.connected ? 5 : 0) + (FEATURED_TOOLKITS.includes(row.slug) ? 2 : 0);
 }
 
+/**
+ * Composio connected-account statuses (INITIALIZING, INITIATED, ACTIVE, FAILED,
+ * EXPIRED, INACTIVE) where the owner has to sign in again: the token expired
+ * or was revoked (EXPIRED), or the account stopped working (FAILED, INACTIVE).
+ * INITIALIZING and INITIATED are a sign-in still in progress, not a lapsed one.
+ */
+const SIGN_IN_AGAIN_STATUSES: ReadonlySet<string> = new Set(["EXPIRED", "FAILED", "INACTIVE"]);
+
 function toRow(item: ToolkitItem & { ownApp?: boolean | undefined }): ConnectorToolkit {
   const account = item.connection?.connectedAccount;
   const connected = item.connection?.isActive === true && account?.status === "ACTIVE";
@@ -503,6 +514,7 @@ function toRow(item: ToolkitItem & { ownApp?: boolean | undefined }): ConnectorT
     connected,
     accountId: account?.id ?? null,
     status: account?.status ?? null,
+    needsSignIn: account !== undefined && SIGN_IN_AGAIN_STATUSES.has(account.status),
   };
 }
 
@@ -741,7 +753,7 @@ export async function countToolkitTools(slug: string, path = connectorsPath()): 
 }
 
 const TOOL_LIST_TTL_MS = 60_000;
-const toolListCache = new Map<string, { at: number; tools: Array<{ name: string; description: string }> }>();
+const toolListCache = new Map<string, { at: number; tools: Array<{ name: string; description: string; risk: ConnectorRisk }> }>();
 
 /** Tests start from an empty tool-list cache. */
 export function forgetToolLists(): void {
@@ -755,7 +767,7 @@ export function forgetToolLists(): void {
 export async function listToolkitTools(
   slug: string,
   path = connectorsPath(),
-): Promise<Array<{ name: string; description: string }>> {
+): Promise<Array<{ name: string; description: string; risk: ConnectorRisk }>> {
   if (!isToolkitSlug(slug)) throw new Error("toolkit_invalid");
   const store = readConnectorsStore(path);
   if (!store.connectedToolkits.includes(slug)) throw new Error("not_connected");
@@ -766,7 +778,11 @@ export async function listToolkitTools(
   if (!Array.isArray(raw)) throw new Error("tools_unavailable");
   const tools = raw
     .filter((tool) => (tool.toolkit?.slug ?? toolkitOf(tool.slug, [slug]) ?? "").toLowerCase() === slug)
-    .map((tool) => ({ name: tool.slug, description: (tool.description ?? "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 200) }));
+    .map((tool) => ({
+      name: tool.slug,
+      description: (tool.description ?? "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 200),
+      risk: connectorRisk(tool.slug, slug),
+    }));
   toolListCache.set(slug, { at: Date.now(), tools });
   return tools;
 }

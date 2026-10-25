@@ -68,11 +68,21 @@ test("setWorkspace rejects an unknown bot and a malformed grant", () => {
   );
 });
 
-test("seed store has the Generalist and none of the removed rail fields", () => {
+test("the one bot's name is fixed: rename, nameBot and an updateBot name change are refused", () => {
+  const store = seedStore();
+  assert.throws(() => applyShellAction(store, { type: "renameBot", botId: DEFAULT_BOT_ID, name: "Jarvis" }), /shell_bot_name_fixed/);
+  assert.throws(() => applyShellAction(store, { type: "nameBot", botId: DEFAULT_BOT_ID, name: "Jarvis" }), /shell_bot_name_fixed/);
+  assert.throws(() => applyShellAction(store, { type: "updateBot", botId: DEFAULT_BOT_ID, patch: { name: "Jarvis" } }), /shell_bot_name_fixed/);
+  const same = applyShellAction(store, { type: "updateBot", botId: DEFAULT_BOT_ID, patch: { name: "Useful Bot", notify: true } }).store;
+  assert.equal(same.bots[0].name, "Useful Bot");
+  assert.equal(same.bots[0].notify, true);
+});
+
+test("seed store has the Useful Bot and none of the removed rail fields", () => {
   const store = seedStore(new Date("2026-09-12T00:00:00Z"));
   assert.equal(store.bots.length, 1);
   assert.equal(store.bots[0].id, DEFAULT_BOT_ID);
-  assert.equal(selectedBot(store).name, "Generalist");
+  assert.equal(selectedBot(store).name, "Useful Bot");
   const wire = JSON.parse(JSON.stringify(store)) as Record<string, unknown> & { bots: Array<Record<string, unknown>> };
   for (const key of ["sections", "collapsedUnassigned", "collapsedHidden"]) assert.equal(key in wire, false, key);
   for (const key of ["pinned", "hidden", "sectionId", "memberIds"]) assert.equal(key in wire.bots[0], false, key);
@@ -101,7 +111,7 @@ test("a store written with the rail's pins, sections and groups still reads, and
     ],
   };
   const parsed = parseShell(JSON.parse(JSON.stringify(legacy)));
-  assert.deepEqual(parsed.bots.map((bot) => [bot.name, bot.kind]), [["Generalist", "bot"], ["Alpha", "bot"], ["Desk", "group"]]);
+  assert.deepEqual(parsed.bots.map((bot) => [bot.name, bot.kind]), [["Useful Bot", "bot"], ["Alpha", "bot"], ["Desk", "group"]]);
   const wire = JSON.parse(JSON.stringify(parsed)) as Record<string, unknown> & { bots: Array<Record<string, unknown>> };
   for (const key of ["sections", "collapsedUnassigned", "collapsedHidden"]) assert.equal(key in wire, false, key);
   for (const bot of wire.bots) {

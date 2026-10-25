@@ -755,6 +755,27 @@ test("countToolkitTools counts one toolkit's tools and returns null on failure",
   assert.equal(await countToolkitTools("gmail", tmpPath(false)), null);
 });
 
+test("a connected account that needs a new sign-in is flagged, an active or half-finished one is not", async () => {
+  const lapsed = (status: string): ToolkitItem => ({
+    slug: "gmail",
+    name: "Gmail",
+    isNoAuth: false,
+    connection: { isActive: false, connectedAccount: { status, id: "ca_gmail" } },
+  });
+  const flags: Record<string, boolean> = {};
+  for (const status of ["EXPIRED", "FAILED", "INACTIVE", "INITIATED", "INITIALIZING"]) {
+    const { factory } = stub({ toolkitItems: [lapsed(status)] });
+    setComposioFactory(factory);
+    const { rows } = await listConnectorToolkits({}, tmpPath());
+    flags[status] = rows.find((row) => row.slug === "gmail")?.needsSignIn ?? false;
+  }
+  assert.deepEqual(flags, { EXPIRED: true, FAILED: true, INACTIVE: true, INITIATED: false, INITIALIZING: false });
+  const { factory } = stub({ toolkitItems: [GMAIL, SLACK] });
+  setComposioFactory(factory);
+  const { rows } = await listConnectorToolkits({}, tmpPath());
+  assert.deepEqual(rows.map((row) => [row.slug, row.needsSignIn]), [["gmail", false], ["slack", false]]);
+});
+
 test("listToolkitTools lists a connected toolkit's tools, refuses an unconnected one and caches briefly", async () => {
   const { state, factory } = stub({
     toolkitItems: [GMAIL],
@@ -769,7 +790,7 @@ test("listToolkitTools lists a connected toolkit's tools, refuses an unconnected
   await assert.rejects(() => listToolkitTools("gmail", path), /not_connected/);
   await assert.rejects(() => listToolkitTools("not a slug", path), /toolkit_invalid/);
   updateConnectorsStore((store) => setConnectedToolkits(store, ["gmail"]), path);
-  assert.deepEqual(await listToolkitTools("gmail", path), [{ name: "GMAIL_FETCH_EMAILS", description: "Fetch emails" }]);
+  assert.deepEqual(await listToolkitTools("gmail", path), [{ name: "GMAIL_FETCH_EMAILS", description: "Fetch emails", risk: "read" }]);
   state.directTools = null as never;
   assert.equal((await listToolkitTools("gmail", path)).length, 1, "served from the cache");
   forgetToolLists();

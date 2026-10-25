@@ -244,7 +244,7 @@ test("memory_upsert writes at once in Auto with the card text recorded, and Read
     assert.ok(written.id);
     assert.equal(approvals.listPending().length, 0);
     const card = [...approvals.records.values()].find((item) => item.tool === "memory.upsert");
-    assert.equal(card?.preview.includes("memory CEO pref (Generalist, tags: writing): Short sentences."), true);
+    assert.equal(card?.preview.includes("memory CEO pref (Useful Bot, tags: writing): Short sentences."), true);
 
     upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
     const refused = await run<{ status: string; error: string }>(memoryUpsert, {

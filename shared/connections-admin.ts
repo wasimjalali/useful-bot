@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import { mcpToolRisk, type ConnectorRisk } from "../agent/lib/connector-risk.ts";
 import { parseBundle, refreshLockPath, withRefreshLock } from "./connection-auth.ts";
 import { cancelDiscovery, discoverConnection, discoveryRunning, settleAllDiscoveries } from "./connection-tools.ts";
 import { connectionIcon, removeConnectionIcon, settleIcons, startDueIcons } from "./connection-icons.ts";
@@ -41,7 +42,7 @@ export type PublicConnection = {
   lastError: { code: string; message: string } | null;
   checkedAt: string | null;
   toolCount: number | null;
-  tools: Array<{ name: string; description: string }>;
+  tools: Array<{ name: string; description: string; risk: ConnectorRisk }>;
   /** A data: URI found once for the server's site, or null. */
   icon: string | null;
 };
@@ -79,7 +80,7 @@ export function publicConnection(entry: ConnectionEntry): PublicConnection {
     lastError: status?.lastError ?? null,
     checkedAt: status?.checkedAt ?? index?.fetchedAt ?? null,
     toolCount: status?.toolCount ?? (index && !index.failed ? index.tools.length : null),
-    tools: (index?.tools ?? []).map((tool) => ({ name: tool.name, description: oneLine(tool.description, 200) })),
+    tools: (index?.tools ?? []).map((tool) => ({ name: tool.name, description: oneLine(tool.description, 200), risk: mcpToolRisk(tool.name) })),
     icon: connectionIcon(entry.id),
   };
 }

@@ -399,14 +399,14 @@ test("the resume is sent by the orchestrator under its real name, not by a hard-
   const shell = readShell();
   writeFixtureShell({
     ...shell,
-    bots: shell.bots.map((bot) => (bot.id === "bot-useful" ? { ...bot, name: "Generalist" } : bot)),
+    bots: shell.bots.map((bot) => (bot.id === "bot-useful" ? { ...bot, name: "Useful Bot" } : bot)),
   });
   await startConnectAuthorize(proposal.id, CALLBACK);
   item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "ca_gmail_1" } };
   resetConnectMemo();
   await pumpConnects({ now: Date.now() + 6_000 });
   assert.equal(listHandoffs()[0].sourceBotId, "bot-useful");
-  assert.equal(listHandoffs()[0].sourceName, "Generalist");
+  assert.equal(listHandoffs()[0].sourceName, "Useful Bot");
 });
 
 test("with the default bot gone from the roster, the resume still comes from the default bot id under the default name", async () => {

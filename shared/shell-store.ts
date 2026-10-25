@@ -273,20 +273,25 @@ Preferences:
 
 const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 
+/** The one bot's name. It is fixed: the owner can't rename it. */
+export const DEFAULT_BOT_NAME = "Useful Bot";
+
 /**
- * A pure overlay for the Generalist only: a description that is still one of
- * the shipped seeds reads as the current text, and a bot still named "Useful
- * Bot" with a seed and no custom avatar reads as "Generalist". Nothing is
- * written here; the change persists with the next normal write.
+ * A pure overlay for the one bot only: it always reads as "Useful Bot" (an
+ * archived one keeps its name), and a description that is still one of the
+ * shipped seeds reads as the current text. Nothing is written here; the
+ * change persists with the next normal write.
  */
-function overlaySeed(bot: ShellBot, all: readonly ShellBot[]): ShellBot {
+function overlaySeed(bot: ShellBot): ShellBot {
   if (bot.id !== DEFAULT_BOT_ID || bot.kind !== "bot") return bot;
+  const named = bot.archived || bot.name === DEFAULT_BOT_NAME ? bot : { ...bot, name: DEFAULT_BOT_NAME };
   const wanted = squash(bot.description);
-  if (!GENERALIST_SEEDS.some((seed) => squash(seed) === wanted)) return bot;
-  // Never a second "Generalist": another bot may already carry the name.
-  const nameTaken = all.some((other) => other.id !== bot.id && other.name.toLowerCase() === "generalist");
-  const rename = bot.name === "Useful Bot" && !bot.avatarCustom && !nameTaken;
-  return { ...bot, description: GENERALIST_SEED_V3, ...(rename ? { name: "Generalist" } : {}) };
+  if (!GENERALIST_SEEDS.some((seed) => squash(seed) === wanted)) return named;
+  return { ...named, description: GENERALIST_SEED_V3 };
+}
+
+function assertNameNotFixed(botId: string): void {
+  if (botId === DEFAULT_BOT_ID) throw new Error("shell_bot_name_fixed");
 }
 
 export function seedStore(at = new Date()): ShellStore {
@@ -298,7 +303,7 @@ export function seedStore(at = new Date()): ShellStore {
       {
         id: DEFAULT_BOT_ID,
         kind: "bot",
-        name: "Generalist",
+        name: DEFAULT_BOT_NAME,
         petname: null,
         label: "",
         description: GENERALIST_SEED_V3,
@@ -653,7 +658,7 @@ export function parseShell(raw: unknown): ShellStore {
   if (!Array.isArray(rec.bots)) throw new Error("shell_shape");
   if (rec.recents !== undefined && !Array.isArray(rec.recents)) throw new Error("shell_recents");
   const parsed = rec.bots.map(parseBot);
-  const bots = parsed.map((bot) => overlaySeed(bot, parsed));
+  const bots = parsed.map((bot) => overlaySeed(bot));
   const recents = (rec.recents ?? []).map(parseRecent);
   if (bots.length === 0) throw new Error("shell_empty");
   const botIds = new Set(bots.map((bot) => bot.id));
@@ -772,6 +777,7 @@ export function applyShellAction(
     }
     case "nameBot": {
       assertNotArchived(store, action.botId);
+      assertNameNotFixed(action.botId);
       const name = clip(action.name, NAME_MAX);
       if (!name) throw new Error("shell_name_required");
       const patch: Partial<ShellBot> = { name };
@@ -794,6 +800,7 @@ export function applyShellAction(
     }
     case "renameBot": {
       assertNotArchived(store, action.botId);
+      assertNameNotFixed(action.botId);
       return {
         store: {
           ...store,
@@ -807,6 +814,7 @@ export function applyShellAction(
       assertNotArchived(store, action.botId);
       const patch: Partial<ShellBot> = {};
       if (action.patch.name !== undefined) {
+        if (action.botId === DEFAULT_BOT_ID && clip(action.patch.name, NAME_MAX) !== DEFAULT_BOT_NAME) assertNameNotFixed(action.botId);
         const name = clip(action.patch.name, NAME_MAX);
         if (name) patch.name = name;
       }
