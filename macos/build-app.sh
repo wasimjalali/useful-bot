@@ -176,7 +176,13 @@ fi
   fi
 )
 
-swift build -c release
+# Swift 6.4's default build engine (swiftbuild) links through swiftc, which gives
+# clang the SDK as --sysroot and runs without SDKROOT. clang reads the SDK version
+# only from -isysroot or SDKROOT, so ld recorded the deployment target as the SDK
+# (sdk 14.0) and AppKit and SwiftUI ran in old-SDK mode. Hand the link step
+# -isysroot until the driver fix ships (swiftlang/swift-driver#2158, #2240).
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+swift build -c release -Xswiftc -Xclang-linker -Xswiftc -isysroot -Xswiftc -Xclang-linker -Xswiftc "$SDK_PATH"
 if [ "$VARIANT" = dev ]; then
   APP="dist/Useful Bot Dev.app"
   EXE="UsefulBotDevApp"
