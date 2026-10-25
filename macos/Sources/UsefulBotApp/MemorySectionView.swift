@@ -37,7 +37,7 @@ struct MemorySectionView: View {
             }
             if let notes = model.memoryNotes {
                 if notes.isEmpty {
-                    Text("Nothing remembered yet. \(bot.name) saves notes as you work together.")
+                    Text("Nothing remembered yet. Useful Bot saves notes as you work together.")
                         .font(.system(size: 13))
                         .lineSpacing(3)
                         .foregroundStyle(Theme.C.inkMuted)
@@ -131,6 +131,7 @@ private struct MemoryRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
             HStack(spacing: 10) {
                 Text(note.title)
                     .font(.system(size: 13, weight: .medium))
@@ -138,6 +139,10 @@ private struct MemoryRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                Text(note.source == "owner" ? "You" : "Useful Bot")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .lineLimit(1)
                 Text(MemoryDateLabel.label(iso: note.updatedAt))
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkFaint)
@@ -149,17 +154,10 @@ private struct MemoryRow: View {
                     .animation(.easeOut(duration: 0.16), value: open)
             }
             .padding(.leading, 14)
-            .padding(.trailing, 12)
+            .padding(.trailing, 10)
             .frame(minHeight: 40)
-            .background(hovering ? Theme.C.sunken.opacity(0.5) : .clear)
-            .overlay(
-                Rectangle()
-                    .strokeBorder(Theme.C.ink, lineWidth: 2)
-                    .opacity(focused && !modality.pointerDriven ? 1 : 0)
-            )
             .contentShape(Rectangle())
             .onTapGesture(perform: toggle)
-            .onHover { hovering = $0 }
             .pointerOnHover()
             .focusable()
             .focused($focused)
@@ -173,6 +171,27 @@ private struct MemoryRow: View {
             .accessibilityValue(open ? "expanded" : "collapsed")
             .accessibilityAction(.default, toggle)
             .accessibilityIdentifier("memory-row-\(note.id)")
+            Button(action: delete) {
+                Text("Remove")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 40)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(busy)
+            .pointerOnHover()
+            .accessibilityIdentifier("memory-delete-\(note.id)")
+            }
+            .padding(.trailing, 4)
+            .background(hovering ? Theme.C.sunken.opacity(0.5) : .clear)
+            .overlay(
+                Rectangle()
+                    .strokeBorder(Theme.C.ink, lineWidth: 2)
+                    .opacity(focused && !modality.pointerDriven ? 1 : 0)
+            )
+            .onHover { hovering = $0 }
 
             if open {
                 VStack(alignment: .leading, spacing: 8) {
@@ -193,17 +212,6 @@ private struct MemoryRow: View {
                                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous))
                         }
                         Spacer(minLength: 0)
-                        Button(action: delete) {
-                            Text("Delete note")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.C.inkMuted)
-                                .padding(.horizontal, 2)
-                                .padding(.vertical, 4)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(busy)
-                        .pointerOnHover()
-                        .accessibilityIdentifier("memory-delete-\(note.id)")
                     }
                 }
                 .padding(.horizontal, 14)

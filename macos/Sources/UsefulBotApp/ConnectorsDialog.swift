@@ -14,6 +14,8 @@ private struct ConnectorDetailPage: View {
     @State private var confirming = false
     @State private var appTools: [DirectConnectionTool]?
     @State private var toolsFailed = false
+    @State private var scope: ConnectorToolScope = .all
+    @State private var filter = ""
 
     private var busy: Bool {
         switch tile.source {
@@ -24,7 +26,9 @@ private struct ConnectorDetailPage: View {
 
     private var kindLine: String {
         switch tile.source {
-        case .app: return "App"
+        case .app(let row):
+            guard let account = row.accountId else { return "App \u{00B7} Composio" }
+            return "App \u{00B7} Composio \u{00B7} connected as \(account)"
         case .server(let row): return "\(row.host) \u{00B7} \(row.kind.label)"
         }
     }
@@ -89,15 +93,24 @@ private struct ConnectorDetailPage: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                if !confirming { actions }
             }
             .padding(.horizontal, 28)
             .padding(.top, 14)
-            HStack(spacing: 6) {
-                if tile.mark == .checking { ProgressView().controlSize(.small) }
-                Text(tile.status)
-                    .font(.system(size: 13))
-                    .foregroundStyle(tile.mark == .added || tile.mark == .checking ? Theme.C.inkMuted : Theme.C.warning)
+            if confirming {
+                confirmRow
+                    .padding(.horizontal, 28)
+                    .padding(.top, 12)
+            }
+            HStack(spacing: 10) {
+                ConnectorStateChip(tile: tile)
+                if let counts = countsLine {
+                    Text(counts)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .monospacedDigit()
+                }
             }
             .padding(.horizontal, 28)
             .padding(.top, 14)
@@ -108,9 +121,6 @@ private struct ConnectorDetailPage: View {
                     .padding(.horizontal, 28)
                     .padding(.top, 4)
             }
-            actions
-                .padding(.horizontal, 28)
-                .padding(.top, 16)
             // A failed Disconnect or Remove shows here, where the owner pressed it.
             if let actionError = tile.source.isApp ? model.connectorsError : model.directConnectionsError {
                 Text(actionError)
@@ -122,7 +132,7 @@ private struct ConnectorDetailPage: View {
             if showsTools {
                 toolsSection
                     .padding(.horizontal, 28)
-                    .padding(.top, 20)
+                    .padding(.top, 16)
                     .padding(.bottom, 16)
             }
             Spacer(minLength: 0)
@@ -137,44 +147,41 @@ private struct ConnectorDetailPage: View {
         }
     }
 
+    /// "48 tools · 31 read · 17 write"; a write count includes destructive tools.
+    private var countsLine: String? {
+        guard let tools, !tools.isEmpty else { return nil }
+        let reads = tools.filter { $0.risk == .read }.count
+        let total = tools.count == 1 ? "1 tool" : "\(tools.count) tools"
+        return "\(total) \u{00B7} \(reads) read \u{00B7} \(tools.count - reads) write"
+    }
+
     @ViewBuilder
     private var toolsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             if let tools {
                 if tools.isEmpty {
                     Text("No tools")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.inkMuted)
                 } else {
-                    Text(tools.count == 1 ? "1 tool" : "\(tools.count) tools")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.C.inkMuted)
-                    ScrollView {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3), spacing: 10) {
-                            ForEach(Array(tools.enumerated()), id: \.offset) { _, tool in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(tool.name)
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(Theme.C.ink)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                    if let description = tool.description, !description.isEmpty {
-                                        Text(description)
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(Theme.C.inkMuted)
-                                            .lineLimit(2)
-                                            .truncationMode(.tail)
-                                    }
-                                }
-                                .padding(10)
-                                .frame(maxWidth: .infinity, alignment: .topLeading)
-                                .background(Theme.C.sunken)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            }
+                    HStack(spacing: 12) {
+                        ConnectorToolScopePicker(scope: $scope)
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.inkFaint)
+                            TextField("Filter tools", text: $filter)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.ink)
+                                .accessibilityLabel("Filter tools")
                         }
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, 12)
+                        .frame(height: 32)
+                        .background(Theme.C.sunken)
+                        .clipShape(Capsule(style: .continuous))
                     }
-                    .uvScroll()
+                    toolList(tools)
                 }
             } else if toolsFailed {
                 Text("Couldn't load the tools.")
@@ -187,35 +194,116 @@ private struct ConnectorDetailPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var actions: some View {
-        HStack(spacing: 8) {
-            if confirming {
-                Text("Disconnect \(tile.name)?")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.C.ink)
-                NativeButton("Disconnect", kind: .danger, small: true, enabled: !busy, action: confirm)
-                NativeButton("Cancel", kind: .secondary, small: true) { confirming = false }
-            } else {
-                switch tile.source {
-                case .app(let row):
-                    NativeButton("Disconnect", kind: .ghost, small: true, enabled: !busy && row.accountId != nil) { confirming = true }
-                case .server(let row):
-                    if row.canReconnect {
-                        NativeButton(
-                            "Reconnect",
-                            kind: row.reconnectProminent ? .primary : .secondary,
-                            small: true,
-                            enabled: !busy
-                        ) { Task { await model.reconnectDirectConnection(row) } }
-                    }
-                    NativeButton("Refresh", kind: .secondary, small: true, enabled: !busy) {
-                        Task { await model.refreshDirectConnection(row) }
-                    }
-                    if row.canRemove {
-                        NativeButton("Disconnect", kind: .ghost, small: true, enabled: !busy) { confirming = true }
+    @ViewBuilder
+    private func toolList(_ tools: [DirectConnectionTool]) -> some View {
+        let query = filter.trimmingCharacters(in: .whitespaces)
+        let shown = tools.filter { tool in
+            query.isEmpty
+                || tool.name.localizedCaseInsensitiveContains(query)
+                || (tool.description?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+        let reads = scope == .writes ? [] : shown.filter { $0.risk == .read }
+        let writes = scope == .reads ? [] : shown.filter { $0.risk != .read }
+        if reads.isEmpty && writes.isEmpty {
+            Text("No tools match.")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkMuted)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    toolGroup("Reads", "Run without asking", reads)
+                    toolGroup("Writes", "Ask you first in Auto", writes)
+                }
+                .padding(.vertical, 2)
+            }
+            .uvScroll()
+        }
+    }
+
+    @ViewBuilder
+    private func toolGroup(_ title: String, _ note: String, _ tools: [DirectConnectionTool]) -> some View {
+        if !tools.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                    Text(note)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                VStack(spacing: 0) {
+                    ForEach(Array(tools.enumerated()), id: \.offset) { index, tool in
+                        if index > 0 { Hairline() }
+                        toolRow(tool)
                     }
                 }
             }
+        }
+    }
+
+    private func toolRow(_ tool: DirectConnectionTool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tool.name)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let description = tool.description, !description.isEmpty {
+                    Text(description)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            Spacer(minLength: 8)
+            Text(tool.risk == .read ? "Read" : "Asks first")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.C.inkMuted)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Theme.C.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous))
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var actions: some View {
+        HStack(spacing: 8) {
+            switch tile.source {
+            case .app(let row):
+                NativeButton("Reconnect", kind: tile.needsSignIn ? .primary : .secondary, small: true, enabled: !busy) {
+                    Task { await model.connectConnector(row, search: search) }
+                }
+                NativeButton("Disconnect", kind: .ghost, small: true, enabled: !busy && row.accountId != nil) { confirming = true }
+            case .server(let row):
+                if row.canReconnect {
+                    NativeButton(
+                        "Reconnect",
+                        kind: row.reconnectProminent ? .primary : .secondary,
+                        small: true,
+                        enabled: !busy
+                    ) { Task { await model.reconnectDirectConnection(row) } }
+                }
+                NativeButton("Refresh", kind: .secondary, small: true, enabled: !busy) {
+                    Task { await model.refreshDirectConnection(row) }
+                }
+                if row.canRemove {
+                    NativeButton("Disconnect", kind: .ghost, small: true, enabled: !busy) { confirming = true }
+                }
+            }
+        }
+    }
+
+    private var confirmRow: some View {
+        HStack(spacing: 8) {
+            Text("Disconnect \(tile.name)?")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.ink)
+            NativeButton("Disconnect", kind: .danger, small: true, enabled: !busy, action: confirm)
+            NativeButton("Cancel", kind: .secondary, small: true) { confirming = false }
             Spacer(minLength: 0)
         }
     }
@@ -624,47 +712,7 @@ struct ConnectorsDialog: View {
     private func addedTile(_ tile: ConnectorTile) -> some View {
         var removing = false
         if case .app(let row) = tile.source { removing = model.connectorBusy == row.slug }
-        let open = { selectedTile = tile.id }
-        return HStack(spacing: 12) {
-            tileLogo(tile.name, url: tile.logoURL, data: tile.iconData)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tile.name)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.C.ink)
-                    .lineLimit(1)
-                Text(tile.status)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            switch tile.mark {
-            case .added:
-                HStack(spacing: 4) {
-                    if !removing {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    Text(removing ? "Removing" : "Added")
-                        .font(.system(size: 13))
-                }
-                .foregroundStyle(Theme.C.inkMuted)
-            case .checking:
-                ProgressView().controlSize(.small)
-            case .warning(let label):
-                Text(label)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.C.warning)
-            }
-        }
-        .frame(minHeight: 48)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: open)
-        .pointerOnHover()
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction(.default, open)
-        .accessibilityIdentifier("connector-tile-\(tile.id)")
+        return ConnectorAddedTile(tile: tile, removing: removing) { selectedTile = tile.id }
     }
 
     private func connectorTile(_ row: ConnectorToolkit) -> some View {
@@ -850,5 +898,137 @@ private struct AddPillButton: View {
         .opacity(enabled ? 1 : 0.6)
         .pointerOnHover()
         .onHover { hovering = $0 }
+    }
+}
+
+/// Which tools the app page lists.
+private enum ConnectorToolScope: String, CaseIterable, Identifiable {
+    case all = "All"
+    case reads = "Reads"
+    case writes = "Writes"
+
+    var id: String { rawValue }
+}
+
+/// All / Reads / Writes as one grey pill with the chosen part raised.
+private struct ConnectorToolScopePicker: View {
+    @Binding var scope: ConnectorToolScope
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(ConnectorToolScope.allCases) { item in
+                Button {
+                    scope = item
+                } label: {
+                    Text(item.rawValue)
+                        .font(.system(size: 13, weight: scope == item ? .medium : .regular))
+                        .foregroundStyle(scope == item ? Theme.C.ink : Theme.C.inkMuted)
+                        .padding(.horizontal, 12)
+                        .frame(height: 26)
+                        .background(scope == item ? Theme.C.surface : .clear)
+                        .clipShape(Capsule(style: .continuous))
+                        .contentShape(Capsule(style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .accessibilityAddTraits(scope == item ? .isSelected : [])
+                .accessibilityIdentifier("connector-tools-\(item.rawValue.lowercased())")
+            }
+        }
+        .padding(3)
+        .background(Theme.C.sunken)
+        .clipShape(Capsule(style: .continuous))
+    }
+}
+
+/// Connected, Sign in again or the server's own trouble, as a small chip.
+private struct ConnectorStateChip: View {
+    let tile: ConnectorTile
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if tile.mark == .checking {
+                ProgressView().controlSize(.mini)
+            }
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+        }
+        .foregroundStyle(warning ? Theme.C.warning : Theme.C.inkMuted)
+        .padding(.horizontal, 8)
+        .frame(height: 22)
+        .background(warning ? Theme.C.warningSoft : Theme.C.sunken)
+        .clipShape(Capsule(style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+    }
+
+    private var warning: Bool {
+        if tile.needsSignIn { return true }
+        if case .warning = tile.mark { return true }
+        return false
+    }
+
+    private var label: String {
+        if tile.needsSignIn { return "Sign in again" }
+        switch tile.mark {
+        case .added: return "Connected"
+        case .checking: return "Checking"
+        case .warning: return tile.status
+        }
+    }
+}
+
+/// An added app or server. The whole tile opens its page.
+private struct ConnectorAddedTile: View {
+    let tile: ConnectorTile
+    let removing: Bool
+    let open: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AppLogo(name: tile.name, url: tile.logoURL, size: 26, data: tile.iconData)
+                .frame(width: 40, height: 40)
+                .background(Theme.C.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tile.name)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Text(tile.needsSignIn && tile.mark == .added ? "Sign-in expired" : tile.status)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if removing {
+                Text("Removing")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+            } else {
+                ConnectorStateChip(tile: tile)
+            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.C.inkFaint)
+        }
+        .frame(minHeight: 48)
+        .padding(.horizontal, 8)
+        .background(hovering ? Theme.C.sunken.opacity(0.6) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: open)
+        .onHover { hovering = $0 }
+        .pointerOnHover()
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default, open)
+        .accessibilityIdentifier("connector-tile-\(tile.id)")
     }
 }
