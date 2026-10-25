@@ -92,11 +92,17 @@ class Driver:
         return self.click(e)
 
     def field(self, role):
-        """The composer: the lowest text area. A reply block with a link is a text area too."""
-        fields = [e for e in self.els() if e.get("role") == role]
-        if role == "AXTextArea" and fields:
-            return max(fields, key=lambda e: (e.get("frame") or {}).get("y", 0))
-        return fields[0] if fields else None
+        """The composer by its id, else the lowest text area: a reply block with a link is a text area too.
+        cua-driver lists an unlabelled element's id as its label, and can drop it for a moment after a set_value."""
+        fields = [e for e in self.els() if e.get("role") == role and e.get("element_token")]
+        if role != "AXTextArea" or not fields:
+            return fields[0] if fields else None
+        named = [e for e in fields if "composer-input" in (e.get("identifier"), e.get("label"))]
+        if named:
+            return named[0]
+        if not all((e.get("frame") or {}).get("y") is not None for e in fields):
+            raise Fail("text areas without frames: can't tell the composer")
+        return max(fields, key=lambda e: e["frame"]["y"])
 
     def type(self, text, role="AXTextArea"):
         """Replace the field's text: clear it, then type (the composer keeps a draft between steps)."""

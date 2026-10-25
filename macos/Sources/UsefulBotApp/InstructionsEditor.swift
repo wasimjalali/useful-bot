@@ -239,6 +239,8 @@ private final class ContainedScrollView: NSScrollView {
     /// Where the current trackpad swipe goes, once its direction is known.
     private var swipeToPage: Bool?
     private var lastWheel: TimeInterval = 0
+    /// A swipe's opening events, held until its direction is known.
+    private var held: [NSEvent] = []
 
     override func scrollWheel(with event: NSEvent) {
         guard abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX),
@@ -257,10 +259,27 @@ private final class ContainedScrollView: NSScrollView {
         if event.phase == .began || event.phase == .mayBegin
             || (wheel && event.timestamp - lastWheel > 0.35) {
             swipeToPage = nil
+            held = []
         }
         if wheel { lastWheel = event.timestamp }
-        if swipeToPage == nil, dy != 0 { swipeToPage = atEdge }
+        // A swipe's first events can carry no movement yet: they wait until
+        // its direction says where the whole swipe goes, so it isn't split.
+        if swipeToPage == nil, dy == 0, !wheel {
+            held.append(event)
+            // A swipe that ends without moving goes back to the field whole.
+            if event.phase == .ended || event.phase == .cancelled {
+                held.forEach { super.scrollWheel(with: $0) }
+                held = []
+            }
+            return
+        }
+        if swipeToPage == nil { swipeToPage = atEdge }
         let toPage = swipeToPage ?? false
+        let pending = held
+        held = []
+        for early in pending {
+            if toPage { nextResponder?.scrollWheel(with: early) } else { super.scrollWheel(with: early) }
+        }
         if toPage {
             nextResponder?.scrollWheel(with: event)
         } else if !atEdge {
@@ -272,6 +291,9 @@ private final class ContainedScrollView: NSScrollView {
         super.tile()
         if let text = documentView as? NSTextView, text.minSize.height != contentSize.height {
             text.minSize = NSSize(width: 0, height: contentSize.height)
+            // A lower floor alone leaves a shrunk box's text view tall, and
+            // it then looked scrollable and kept the page's swipes.
+            text.sizeToFit()
         }
         if abs(contentSize.width - lastWidth) > 0.5 {
             lastWidth = contentSize.width
