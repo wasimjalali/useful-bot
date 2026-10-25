@@ -33,8 +33,9 @@ export async function measureTools() {
 // eve's own default tools, measured from its definitions (what a turn carries
 // when nothing under agent/tools/ replaces them). connection_search is a dynamic
 // tool whose schemas eve builds at run time, so it cannot be weighed here.
-// agent and task_cancel are eve's sub-agent tools, on in this app.
-export const EVE_DEFAULTS = ["todo", "ask_question", "load_skill", "agent", "task_cancel"];
+// agent and task_cancel (eve's sub-agent tools) are switched off by the
+// disableTool() files under agent/tools, so they are not counted.
+export const EVE_DEFAULTS = ["todo", "ask_question", "load_skill"];
 
 export async function measureEveDefaults() {
   const rows = [];
@@ -45,6 +46,30 @@ export async function measureEveDefaults() {
     rows.push({ name, words: description.split(/\s+/).filter(Boolean).length, descChars: description.length, schemaChars: schema.length, chars: description.length + schema.length });
   }
   return rows;
+}
+
+/**
+ * The tools array a turn's request carries, as OpenAI-style function entries
+ * (name, description, JSON schema), for the authored tools plus the eve
+ * defaults they do not override. Measured offline, so it leaves out find_tools
+ * (built per step) and any mounted connection tools. Not byte-exact against the
+ * router's view of the request, which the payload probe gives; it is the number
+ * TOOL_SCHEMA_CHARS (shared/admission.ts) is held against.
+ */
+export async function measureWire() {
+  const entries = [];
+  const add = (name, tool) => {
+    if (!tool?.inputSchema) return;
+    const parameters = z.toJSONSchema(tool.inputSchema, { io: "input" });
+    entries.push(JSON.stringify({ type: "function", function: { name, description: String(tool.description ?? ""), parameters } }));
+  };
+  const files = readdirSync(TOOLS).filter((name) => name.endsWith(".ts")).sort();
+  for (const file of files) add(file.slice(0, -3), (await import(join(TOOLS, file))).default);
+  const overridden = new Set(files.map((file) => file.slice(0, -3)));
+  for (const name of EVE_DEFAULTS) {
+    if (!overridden.has(name)) add(name, (await import(`eve/tools/${name}`)).default);
+  }
+  return { tools: entries.length, chars: `[${entries.join(",")}]`.length };
 }
 
 export function parseTable(text) {
@@ -80,4 +105,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const grand = sum("chars") + mounted.reduce((total, row) => total + row.chars, 0);
   console.log(`eve defaults not overridden: ${mounted.map((row) => row.name).join(", ") || "none"}`);
   console.log(`GRAND TOTAL (authored + eve defaults not overridden): ${grand}`);
+  const wire = await measureWire();
+  console.log(`tools array on the wire (function entries, without find_tools): ${wire.chars} characters, ${wire.tools} tools`);
 }

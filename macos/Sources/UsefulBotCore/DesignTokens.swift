@@ -135,7 +135,6 @@ public enum DesignTokens {
         public static let botRow: CGFloat = 36
         public static let headerGap: CGFloat = 10
         public static let sectionHead: CGFloat = 24
-        public static let pinnedCardPadding: CGFloat = 10
         public static let scrollbarWidth: CGFloat = 5
 
         // Phone metrics (iOS design spec 4.3); the Mac values above stay put.

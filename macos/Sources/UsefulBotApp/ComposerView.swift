@@ -87,7 +87,7 @@ struct ComposerView: View {
     private var placeholder: String {
         if replying != nil { return "Reply…" }
         if model.pendingRequests.contains(where: { !$0.options.isEmpty }) { return "Your message waits until you answer the card" }
-        return bot.isGroup ? "Message this group. @name to direct one bot" : "Message \(bot.name)"
+        return "Message \(bot.name)"
     }
 
     /// The reply chip belongs to the chat it was started in.
@@ -456,9 +456,8 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var sendButton: some View {
-        // Stop while the bot works, and while only sub-agents run and there is
-        // nothing typed to send.
-        if model.pending || (model.subagentsRunning && !canSend) {
+        // Stop while the bot works.
+        if model.pending {
             Button(action: model.cancel) {
                 ZStack {
                     Circle().fill(Theme.C.brand)
@@ -623,7 +622,7 @@ struct ComposerView: View {
         // sends, to tell the agent something it already knew. The chip under
         // the composer is where the owner sees which folder is attached.
         let formatted = Attachments.formatMessage(model.draft, files: model.attachments)
-        let message = replying?.wrap(formatted, group: bot.isGroup) ?? formatted
+        let message = replying?.wrap(formatted) ?? formatted
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.

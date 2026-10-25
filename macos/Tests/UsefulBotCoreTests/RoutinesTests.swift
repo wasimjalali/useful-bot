@@ -15,6 +15,22 @@ import Testing
         try JSONDecoder().decode(Routine.self, from: Data(json.utf8))
     }
 
+    /// A routine the one-bot migration moved to the default bot arrives paused
+    /// and names where it came from; every other routine has no such field.
+    @Test func aMovedRoutineCarriesItsOldBotAndAnOrdinaryOneDoesNot() throws {
+        let moved = try decode("""
+        {"id":"rtn_9","botId":"bot-useful","name":"Morning brief (from Scout)","instruction":"x",
+         "active":false,"movedFrom":"bot-scout","schedules":[{"kind":"daily","time":"08:00"}]}
+        """)
+        #expect(moved.movedFrom == "bot-scout")
+        #expect(!moved.active)
+        let plainRoutine = try decode(#"{"id":"rtn_1","botId":"bot-useful"}"#)
+        #expect(plainRoutine.movedFrom == nil)
+        // The server sends null once an edit or turning it on clears the mark.
+        let cleared = try decode(#"{"id":"rtn_2","botId":"bot-useful","movedFrom":null}"#)
+        #expect(cleared.movedFrom == nil)
+    }
+
     @Test func decodeToleratesUnknownAndMissingFields() throws {
         // A newer server adds `nextRunAt`; only `id` is required here.
         let routine = try decode("""

@@ -15,8 +15,8 @@ import {
 } from "../shared/admission.ts";
 import { estimateTokens } from "../shared/context-blocks.ts";
 import { readProviderStore } from "../shared/providers.ts";
-import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
-import { applyShellAction, DEFAULT_BOT_ID, DESCRIPTION_MAX, GENERALIST_SEED_V2 } from "../shared/shell-store.ts";
+import { readShell, updateShell, writeFixtureShell } from "../shared/shell-io.ts";
+import { applyShellAction, DEFAULT_BOT_ID, DESCRIPTION_MAX, GENERALIST_SEED_V3 } from "../shared/shell-store.ts";
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
 import { listThreadEvents } from "../shared/agent-store.ts";
@@ -25,7 +25,7 @@ import { recallNotes } from "../agent/memory/notes.ts";
 import { upsertConnection } from "../shared/connections-store.ts";
 import { activateSessionTools, indexedToolBytes, putConnectionIndex, putConnectionOperations, updateConnectionToolsStore } from "../shared/connection-tools-store.ts";
 import { bindSession } from "../shared/session-bindings.ts";
-import { hiddenPrefixChars, rewriteEveTurnBody, type SessionRoute } from "../shared/eve-proxy.ts";
+import { hiddenPrefixChars, rewriteEveTurnBody } from "../shared/eve-proxy.ts";
 import { MOUNTED_TOOL_BYTE_BUDGET } from "../shared/policy.ts";
 import {
   admissionRefusal,
@@ -104,14 +104,21 @@ async function withWorld<T>(fn: (world: { shell: string; dir: string }) => Promi
 
 const pick = (modelId: string) => ({ connectionId: GO, modelId, effort: null, speed: "standard" as const });
 
-/** A teammate with the given description and model, returned with the fresh roster. */
+let botSeq = 0;
+
+/**
+ * A bot with the given description and model, written straight into the
+ * roster (not through createBot, which caps a roster at two bots): the tests
+ * below size several bots side by side. Returned by id.
+ */
 function teammate(shell: string, description: string, modelId = "small") {
-  const made = applyShellAction(readShell(shell), { type: "createBot", name: "Alpha", description: description.slice(0, 100) });
-  const id = made.createdId as string;
+  const roster = readShell(shell);
+  botSeq += 1;
+  const id = `bot-test-${botSeq}`;
   // The description goes in verbatim, as the owner's editor saves it.
-  writeShell({
-    ...made.store,
-    bots: made.store.bots.map((bot) => (bot.id === id ? { ...bot, description, model: pick(modelId) } : bot)),
+  writeFixtureShell({
+    ...roster,
+    bots: [...roster.bots, { ...roster.bots[0], id, name: `Alpha ${botSeq}`, label: "", description, model: pick(modelId), sessionId: null }],
   }, shell);
   return id;
 }
@@ -126,21 +133,22 @@ function eveFetchCounter() {
 test("SHARED_PROMPT_CHARS is at least the size of agent/instructions.md", () => {
   const bytes = readFileSync(new URL("../agent/instructions.md", import.meta.url)).length;
   assert.ok(SHARED_PROMPT_CHARS >= bytes, `instructions.md is ${bytes} bytes, the constant says ${SHARED_PROMPT_CHARS}`);
-  assert.equal(TOOL_SCHEMA_CHARS, 30_000);
+  assert.equal(TOOL_SCHEMA_CHARS, 21_000);
   assert.equal(OUTPUT_RESERVE_TOKENS, 4096);
 });
 
-test("a bot with a normal description fits, and the Generalist and a teammate measure about the same fixed cost", async () => {
+test("a bot with a normal description fits, and a longer set of instructions makes a bigger envelope", async () => {
   await withWorld(({ shell }) => {
     const store = readProviderStore();
     const id = teammate(shell, "Watch rankings.");
     const roster = readShell(shell);
-    const mate = admission({ bot: roster.bots.find((bot) => bot.id === id)!, shell: roster, store, notesChars: 0 });
-    const generalist = admission({ bot: roster.bots.find((bot) => bot.id === DEFAULT_BOT_ID)!, shell: roster, store, notesChars: 0 });
+    const mate = admission({ bot: roster.bots.find((bot) => bot.id === id)!, store, notesChars: 0 });
+    const generalist = admission({ bot: roster.bots.find((bot) => bot.id === DEFAULT_BOT_ID)!, store, notesChars: 0 });
     assert.ok(mate.ok && generalist.ok);
     console.log(`envelope tokens: Generalist ${generalist.tokens}, teammate ${mate.tokens}, window ${mate.windowTokens}`);
-    // The Generalist carries "Running the team" and the long shipped text; the teammate does not.
+    // The Generalist carries the long shipped text; the other bot has one line.
     assert.ok(generalist.tokens > mate.tokens);
+    assert.ok(generalist.tokens - mate.tokens < 400, "no extra team block: the difference is the instructions alone");
     assert.equal(mate.windowTokens, WINDOW);
     assert.equal(mate.modelLabel, "Label small");
     const floor = estimateTokens(SHARED_PROMPT_CHARS) + estimateTokens(TOOL_SCHEMA_CHARS) + OUTPUT_RESERVE_TOKENS;
@@ -153,7 +161,7 @@ test("an 8,000-character description is refused on a small window and fits on a 
     const store = readProviderStore();
     const small = teammate(shell, "x".repeat(DESCRIPTION_MAX), "small");
     const roster = readShell(shell);
-    const refused = admission({ bot: roster.bots.find((bot) => bot.id === small)!, shell: roster, store, notesChars: 0 });
+    const refused = admission({ bot: roster.bots.find((bot) => bot.id === small)!, store, notesChars: 0 });
     assert.equal(refused.ok, false);
     if (refused.ok) return;
     assert.equal(refused.code, "context_too_large");
@@ -162,7 +170,7 @@ test("an 8,000-character description is refused on a small window and fits on a 
     assert.equal(refused.descriptionChars, DESCRIPTION_MAX);
     const big = teammate(shell, "x".repeat(DESCRIPTION_MAX), "big");
     const roster2 = readShell(shell);
-    assert.equal(admission({ bot: roster2.bots.find((bot) => bot.id === big)!, shell: roster2, store, notesChars: 0 }).ok, true);
+    assert.equal(admission({ bot: roster2.bots.find((bot) => bot.id === big)!, store, notesChars: 0 }).ok, true);
   });
 });
 
@@ -172,19 +180,19 @@ test("the carry-over brief and the notes tip a fitting bot over, and the brief b
     const id = teammate(shell, "Watch rankings.");
     const roster = readShell(shell);
     const bot = roster.bots.find((item) => item.id === id)!;
-    const base = admission({ bot, shell: roster, store, notesChars: 0 });
+    const base = admission({ bot, store, notesChars: 0 });
     assert.ok(base.ok);
     const room = base.windowTokens - base.tokens;
     const tooBig = Math.ceil(room * 3.5) + 100;
-    assert.equal(admission({ bot, shell: roster, store, notesChars: 0, briefChars: tooBig }).ok, false);
-    assert.equal(admission({ bot, shell: roster, store, notesChars: tooBig }).ok, false);
-    assert.equal(admission({ bot, shell: roster, store, notesChars: 0, briefChars: 1000 }).ok, true);
-    const budget = briefBudgetChars({ bot, shell: roster, store, notesChars: 0 }, 32_000);
+    assert.equal(admission({ bot, store, notesChars: 0, briefChars: tooBig }).ok, false);
+    assert.equal(admission({ bot, store, notesChars: tooBig }).ok, false);
+    assert.equal(admission({ bot, store, notesChars: 0, briefChars: 1000 }).ok, true);
+    const budget = briefBudgetChars({ bot, store, notesChars: 0 }, 32_000);
     assert.ok(budget > 0 && budget <= Math.floor((room * 3.5) / 2), `budget ${budget}`);
     // A bot whose fixed envelope already fills the window has no room for a brief.
     const full = teammate(shell, "x".repeat(DESCRIPTION_MAX));
     const roster3 = readShell(shell);
-    assert.equal(briefBudgetChars({ bot: roster3.bots.find((item) => item.id === full)!, shell: roster3, store, notesChars: 0 }, 32_000), 0);
+    assert.equal(briefBudgetChars({ bot: roster3.bots.find((item) => item.id === full)!, store, notesChars: 0 }, 32_000), 0);
   });
 });
 
@@ -211,19 +219,19 @@ test("the proxy refuses an over-cap description and a too-large envelope with a 
       const over = teammate(shell, "x".repeat(DESCRIPTION_MAX + 1), "big");
       const roster = readShell(shell);
       const store = readProviderStore();
-      const first = admissionRefusal(roster.bots.find((bot) => bot.id === over)!, roster, store);
+      const first = admissionRefusal(roster.bots.find((bot) => bot.id === over)!, store);
       assert.equal(first?.status, 409);
       assert.deepEqual(await first!.json(), { ok: false, error: "description_too_long", message: DESCRIPTION_TOO_LONG_TEXT });
       const full = teammate(shell, "x".repeat(DESCRIPTION_MAX));
       const roster2 = readShell(shell);
-      const second = admissionRefusal(roster2.bots.find((bot) => bot.id === full)!, roster2, store);
+      const second = admissionRefusal(roster2.bots.find((bot) => bot.id === full)!, store);
       assert.equal(second?.status, 409);
       assert.deepEqual(await second!.json(), { ok: false, error: "context_too_large", message: CONTEXT_TOO_LARGE_TEXT });
       const fine = teammate(shell, "Watch rankings.");
       const roster3 = readShell(shell);
-      assert.equal(admissionRefusal(roster3.bots.find((bot) => bot.id === fine)!, roster3, store), null);
+      assert.equal(admissionRefusal(roster3.bots.find((bot) => bot.id === fine)!, store), null);
       // A brief that pushes a fitting bot over is refused too.
-      assert.equal(admissionRefusal(roster3.bots.find((bot) => bot.id === fine)!, roster3, store, 500_000)?.status, 409);
+      assert.equal(admissionRefusal(roster3.bots.find((bot) => bot.id === fine)!, store, 500_000)?.status, 409);
       assert.equal(eve.calls(), 0);
     } finally {
       eve.restore();
@@ -276,23 +284,23 @@ test("the counter report: numbers for any bot, the seed only for the Generalist"
     assert.equal(botContextReport("bot-ghost"), null);
 
     const generalist = botContextReport(DEFAULT_BOT_ID)!;
-    assert.deepEqual(generalist.seed, { differs: false, text: GENERALIST_SEED_V2 });
+    assert.deepEqual(generalist.seed, { differs: false, text: GENERALIST_SEED_V3 });
     updateShell((current) => ({
       ...current,
-      bots: current.bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, description: `${GENERALIST_SEED_V2}\n\nAlways answer in Spanish.` } : bot)),
+      bots: current.bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, description: `${GENERALIST_SEED_V3}\n\nAlways answer in Spanish.` } : bot)),
     }), shell);
     assert.equal(botContextReport(DEFAULT_BOT_ID)!.seed?.differs, true);
     // Whitespace alone is not a difference.
     updateShell((current) => ({
       ...current,
-      bots: current.bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, description: `  ${GENERALIST_SEED_V2.replace(/\n/g, "\n\n")}  ` } : bot)),
+      bots: current.bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, description: `  ${GENERALIST_SEED_V3.replace(/\n/g, "\n\n")}  ` } : bot)),
     }), shell);
     assert.equal(botContextReport(DEFAULT_BOT_ID)!.seed?.differs, false);
 
     // Over the cap: the report says it does not fit.
     const over = teammate(shell, "x".repeat(DESCRIPTION_MAX + 1), "big");
     assert.equal(botContextReport(over)!.fits, false);
-    assert.equal(envelopeFor({ bot: readShell(shell).bots.find((bot) => bot.id === over)!, shell: readShell(shell), store: readProviderStore(), notesChars: 0 }).descriptionChars, DESCRIPTION_MAX + 1);
+    assert.equal(envelopeFor({ bot: readShell(shell).bots.find((bot) => bot.id === over)!, store: readProviderStore(), notesChars: 0 }).descriptionChars, DESCRIPTION_MAX + 1);
   });
 });
 
@@ -345,22 +353,22 @@ test("mounted tool schemas count: an OpenAPI connection every turn and the MCP t
     const roster2 = readShell(shell);
     const bot2 = roster2.bots.find((item) => item.id === mate)!;
     const store2 = readProviderStore();
-    const base2 = admission({ bot: bot2, shell: roster2, store: store2, notesChars: 0 });
+    const base2 = admission({ bot: bot2, store: store2, notesChars: 0 });
     assert.ok(base2.ok);
     // The same bot, on the same window: admitted with the narrowed set's tools, refused with the wide set's.
-    assert.equal(admission({ bot: bot2, shell: roster2, store: store2, notesChars: 0, mountedToolChars: narrow - eager }).ok, true);
-    assert.equal(admission({ bot: bot2, shell: roster2, store: store2, notesChars: 0, mountedToolChars: wide - eager }).ok, false);
+    assert.equal(admission({ bot: bot2, store: store2, notesChars: 0, mountedToolChars: narrow - eager }).ok, true);
+    assert.equal(admission({ bot: bot2, store: store2, notesChars: 0, mountedToolChars: wide - eager }).ok, false);
 
     // A bot that fits without them is refused with them on a tight window.
     const id = teammate(shell, "Watch rankings.");
     const roster = readShell(shell);
     const bot = roster.bots.find((item) => item.id === id)!;
     const store = readProviderStore();
-    const base = admission({ bot, shell: roster, store, notesChars: 0 });
+    const base = admission({ bot, store, notesChars: 0 });
     assert.ok(base.ok);
     const room = (base.windowTokens - base.tokens) * 3.5;
-    assert.equal(admission({ bot, shell: roster, store, notesChars: 0, mountedToolChars: room - 100 }).ok, true);
-    assert.equal(admission({ bot, shell: roster, store, notesChars: 0, mountedToolChars: room + 100 }).ok, false);
+    assert.equal(admission({ bot, store, notesChars: 0, mountedToolChars: room - 100 }).ok, true);
+    assert.equal(admission({ bot, store, notesChars: 0, mountedToolChars: room + 100 }).ok, false);
   });
 });
 
@@ -386,13 +394,13 @@ test("the admission notes count equals what the notes slot renders, outside-cont
   });
 });
 
-test("the hidden prefix is sized whole: the mention line, a routine note and the framing", () => {
-  const route: SessionRoute = { threadId: "g1", kind: "group", mentionIds: ["b1"], mentionNames: ["Research"], untargeted: false };
-  const raw = JSON.stringify({ message: "@Research go", botId: "g1" });
-  const body = JSON.parse(rewriteEveTurnBody(raw, route, ["Retry note: the last try failed."])) as { message: string };
-  assert.equal(hiddenPrefixChars(route, ["Retry note: the last try failed."]), body.message.length - "@Research go".length);
-  assert.equal(hiddenPrefixChars(null, []), 0);
-  assert.ok(hiddenPrefixChars(route, []) > "The owner addressed Research.".length, "the mention line and the session-note lead count");
+test("the hidden prefix is sized whole: the notes and the session-note framing", () => {
+  const notes = ["Retry note: the last try failed."];
+  const raw = JSON.stringify({ message: "go on", botId: "bot-useful" });
+  const body = JSON.parse(rewriteEveTurnBody(raw, notes)) as { message: string };
+  assert.equal(hiddenPrefixChars(notes), body.message.length - "go on".length);
+  assert.equal(hiddenPrefixChars([]), 0);
+  assert.ok(hiddenPrefixChars(notes) > notes[0].length, "the session-note lead counts too");
 });
 
 test("a pick or an edit that lands during a send's awaits is caught before the send, not after", async () => {

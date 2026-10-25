@@ -31,7 +31,7 @@ import connectionTools from "../agent/tools/connection_tools.ts";
 import { MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
 import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
 import { acquireRefreshLock } from "../shared/connection-auth.ts";
-import { writeShell } from "../shared/shell-io.ts";
+import { writeFixtureShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 
 const CALLBACK = "http://127.0.0.1:4320/api/connections/callback";
@@ -49,7 +49,7 @@ function paths() {
   const shell = seedStore();
   shell.bots.push({ ...shell.bots[0], id: "b1", name: "Drawer" });
   shell.selectedBotId = "b1";
-  writeShell(shell);
+  writeFixtureShell(shell);
   return { storePath: process.env.UB_AGENT_STORE_PATH, dir };
 }
 

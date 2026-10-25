@@ -11,7 +11,7 @@ export default defineTool({
     routineId: z.string().min(1).max(120),
   }),
   async execute(input, ctx) {
-    // A run starts a teammate turn and writes transcripts, so Read only
+    // A run starts a bot turn and writes transcripts, so Read only
     // refuses it like every other change inside the app.
     const who = await callerOf(readShell(), ctx);
     if (!who.ok) return who.result;
@@ -30,7 +30,10 @@ export default defineTool({
         status: "paused",
         routineId: routine.id,
         error: "that routine is paused",
-        hint: "Ask the owner to resume it, or call update_routine with active true once they agree.",
+        // A moved routine cannot be resumed by the bot at all (update_routine refuses it).
+        hint: routine.movedFrom
+          ? "This routine came from an earlier bot and waits for the owner's review. Tell them it is waiting."
+          : "Ask the owner to resume it, or call update_routine with active true once they agree.",
       };
     }
     // The web server owns delivery; this only raises the request flag, which

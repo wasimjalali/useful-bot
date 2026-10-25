@@ -3,10 +3,10 @@ import test from "node:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyShellAction, DEFAULT_BOT_ID, orchestratorId, type ShellStore } from "../shared/shell-store.ts";
-import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
-import { bindChildSession, bindSession, readSessionBot, readSessionParent, resolveSessionBot } from "../shared/session-bindings.ts";
-import { authorizeChildStream, authorizeEveCall, type ChildStreamDeps } from "../web/lib/eve-session-auth.ts";
+import { applyShellAction, DEFAULT_BOT_ID } from "../shared/shell-store.ts";
+import { withBot } from "./helpers/roster.ts";
+import { readShell, updateShell, writeFixtureShell } from "../shared/shell-io.ts";
+import { bindSession, readSessionBot } from "../shared/session-bindings.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import { renderContext } from "../shared/context-blocks.ts";
 import { withBotSelection } from "../shared/shell-store.ts";
@@ -17,7 +17,6 @@ import {
   turnSnapshot,
   type SnapshotCtx,
 } from "../agent/lib/turn-snapshot.ts";
-import listModels from "../agent/tools/list_models.ts";
 
 process.env.UB_ROUTER_DESKTOP_TOKEN ??= "test-router-token";
 const { default: agent } = await import("../agent/agent.ts");
@@ -85,13 +84,12 @@ async function withWorld<T>(fn: (world: { alpha: string; beta: string }) => Prom
     schemaVersion: 3,
     providers: { [GO]: { fetchedAt: Date.now(), models: [modelRow("glm-5.3-flash", 200_000), modelRow("glm-5", 100_000)] } },
   }));
-  let store: ShellStore = readShell();
-  const alpha = applyShellAction(store, { type: "createBot", name: "Alpha", label: "the researcher", description: "Be brief." });
-  store = alpha.store;
-  const beta = applyShellAction(store, { type: "createBot", name: "Beta" });
-  writeShell(beta.store);
+  // Alpha and Beta are an earlier build's second and third bots: a roster the app no longer makes but still reads.
+  const alpha = withBot(readShell(), "Alpha", { label: "the researcher", description: "Be brief." });
+  const beta = withBot(alpha.store, "Beta");
+  writeFixtureShell(beta.store);
   try {
-    return await fn({ alpha: alpha.createdId as string, beta: beta.createdId as string });
+    return await fn({ alpha: alpha.id, beta: beta.id });
   } finally {
     for (const key of KEYS) {
       if (saved[key] === undefined) delete process.env[key];
@@ -171,112 +169,29 @@ test("with no claim the binding is used, after a bounded wait for a brand new se
   });
 });
 
-test("neither a claim nor a binding, and a child session, are refused", async () => {
-  await withWorld(async ({ alpha }) => {
+test("neither a claim nor a binding is refused, after waiting for the binding", async () => {
+  await withWorld(async () => {
     const started = Date.now();
     const { result } = await silenced(() => boundBotId(ctxFor("sess-nobody"), 120));
     assert.equal(result, null);
     assert.ok(Date.now() - started >= 100, "it waited for the binding first");
-    const child = { ...ctxFor("sess-child", alpha), session: { ...ctxFor("sess-child", alpha).session, parent: { id: "p" } } };
-    assert.equal((await silenced(() => boundBotId(child))).result, null);
   });
 });
 
-// W5 failure modes: a tool or hook context of a child (it carries `session.parent`)
-// resolves to its verified root's bot and shows the root's grant, never its own;
-// an unverifiable child, or one claiming another bot, is refused; a resolver
-// context of a child (no parent, `kind: "subagent"`) shows the root's grant
-// through the child's recorded parent, else the bot's own current chat, and
-// never the child id's grant.
-test("a child's tool context resolves to its root's bot and grant, and refuses what it cannot verify", async () => {
+// A session with a parent in its context (what eve gave a sub-agent's child) is
+// an ordinary session now: sub-agents are off, nothing resolves it to a root.
+test("a context that still carries a parent is judged like any other: by its own claim and grant", async () => {
+  forgetSnapshots();
   await withWorld(async ({ alpha, beta }) => {
-    bindSession("root-1", alpha);
-    upsertSessionGrant({ sessionId: "root-1", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    // A stronger grant on the child's own id must not count.
     upsertSessionGrant({ sessionId: "kid-1", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
     const parent = { callId: "c", rootSessionId: "root-1", sessionId: "root-1", turn: { id: "t0", sequence: 0 } };
-    const toolCtx = { ...ctxFor("kid-1", alpha), session: { ...ctxFor("kid-1", alpha).session, parent } };
-    assert.equal(await boundBotId(toolCtx), alpha);
-    const snap = await ensureTurnSnapshot(toolCtx, "t1");
+    const withParent = (claim: string) => ({ ...ctxFor("kid-1", claim), session: { ...ctxFor("kid-1", claim).session, parent } });
+    const snap = await ensureTurnSnapshot(withParent(alpha) as never, "t1");
     assert.equal(snap?.status, "ok");
-    assert.equal(snap?.status === "ok" ? snap.permission : null, "read_only");
-    assert.equal(readSessionParent("kid-1"), "root-1");
-    // A claim for another bot, an unbound root and a nested hop are refused.
-    const wrongClaim = { ...ctxFor("kid-2", beta), session: { ...ctxFor("kid-2", beta).session, parent } };
-    assert.equal((await silenced(() => boundBotId(wrongClaim))).result, null);
-    const unboundRoot = { ...ctxFor("kid-3", alpha), session: { ...ctxFor("kid-3", alpha).session, parent: { ...parent, rootSessionId: "nope", sessionId: "nope" } } };
-    assert.equal((await silenced(() => boundBotId(unboundRoot))).result, null);
-    const nested = { ...ctxFor("kid-4", alpha), session: { ...ctxFor("kid-4", alpha).session, parent: { ...parent, sessionId: "kid-1" } } };
-    assert.equal((await silenced(() => boundBotId(nested))).result, null);
-  });
-});
-
-test("a child's resolver context shows the root's grant, never the child id's", async () => {
-  forgetSnapshots();
-  await withWorld(async ({ alpha }) => {
-    bindSession("root-1", alpha);
-    upsertSessionGrant({ sessionId: "root-1", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    upsertSessionGrant({ sessionId: "kid-1", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    const resolver = { ...ctxFor("kid-1", alpha), channel: { kind: "subagent" } };
-    // The child's recorded parent decides when the proxy has bound it.
-    bindChildSession("kid-1", "root-1", alpha);
-    const viaRow = await ensureTurnSnapshot(resolver, "t1");
-    assert.equal(viaRow?.status === "ok" ? viaRow.permission : null, "auto");
-    // Not yet bound: the grant is unknown. Neither the child's own row nor the
-    // bot's current chat is read, even when that chat is the bot's own.
-    writeShell(applyShellAction(readShell(), { type: "touchChat", botId: alpha, preview: "hi", sessionId: "root-1" }).store);
-    upsertSessionGrant({ sessionId: "kid-2", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
-    const viaPointer = await ensureTurnSnapshot({ ...ctxFor("kid-2", alpha), channel: { kind: "subagent" } }, "t1");
-    assert.equal(viaPointer?.status, "ok");
-    assert.equal(viaPointer?.status === "ok" ? viaPointer.permission : "x", null);
-    assert.equal(viaPointer?.status === "ok" ? viaPointer.folder : "x", null);
-    assert.match(viaPointer?.status === "ok" ? renderContext(viaPointer.context) : "", /This chat: the same permission and folder as the chat that started you\./);
-    // A root-bound child still shows the root's grant (the first branch above).
-    assert.match(viaRow?.status === "ok" ? renderContext(viaRow.context) : "", /This chat: Auto,/);
-  });
-});
-
-test("a sub-agent's child turn never binds the child as a root, so the proxy can bind it under its parent", async () => {
-  await withWorld(async ({ alpha }) => {
-    const savedSecret = process.env.UB_CHANNEL_JWT_SECRET;
-    process.env.UB_CHANNEL_JWT_SECRET = "test-channel-secret";
-    try {
-      const parent = "wrun_PARENT01";
-      const child = "wrun_CHILD01";
-      bindSession(parent, alpha);
-      // What eve's dynamic resolvers hand a child's step: the root's claim
-      // (auth propagates), the subagent channel and no `session.parent`.
-      const ctx = { ...ctxFor(child, alpha), channel: { kind: "subagent" } };
-      assert.equal(await boundBotId(ctx), alpha);
-      assert.equal(readSessionBot(child), null, "the child was bound as a root session");
-      // The app names the index of the parent's subagent.called; the proxy
-      // reads that one event from eve and binds the child under the parent.
-      const call = { type: "subagent.called", data: { sessionId: parent, childSessionId: child, callId: "c" } };
-      const reads: number[] = [];
-      const deps: ChildStreamDeps = {
-        resolveBot: (id) => resolveSessionBot(id),
-        readParent: (id) => readSessionParent(id),
-        readEventAt: async (_parent, at) => { reads.push(at); return at === 12 ? JSON.stringify(call) : JSON.stringify({ type: "message.appended", data: {} }); },
-        bind: (kid, root, bot) => { bindChildSession(kid, root, bot); },
-      };
-      assert.deepEqual(await authorizeChildStream(parent, child, 11, deps), { ok: false, status: 403, error: "child_session_unverified" });
-      assert.equal(readSessionParent(child), null);
-      const read = await authorizeChildStream(parent, child, 12, deps);
-      assert.equal(read.ok, true, JSON.stringify(read));
-      assert.equal(readSessionParent(child), parent);
-      // Bound now: the next read needs no `at` and no eve read.
-      assert.equal((await authorizeChildStream(parent, child, null, deps)).ok, true);
-      assert.deepEqual(reads, [11, 12]);
-      // A bound child is read only: a send, an answer or a cancel into it is refused.
-      for (const [suffix, body] of [[`session/${child}`, JSON.stringify({ message: "hi" })], [`session/${child}`, JSON.stringify({ inputResponses: [{ requestId: "r", optionId: "continue" }] })], [`session/${child}/cancel`, ""]]) {
-        assert.deepEqual(authorizeEveCall("POST", suffix, body, (id) => resolveSessionBot(id)), { ok: false, status: 403, error: "child_session_readonly" }, suffix);
-      }
-      // The child's next step agrees with the binding the proxy wrote.
-      assert.equal(await boundBotId(ctx), alpha);
-    } finally {
-      if (savedSecret === undefined) delete process.env.UB_CHANNEL_JWT_SECRET;
-      else process.env.UB_CHANNEL_JWT_SECRET = savedSecret;
-    }
+    assert.equal(snap?.status === "ok" ? snap.permission : null, "full_access", "its own grant, not a root's");
+    assert.equal(readSessionBot("kid-1"), alpha, "bound as an ordinary session");
+    // A claim for another bot is still the mismatch it always was.
+    assert.equal((await silenced(() => boundBotId(withParent(beta) as never))).result, null);
   });
 });
 
@@ -295,33 +210,23 @@ test("one snapshot per session and turn: a pick made mid-turn waits for the next
   });
 });
 
-test("the Generalist's own chat gets Running the team, a teammate does not, a group gets the group variant", async () => {
-  await withWorld(async ({ alpha, beta }) => {
+test("every bot's context is Your bot then This turn, with no Running the team block", async () => {
+  await withWorld(async ({ alpha }) => {
     const text = async (botId: string, session: string): Promise<string> => {
       const out = await turnStarted(event("t1"), ctxFor(session, botId)) as { content?: string } | null;
       return out?.content ?? "";
     };
     const generalist = await text(DEFAULT_BOT_ID, "sess-gen");
-    assert.match(generalist, /# Running the team/);
-    assert.match(generalist, /You are the owner's main assistant/);
+    assert.ok(generalist.startsWith("# Your bot"));
+    assert.doesNotMatch(generalist, /Running the team/);
+    assert.match(generalist, /You are Generalist\./);
+    assert.match(generalist, /You're the owner's main assistant/);
     assert.match(generalist, /# This turn/);
-    const teammate = await text(alpha, "sess-alpha");
-    assert.doesNotMatch(teammate, /# Running the team/);
-    assert.match(teammate, /You are Alpha, the researcher\./);
-    assert.match(teammate, /<owner-instructions>\nBe brief\.\n<\/owner-instructions>/);
-    assert.match(teammate, /first chat with you/);
-
-    writeShell(applyShellAction(readShell(), { type: "createGroup", name: "Crew", memberIds: [alpha, beta], description: "Work together." }).store);
-    const groupId = readShell().bots.find((bot) => bot.kind === "group")!.id;
-    const group = await text(groupId, "sess-group");
-    assert.match(group, /You orchestrate the group Crew\. Members: Alpha \(the researcher\), Beta/);
-    assert.doesNotMatch(group, /# Running the team/);
-
-    // The owner deleted the Generalist: the first visible bot orchestrates, without the first sentence.
-    writeShell(applyShellAction(readShell(), { type: "deleteBot", botId: DEFAULT_BOT_ID }).store);
-    const fallback = await text(orchestratorId(readShell()) as string, "sess-fallback");
-    assert.match(fallback, /# Running the team/);
-    assert.doesNotMatch(fallback, /You are the owner's main assistant/);
+    const other = await text(alpha, "sess-alpha");
+    assert.ok(other.startsWith("# Your bot"));
+    assert.match(other, /You are Alpha, the researcher\./);
+    assert.match(other, /<owner-instructions>\nBe brief\.\n<\/owner-instructions>/);
+    assert.match(other, /first chat with you/);
   });
 });
 
@@ -369,7 +274,8 @@ test("the context resolver records a failure instead of throwing, so the model r
   await withWorld(async ({ alpha }) => {
     // The bot vanishes between the claim and the build: the roster no longer has it.
     bindSession("sess-gone", alpha);
-    writeShell(applyShellAction(readShell(), { type: "deleteBot", botId: alpha }).store);
+    const roster = readShell();
+    writeFixtureShell({ ...roster, bots: roster.bots.filter((bot) => bot.id !== alpha) });
     const ctx = ctxFor("sess-gone", alpha);
     const { result } = await silenced(async () => turnStarted(event("turn-x"), ctx));
     assert.equal(result, null, "nothing rendered, nothing thrown");
@@ -379,21 +285,20 @@ test("the context resolver records a failure instead of throwing, so the model r
   });
 });
 
-test("list_models reports the model the turn froze, not the default", async () => {
+test("the context names the model the turn froze, not the default", async () => {
   await withWorld(async ({ alpha }) => {
     updateShell((current) => withBotSelection(current, alpha, { connectionId: GO, modelId: "glm-5", effort: "low", speed: "standard" }));
     const ctx = ctxFor("sess-lm", alpha);
     const rendered = await turnStarted(event("t1"), ctx) as { content: string };
-    const out = await listModels.execute({ kind: "chat" } as never, ctx as never) as { current: { chat: { id: string } } };
-    assert.equal(out.current.chat.id, "glm-5");
     assert.match(rendered.content, /Model: glm-5 \(glm-5\) via /);
-    // A pick afterwards changes neither the line nor the tool inside this turn.
+    // A pick afterwards changes neither the line nor the snapshot inside this turn.
     updateShell((current) => withBotSelection(current, alpha, { connectionId: GO, modelId: "glm-5.3-flash", effort: "low", speed: "standard" }));
-    const still = await listModels.execute({ kind: "chat" } as never, ctx as never) as { current: { chat: { id: string } } };
-    assert.equal(still.current.chat.id, "glm-5");
-    // A session nobody is bound to has no turn to describe.
-    const blocked = await silenced(async () => listModels.execute({ kind: "chat" } as never, ctxFor("sess-lm-nobody") as never));
-    assert.deepEqual(blocked.result, { status: "blocked", error: "bot_context_missing" });
+    const still = await ensureTurnSnapshot(ctx, "t1");
+    assert.equal(still?.status === "ok" && still.selection.modelId, "glm-5");
+    assert.match(still?.status === "ok" ? renderContext(still.context) : "", /Model: glm-5 \(glm-5\) via /);
+    // The next turn takes the new pick.
+    const next = await ensureTurnSnapshot(ctx, "t2");
+    assert.equal(next?.status === "ok" && next.selection.modelId, "glm-5.3-flash");
   });
 });
 
@@ -425,150 +330,45 @@ test("This chat shows the permission and folder the session grant gives, which i
   });
 });
 
-// Taint from a sub-agent to its root. Failure modes: a child's reading never
-// reaching the root; the mark dropped on a report whose wording this build does
-// not know; dropped by an owner message while a child is still out; kept
-// forever after everything reported; a binding store that cannot be read.
-import { clearRootOutside, markOutside, noteRootReport, seenOutside } from "../agent/lib/outside-content.ts";
-import { isSubAgentReport } from "../agent/lib/turn-snapshot.ts";
+// What the turn read from outside. Failure modes: a mark that leaks into the
+// next turn or another session, a handoff turn that is not marked, and a mark
+// that survives a snapshot rebuild it should not.
+import { markOutside, seenOutside } from "../agent/lib/outside-content.ts";
 
 function forgetOutside(): void {
   const holder = globalThis as unknown as Record<symbol, { clear(): void } | undefined>;
   holder[Symbol.for("useful-bot.outside-content")]?.clear();
-  holder[Symbol.for("useful-bot.outside-content.roots")]?.clear();
 }
 
-function kidCtx(child: string, root: string, botId: string) {
-  const base = ctxFor(child, botId);
-  return { ...base, session: { ...base.session, parent: { callId: "c", rootSessionId: root, sessionId: root, turn: { id: "t0", sequence: 0 } } } };
-}
-
-test("a child's outside reading marks its root for any turn", async () => {
-  forgetOutside();
-  await withWorld(async ({ alpha }) => {
-    bindSession("root-1", alpha);
-    const rootTurn = (id: string) => ({ session: { id: "root-1", turn: { id } } });
-    assert.equal(seenOutside(rootTurn("a")), false);
-    markOutside(kidCtx("kid-1", "root-1", alpha));
-    assert.equal(seenOutside(rootTurn("a")), true);
-    assert.equal(seenOutside(rootTurn("later")), true);
-    // A child that cannot be verified still taints the root it names, and nothing else.
-    markOutside(kidCtx("kid-9", "nobody", alpha));
-    assert.equal(seenOutside({ session: { id: "nobody", turn: { id: "a" } } }), true);
-    assert.equal(seenOutside({ session: { id: "somebody-else", turn: { id: "a" } } }), false);
-    // A root that is not a session id is ignored.
-    markOutside({ ...kidCtx("kid-8", "x", alpha), session: { ...kidCtx("kid-8", "x", alpha).session, parent: { rootSessionId: "../x", sessionId: "../x" } } });
-    assert.equal(seenOutside({ session: { id: "../x", turn: { id: "a" } } }), false);
-  });
-});
-
-test("report turns are recognised by eve's kind first, and by wording or a merged paragraph as a fallback", () => {
-  const user = (content: unknown, kind?: string) => ({ role: "user", content, ...(kind ? { kind } : {}) });
-  assert.equal(isSubAgentReport([user("hello", "user")]), false);
-  // The kind alone is enough, whatever the text says.
-  assert.equal(isSubAgentReport([user("the critics finished", "execution.background_task")]), true);
-  assert.equal(isSubAgentReport([user("Background task task_ab12 (agent) is completed.\nok")]), true);
-  assert.equal(isSubAgentReport([user([{ type: "text", text: "Background task task_ab12 failed." }])]), true);
-  // A report merged after other text.
-  assert.equal(isSubAgentReport([user("also this\n\nBackground task task_ab12 is completed.")]), true);
-  // Only the turn's own input counts: a report before an assistant reply does not.
-  assert.equal(isSubAgentReport([user("x", "execution.background_task"), { role: "assistant", content: "ok" }, user("thanks", "user")]), false);
-});
-
-test("an unrecognised report keeps the mark; an owner turn clears it only once every child has reported", async () => {
+test("outside reading marks its own turn only", async () => {
   forgetOutside();
   forgetSnapshots();
   await withWorld(async ({ alpha }) => {
-    bindSession("root-1", alpha);
-    bindChildSession("kid-1", "root-1", alpha, new Date(Date.now() - 60_000));
-    const owner = (messages: SnapshotCtx["messages"]) => ({ ...ctxFor("root-1", alpha, { delivery: "owner" }), messages });
-    const rootTurn = { session: { id: "root-1", turn: { id: "t-x" } } };
-    markOutside(kidCtx("kid-1", "root-1", alpha));
-    // A report in wording nobody knows, no kind: the turn looks like an owner turn. No report was seen, so it keeps the mark.
-    await ensureTurnSnapshot(owner([{ role: "user", content: "the critics are done: all clear" }]), "t-a");
-    assert.equal(seenOutside(rootTurn), true, "an unrecognised report must not clear the mark");
-    // A report turn (by kind) is seen; the next owner message, with no child out, clears.
-    await ensureTurnSnapshot(owner([{ role: "user", kind: "execution.background_task", content: "x" }]), "t-b");
-    assert.equal(seenOutside(rootTurn), true, "the report turn itself is outside");
-    await ensureTurnSnapshot(owner([{ role: "user", kind: "user", content: "thanks" }]), "t-c");
-    assert.equal(seenOutside(rootTurn), false);
+    const turn = (session: string, id: string) => ({ session: { id: session, turn: { id } } });
+    assert.equal(seenOutside(turn("sess-o", "a")), false);
+    markOutside(turn("sess-o", "a"));
+    assert.equal(seenOutside(turn("sess-o", "a")), true);
+    assert.equal(seenOutside(turn("sess-o", "b")), false, "the next turn starts clean");
+    assert.equal(seenOutside(turn("sess-other", "a")), false, "another session is untouched");
+    // No session at all (a bare test call) is ignored both ways.
+    markOutside({});
+    assert.equal(seenOutside({}), false);
+    // A handoff-delivered turn starts after outside content; an owner or routine turn does not.
+    await ensureTurnSnapshot(ctxFor("sess-h", alpha, { delivery: "handoff" }), "t-h");
+    assert.equal(seenOutside(turn("sess-h", "t-h")), true);
+    await ensureTurnSnapshot(ctxFor("sess-owner", alpha, { delivery: "owner" }), "t-o");
+    assert.equal(seenOutside(turn("sess-owner", "t-o")), false);
+    await ensureTurnSnapshot(ctxFor("sess-routine", alpha, { delivery: "routine" }), "t-r");
+    assert.equal(seenOutside(turn("sess-routine", "t-r")), false);
   });
 });
 
-test("an owner turn while a child is still out keeps the mark", async () => {
+test("a sub-agent's report turn is an ordinary turn now: it neither marks nor clears anything", async () => {
   forgetOutside();
   forgetSnapshots();
   await withWorld(async ({ alpha }) => {
-    bindSession("root-1", alpha);
-    bindChildSession("kid-1", "root-1", alpha, new Date(Date.now() - 60_000));
-    const owner = (kind: string) => ({ ...ctxFor("root-1", alpha, { delivery: "owner" }), messages: [{ role: "user", kind, content: "x" }] });
-    const rootTurn = { session: { id: "root-1", turn: { id: "t-x" } } };
-    markOutside(kidCtx("kid-1", "root-1", alpha));
-    await ensureTurnSnapshot(owner("execution.background_task"), "t-b");
-    // A second child starts after that report and has not reported.
-    bindChildSession("kid-2", "root-1", alpha, new Date(Date.now() + 60_000));
-    await ensureTurnSnapshot(owner("user"), "t-c");
-    assert.equal(seenOutside(rootTurn), true);
-    // A new reading resets the report: still kept.
-    markOutside(kidCtx("kid-2", "root-1", alpha));
-    assert.equal(clearRootOutside("root-1"), false);
-    // The first report after the last mark, with kid-2 recorded before it, lets the next owner turn clear.
-    noteRootReport("root-1", Date.now() + 120_000);
-    assert.equal(clearRootOutside("root-1"), true);
-    assert.equal(seenOutside(rootTurn), false);
-  });
-});
-
-test("an unreadable binding store keeps the mark", async () => {
-  forgetOutside();
-  await withWorld(async ({ alpha }) => {
-    bindSession("root-1", alpha);
-    markOutside(kidCtx("kid-1", "root-1", alpha));
-    noteRootReport("root-1", Date.now() + 1000);
-    const path = process.env.UB_SESSION_OWNERS_PATH as string;
-    // A bad row makes the strict reader see an empty store (children unknown), so the mark must not clear on that.
-    writeFileSync(path, "not json", "utf8");
-    assert.equal((await silenced(async () => clearRootOutside("root-1"))).result, false);
-    assert.equal(seenOutside({ session: { id: "root-1", turn: { id: "t" } } }), true);
-  });
-});
-
-// Stop must stick. Failure modes: a marker written for anything but a verified
-// child cancel; the "do not restart" line missing for a cancelled report of a
-// stopped child; the line shown for a genuinely failed child, a turn with no
-// report, or another root's stop.
-import { defaultSubagentStopsPath, readSubagentStops, recordSubagentStop } from "../shared/subagent-stops.ts";
-
-test("a cancelled report of a stopped child carries the do-not-restart line; a failed one does not", async () => {
-  forgetSnapshots();
-  await withWorld(async ({ alpha }) => {
-    const savedRoot = process.env.UB_STATE_ROOT;
-    process.env.UB_STATE_ROOT = mkdtempSync(join(tmpdir(), "ub-stops-"));
-    const path = defaultSubagentStopsPath();
-    try {
-      bindSession("root-1", alpha);
-      bindSession("root-2", alpha);
-      recordSubagentStop({ rootSessionId: "root-1", childSessionId: "kid-1", agentId: "ag_agent:abc123" });
-      recordSubagentStop({ rootSessionId: "root-1", childSessionId: "kid-2", agentId: null });
-      const cancelled = 'Background task task_ab12 (agent) failed.\n\nError:\n{"code":"SUBAGENT_EXECUTION_FAILED","message":"The agent invocation was cancelled."}';
-      const failed = 'Background task task_cd34 (agent) failed.\n\nError:\n{"code":"SUBAGENT_EXECUTION_FAILED","message":"The model call timed out."}';
-      const turn = (root: string, text: string | null, id: string) => ({
-        ...ctxFor(root, alpha, { delivery: "owner" }),
-        messages: text === null ? [] : [{ role: "user", kind: "execution.background_task", content: text }],
-      }) as SnapshotCtx;
-      const line = async (root: string, text: string | null, id: string) => {
-        const snap = await ensureTurnSnapshot(turn(root, text, id), id);
-        return snap?.status === "ok" ? renderContext(snap.context) : "";
-      };
-      assert.match(await line("root-1", cancelled, "t1"), /The owner pressed Stop on these sub-agents: ag_agent:abc123, kid-2\. .*Do not start them again unless the owner asks\./);
-      assert.doesNotMatch(await line("root-1", failed, "t2"), /pressed Stop/);
-      assert.doesNotMatch(await line("root-1", null, "t3"), /pressed Stop/);
-      assert.doesNotMatch(await line("root-2", cancelled, "t4"), /pressed Stop/);
-      // An expired stop is forgotten.
-      assert.deepEqual(readSubagentStops("root-1", Date.now() + 2 * 60 * 60 * 1000, path), []);
-    } finally {
-      if (savedRoot === undefined) delete process.env.UB_STATE_ROOT;
-      else process.env.UB_STATE_ROOT = savedRoot;
-    }
+    const report = { ...ctxFor("sess-rep", alpha, { delivery: "owner" }), messages: [{ role: "user", kind: "execution.background_task", content: "Background task task_ab12 is completed." }] };
+    await ensureTurnSnapshot(report, "t-a");
+    assert.equal(seenOutside({ session: { id: "sess-rep", turn: { id: "t-a" } } }), false);
   });
 });

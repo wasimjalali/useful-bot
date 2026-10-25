@@ -8,8 +8,8 @@ import { forgetRecallCache, NOTES_RECORD_ID, notesScope, recallNotes, renderNote
 import notes from "../agent/memory/notes.ts";
 import { markOutside, seenOutside } from "../agent/lib/outside-content.ts";
 import { ensureTurnSnapshot } from "../agent/lib/turn-snapshot.ts";
-import { applyShellAction } from "../shared/shell-store.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { withBot } from "./helpers/roster.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { bindSession } from "../shared/session-bindings.ts";
 
 const KEYS = ["UB_SESSION_OWNERS_PATH", "UB_BINDING_WAIT_MS", "UB_SHELL_PATH", "UB_WORKSPACE_STORE_PATH", "UB_PROVIDERS_PATH", "UB_MODELS_CACHE_PATH"] as const;
@@ -31,13 +31,11 @@ async function withWorld<T>(fn: (world: { alpha: string; beta: string }) => Prom
     },
     activeConnectionId: GO, selectedModel: "glm-5.3-flash", effort: null, speed: "standard", roles: {},
   }));
-  let store = readShell();
-  const alpha = applyShellAction(store, { type: "createBot", name: "Alpha" });
-  store = alpha.store;
-  const beta = applyShellAction(store, { type: "createBot", name: "Beta" });
-  writeShell(beta.store);
+  const alpha = withBot(readShell(), "Alpha");
+  const beta = withBot(alpha.store, "Beta");
+  writeFixtureShell(beta.store);
   try {
-    return await fn({ alpha: alpha.createdId as string, beta: beta.createdId as string });
+    return await fn({ alpha: alpha.id, beta: beta.id });
   } finally {
     for (const key of KEYS) {
       if (saved[key] === undefined) delete process.env[key];

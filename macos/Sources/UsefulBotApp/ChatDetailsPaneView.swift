@@ -2,17 +2,12 @@ import SwiftUI
 import UsefulBotCore
 
 /// The right-hand chat details pane from the Grok Bot reference
-/// (`03-agent-pane/`): a room's members, or a 1:1 bot's profile, above the
-/// bot's routines. The gear opens the full settings pane and the chevrons
+/// (`03-agent-pane/`): the bot's profile above its routines. The gear opens the full settings pane and the chevrons
 /// collapse the pane, mirroring the reference's pane chrome. Opening a routine
 /// replaces the pane body with its detail view.
 struct ChatDetailsPaneView: View {
     @EnvironmentObject private var model: AppModel
     let bot: ShellBot
-
-    private var members: [ShellBot] {
-        groupMemberBots(bot, store: model.store)
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,11 +31,7 @@ struct ChatDetailsPaneView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    if bot.isGroup {
-                        membersSection
-                    } else {
-                        profileSection
-                    }
+                    profileSection
                     routinesSection
                 }
                 .padding(.horizontal, 16)
@@ -72,50 +63,7 @@ struct ChatDetailsPaneView: View {
         .padding(.vertical, 8)
     }
 
-    // MARK: - Group members
-
-    private var membersSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionLabel("Members")
-            if members.isEmpty {
-                // A roster that no longer resolves is different from a group
-                // that was never staffed.
-                Text(bot.memberIds.isEmpty
-                    ? "No members yet. Add two to six bots from the group settings."
-                    : "This group's members are gone. Pick new ones in the group settings.")
-                    .font(.system(size: 13))
-                    .lineSpacing(3)
-                    .foregroundStyle(Theme.C.inkMuted)
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(members) { member in
-                        HStack(spacing: 10) {
-                            BotAvatarView(bot: member, size: 28)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(member.name)
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Theme.C.ink)
-                                    .lineLimit(1)
-                                if !member.label.isEmpty {
-                                    Text(member.label.uppercased())
-                                        .font(.system(size: 10, weight: .semibold))
-                                        .tracking(DesignTokens.Tracking.label * 10)
-                                        .foregroundStyle(Theme.C.inkFaint)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 4)
-                        .frame(minHeight: 40)
-                    }
-                }
-            }
-        }
-        .padding(.top, 8)
-    }
-
-    // MARK: - 1:1 profile
+    // MARK: - Profile
 
     private var profileSection: some View {
         VStack(spacing: 10) {

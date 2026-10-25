@@ -126,9 +126,12 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
     public var active: Bool
     public var lastRunAt: String?
     public var runHistory: [RoutineRun]
+    /// The bot this routine ran under before the one-bot migration moved it to
+    /// the default bot, paused. Any edit or turning it on clears it.
+    public var movedFrom: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, botId, name, instruction, schedules, timezone, active, lastRunAt, runHistory
+        case id, botId, name, instruction, schedules, timezone, active, lastRunAt, runHistory, movedFrom
     }
 
     public init(
@@ -140,7 +143,8 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
         timezone: String,
         active: Bool,
         lastRunAt: String?,
-        runHistory: [RoutineRun]
+        runHistory: [RoutineRun],
+        movedFrom: String? = nil
     ) {
         self.id = id
         self.botId = botId
@@ -151,6 +155,7 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
         self.active = active
         self.lastRunAt = lastRunAt
         self.runHistory = runHistory
+        self.movedFrom = movedFrom
     }
 
     public init(from decoder: Decoder) throws {
@@ -166,6 +171,7 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
         active = (try? c.decode(Bool.self, forKey: .active)) ?? true
         lastRunAt = try? c.decodeIfPresent(String.self, forKey: .lastRunAt)
         runHistory = (try? c.decode([RoutineRun].self, forKey: .runHistory)) ?? []
+        movedFrom = try? c.decodeIfPresent(String.self, forKey: .movedFrom)
     }
 }
 

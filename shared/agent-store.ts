@@ -13,11 +13,10 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { statePath } from "./stack.ts";
-import { DESCRIPTION_MAX, PROPOSE_DESCRIPTION_MAX } from "./shell-store.ts";
 import type { ConnectionAuthKind, ConnectionKind } from "./connections-store.ts";
 
 /**
- * Local multi-agent state: per-thread event transcripts and pending
+ * Local agent state: per-thread event transcripts and pending
  * confirmations. Both the Next server (UI actions) and the eve agent process
  * (agent tools) write here, so every mutation is a locked read/merge/write.
  * The log is append-only and deduplicated by event id.
@@ -37,16 +36,22 @@ const TEXT_MAX = 4000;
 
 export type ThreadKind = "bot" | "group";
 
-export type AgentEventKind =
+/**
+ * Rows from before bot-to-bot handoffs were removed. They stay in the file so
+ * nothing is lost, but nothing writes them and every read leaves them out.
+ */
+export type LegacyEventKind = "handoff" | "post";
+
+export type LiveEventKind =
   | "user"
   | "assistant"
-  | "handoff"
-  | "post"
   | "note"
   | "proposal"
   | "widget"
   | "image"
   | "page";
+
+export type AgentEventKind = LiveEventKind | LegacyEventKind;
 
 export type AgentEvent = {
   id: string;
@@ -72,70 +77,6 @@ export type AgentEvent = {
    */
   connectedName: string | null;
   connectedLogo: string | null;
-};
-
-export type BotProfileDraft = {
-  name: string;
-  petname: string;
-  title: string;
-  /** Absent means the description is unchanged: the card leaves it alone. */
-  description?: string;
-  avatarShape: string | null;
-  avatarColor: string | null;
-};
-
-export type BotProposal = {
-  kind: "createBot";
-  name: string;
-  /** Working name while the bot is being onboarded, e.g. New Bot 2. */
-  petname: string;
-  title: string;
-  description: string;
-  sectionId: string | null;
-  sourceBotId: string | null;
-  threadId: string;
-  brief: string;
-  /**
-   * The bot whose tool call raised the card. Confirming re-checks that bot's
-   * authority against the live roster; a card with no proposer is refused.
-   */
-  proposerId?: string;
-};
-
-export type GroupProposal = {
-  kind: "createGroup";
-  name: string;
-  memberIds: string[];
-  /** The group's standing instructions, stored and confirmed like a bot's. */
-  description: string;
-  sourceBotId: string | null;
-  threadId: string;
-  /** See `BotProposal.proposerId`. */
-  proposerId?: string;
-};
-
-export type ProfileProposal = {
-  kind: "updateBotProfile";
-  botId: string;
-  patch: BotProfileDraft;
-  /**
-   * The target's `profileRevision` when the card was raised. The confirm path
-   * refuses the card once the profile has moved on (shell-store.ts).
-   */
-  baseRevision: number;
-  sourceBotId: string | null;
-  threadId: string;
-  /** See `BotProposal.proposerId`. */
-  proposerId?: string;
-};
-
-export type FanoutProposal = {
-  kind: "fanout";
-  message: string;
-  targetIds: string[];
-  groupId: string | null;
-  sourceBotId: string | null;
-  threadId: string;
 };
 
 export type ConnectPhase = "proposed" | "waiting" | "connected" | "expired";
@@ -190,7 +131,7 @@ export type ConnectServerProposal = {
   handoffId: string | null;
 };
 
-export type ProposalPayload = BotProposal | GroupProposal | ProfileProposal | FanoutProposal | ConnectAppProposal | ConnectServerProposal;
+export type ProposalPayload = ConnectAppProposal | ConnectServerProposal;
 export type ProposalKind = ProposalPayload["kind"];
 
 export type Proposal = ProposalPayload & {
@@ -217,7 +158,7 @@ export type AgentStore = {
   reserves: string[];
 };
 
-export type ReserveKind = "handoff" | "post" | "proposal" | "image";
+export type ReserveKind = "proposal" | "image";
 
 const EVENT_KINDS = new Set<AgentEventKind>([
   "user",
@@ -255,16 +196,6 @@ export function threadIdFor(botId: string): string {
 
 function clip(value: unknown, max = TEXT_MAX): string {
   return typeof value === "string" ? value.slice(0, max) : "";
-}
-
-/**
- * A proposal description over its cap is refused, never clipped. A stored
- * card that is over (hand-edited file) is dropped by the parser, since the
- * card must show exactly the text that would be written.
- */
-function descriptionWithin(value: unknown, max: number): string | null {
-  const text = typeof value === "string" ? value.trim() : "";
-  return text.length > max ? null : text;
 }
 
 function isId(value: unknown, max = 80): value is string {
@@ -326,13 +257,9 @@ function parseThread(raw: unknown): AgentThread | null {
   };
 }
 
+/** Cards of any other kind (bot, group, profile, fan-out) are from before they were removed: ignored, never rendered or confirmable. */
 function isProposalKind(value: unknown): value is ProposalKind {
-  return value === "createBot"
-    || value === "createGroup"
-    || value === "updateBotProfile"
-    || value === "fanout"
-    || value === "connectApp"
-    || value === "connectServer";
+  return value === "connectApp" || value === "connectServer";
 }
 
 function parseProposal(raw: unknown): Proposal | null {
@@ -351,63 +278,6 @@ function parseProposal(raw: unknown): Proposal | null {
     sourceBotId: isId(rec.sourceBotId) ? rec.sourceBotId : null,
     threadId: clip(rec.threadId, 80),
   };
-  if (rec.kind === "createBot") {
-    const description = descriptionWithin(rec.description, PROPOSE_DESCRIPTION_MAX);
-    if (description === null) return null;
-    return {
-      ...base,
-      kind: "createBot",
-      name: clip(rec.name, 80),
-      petname: clip(rec.petname, 80),
-      title: clip(rec.title, 24),
-      description,
-      sectionId: isId(rec.sectionId) ? rec.sectionId : null,
-      brief: clip(rec.brief, 1000),
-      proposerId: isId(rec.proposerId) ? rec.proposerId : "",
-    };
-  }
-  if (rec.kind === "createGroup") {
-    const memberIds = Array.isArray(rec.memberIds)
-      ? rec.memberIds.filter((id): id is string => isId(id)).slice(0, 6)
-      : [];
-    const description = descriptionWithin(rec.description, DESCRIPTION_MAX);
-    if (description === null) return null;
-    return {
-      ...base,
-      kind: "createGroup",
-      name: clip(rec.name, 80),
-      memberIds,
-      description,
-      proposerId: isId(rec.proposerId) ? rec.proposerId : "",
-    };
-  }
-  if (rec.kind === "updateBotProfile") {
-    const patchRaw = (rec.patch ?? {}) as Record<string, unknown>;
-    // Present only when the card changes it; an absent one stays absent.
-    const description = typeof patchRaw.description === "string"
-      ? descriptionWithin(patchRaw.description, DESCRIPTION_MAX)
-      : undefined;
-    if (description === null) return null;
-    return {
-      ...base,
-      kind: "updateBotProfile",
-      proposerId: isId(rec.proposerId) ? rec.proposerId : "",
-      botId: isId(rec.botId) ? rec.botId : "",
-      // A card with no recorded revision is stale by construction: -1 never
-      // matches a bot's revision.
-      baseRevision: Number.isInteger(rec.baseRevision) && (rec.baseRevision as number) >= 0
-        ? (rec.baseRevision as number)
-        : -1,
-      patch: {
-        name: clip(patchRaw.name, 80),
-        petname: clip(patchRaw.petname, 80),
-        title: clip(patchRaw.title, 24),
-        ...(description !== undefined ? { description } : {}),
-        avatarShape: typeof patchRaw.avatarShape === "string" ? patchRaw.avatarShape : null,
-        avatarColor: typeof patchRaw.avatarColor === "string" ? patchRaw.avatarColor : null,
-      },
-    };
-  }
   if (rec.kind === "connectApp") {
     const phase: ConnectPhase = rec.phase === "waiting" || rec.phase === "connected" || rec.phase === "expired"
       ? rec.phase
@@ -461,16 +331,7 @@ function parseProposal(raw: unknown): Proposal | null {
       handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
     };
   }
-  const targetIds = Array.isArray(rec.targetIds)
-    ? rec.targetIds.filter((id): id is string => isId(id)).slice(0, 8)
-    : [];
-  return {
-    ...base,
-    kind: "fanout",
-    message: clip(rec.message, 2000),
-    targetIds,
-    groupId: isId(rec.groupId) ? rec.groupId : null,
-  };
+  return null;
 }
 
 export function parseAgentStore(raw: unknown): AgentStore {
@@ -502,6 +363,21 @@ export function readAgentStore(path = agentStorePath()): AgentStore {
     return parseAgentStore(JSON.parse(readFileSync(path, "utf8")));
   } catch {
     return emptyStore();
+  }
+}
+
+/**
+ * Whether the file on disk is there but cannot be read as the current schema.
+ * readAgentStore answers an empty store for those, which is right for a reader
+ * that only lists things, and wrong for one that acts on what is missing.
+ */
+export function agentStoreUnreadable(path = agentStorePath()): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> | null;
+    return !raw || typeof raw !== "object" || raw.schemaVersion !== AGENT_SCHEMA;
+  } catch {
+    return true;
   }
 }
 
@@ -609,9 +485,13 @@ function upsertThread(store: AgentStore, botId: string, kind: ThreadKind, sessio
   return thread;
 }
 
+function isLegacyEvent(event: AgentEvent): boolean {
+  return event.kind === "handoff" || event.kind === "post";
+}
+
 export function listThreadEvents(botId: string, path = agentStorePath()): AgentEvent[] {
   const thread = readAgentStore(path).threads.find((item) => item.id === threadIdFor(botId));
-  return thread ? thread.events.slice() : [];
+  return thread ? thread.events.filter((event) => !isLegacyEvent(event)) : [];
 }
 
 /**
@@ -661,7 +541,7 @@ export function referencedWidgetIds(path = agentStorePath()): Set<string> | null
 export function appendAgentEvent(
   botId: string,
   input: {
-    kind: AgentEventKind;
+    kind: LiveEventKind;
     text: string;
     threadKind?: ThreadKind;
     sessionId?: string;
@@ -714,24 +594,11 @@ export function appendAgentEvent(
   }, path);
 }
 
-/** Refuse a card whose description is over its cap (see `descriptionWithin`). */
-function assertProposalDescription(payload: ProposalPayload): void {
-  const check = (text: string, max: number) => {
-    if (text.trim().length > max) throw new Error("shell_description_too_long");
-  };
-  if (payload.kind === "createBot") check(payload.description, PROPOSE_DESCRIPTION_MAX);
-  else if (payload.kind === "createGroup") check(payload.description, DESCRIPTION_MAX);
-  else if (payload.kind === "updateBotProfile") {
-    if (payload.patch.description !== undefined) check(payload.patch.description, DESCRIPTION_MAX);
-  }
-}
-
 export function createProposal<P extends ProposalPayload>(
   payload: P,
   path = agentStorePath(),
 ): P & Pick<Proposal, "id" | "createdAt" | "expiresAt" | "status"> {
   type Stored = P & Pick<Proposal, "id" | "createdAt" | "expiresAt" | "status">;
-  assertProposalDescription(payload);
   return withAgentStore((store) => {
     const now = Date.now();
     const proposal = {
@@ -746,48 +613,6 @@ export function createProposal<P extends ProposalPayload>(
     store.proposals = keep.slice(-80);
     return proposal;
   }, path);
-}
-
-/**
- * Raise a profile card unless the target bot already has one waiting: one
- * pending profile proposal per bot. The check and the write share one lock, so
- * two concurrent calls cannot both land. Returns null when one is pending.
- */
-export function createProfileProposalOnce(
-  payload: ProfileProposal,
-  path = agentStorePath(),
-): (ProfileProposal & Pick<Proposal, "id" | "createdAt" | "expiresAt" | "status">) | null {
-  type Stored = ProfileProposal & Pick<Proposal, "id" | "createdAt" | "expiresAt" | "status">;
-  assertProposalDescription(payload);
-  return withAgentStore((store) => {
-    const now = Date.now();
-    const waiting = store.proposals.some((item) => (
-      item.kind === "updateBotProfile"
-      && item.botId === payload.botId
-      && item.status === "pending"
-      && Date.parse(item.expiresAt) > now
-    ));
-    if (waiting) return null;
-    const proposal = {
-      ...payload,
-      id: newProposalId(),
-      createdAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + PROPOSAL_TTL_MS).toISOString(),
-      status: "pending",
-    } as Stored;
-    store.proposals.push(proposal);
-    store.proposals = store.proposals.slice(-80);
-    return proposal;
-  }, path);
-}
-
-/** Working name for a bot that is still being onboarded, e.g. "New Bot 2". */
-export function nextPetname(store: { bots: Array<{ name: string }> }): string {
-  for (let index = 1; index <= 99; index += 1) {
-    const candidate = `New Bot ${index}`;
-    if (!store.bots.some((bot) => bot.name.toLowerCase() === candidate.toLowerCase())) return candidate;
-  }
-  return "New Bot";
 }
 
 /**
@@ -872,7 +697,7 @@ export function isReserved(key: string, path = agentStorePath()): boolean {
 
 /**
  * Claim an idempotency slot for an agent tool call so a retried step cannot
- * send the same handoff twice. The model supplies the request id.
+ * raise the same card or draw the same image twice. The model supplies the request id.
  */
 export function reserveSend(kind: ReserveKind, requestId: string, path = agentStorePath()): boolean {
   return withAgentStore((store) => {
@@ -958,7 +783,7 @@ export function threadSnapshot(botId: string, path = agentStorePath()): {
   const thread = store.threads.find((item) => item.id === threadIdFor(botId));
   const now = Date.now();
   return {
-    events: thread ? thread.events.slice() : [],
+    events: thread ? thread.events.filter((event) => !isLegacyEvent(event)) : [],
     proposals: store.proposals.filter((item) => (
       item.threadId === threadIdFor(botId)
       && item.status === "pending"

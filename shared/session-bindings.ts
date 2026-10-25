@@ -38,8 +38,9 @@ const SESSION_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const BOT_ID = /^.{1,80}$/;
 
 /**
- * `parentId` is set only on a sub-agent's child session: the root session it
- * was delegated from. The proxy refuses to send into such a session.
+ * `parentId` is set only on a row a sub-agent's child session got before
+ * sub-agents were removed: the root session it was delegated from. Nothing
+ * writes it any more; such a row is read only and never carried over.
  */
 export type SessionBinding = { botId: string; createdAt: string; parentId?: string };
 
@@ -186,40 +187,6 @@ export function bindSession(
       store: {
         ...store,
         sessions: { ...store.sessions, [sessionId]: { botId, createdAt: at.toISOString() } },
-      },
-      result: "created" as const,
-    };
-  }, path);
-}
-
-/**
- * Bind a verified sub-agent child session to the bot of the session it was
- * delegated from, recording that parent, so eve (which holds every session
- * call to a binding) answers a read of it. Immutable like `bindSession`: the
- * same bot and parent again is a no-op, anything else (another bot, another
- * parent, a session already bound as a root) is `session_owner_conflict`.
- */
-export function bindChildSession(
-  sessionId: string,
-  parentId: string,
-  botId: string,
-  at = new Date(),
-  path = defaultSessionOwnersPath(),
-): "created" | "exists" {
-  if (!SESSION_ID.test(sessionId) || !SESSION_ID.test(parentId) || sessionId === parentId) {
-    throw new Error("session_owners_session_id");
-  }
-  if (!BOT_ID.test(botId)) throw new Error("session_owners_bot_id");
-  return updateStore((store) => {
-    const current = store.sessions[sessionId];
-    if (current) {
-      if (current.botId !== botId || current.parentId !== parentId) throw new Error("session_owner_conflict");
-      return { store, result: "exists" as const };
-    }
-    return {
-      store: {
-        ...store,
-        sessions: { ...store.sessions, [sessionId]: { botId, createdAt: at.toISOString(), parentId } },
       },
       result: "created" as const,
     };

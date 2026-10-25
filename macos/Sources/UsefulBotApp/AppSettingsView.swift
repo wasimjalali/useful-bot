@@ -317,7 +317,7 @@ struct AppSettingsView: View {
                             Text("This Mac")
                                 .font(.system(size: 14))
                                 .foregroundStyle(Theme.C.ink)
-                            Text("Bots run their tools on this Mac.")
+                            Text("Your bot runs its tools on this Mac.")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.C.inkMuted)
                         }

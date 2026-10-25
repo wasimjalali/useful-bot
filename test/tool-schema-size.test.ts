@@ -9,9 +9,9 @@ test("every authored tool stays short and names its siblings in snake_case", asy
     measureTools: () => Promise<{ name: string; words: number; chars: number }[]>;
   };
   const rows = await measureTools();
-  assert.ok(rows.length >= 30, `only ${rows.length} tools measured; the walk is broken`);
+  assert.ok(rows.length >= 20, `only ${rows.length} tools measured; the walk is broken`);
   const total = rows.reduce((sum, row) => sum + row.chars, 0);
-  assert.ok(total < 20_200, `authored tools weigh ${total} chars, past the 20,200 ceiling (19,193 after PR C plus about 5%, was 20,309 before)`);
+  assert.ok(total < 13_500, `authored tools weigh ${total} chars, past the 13,500 ceiling (12,872 after the multi-bot tools went, plus about 5%)`);
   for (const row of rows) {
     assert.ok(row.words <= 120, `${row.name} description is ${row.words} words; the ceiling is 120`);
   }
@@ -41,6 +41,22 @@ test("no tool description, hint or error names a tool in camelCase", async () =>
       assert.equal(pattern.test(literal), false, `${file} has a string naming a tool in camelCase: ${literal}`);
     }
   }
+});
+
+test("the tools array as the model's request carries it fits TOOL_SCHEMA_CHARS with 15% to spare", async () => {
+  const { join } = await import("node:path");
+  const { measureWire } = (await import(join(import.meta.dirname, "../scripts/tool-schema-size.mjs"))) as {
+    measureWire: () => Promise<{ tools: number; chars: number }>;
+  };
+  const { TOOL_SCHEMA_CHARS } = await import("../shared/admission.ts");
+  const wire = await measureWire();
+  assert.ok(wire.tools >= 20, `only ${wire.tools} tools measured; the walk is broken`);
+  // find_tools is built per step and cannot be weighed here; it is under 500 characters.
+  const FIND_TOOLS = 600;
+  assert.ok(
+    wire.chars + FIND_TOOLS <= TOOL_SCHEMA_CHARS * 0.85,
+    `the tools array is ${wire.chars} characters (plus find_tools) against TOOL_SCHEMA_CHARS ${TOOL_SCHEMA_CHARS}; raise the constant in shared/admission.ts with a new measurement`,
+  );
 });
 
 test("the script prints a table with a total", () => {

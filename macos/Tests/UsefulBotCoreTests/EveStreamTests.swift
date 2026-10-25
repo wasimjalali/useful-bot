@@ -168,13 +168,6 @@ import Testing
         #expect(TurnActivity.thinking.label == "Thinking")
     }
 
-    @Test func subagentCallsNameThemselves() {
-        let line = #"{"type":"actions.requested","meta":{"id":"1"},"data":{"actions":[{"callId":"c1","kind":"subagent-call","subagentName":"scout"}]}}"#
-        var projection = StreamProjection()
-        projection.apply(EveStream.parseLine(line)!)
-        #expect(projection.activity == .tool("scout"))
-    }
-
     @Test func aNewTurnDoesNotInheritTheLastTurnsFailure() {
         // The reload leaves the projection on a turn that failed hours ago.
         var projection = StreamProjection()
@@ -208,7 +201,7 @@ import Testing
             code: "turn.failed",
             detail: "AI_APICallError: global_concurrency_limit (rate_limit_error)"
         )
-        #expect(full.reason == "Ten bots are already working. Try again in a moment.")
+        #expect(full.reason == "Too many turns are running at once. Try again in a moment.")
 
         // The real daily budgets keep their wording.
         for code in ["caller_budget_exhausted", "global_budget_exhausted"] {

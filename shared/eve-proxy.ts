@@ -1,4 +1,3 @@
-import { DEFAULT_BOT_ID, orchestratorId } from "./shell-store.ts";
 import type { ShellBot, ShellStore } from "./shell-store.ts";
 import {
   IMAGE_DATA_URL,
@@ -9,10 +8,7 @@ import {
   type TurnMessage,
   type TurnTextPart,
 } from "./attachments.ts";
-
-import { resolveRoute, speakersFrom, type Route } from "./threads.ts";
 import { withSessionNotes } from "./continuation-brief.ts";
-import type { ThreadKind } from "./agent-store.ts";
 
 /**
  * Session ids are opaque eve identifiers (uuid-shaped). The charset is pinned
@@ -54,8 +50,6 @@ export function relayedEveCode(status: number, body: string): string | null {
     return null;
   }
 }
-
-export type SessionRoute = Route & { mentionNames: string[] };
 
 /** How a failure while routing or rewriting a turn is answered: never by forwarding it. */
 export function turnRewriteFailure(err: unknown): { status: 400 | 503; error: "eve_message_invalid" | "session_route_failed" } {
@@ -193,53 +187,6 @@ export function bodyHasInputResponses(raw: string): boolean {
   }
 }
 
-/** eve's agent ids, as the app sends them on a child cancel. */
-const CHILD_AGENT_ID = /^ag_agent:[a-z0-9]+$/;
-
-const CHILD_PARENT = new RegExp(`^${SESSION_ID}$`);
-
-/** The largest `at` a child stream read may name: far past any real session, small enough to stay exact. */
-export const CHILD_AT_MAX = 100_000_000;
-
-/**
- * The `parent` and `at` queries of a sub-agent's stream read. The app names
- * the parent session the child was delegated from and `at`, the absolute
- * index of the parent's `subagent.called` event for it; the proxy never relays
- * either to eve. `parent` is null when it is present but not exactly one
- * session id; `at` is null when it is missing or not exactly one plain
- * non-negative integer up to `CHILD_AT_MAX`.
- */
-export function childStreamQuery(search: string): { present: false } | { present: true; parent: string | null; at: number | null; search: string } {
-  const params = new URLSearchParams(search);
-  if (!params.has("parent")) return { present: false };
-  const all = params.getAll("parent");
-  const parent = all.length === 1 && CHILD_PARENT.test(all[0]) ? all[0] : null;
-  const ats = params.getAll("at");
-  const at = ats.length === 1 && /^\d{1,9}$/.test(ats[0]) && Number(ats[0]) <= CHILD_AT_MAX ? Number(ats[0]) : null;
-  params.delete("parent");
-  params.delete("at");
-  const rest = params.toString();
-  return { present: true, parent, at, search: rest ? `?${rest}` : "" };
-}
-
-/**
- * The `parent` and `at` queries of a cancel into a sub-agent's child, read
- * exactly like a child stream read (see `childStreamQuery`). Not present for
- * any other request, a plain cancel included.
- */
-export function childCancelQuery(method: string, suffix: string, search: string): { present: false } | (Extract<ReturnType<typeof childStreamQuery>, { present: true }> & { agentId: string | null; agentIdBad: boolean }) {
-  if (method.toUpperCase() !== "POST" || !SESSION_CANCEL.test(suffix)) return { present: false };
-  // The app may name the sub-agent being stopped; it is recorded, never relayed to eve.
-  const params = new URLSearchParams(search);
-  const agents = params.getAll("agentId");
-  const agentIdBad = agents.length > 1 || (agents.length === 1 && !CHILD_AGENT_ID.test(agents[0]));
-  params.delete("agentId");
-  const rest = params.toString();
-  const query = childStreamQuery(rest ? `?${rest}` : "");
-  if (!query.present) return { present: false };
-  return { ...query, agentId: agents.length === 1 && !agentIdBad ? agents[0] : null, agentIdBad };
-}
-
 /** The text of a turn: the string itself, or its text parts joined. */
 export function turnText(message: TurnMessage): string {
   if (typeof message === "string") return message;
@@ -251,78 +198,45 @@ export function turnHasImages(message: TurnMessage): boolean {
 }
 
 /**
- * Resolve the bot or group an eve turn belongs to, plus its @mentions, from the
- * stored shell. The caller hands the route back to the UI so the transcript can
- * attribute the reply to the bot that actually answered.
+ * The bot an eve turn is for, from the stored shell, or null for an unknown
+ * `botId`. Never a silent remap to whichever bot is selected: rewriting the
+ * turn as another bot would misattribute the reply.
  */
-export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | null {
-  let botId = "";
-  let message = "";
+export function eveTurnBot(raw: string, store: Pick<ShellStore, "bots">): ShellBot | null {
   try {
-    const json = JSON.parse(raw) as { botId?: unknown; message?: unknown };
-    botId = typeof json.botId === "string" ? json.botId : "";
-    const parsed = parseTurnMessage(json.message);
-    message = parsed === null ? "" : turnText(parsed);
+    const json = JSON.parse(raw) as { botId?: unknown };
+    const botId = typeof json.botId === "string" ? json.botId : "";
+    return store.bots.find((item) => item.id === botId) ?? null;
   } catch {
     return null;
   }
-  const bot = store.bots.find((item) => item.id === botId) ?? null;
-  const speakers = speakersFrom(store.bots);
-  // An unknown botId is an error, never a silent remap to whichever bot is
-  // selected: rewriting the turn as another bot would misattribute the reply.
-  if (!bot) return null;
-  const route = resolveRoute({
-    botId: bot.id,
-    text: message,
-    bots: speakers,
-    memberIds: bot.memberIds,
-    orchestrator: orchestratorId(store),
-  });
-  const mentionNames = route.mentionIds
-    .map((id) => speakers.find((speaker) => speaker.id === id)?.name ?? "")
-    .filter((name) => name.length > 0);
-  return { ...route, mentionNames };
-}
-
-/** The note a group turn carries when the owner @mentioned members. */
-export function mentionLine(names: string[]): string {
-  const who = names.join(", ");
-  return `The owner addressed ${who}. Answer for that member's part as the orchestrator; don't claim to be ${who}.`;
-}
-
-/**
- * The turn rewrite: the message validated, and the app notes folded in as
- * hidden lines the transcript strips (a carry-over brief, a retry note, and
- * the mention line when the owner @mentioned members of a group). The bot's
- * identity is not part of the turn: it is a system block built from the bot.
- */
-/** Every app note a turn carries: the caller's notes, then the mention line for a group turn. */
-function turnNotes(route: SessionRoute | null, notes: string[]): string[] {
-  const mentioned = (route?.mentionNames ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter((name) => name.length > 0);
-  return mentioned.length > 0 ? [...notes, mentionLine(mentioned)] : notes;
 }
 
 /**
  * Characters of the whole hidden prefix `rewriteEveTurnBody` puts in front of
- * the owner's message for these notes and this route, session-note framing
- * included. Admission sizes exactly this.
+ * the owner's message for these notes, session-note framing included.
+ * Admission sizes exactly this.
  */
-export function hiddenPrefixChars(route: SessionRoute | null, notes: string[]): number {
-  return withSessionNotes("", turnNotes(route, notes)).length;
+export function hiddenPrefixChars(notes: string[]): number {
+  return withSessionNotes("", notes).length;
 }
 
+/**
+ * The turn rewrite: the message validated, and the app notes folded in as
+ * hidden lines the transcript strips (a carry-over brief, a retry note). The
+ * bot's identity is not part of the turn: it is a system block built from the
+ * bot.
+ */
 export function rewriteEveTurnBody(
   raw: string,
-  route: SessionRoute | null,
   /** App notes for the hidden prefix: a carry-over brief, a retry note. */
   notes: string[] = [],
 ): string {
   const json = JSON.parse(raw) as { message?: unknown };
   const message = parseTurnMessage(json.message);
   if (message === null) throw new Error("eve_message");
-  const allNotes = turnNotes(route, notes);
-  if (allNotes.length === 0) return JSON.stringify({ message });
-  const prefix = withSessionNotes("", allNotes);
+  if (notes.length === 0) return JSON.stringify({ message });
+  const prefix = withSessionNotes("", notes);
   if (typeof message === "string") {
     return JSON.stringify({ message: `${prefix}${message}` });
   }
@@ -357,35 +271,5 @@ export function parseTurnExtras(raw: string): { continueFrom?: string | null; re
     return out;
   } catch {
     return { retry: false };
-  }
-}
-
-export function sessionRouteHeader(route: SessionRoute | null): string | null {
-  if (!route) return null;
-  try {
-    return Buffer.from(JSON.stringify(route), "utf8").toString("base64url");
-  } catch {
-    return null;
-  }
-}
-
-export function parseSessionRouteHeader(value: string | null): SessionRoute | null {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as SessionRoute;
-    if (!parsed || (parsed.kind !== "bot" && parsed.kind !== "group")) return null;
-    return {
-      threadId: typeof parsed.threadId === "string" ? parsed.threadId : "",
-      kind: parsed.kind as ThreadKind,
-      mentionIds: Array.isArray(parsed.mentionIds)
-        ? parsed.mentionIds.filter((id): id is string => typeof id === "string")
-        : [],
-      mentionNames: Array.isArray(parsed.mentionNames)
-        ? parsed.mentionNames.filter((name): name is string => typeof name === "string")
-        : [],
-      untargeted: parsed.untargeted === true,
-    };
-  } catch {
-    return null;
   }
 }

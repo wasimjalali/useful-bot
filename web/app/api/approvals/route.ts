@@ -20,14 +20,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   try {
-    // Each card names the bot whose chat it belongs to (a sub-agent's card, the
-    // bot of its root session) and the session that raised it.
+    // Each card names the bot whose chat it belongs to and the session that raised it.
     const shell = readShell();
-    const approvals = store().listPending().map(({ rootSessionId, subagent, ...card }) => {
-      const botId = resolveSessionBot(rootSessionId ?? card.sessionId, shell);
+    const approvals = store().listPending().map((card) => {
+      const botId = resolveSessionBot(card.sessionId, shell);
       const botName = shell.bots.find((bot) => bot.id === botId)?.name ?? null;
-      // The root session names the chat a sub-agent's card belongs to; a root's own card is its session.
-      return { ...card, rootSessionId: rootSessionId ?? card.sessionId, botId, botName, subagent: subagent === true };
+      return { ...card, botId, botName };
     });
     return NextResponse.json({ ok: true, approvals });
   } catch (err) {

@@ -102,9 +102,9 @@ test("notes ride in the hidden prefix and the transcript strips them for every b
 
 test("the proxy folds notes into any bot's turn and leaves a note-free turn untouched", () => {
   const raw = JSON.stringify({ message: "hello", botId: DEFAULT_BOT_ID, retry: true, continueFrom: "wrun_1" });
-  const plain = JSON.parse(rewriteEveTurnBody(raw, null)) as Record<string, unknown>;
+  const plain = JSON.parse(rewriteEveTurnBody(raw)) as Record<string, unknown>;
   assert.deepEqual(plain, { message: "hello" });
-  const noted = JSON.parse(rewriteEveTurnBody(raw, null, [RETRY_NOTE])) as { message: string };
+  const noted = JSON.parse(rewriteEveTurnBody(raw, [RETRY_NOTE])) as { message: string };
   assert.equal(stripThreadPrefix(noted.message), "hello");
   assert.ok(noted.message.includes("Retry note:"));
   assert.equal("continueFrom" in noted, false);

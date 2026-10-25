@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CHILD_AT_MAX,
-  childStreamQuery,
   eveGetAllowed,
   evePostAllowed,
   parseInputResponses,
@@ -44,14 +42,14 @@ test("eve proxy rejects traversal and out-of-charset session ids", () => {
 test("turn rewrite carries no identity for a specialist bot and drops the routing botId", () => {
   const raw = JSON.stringify({ message: "hello", botId: "bot-seo" });
   // Without notes the message goes through untouched: no "Standing instructions", no "You are".
-  const parsed = JSON.parse(rewriteEveTurnBody(raw, null)) as { message: string; botId?: string };
+  const parsed = JSON.parse(rewriteEveTurnBody(raw)) as { message: string; botId?: string };
   assert.equal(parsed.message, "hello");
   assert.doesNotMatch(parsed.message, /Standing instructions/);
   // The proxy resolves the route from the raw body and strips botId before eve
   // sees the turn; the transcript cannot leak it back to the model.
   assert.equal(parsed.botId, undefined);
   // With a note the turn opens with the app-note prefix and nothing about the bot.
-  const noted = JSON.parse(rewriteEveTurnBody(raw, null, [RETRY_NOTE])) as { message: string };
+  const noted = JSON.parse(rewriteEveTurnBody(raw, [RETRY_NOTE])) as { message: string };
   assert.doesNotMatch(noted.message, /Standing instructions|You are /);
   assert.equal(stripThreadPrefix(noted.message), "hello");
 });
@@ -108,7 +106,7 @@ test("turn rewrite puts the note prefix on the first text part and keeps the ima
   });
   // A file ahead of the text: the prefix still comes first, as its own part,
   // so eve's summary starts with it and the strip and the arming still work.
-  const parsed = JSON.parse(rewriteEveTurnBody(raw, null, [RETRY_NOTE])) as { message: Array<Record<string, string>>; botId?: string };
+  const parsed = JSON.parse(rewriteEveTurnBody(raw, [RETRY_NOTE])) as { message: Array<Record<string, string>>; botId?: string };
   assert.equal(parsed.botId, undefined);
   assert.equal(parsed.message.length, 3);
   assert.equal(parsed.message[0]?.type, "text");
@@ -119,18 +117,18 @@ test("turn rewrite puts the note prefix on the first text part and keeps the ima
   assert.equal(summary.startsWith(prefix), true);
   // Text first: the prefix goes onto that part in place.
   const textFirst = JSON.stringify({ botId: "bot-seo", message: [{ type: "text", text: "rank this" }, { type: "file", data: dataUrl, mediaType: "image/png", filename: "shot.png" }] });
-  const textFirstParsed = JSON.parse(rewriteEveTurnBody(textFirst, null, [RETRY_NOTE])) as { message: Array<Record<string, string>> };
+  const textFirstParsed = JSON.parse(rewriteEveTurnBody(textFirst, [RETRY_NOTE])) as { message: Array<Record<string, string>> };
   assert.equal(textFirstParsed.message.length, 2);
   assert.equal(textFirstParsed.message[0]?.text, `${prefix}rank this`);
   // Images only: the prefix gets a text part of its own so eve still sees it.
   const only = JSON.stringify({ botId: "bot-seo", message: [{ type: "file", data: dataUrl, mediaType: "image/png", filename: "shot.png" }] });
-  const onlyParsed = JSON.parse(rewriteEveTurnBody(only, null, [RETRY_NOTE])) as { message: Array<Record<string, string>> };
+  const onlyParsed = JSON.parse(rewriteEveTurnBody(only, [RETRY_NOTE])) as { message: Array<Record<string, string>> };
   assert.equal(onlyParsed.message[0]?.type, "text");
   assert.equal(onlyParsed.message[0]?.text, `${prefix.trimEnd()}\n`);
   // No notes: the parts are untouched, as a string is.
-  const plain = JSON.parse(rewriteEveTurnBody(raw, null)) as { message: unknown };
+  const plain = JSON.parse(rewriteEveTurnBody(raw)) as { message: unknown };
   assert.deepEqual(plain.message, JSON.parse(raw).message);
-  assert.throws(() => rewriteEveTurnBody(JSON.stringify({ message: [{ type: "video" }] }), null), /eve_message/);
+  assert.throws(() => rewriteEveTurnBody(JSON.stringify({ message: [{ type: "video" }] })), /eve_message/);
 });
 
 // Literal legacy prefixes: older sessions hold them on their first user turn,
@@ -188,29 +186,4 @@ test("an input answer takes exactly an array of requestId and optionId, nothing 
   assert.equal(parseInputResponses("[]").ok, false);
   assert.equal(parseInputResponses("null").ok, false);
   assert.equal(parseInputResponses(JSON.stringify({ message: "hi" })).ok, false);
-});
-
-// Failure modes for the child stream query: no parent, an empty one, one with a
-// path character, two of them (which wins is ambiguous), and a parent that is
-// the same as the child. `at` (the parent's subagent.called index) is missing,
-// empty, negative, fractional, signed, hex, exponent, padded, huge or given
-// twice. Neither the parent nor `at` ever reaches eve.
-test("the child stream names its parent and `at` in the query, and neither is relayed", () => {
-  assert.deepEqual(childStreamQuery("?startIndex=4&parent=sess-p&at=17&includeTailIndex=1"), {
-    present: true,
-    parent: "sess-p",
-    at: 17,
-    search: "?startIndex=4&includeTailIndex=1",
-  });
-  assert.deepEqual(childStreamQuery("?parent=sess-p"), { present: true, parent: "sess-p", at: null, search: "" });
-  assert.deepEqual(childStreamQuery("?parent=sess-p&at=0"), { present: true, parent: "sess-p", at: 0, search: "" });
-  assert.deepEqual(childStreamQuery(`?parent=sess-p&at=${CHILD_AT_MAX}`), { present: true, parent: "sess-p", at: CHILD_AT_MAX, search: "" });
-  assert.deepEqual(childStreamQuery("?startIndex=4"), { present: false });
-  assert.deepEqual(childStreamQuery(""), { present: false });
-  for (const search of ["?parent=", "?parent=a.b", "?parent=a/b", "?parent=..", "?parent=a%2Fb", "?parent=a&parent=b", "?parent=a%20b"]) {
-    assert.deepEqual(childStreamQuery(search), { present: true, parent: null, at: null, search: "" }, search);
-  }
-  for (const at of ["", "-1", "1.5", "+3", "0x10", "1e3", " 3", "03a", `${CHILD_AT_MAX + 1}`, "99999999999999999999", "3&at=4"]) {
-    assert.deepEqual(childStreamQuery(`?parent=sess-p&at=${at}`), { present: true, parent: "sess-p", at: null, search: "" }, at);
-  }
 });

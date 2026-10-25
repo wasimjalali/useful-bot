@@ -183,7 +183,7 @@ final class FirstRunController: ObservableObject {
         if let landOverride, let bot = store.bots.first(where: { $0.kind == "bot" && ($0.name == landOverride || $0.id == landOverride) }) {
             return bot.id
         }
-        let bots = store.bots.filter { $0.kind == "bot" && !$0.hidden }
+        let bots = store.activeBots
         return bots.first { $0.id == Threads.defaultBotId }?.id
             ?? bots.first { $0.name == "Generalist" }?.id
             ?? bots.first?.id
@@ -1382,7 +1382,7 @@ private struct ModelPage: View {
             StepHeader(
                 eyebrow: "Step 2 of 2",
                 title: "Pick your default model",
-                detail: "Every bot starts with this one. You can switch per chat anytime."
+                detail: "New chats start with this one. You can switch anytime."
             )
             if groups.isEmpty {
                 empty

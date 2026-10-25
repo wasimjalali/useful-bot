@@ -2,17 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
-import {
-  callerOf,
-  inAppGate,
-  mayActOn,
-  mayStillActOn,
-  notAvailable,
-  READ_ONLY_BLOCKED,
-  SELF_ONLY_HINT,
-  sessionPermission,
-  settle,
-} from "../lib/permission.ts";
+import { callerOf, inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import {
   createRoutine,
   hostTimeZone,
@@ -42,12 +32,11 @@ const schedule = z.object({
 
 export default defineTool({
   description:
-    "Create a routine, a standing instruction a bot runs on a schedule, only when the owner asks for recurring work (\"check this every Monday morning\"). Times are wall clock in the routine's timezone. Defaults to this bot. Applies at once in Auto and Full access, refused in Read only; the owner can pause or edit it in the chat details pane.",
+    "Create a routine, a standing instruction this bot runs on a schedule, only when the owner asks for recurring work (\"check this every Monday morning\"). Times are wall clock in the routine's timezone. Applies at once in Auto and Full access, refused in Read only; the owner can pause or edit it in the chat details pane.",
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     instruction: z.string().min(1).max(4000),
     schedules: z.array(schedule).min(1).max(10),
-    botId: z.string().min(1).max(80).optional(),
     /** IANA zone, for example Europe/Berlin. Defaults to this Mac's zone. */
     timezone: z.string().max(80).optional(),
   }),
@@ -55,13 +44,7 @@ export default defineTool({
     const shell = readShell();
     const who = await callerOf(shell, ctx);
     if (!who.ok) return who.result;
-    const botId = input.botId?.trim() || who.caller.id;
-    const bot = shell.bots.find((item) => item.id === botId) ?? null;
-    if (!bot) {
-      return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call list_bots for exact ids." };
-    }
-    // A plain bot or a group schedules only its own routines.
-    if (!mayActOn(who.caller, bot.id)) return notAvailable(SELF_ONLY_HINT);
+    const bot = who.caller.bot;
     if (input.timezone !== undefined && !isValidTimeZone(input.timezone)) {
       return { status: "invalid", error: `${input.timezone} is not an IANA timezone`, hint: "For example Europe/Berlin." };
     }
@@ -115,7 +98,6 @@ export default defineTool({
       if (!readShell().bots.some((item) => item.id === bot.id)) {
         return { status: "not_found", error: `no bot with id ${bot.id}` };
       }
-      if (!mayStillActOn(who.caller.id, bot.id)) return notAvailable(SELF_ONLY_HINT);
       let routine;
       try {
         routine = createRoutine(draft);

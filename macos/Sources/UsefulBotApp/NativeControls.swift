@@ -363,35 +363,6 @@ struct BotLabelChip: View {
     }
 }
 
-/// `.section-toggle` header: 11pt uppercase, tracked, faint ink.
-struct SectionHeader: View {
-    let title: String
-    let collapsed: Bool
-    let onToggle: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .rotationEffect(.degrees(collapsed ? -90 : 0))
-                // Sentence case, as the section was named: a quiet label,
-                // not an all-caps eyebrow.
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .foregroundStyle(hovering ? Theme.C.inkMuted : Theme.C.inkFaint)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .onHover { hovering = $0 }
-    }
-}
-
 /// `.field`: 13pt medium label above the control, 13pt danger error under it.
 struct FieldShell<Content: View>: View {
     let label: String

@@ -684,6 +684,84 @@ export class MemoryStore {
     }
   }
 
+  /**
+   * Move every live note of `from` to `to`: the front matter's `botId` is
+   * rewritten, the revision goes up by one and `updatedAt` moves, and the index
+   * row follows. It is the only path that changes a note's bot (`upsert` refuses
+   * it, a note is never retagged by a bot), and the archive migration's owner
+   * action "Move notes" is its only caller. The body, and so the index's
+   * `body_sha`, does not change. An archived or expired note is not live and
+   * stays. One note at a time under the store lock, file first and index
+   * second, so a run that is cut short leaves the rest under `from` for the
+   * next run. Returns how many moved.
+   */
+  moveBotNotes(from: string, to: string): number {
+    if (!from || !to) throw new Error("memory_bot_required");
+    if (from === to) return 0;
+    const release = this.acquire();
+    try {
+      let moved = 0;
+      const now = new Date().toISOString();
+      for (const name of readdirSync(this.notesDir)) {
+        if (!name.endsWith(".md")) continue;
+        const path = join(this.notesDir, name);
+        const raw = readNoteFile(path);
+        if (raw === null) continue;
+        let note: ReturnType<typeof parseNote>;
+        try {
+          note = parseNote(raw);
+        } catch {
+          continue;
+        }
+        const { meta, body } = note;
+        if (meta.botId !== from || meta.status !== "active" || !NOTE_ID_PATTERN.test(meta.id)) continue;
+        if (meta.expiresAt !== null && meta.expiresAt <= now) continue;
+        const next: NoteMeta = { ...meta, botId: to, revision: meta.revision + 1, updatedAt: now };
+        const tmp = join(this.notesDir, `.${meta.id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+        writeFileSync(tmp, serializeNote(next, body), { encoding: "utf8", mode: 0o600, flag: "wx" });
+        this.markDirty(meta.id);
+        try {
+          renameSync(tmp, path);
+        } catch (error) {
+          try { unlinkSync(tmp); } catch { /* ignore */ }
+          throw error;
+        }
+        this.transaction(() => this.insertIndex(next, body));
+        this.clearDirty();
+        moved += 1;
+      }
+      return moved;
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Archive every live note of a bot (not a hard delete: the files stay with
+   * status `archived`). For removing an earlier bot. Returns how many.
+   */
+  archiveBotNotes(botId: string): number {
+    if (!botId) throw new Error("memory_bot_required");
+    let archived = 0;
+    // 100 notes a pass, and a pass that archives nothing ends it.
+    for (let pass = 0; pass < 200; pass += 1) {
+      let progressed = 0;
+      for (const card of this.list(botId, 100)) {
+        try {
+          this.archive(card.id, botId, card.revision);
+          archived += 1;
+          progressed += 1;
+        } catch (err) {
+          // Gone or edited since the list: the next pass sees what is left.
+          const message = err instanceof Error ? err.message : "";
+          if (message !== "memory_not_found" && message !== "memory_revision_conflict") throw err;
+        }
+      }
+      if (progressed === 0) break;
+    }
+    return archived;
+  }
+
   /** One of the bot's live notes, whole, with the fields Settings shows. Refused like `read`. */
   readCard(id: string, botId: string): MemoryNoteCard & { body: string } {
     assertNoteId(id);

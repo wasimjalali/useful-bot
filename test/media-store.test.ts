@@ -16,7 +16,7 @@ import {
 } from "../shared/media-store.ts";
 import { readImage, writeImage } from "../shared/images-store.ts";
 import { appendAgentEvent } from "../shared/agent-store.ts";
-import { readShell, writeShell } from "../shared/shell-io.ts";
+import { readShell, writeFixtureShell } from "../shared/shell-io.ts";
 import { isExcalidrawWidget, migrateDrawings, migrateLegacyImages } from "../web/lib/media-migrate.ts";
 import { writeWidget } from "../shared/widgets-store.ts";
 
@@ -161,7 +161,7 @@ test("legacy base64 records move into the media folder under their bot, keeping 
   try {
     const shell = readShell();
     const bot = shell.bots[0]!;
-    writeShell(shell);
+    writeFixtureShell(shell);
     writeImage({ id: "imglegacy001", mime: "image/png", b64: PNG.toString("base64"), prompt: "old sunset", provider: "openai", model: "gpt-image-1" });
     appendAgentEvent(bot.id, { kind: "image", text: "old sunset", imageId: "imglegacy001", id: "img_imglegacy001" });
     assert.deepEqual(migrateLegacyImages(), { moved: 1, failed: 0 });
@@ -194,7 +194,7 @@ test("drawings still in a chat backfill into the Library, dated when first drawn
   try {
     const shell = readShell();
     const bot = shell.bots[0]!;
-    writeShell(shell);
+    writeFixtureShell(shell);
     const drawing = { connectionId: "excalidraw", toolName: "excalidraw__create_view", resourceUri: null, result: null, createdAt: new Date().toISOString() };
     writeWidget({ ...drawing, id: "call_old00001", arguments: { elements: JSON.stringify([{ type: "rectangle", label: { text: "Old" } }]) } });
     writeWidget({ ...drawing, id: "call_chart0001", connectionId: "charts", toolName: "charts__plot", arguments: { elements: [] } });
@@ -229,7 +229,7 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
   try {
     const shell = readShell();
     const bot = shell.bots[0]!;
-    writeShell(shell);
+    writeFixtureShell(shell);
     appendAgentEvent(bot.id, { kind: "image", text: "a red kite over dunes", imageId: "imglost00001", id: "img_imglost00001" });
     const sent: Array<{ url: string; body: Record<string, unknown> }> = [];
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
