@@ -134,7 +134,7 @@ test("live rows equal a rebuild from the file, and survive a restart", async () 
     await waitForRequests(world, 4);
     // Stop only after the stalled turn has streamed: a cancel that lands first leaves nothing to compare.
     const stallDeadline = Date.now() + 5_000;
-    while (!recorder.events.some((event) => event.type === "message.delta" && String(event.delta).includes("partial")) && Date.now() < stallDeadline) {
+    while (!world.engine.host.chat(chatId).turn?.partialText.includes("partial") && Date.now() < stallDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     world.send(chatId, "queued one");

@@ -160,9 +160,9 @@ export class RoutineScheduler {
     let chatId = known?.chatId;
     if (!chatId) {
       chatId = index.create({ botId: routine.botId, title: routine.name, routineId: routine.id }).chatId;
-      this.engine.host.deps.setRoutineChat(routine.id, chatId);
+      this.linkChat(routine.id, chatId);
     } else if (routine.chatId !== chatId) {
-      this.engine.host.deps.setRoutineChat(routine.id, chatId);
+      this.linkChat(routine.id, chatId);
     }
     const stamp = this.engine.host.now().toISOString();
     const prompt = `Scheduled run of the routine ${routine.name}. Nobody is watching: do not ask questions or wait for cards.\n\n${routine.instruction}`;
@@ -177,6 +177,16 @@ export class RoutineScheduler {
     this.running.set(routine.id, finished);
     void finished.finally(() => { this.running.delete(routine.id); });
     return { chatId, turnId: submitted.turnId, queued: submitted.queued };
+  }
+
+  /** Points the routine at its chat; a busy store (short lock wait) is a retryable 503, not a bare error. */
+  private linkChat(routineId: string, chatId: string): void {
+    try {
+      this.engine.host.deps.setRoutineChat(routineId, chatId);
+    } catch (error) {
+      if (isLockBusy(error)) throw new EngineError(503, "routines_store_busy", { retryable: true });
+      throw error;
+    }
   }
 
   /** Enforces the budget and records the run when it ends. */

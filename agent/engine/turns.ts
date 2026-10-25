@@ -95,7 +95,8 @@ type RetryTarget = {
   /** The failed turn's `ub.turn-start`: the leaf moves to its parent, so the whole attempt is left behind. */
   startEntry: SessionEntry;
   /** The user message Pi wrote for it: the exact text and images the model saw. */
-  userEntry: SessionEntry & { type: "message" };
+  /** Null when the attempt died before Pi wrote the message: the marker's own text is all there is. */
+  userEntry: (SessionEntry & { type: "message" }) | null;
   start: TurnStartData;
   failure: FailureData;
   failedAt: number;
@@ -130,12 +131,15 @@ export function findRetryTarget(branch: readonly SessionEntry[]): RetryTarget | 
       userEntry = entry;
     }
   }
-  if (!failure || !userEntry) return null;
+  if (!failure) return null;
   return { turnId: start.turnId, clientId: start.clientId, startEntry, userEntry, start, failure, failedAt };
 }
 
 export class TurnRunner {
   private readonly host: EngineHost;
+  /** How a queued message whose start finds the workspace store busy is retried: every 250 ms, 40 times. */
+  busyRetry = { ms: 250, tries: 40 };
+  private readonly busyTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(host: EngineHost) {
     this.host = host;
@@ -193,8 +197,14 @@ export class TurnRunner {
 
   // --- submitting -------------------------------------------------------------
 
+  /** Once shutdown has begun no turn starts or queues: the app retries against the next engine. */
+  private assertRunning(): void {
+    if (this.host.stopping) throw new EngineError(503, "engine_stopping", { retryable: true });
+  }
+
   /** An owner message: refused, queued behind a running turn, or started. */
   submitOwner(chatId: string, body: TurnBody): SubmitResult {
+    this.assertRunning();
     const chat = this.host.chat(chatId);
     chat.ensureLive();
     if (body.retry) return this.retry(chat, body);
@@ -207,6 +217,7 @@ export class TurnRunner {
 
   /** A routine run or a system turn. Same admission; the prompt is not an owner bubble. */
   submitInternal(chatId: string, origin: Exclude<TurnOrigin, "owner">, clientId: string, text: string, startNote?: RowInput): SubmitResult {
+    this.assertRunning();
     const chat = this.host.chat(chatId);
     chat.ensureLive();
     const existing = this.existing(chat, clientId);
@@ -236,7 +247,8 @@ export class TurnRunner {
 
   private accept(chat: ChatRuntime, input: { origin: TurnOrigin; clientId: string; spec: TurnSpec; persisted: boolean; startNote?: RowInput }): SubmitResult {
     const turnId = randomUUID();
-    if (chat.turn) return this.enqueue(chat, { turnId, ...input, ...deferred() });
+    // A queue that is waiting for its head to start (busy store) keeps its order: a new send goes behind it.
+    if (chat.turn || chat.queue.length > 0) return this.enqueue(chat, { turnId, ...input, ...deferred() });
     return this.start(chat, { turnId, ...input, ...deferred() });
   }
 
@@ -488,12 +500,28 @@ export class TurnRunner {
 
   /** Starts the next queued message, in order, once the running turn has settled. */
   private startNext(chat: ChatRuntime): void {
-    if (chat.turn) return;
+    if (chat.turn || this.host.stopping) return;
     const next = chat.queue.shift();
     if (!next) return;
     try {
       this.start(chat, next);
     } catch (error) {
+      // A busy workspace store is momentary: the message keeps its place at the head of the queue and the start is tried again.
+      if (error instanceof EngineError && error.code === "workspace_store_busy" && (next.busyTries ?? 0) < this.busyRetry.tries) {
+        next.busyTries = (next.busyTries ?? 0) + 1;
+        chat.queue.unshift(next);
+        const timer = setTimeout(() => {
+          this.busyTimers.delete(chat.chatId);
+          try {
+            this.startNext(chat);
+          } catch (retryError) {
+            console.error(JSON.stringify({ event: "start_next_failed", chatId: chat.chatId, error: retryError instanceof Error ? retryError.message : String(retryError) }));
+          }
+        }, this.busyRetry.ms);
+        timer.unref();
+        this.busyTimers.set(chat.chatId, timer);
+        return;
+      }
       // A message that waited and can no longer run (its model went away, say)
       // comes back as an unsent bubble with Send again.
       const message = error instanceof EngineError && typeof error.fields.message === "string" ? error.fields.message : error instanceof Error ? error.message : String(error);
@@ -507,6 +535,8 @@ export class TurnRunner {
   /** Stop: drop the queue, expire the cards, abort. The `turn.cancelled` event comes on settle. */
   cancel(chatId: string): void {
     const chat = this.host.chat(chatId);
+    clearTimeout(this.busyTimers.get(chatId));
+    this.busyTimers.delete(chatId);
     for (const queued of chat.queue.splice(0)) this.dropQueued(chat, queued, "cancelled");
     const turn = chat.turn;
     if (!turn) return;
@@ -548,6 +578,15 @@ export class TurnRunner {
    */
   shutdown(chatId: string): void {
     const chat = this.host.chat(chatId);
+    clearTimeout(this.busyTimers.get(chatId));
+    this.busyTimers.delete(chatId);
+    // Routine and system turns that waited live in memory only and will not come back at boot: their senders learn it was lost.
+    // Queued owner messages stay: they are in the session and the ledger, and boot turns them into unsent rows.
+    chat.queue = chat.queue.filter((queued) => {
+      if (queued.persisted) return true;
+      queued.finish({ turnId: queued.turnId, outcome: "failed", failure: { code: "interrupted", detail: "The app stopped while this was running." } });
+      return false;
+    });
     const turn = chat.turn;
     if (!turn || turn.abortReason) return;
     turn.abortReason = "shutdown";
@@ -598,6 +637,16 @@ export class TurnRunner {
     const remaining = (target.failure.retryAfterMs ?? 0) - (this.host.now().getTime() - target.failedAt);
     if (remaining > 0) throw new EngineError(429, "retry_too_soon", { retryAfterMs: Math.ceil(remaining) });
     // The exact message again: text and images as the model saw them, the owner text as the row shows it.
+    if (!target.userEntry) {
+      // The attempt died before Pi wrote the message. The marker keeps the owner's words but only the
+      // names of the attachments, so a message with attachments cannot be sent again.
+      if ((target.start.attachments ?? []).length > 0) throw new EngineError(409, "retry_attachments_lost");
+      const text = target.start.text ?? "";
+      if (text.trim() === "") throw new EngineError(409, "retry_not_available");
+      const fromMarker: TurnSpec = { text, promptText: text, images: [], attachments: [] };
+      this.prepare(chat, fromMarker, { stampGrant: false });
+      return this.start(chat, { turnId: randomUUID(), origin: "owner", clientId: target.clientId, spec: fromMarker, persisted: false, ...deferred() }, target);
+    }
     const content = (target.userEntry.message as unknown as { content: unknown }).content;
     const images = Array.isArray(content)
       ? (content as { type?: string; data?: string; mimeType?: string }[])

@@ -162,7 +162,10 @@ test("stopping aborts a running turn and frees the port", async () => {
     const deadline = Date.now() + 3_000;
     while (world.router.requests.length < 1 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
     const started = Date.now();
-    await service.stop();
+    const stopping = service.stop();
+    // The listener is closed before the turns are: a request during the stop is refused at the door, not run.
+    await assert.rejects(fetch(`http://127.0.0.1:${env.UB_ENGINE_PORT}/health`), "nothing is accepted once stop has begun");
+    await stopping;
     assert.ok(Date.now() - started < 5_000, "stop is quick");
     assert.equal(service.engine.host.chat(chat).turn, null);
     await new Promise<void>((resolve, reject) => {

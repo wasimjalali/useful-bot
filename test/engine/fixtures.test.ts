@@ -301,8 +301,34 @@ test("status, list and search have the fixtures' fields", async () => {
   }
 });
 
+test("an answer cut mid-stream that Pi retries by itself", async () => {
+  const world = await makeWorld();
+  try {
+    const chatId = world.newChat();
+    const recorder = world.record(chatId);
+    world.router.enqueue({ kind: "cut", text: "Half an ans" }, { kind: "text", text: "The whole answer." });
+    world.send(chatId, "Tell me");
+    await world.idle(chatId);
+    const events = recorder.events as Event[];
+    produced.push(...events);
+    const types = events.map((event) => event.type);
+    const removedAt = types.indexOf("row.removed");
+    assert.ok(removedAt > types.indexOf("message.final"), "the partial was streamed and finished before it was dropped");
+    assert.ok(removedAt < types.lastIndexOf("message.delta"), "and the answer streams after the drop");
+    const removed = events[removedAt];
+    assert.equal(removed.rowId, events.find((event) => event.type === "message.delta")?.rowId);
+    assert.ok(events.some((event) => event.type === "activity" && event.kind === "retrying"));
+    // The same shape, in the same order, as the fixture's.
+    const wanted = fixtureLines("events-auto-retry.ndjson").map((event) => event.type).filter((type) => type !== "stream.ready");
+    assert.deepEqual(types.filter((type) => type !== "stream.ready" && type !== "ping" && type !== "message.user"), wanted.filter((type) => type !== "message.user"));
+    producedRows.push(...world.engine.rows(chatId, {}).rows);
+  } finally {
+    await world.close();
+  }
+});
+
 test("everything produced has the fixtures' shapes, and every fixture shape was produced", () => {
-  const fixtureEvents = ["turn", "failure", "queue", "compaction", "resync", "routine"].flatMap((name) => fixtureLines(`events-${name}.ndjson`));
+  const fixtureEvents = ["turn", "failure", "queue", "compaction", "resync", "routine", "auto-retry"].flatMap((name) => fixtureLines(`events-${name}.ndjson`));
   const everything = [...produced, ...producedRows.map(asEvent)];
   assertEnvelope(produced);
   const fixtureRows = fixtureJson<{ rows: Row[] }>("rows-page.json").rows.map(asEvent);

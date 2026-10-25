@@ -274,6 +274,12 @@ test("review 2: an unreadable routines store unlinks nothing", async () => {
     world.engine.sweepRoutineLinks();
     assert.equal(world.engine.host.index.require(started.chatId).routineId, made.id, "the link survives a store that cannot be read");
 
+    // Valid JSON under another schema version is just as unreadable.
+    writeFileSync(routinesStorePath(), JSON.stringify({ schemaVersion: 99, routines: [] }));
+    assert.equal(tryReadRoutinesStore(), null);
+    world.engine.sweepRoutineLinks();
+    assert.equal(world.engine.host.index.require(started.chatId).routineId, made.id, "a store from another version unlinks nothing");
+
     // A store that reads fine and no longer has the routine does unlink it.
     writeFileSync(routinesStorePath(), JSON.stringify({ schemaVersion: 1, routines: [] }));
     assert.equal(tryReadRoutinesStore()?.routines.length, 0);
@@ -307,6 +313,66 @@ test("review 2: a busy routines store skips the tick and refuses Run now fast, i
   } finally {
     console.error = logged;
     rmSync(lock, { recursive: true, force: true });
+    await world.close();
+  }
+});
+
+test("review 3: a busy routines store cannot half-finish a chat delete, and starting a run answers routines_store_busy", async () => {
+  let busy = false;
+  const { world } = await routineWorld({
+    deps: { setRoutineChat: () => { if (busy) throw new Error("routines_locked"); } },
+  });
+  const logged = console.error;
+  console.error = () => undefined;
+  try {
+    const made = routine("Linked chat");
+    world.router.enqueue({ kind: "text", text: "ok" });
+    const started = world.engine.routines.runNow(made.id);
+    await world.idle(started.chatId);
+    world.engine.openChat(started.chatId);
+    busy = true;
+    const deleted = world.engine.deleteChat(started.chatId);
+    assert.equal(world.engine.host.index.get(started.chatId), undefined, "the delete finished");
+    assert.equal(world.engine.host.openChatId, null);
+    assert.ok(deleted);
+
+    // The routine's chat is gone: the next run must create one, and the busy store refuses it with a retryable 503.
+    assert.throws(
+      () => world.engine.routines.runNow(made.id),
+      (error: unknown) => error instanceof EngineError && error.status === 503 && error.code === "routines_store_busy" && error.fields.retryable === true,
+    );
+  } finally {
+    console.error = logged;
+    await world.close();
+  }
+});
+
+test("review 3: a routine run that waited when the engine stopped is recorded as lost, and a send during the stop is refused", async () => {
+  const { world } = await routineWorld();
+  try {
+    const made = routine("Waiting at shutdown");
+    world.router.enqueue({ kind: "text", text: "first run" });
+    const first = world.engine.routines.runNow(made.id);
+    await world.idle(first.chatId);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    world.router.enqueue({ kind: "stall", text: "owner is typing here" });
+    world.send(first.chatId, "something else");
+    await waitForRequests(world, world.router.requests.length + 1);
+    const second = world.engine.routines.runNow(made.id);
+    assert.equal(second.queued, true);
+    const closing = world.engine.close();
+    assert.throws(
+      () => world.send(first.chatId, "too late"),
+      (error: unknown) => error instanceof EngineError && error.status === 503 && error.code === "engine_stopping",
+    );
+    assert.throws(() => world.engine.systemTurn(DEFAULT_BOT_ID, "late", "hello"), (error: unknown) => error instanceof EngineError && error.code === "engine_stopping");
+    await closing;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const runs = readRoutine(made.id)?.runHistory ?? [];
+    assert.equal(runs.length, 2, "the lost run has a history entry");
+    assert.equal(runs.at(-1)?.status, "failed");
+    assert.match(runs.at(-1)?.error ?? "", /app stopped/);
+  } finally {
     await world.close();
   }
 });

@@ -78,9 +78,11 @@ export async function startService(options: { env?: NodeJS.ProcessEnv; deps?: De
     server,
     engine: running,
     stop: async () => {
+      // Stop accepting first, so nothing new arrives while the turns are being closed.
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
       server.closeAllConnections();
       await running.close();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closed;
     },
   };
 }

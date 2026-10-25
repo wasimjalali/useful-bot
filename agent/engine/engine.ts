@@ -45,6 +45,8 @@ export type StatusChat = {
 };
 
 const DAY_MS = 86_400_000;
+/** How long a delete waits for the workspace store's lock. */
+const GRANT_WAIT_MS = 50;
 const SEARCH_BUDGET_MS = 2_000;
 
 export class Engine {
@@ -90,11 +92,10 @@ export class Engine {
   }
 
   async close(): Promise<void> {
+    this.host.stopping = true;
     this.routines.stop();
-    for (const chat of this.host.runtimes()) {
-      // Not Stop: a shutdown is an interruption, recorded as one by the next boot.
-      if (chat.turn) this.turns.shutdown(chat.chatId);
-    }
+    // Not Stop: a shutdown is an interruption, recorded as one by the next boot.
+    for (const chat of this.host.runtimes()) this.turns.shutdown(chat.chatId);
     // Give the aborted turns a moment to write their last entries.
     const deadline = Date.now() + 5_000;
     while (this.host.runtimes().some((chat) => chat.turn) && Date.now() < deadline) {
@@ -177,11 +178,24 @@ export class Engine {
     const meta = this.host.index.require(chatId);
     const chat = this.host.chat(chatId);
     if (chat.turn || chat.queue.length > 0) throw new EngineError(409, "chat_busy");
+    // The grant goes first, with a short wait: a busy store refuses the delete (retryable) before anything is removed.
+    try {
+      removeSessionGrant(chatId, undefined, GRANT_WAIT_MS);
+    } catch (error) {
+      if (error instanceof Error && error.message === "workspace_locked") throw new EngineError(503, "workspace_store_busy", { retryable: true });
+      throw error;
+    }
     this.host.approvals.expireSession(chatId);
-    removeSessionGrant(chatId);
     this.host.forget(chatId);
     this.host.index.remove(chatId);
-    if (meta.routineId) this.host.deps.setRoutineChat(meta.routineId, null);
+    if (meta.routineId) {
+      try {
+        this.host.deps.setRoutineChat(meta.routineId, null);
+      } catch (error) {
+        // The routine's stale chat id heals on the next sweep or run; the delete must finish.
+        console.error(JSON.stringify({ event: "routine_unlink_failed", routineId: meta.routineId, chatId, error: error instanceof Error ? error.message : String(error) }));
+      }
+    }
     if (this.host.openChatId === chatId) this.host.openChatId = null;
     let current = this.currentChatId(meta.botId);
     if (current === chatId) {
