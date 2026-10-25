@@ -50,8 +50,9 @@ clean; `--allow-dirty` is for test builds only.
 On launch a release copies its runtime to `~/Library/Application Support/Useful Bot/app` when the
 version changed (`RuntimeInstall.swift`), first stopping the previous version's services (they
 outlive the app, so after an update they would otherwise keep serving from replaced files), mints any missing or expired local credentials
-(`setup-local.mjs`), and starts the services from there with its own Node. Eve keeps its sessions in
-`app/.eve/`, which a copy never touches. Everything else stays in `~/.useful-bot` as before. Nothing
+(`setup-local.mjs`), and starts the services from there with its own Node. The engine keeps its chats
+under `~/.useful-bot/engine/`, so a copy never touches them. Everything else stays in
+`~/.useful-bot` as before. Nothing
 leaves the Mac.
 
 With no `~/.useful-bot/config.json` but Useful Bot items still in the Keychain (the data folder was

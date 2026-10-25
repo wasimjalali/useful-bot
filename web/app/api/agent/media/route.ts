@@ -3,6 +3,7 @@ import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { errorCode } from "../../../../lib/api-guard";
 import { findMedia, listMedia, mediaRoot, readMediaBytes, type MediaKind } from "../../../../../shared/media-store.ts";
 import { legacyImageIds } from "../../../../../shared/images-store.ts";
+import { drainHeldImages } from "../../../../lib/held-images";
 
 export const runtime = "nodejs";
 
@@ -14,6 +15,8 @@ export async function GET(request: Request) {
   const kindParam = url.searchParams.get("kind");
   const kind: MediaKind | undefined = kindParam === "image" || kindParam === "drawing" || kindParam === "page" ? kindParam : undefined;
   try {
+    // Images the folder refused earlier move in now if it takes them.
+    drainHeldImages();
     const items = listMedia({
       kind,
       botId: url.searchParams.get("botId") ?? undefined,

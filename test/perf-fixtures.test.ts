@@ -74,14 +74,16 @@ test("the writer refuses off the dev stack, without a state root and while the e
   await assert.rejects(assertSafeToWrite({ UB_STATE_ROOT: "/x" }), /UB_STACK must be dev/);
   await assert.rejects(assertSafeToWrite({ UB_STACK: "daily", UB_STATE_ROOT: "/x" }), /UB_STACK must be dev/);
   await assert.rejects(assertSafeToWrite({ UB_STACK: "dev" }), /UB_STATE_ROOT/);
+  await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/Users/someone/.useful-bot" }), /dev folder/);
+  await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/x" }), /dev folder/);
 
   const server = createServer();
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
   const port = (server.address() as { port: number }).port;
   try {
-    await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/x", UB_ENGINE_PORT: String(port) }), /engine is listening/);
+    await assert.rejects(assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/x/.useful-bot-perftest", UB_ENGINE_PORT: String(port) }), /engine is listening/);
   } finally {
     await new Promise((done) => server.close(done));
   }
-  await assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/x", UB_ENGINE_PORT: String(port) });
+  await assertSafeToWrite({ UB_STACK: "dev", UB_STATE_ROOT: "/x/.useful-bot-perftest", UB_ENGINE_PORT: String(port) });
 });

@@ -275,6 +275,11 @@ Every row must exist in both columns before PR 3 merges. "PR" says where it is b
 | Routine chats in the list (clock mark) | chat index entry `routineId`; `routine.chatId`, `RoutineRun.chatId` | 3 |
 | Chat row menu (rename, delete) | `PATCH` / `DELETE /api/chats/:id` | 3 |
 | Library page | `/api/agent/media` | 2 |
+| Library item actions (open, Show in Finder, Locate, Move to Trash) and chat images | `/api/agent/media/:id`, `/api/agent/image/:id` | 2 |
+| Regenerate a lost image | `POST /api/agent/image/:id/regenerate` | 2 |
+| A widget's own tool calls (Edit, Open in Excalidraw) | `POST /api/connections/widget/:id/call` | 2 |
+| Providers sign-in (ChatGPT, device flows) | `/api/providers/oauth`, `/api/providers/oauth/:pollId` | 2 |
+| Token usage | `/api/usage` | 2 |
 | Connectors page, its dot and the Connected / Sign in again chips | `/api/connectors`, `/api/connections` (state `needsSignIn`) | 2b: direct MCP servers already carry it (connection state `authFailed` or `expired`); Composio apps gain `needsSignIn` on `/api/connectors` |
 | App page Reconnect and Disconnect (Refresh for a direct MCP server) | `/api/connectors` (Composio), `/api/connections` (MCP), the same calls as today | 2 |
 | Account row owner name | `GET /api/status` (operator name) | 2 |

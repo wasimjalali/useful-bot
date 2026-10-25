@@ -148,8 +148,12 @@ class Driver:
 def answer_card(d, ctx, seen=None):
     """Approve a card only when it acts inside this run's work folder; deny anything else.
     A web page the bot read could ask for another command: the run never approves that."""
+    # Only the card's own text: the window also holds the owner's prompt, which names the folder.
     md = d.md or ""
-    expected = ctx["work"] in md or "UsefulBotE2E" in md
+    start = md.rfind("Needs approval")
+    end = md.find("Approve", start)
+    card = md[start:end] if start >= 0 and end > start else ""
+    expected = bool(card) and (ctx["work"] in card or "UsefulBotE2E" in card)
     if seen is not None:
         seen.append(d.shot("card"))
     d.click_label("Approve" if expected else "Deny")

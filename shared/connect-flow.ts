@@ -8,6 +8,7 @@ import {
 import { authorizeConnector, countToolkitTools, forgetConnected, listConnectorToolkits } from "./composio.ts";
 import { connectorsPath as defaultConnectorsPath } from "./connectors-store.ts";
 import { engineNoteRow, engineSystemTurn } from "./engine-client.ts";
+import { wrapUntrusted } from "./untrusted.ts";
 
 /**
  * The connect card's server side. Confirm starts Composio OAuth and parks the
@@ -47,7 +48,7 @@ function oneLine(value: string, max: number): string {
  * comes from Composio's catalogue and is data, not an instruction.
  */
 function resumeMessage(card: Stored): string {
-  return `The owner connected the app ${card.slug}. Continue the task: ${oneLine(card.purpose, 120)}`;
+  return `The owner connected the app ${card.slug}. Continue the task you said it was for:\n${wrapUntrusted("connect-purpose", oneLine(card.purpose, 120))}`;
 }
 
 export async function startConnectAuthorize(

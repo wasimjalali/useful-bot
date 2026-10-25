@@ -363,6 +363,7 @@ test("the pump connects a waiting card once, writes the note and starts one resu
     assert.match(resume.text, /connected the app gmail\./);
     assert.ok(!resume.text.includes("Gmail"), "the catalogue's display name is data, not part of the instruction");
     assert.match(resume.text, /Find the invoice/);
+    assert.match(resume.text, /BEGIN-UNTRUSTED\(connect-purpose\)/, "the bot-written purpose reaches the model fenced as untrusted");
     const notes = sent(engine, ROWS);
     assert.equal(notes.length, 1);
     assert.deepEqual(JSON.parse(notes[0].body), { key: `connect:${proposal.id}`, kind: "note", text: "Connected Gmail.", source: "connect" });

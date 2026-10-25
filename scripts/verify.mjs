@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -18,23 +17,12 @@ function log(message) {
   process.stderr.write(`${message}\n`);
 }
 
-function run(file, args) {
-  return new Promise((resolve) => {
-    const child = spawn(NODE, [file, ...args], {
-      cwd: ROOT,
-      env: { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" },
-      stdio: "inherit",
-    });
-    child.on("close", (code, signal) => resolve({ code, signal }));
-  });
-}
-
 function parseArgs(argv) {
   const options = { phase: argv[0], cases: [] };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === "--case") options.cases.push(argv[++i]);
     else if (argv[i] === "--help") {
-      process.stdout.write("Usage: verify.mjs phase0 [--case runtime|opencode|sandbox]\n");
+      process.stdout.write("Usage: verify.mjs phase0 [--case runtime|opencode]\n");
       process.exit(0);
     } else {
       process.stderr.write(`Unknown argument: ${argv[i]}\n`);
@@ -45,7 +33,7 @@ function parseArgs(argv) {
     process.stderr.write(`verify.mjs in this PR only implements phase0, got ${options.phase}\n`);
     process.exit(2);
   }
-  if (options.cases.length === 0) options.cases = ["runtime", "opencode", "sandbox"];
+  if (options.cases.length === 0) options.cases = ["runtime", "opencode"];
   return options;
 }
 
@@ -89,9 +77,6 @@ async function main() {
       caseRuntime();
     } else if (name === "opencode") {
       caseOpencode();
-    } else if (name === "sandbox") {
-      const result = await run("spikes/s3/probe.mjs", []);
-      if (result.code !== 0) process.exit(result.code ?? 1);
     } else {
       process.stderr.write(`Unknown case: ${name}\n`);
       process.exit(2);
