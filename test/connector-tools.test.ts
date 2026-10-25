@@ -401,8 +401,8 @@ test("a Stop before the call reaches Composio runs nothing", async () => {
     grant(box.dir, "full_access");
     const ctx = fakeCtx({ chatId: "sess-conn" });
     ctx.abort();
-    const out = await run<{ status: string }>(connectorExecute, { tool: "GMAIL_SEND_EMAIL", arguments: { to: "a@b.c" } }, ctx);
-    assert.notEqual(out.status, "ok");
+    // Rethrown, not handed back as an error the model might retry: the call may have run.
+    await assert.rejects(run(connectorExecute, { tool: "GMAIL_SEND_EMAIL", arguments: { to: "a@b.c" } }, ctx));
     assert.equal(box.executed.length, 0);
   } finally {
     box.restore();

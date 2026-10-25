@@ -188,6 +188,8 @@ async function run(args: Input, ctx: ToolCtx) {
       const raw = await executeConnectorTool(tool, toolArgs, undefined, ctx.abortSignal);
       return shape(tool, raw);
     } catch (err) {
+      // A Stop is not a failure to retry: the request may still have gone through.
+      if (ctx.abortSignal.aborted) throw err;
       const failed = err as Error & { toolkit?: string };
       if (failed.message === "not_connected") return { status: "blocked", error: "not_connected", toolkit: failed.toolkit };
       return { status: "error", error: wrapUntrusted(`connector:${tool} error`, String(failed.message ?? "failed")) };

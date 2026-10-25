@@ -173,6 +173,17 @@ test("a failed generation releases its request id so the retry can go through, a
   }
 });
 
+test("bash output is cut at 32 KB of bytes, not 32 K characters", async () => {
+  const env = world("full_access", "chat-bytes");
+  try {
+    const out = await bash.execute({ command: "yes € | head -n 15000 | tr -d '\\n'" }, fakeCtx({ chatId: "chat-bytes" })) as { stdout: string; truncated: boolean };
+    assert.equal(out.truncated, true);
+    assert.ok(Buffer.byteLength(out.stdout) < 32 * 1024 + 400, `stdout is ${Buffer.byteLength(out.stdout)} bytes`);
+  } finally {
+    env.restore();
+  }
+});
+
 test("a Stop while a bash card waits ends the call at once, retires the card and leaves the file alone", async () => {
   const env = world("auto", "chat-stop");
   try {

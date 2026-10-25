@@ -14,7 +14,7 @@ import {
 import { dirname } from "node:path";
 import { MAX_SESSION_TOOLS, MAX_SESSION_TOOL_BYTES } from "./policy.ts";
 import { schemaBytesOf, toolWireBytes } from "./tool-wire-size.ts";
-import { wrapUntrusted } from "./untrusted.ts";
+import { flatLine, wrapUntrusted } from "./untrusted.ts";
 import { rawSchemaHint, toolInputSchema } from "./json-schema-zod.ts";
 import { statePath } from "./stack.ts";
 
@@ -602,7 +602,7 @@ export function mountedDescription(tool: IndexedTool, connectionId: string, conn
 
 /** A connection's name goes outside the fence, so it must not carry lines. */
 function oneLine(value: string): string {
-  return value.replace(/[\r\n]+/g, " ").trim();
+  return flatLine(value);
 }
 
 export function indexedToolBytes(tool: IndexedTool, connectionId = "", connectionName = ""): number {
