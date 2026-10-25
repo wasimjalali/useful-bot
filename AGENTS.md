@@ -92,3 +92,10 @@ Dev and never quits or relaunches the daily app, and the records it writes under
 are committed. It's a shared resource: one run at a time, by the orchestrator. A breach is fixed, or the
 budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-run never erases a
 breach. The fixture bots ("Perf ...") are frozen: never send to them. See `perf/README.md`.
+
+## Code traps
+
+- **Never call `Process.waitUntilExit()` after an `await`, or from a thread other than the one that
+  ran the process.** Foundation can then wait forever on that thread's stale task state (it hung
+  `ProcessRunnerRealTests` about 1 run in 100; root cause in PR #216). Use `terminationHandler`
+  (with a semaphore if you must block) or poll `isRunning`.
