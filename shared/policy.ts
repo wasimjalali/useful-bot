@@ -20,7 +20,6 @@ export const UNKNOWN_WINDOW_TOKENS = 32_768;
 export const POLICY_OUTPUT_TOKENS = 4_096;
 export const POLICY_APPROVAL_TTL_MS = 5 * 60 * 1000;
 export const POLICY_NODE_MAJOR = 24;
-export const POLICY_EVE_VERSION = "0.54.3";
 export const ABSOLUTE_NODE = "/usr/local/bin/node";
 export const ROUTER_HOST = "127.0.0.1";
 /**
@@ -29,7 +28,7 @@ export const ROUTER_HOST = "127.0.0.1";
  * fixture (test/fixtures/router-index-pre-fix.ts.txt) that still imports it.
  */
 export const ROUTER_PORT = DAILY.routerPort;
-export const EVE_HOST = "127.0.0.1";
+export const ENGINE_HOST = "127.0.0.1";
 export const BODY_LIMIT_BYTES = 1_048_576;
 /**
  * A completion body carries the conversation, and a conversation with images

@@ -31,7 +31,7 @@ export const LOOPBACK = "127.0.0.1";
 export const DAILY = {
   routerPort: 4319,
   webPort: 4320,
-  evePort: 4321,
+  enginePort: 4321,
   keychainPrefix: "com.usefulbot",
   stateDir: ".useful-bot",
   mediaDir: "Useful Bot",
@@ -63,12 +63,12 @@ export const STORE_OVERRIDE_VARS = [
 /** Base-URL overrides. On the dev stack none may aim at a loopback host on a daily port. */
 export const ORIGIN_OVERRIDE_VARS = ["UB_ROUTER_BASE_URL", "UB_WEB_BASE_URL", "UB_OPENCODE_GO_BASE"] as const;
 
-const DAILY_PORTS: readonly number[] = [DAILY.routerPort, DAILY.webPort, DAILY.evePort];
+const DAILY_PORTS: readonly number[] = [DAILY.routerPort, DAILY.webPort, DAILY.enginePort];
 
 const PORT_VARS = [
   ["UB_ROUTER_PORT", DAILY.routerPort],
   ["UB_WEB_PORT", DAILY.webPort],
-  ["UB_EVE_PORT", DAILY.evePort],
+  ["UB_ENGINE_PORT", DAILY.enginePort],
 ] as const;
 
 // The part after the stack's prefix: `device.desktop`, `connection.<id>`.
@@ -134,8 +134,8 @@ export function webPort(env: Env = process.env): number {
   return portFrom(env, "UB_WEB_PORT", DAILY.webPort);
 }
 
-export function evePort(env: Env = process.env): number {
-  return portFrom(env, "UB_EVE_PORT", DAILY.evePort);
+export function enginePort(env: Env = process.env): number {
+  return portFrom(env, "UB_ENGINE_PORT", DAILY.enginePort);
 }
 
 /** `http://127.0.0.1:<router port>`, no path. */
@@ -148,8 +148,8 @@ export function routerApiBase(env: Env = process.env): string {
   return env.UB_ROUTER_BASE_URL ?? `${routerOrigin(env)}/v1`;
 }
 
-export function eveOrigin(env: Env = process.env): string {
-  return `http://${LOOPBACK}:${evePort(env)}`;
+export function engineOrigin(env: Env = process.env): string {
+  return `http://${LOOPBACK}:${enginePort(env)}`;
 }
 
 /** The loopback origin the web service binds; UB_WEB_BASE_URL still wins. */

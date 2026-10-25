@@ -7,7 +7,7 @@ import { createHmac } from "node:crypto";
 import { createServer } from "node:net";
 import { webLaunch } from "./web-mode.mjs";
 import { ownerPath } from "../shared/user-path.ts";
-import { LOOPBACK, enforceStack, evePort, keychainName, routerConfigPath, routerPort, webOrigin, webPort } from "../shared/stack.ts";
+import { LOOPBACK, enforceStack, enginePort, keychainName, routerConfigPath, routerPort, webOrigin, webPort } from "../shared/stack.ts";
 
 // The interpreter running this script, not a fixed path: the supervisor
 // accepts more than one install location and launches this file with it.
@@ -21,10 +21,9 @@ if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1
   process.exit(2);
 }
 
-// eve's CLI and Next both report usage to their vendors by default. The app
-// promises no analytics (bot.usefulbuild.com/privacy), so every service and
-// anything it spawns (eve flushes from a detached child) runs with both off.
-process.env.EVE_TELEMETRY_DISABLED = "1";
+// Next reports usage to its vendor by default. The app promises no analytics
+// (bot.usefulbuild.com/privacy), so every service and anything it spawns runs
+// with it off. The engine sets Pi's own switches (SPEC 5.1).
 process.env.NEXT_TELEMETRY_DISABLED = "1";
 
 const KEYCHAIN_TIMEOUT_MS = 15_000;
@@ -33,7 +32,7 @@ const KEYCHAIN_TIMEOUT_MS = 15_000;
 // there, not thrown while the module loads.
 const servicePorts = () => ({
   router: { host: LOOPBACK, port: routerPort() },
-  eve: { host: LOOPBACK, port: evePort() },
+  engine: { host: LOOPBACK, port: enginePort() },
   web: { host: LOOPBACK, port: webPort() },
 });
 
@@ -187,15 +186,16 @@ async function main() {
     run(["--experimental-strip-types", path.join(ROOT, "router/src/index.ts")], env);
     return;
   }
-  if (mode === "eve") {
+  if (mode === "engine") {
     await waitReady(`http://${LOOPBACK}:${routerPort()}/health/live`, 60_000);
+    // W3 (PR 3) replaces this with the explicit engine env of SPEC 5.1.
     const env = {
       ...process.env,
       PATH: ownerPath(),
       NODE_ENV: process.env.NODE_ENV || "production",
     };
     try {
-      env.UB_CHANNEL_JWT_SECRET = await keychain(keychainName("channel.desktop"));
+      env.UB_ENGINE_TOKEN = await keychain(keychainName("channel.desktop"));
     } catch {
       fail("credential_store_locked_or_missing", keychainName("channel.desktop"));
     }
@@ -204,10 +204,7 @@ async function main() {
     } catch {
       fail("credential_store_locked_or_missing", keychainName("router.desktop"));
     }
-    // Lets an agent tool wake the handoff pump at once instead of waiting for
-    // the next web poll. Best effort: the poll drains the same queue.
-    env.UB_WEB_BASE_URL = webOrigin();
-    run([path.join(ROOT, "node_modules/eve/bin/eve.js"), "dev", "--no-ui", "--host", LOOPBACK, "--port", String(evePort())], env);
+    run(["--experimental-strip-types", path.join(ROOT, "agent/server.ts")], env);
     return;
   }
   if (mode === "web") {
@@ -263,7 +260,7 @@ async function main() {
     ], env);
     return;
   }
-  process.stderr.write("usage: service.mjs router|eve|web\n");
+  process.stderr.write("usage: service.mjs router|engine|web\n");
   process.exit(2);
 }
 

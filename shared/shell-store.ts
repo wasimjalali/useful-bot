@@ -1119,3 +1119,13 @@ export function searchShell(store: ShellStore, query: string, tab: SearchTab = "
   }
   return hits;
 }
+
+/**
+ * Records a bot's current chat and its last preview when a turn settles or a
+ * chat is made current (SPEC 5.4). The engine calls it under the shell lock
+ * through `updateShell`. W3 implements it with the v2 shell schema.
+ */
+export function setBotChat(store: ShellStore, botId: string, chatId: string | null, preview: string | null, at: string): ShellStore {
+  void store; void botId; void chatId; void preview; void at;
+  throw new Error("setBotChat_not_implemented");
+}

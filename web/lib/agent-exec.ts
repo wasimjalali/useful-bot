@@ -41,7 +41,7 @@ import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V3, recordSessio
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { retiredRouteMessage } from "../../shared/provider-catalog.ts";
 import { effectiveDefault, ProviderRouteRetiredError, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
-import { eveOrigin } from "../../shared/stack.ts";
+import { engineOrigin } from "../../shared/stack.ts";
 import {
   admission,
   briefBudgetChars,
@@ -67,7 +67,7 @@ import { sharedMemoryStore } from "../../agent/lib/memory.ts";
  * the result to the receiving transcript.
  */
 
-const EVE = eveOrigin();
+const EVE = engineOrigin();
 /** A queued handoff (a connect card's resume) gets two minutes, then it counts as a failed try. */
 const DELIVER_TIMEOUT_MS = 120_000;
 /**

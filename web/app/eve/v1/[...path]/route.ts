@@ -32,14 +32,14 @@ import {
 import { authorizeEveCall, carryOverReader, childWriteRefusal, type EveCallAuth } from "../../../../lib/eve-session-auth";
 import { archivedBotRefusal } from "../../../../lib/archived-bots";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
-import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
+import { TURN_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { bindSession, readSessionParent, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
-import { eveOrigin } from "../../../../../shared/stack.ts";
+import { engineOrigin } from "../../../../../shared/stack.ts";
 
-const EVE = eveOrigin();
+const EVE = engineOrigin();
 
 /**
  * True only when the catalog says the bot's own model is text-only. The model
@@ -163,7 +163,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   let inputAnswer = false;
   if (method !== "GET") {
     try {
-      body = await readBody(request, EVE_BODY_MAX);
+      body = await readBody(request, TURN_BODY_MAX);
     } catch (err) {
       const guarded = apiError(err);
       if (guarded) return guarded;

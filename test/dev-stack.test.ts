@@ -41,8 +41,8 @@ import listDir from "../agent/tools/list_dir.ts";
 import bash from "../agent/tools/bash.ts";
 import {
   assertStack,
-  eveOrigin,
-  evePort,
+  engineOrigin,
+  enginePort,
   keychainName,
   keychainPrefix,
   keychainServiceAllowed,
@@ -76,7 +76,7 @@ const STORE_OVERRIDES = [
   "UB_SESSION_OWNERS_PATH", "UB_CHATGPT_SIGNIN_PATH", "UB_ROUTER_DB", "UB_ROUTER_CONFIG",
 ];
 const STACK_VARS = [
-  "UB_STACK", "UB_STATE_ROOT", "UB_ROUTER_PORT", "UB_WEB_PORT", "UB_EVE_PORT", "UB_KEYCHAIN_PREFIX", "UB_MEDIA_DIR",
+  "UB_STACK", "UB_STATE_ROOT", "UB_ROUTER_PORT", "UB_WEB_PORT", "UB_ENGINE_PORT", "UB_KEYCHAIN_PREFIX", "UB_MEDIA_DIR",
   "UB_WEB_BASE_URL", "UB_ROUTER_BASE_URL", "UB_OPENCODE_GO_BASE", "UB_WORKSPACE_ROOT",
 ];
 const ALL_VARS = ["HOME", "NODE_TEST_CONTEXT", ...STACK_VARS, ...STORE_OVERRIDES];
@@ -118,7 +118,7 @@ function devEnv(home: string): Record<string, string> {
     UB_STATE_ROOT: join(home, ".useful-bot-dev-app"),
     UB_ROUTER_PORT: "4419",
     UB_WEB_PORT: "4420",
-    UB_EVE_PORT: "4421",
+    UB_ENGINE_PORT: "4421",
     UB_KEYCHAIN_PREFIX: "com.usefulbot.dev",
     UB_MEDIA_DIR: join(home, "Documents", "Useful Bot Dev"),
     UB_WEB_BASE_URL: "http://127.0.0.1:4420",
@@ -225,12 +225,12 @@ test("ports, prefix and origins default to the daily literals", () => {
       assert.equal(stackName(), "daily");
       assert.equal(routerPort(), 4319);
       assert.equal(webPort(), 4320);
-      assert.equal(evePort(), 4321);
+      assert.equal(enginePort(), 4321);
       assert.equal(keychainPrefix(), "com.usefulbot");
       assert.equal(keychainName("router.desktop"), "com.usefulbot.router.desktop");
       assert.equal(routerOrigin(), "http://127.0.0.1:4319");
       assert.equal(routerApiBase(), "http://127.0.0.1:4319/v1");
-      assert.equal(eveOrigin(), "http://127.0.0.1:4321");
+      assert.equal(engineOrigin(), "http://127.0.0.1:4321");
       assert.equal(webOrigin(), "http://127.0.0.1:4320");
       assert.deepEqual(stackProblems(), []);
     });
@@ -241,10 +241,10 @@ test("ports, prefix and origins default to the daily literals", () => {
 });
 
 test("a port or base URL given in the environment is used; a bad port is refused", () => {
-  withEnv({ UB_ROUTER_PORT: "5319", UB_WEB_PORT: "5320", UB_EVE_PORT: "5321" }, () => {
+  withEnv({ UB_ROUTER_PORT: "5319", UB_WEB_PORT: "5320", UB_ENGINE_PORT: "5321" }, () => {
     assert.equal(routerPort(), 5319);
     assert.equal(webPort(), 5320);
-    assert.equal(evePort(), 5321);
+    assert.equal(enginePort(), 5321);
     assert.equal(routerApiBase(), "http://127.0.0.1:5319/v1");
     assert.equal(webOrigin(), "http://127.0.0.1:5320");
   });
@@ -269,9 +269,9 @@ test("a complete dev environment passes and resolves every value to its dev one"
       assert.equal(stateRoot(), join(home, ".useful-bot-dev-app"));
       assert.equal(routerPort(), 4419);
       assert.equal(webPort(), 4420);
-      assert.equal(evePort(), 4421);
+      assert.equal(enginePort(), 4421);
       assert.equal(routerOrigin(), "http://127.0.0.1:4419");
-      assert.equal(eveOrigin(), "http://127.0.0.1:4421");
+      assert.equal(engineOrigin(), "http://127.0.0.1:4421");
       assert.equal(webOrigin(), "http://127.0.0.1:4420");
       assert.equal(keychainPrefix(), "com.usefulbot.dev");
       assert.equal(keychainName("device.desktop"), "com.usefulbot.dev.device.desktop");
@@ -285,7 +285,7 @@ test("a complete dev environment passes and resolves every value to its dev one"
 test("dev with any required value missing throws and names it", () => {
   const home = tempHome();
   try {
-    for (const missing of ["UB_STATE_ROOT", "UB_ROUTER_PORT", "UB_WEB_PORT", "UB_EVE_PORT", "UB_KEYCHAIN_PREFIX", "UB_MEDIA_DIR"]) {
+    for (const missing of ["UB_STATE_ROOT", "UB_ROUTER_PORT", "UB_WEB_PORT", "UB_ENGINE_PORT", "UB_KEYCHAIN_PREFIX", "UB_MEDIA_DIR"]) {
       const env: Record<string, string | undefined> = { ...devEnv(home), [missing]: undefined };
       withEnv(env, () => {
         assert.throws(() => assertStack(), new RegExp(missing), `${missing} missing`);
@@ -310,7 +310,7 @@ test("dev with a daily-equal value throws, however the path is spelled", () => {
       ["UB_STATE_ROOT", join(home, ".useful-bot-dev")],
       ["UB_ROUTER_PORT", "4319"],
       ["UB_WEB_PORT", "4320"],
-      ["UB_EVE_PORT", "4321"],
+      ["UB_ENGINE_PORT", "4321"],
       ["UB_KEYCHAIN_PREFIX", "com.usefulbot"],
       ["UB_MEDIA_DIR", join(home, "Documents", "Useful Bot")],
     ];
@@ -726,13 +726,13 @@ test("on dev, the bot working root may not sit at or under a protected daily fol
 test("on dev, no service may take any daily port, and no two services may share a port", () => {
   const home = tempHome();
   try {
-    for (const name of ["UB_ROUTER_PORT", "UB_WEB_PORT", "UB_EVE_PORT"]) {
+    for (const name of ["UB_ROUTER_PORT", "UB_WEB_PORT", "UB_ENGINE_PORT"]) {
       for (const daily of ["4319", "4320", "4321"]) {
         const problems = problemsFor(home, { [name]: daily });
         assert.ok(problems.some((problem) => problem.includes(name) && /daily/.test(problem)), `${name}=${daily}`);
       }
     }
-    for (const [a, b] of [["UB_ROUTER_PORT", "UB_WEB_PORT"], ["UB_ROUTER_PORT", "UB_EVE_PORT"], ["UB_WEB_PORT", "UB_EVE_PORT"]]) {
+    for (const [a, b] of [["UB_ROUTER_PORT", "UB_WEB_PORT"], ["UB_ROUTER_PORT", "UB_ENGINE_PORT"], ["UB_WEB_PORT", "UB_ENGINE_PORT"]]) {
       const problems = problemsFor(home, { [a]: "4499", [b]: "4499" });
       assert.ok(problems.some((problem) => problem.includes(a) && problem.includes(b) && /same port|duplicate/i.test(problem)), `${a}/${b}: ${problems.join("; ")}`);
     }
