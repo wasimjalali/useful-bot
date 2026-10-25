@@ -53,9 +53,9 @@ import Testing
         for process in found.reversed() { _ = runner.signalProcess(process, force: true) }
         // Not waitUntilExit: the awaits above can resume this test on another
         // thread than the one that ran the child, and Foundation's
-        // waitUntilExit can then wait forever for a notification queued on the
-        // launching thread's run loop. isRunning is cleared by the exit itself.
-        #expect(await waitUntil { !child.isRunning }, "the launcher exits once it and its child are killed")
+        // waitUntilExit can then wait forever on that thread's stale task
+        // state. isRunning is cleared by the exit itself, on any thread.
+        #expect(await waitUntil(10) { !child.isRunning }, "the launcher exits once it and its child are killed")
         #expect(!runner.isStillRunning(shell))
         #expect(runner.ownServiceProcesses(owns: owns).isEmpty)
     }
