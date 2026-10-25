@@ -257,12 +257,11 @@ export function allocateConnectionId(name: string, path = connectionsPath()): st
 /**
  * Insert or replace a connection, and return the row that is now live.
  *
- * A URL may hold one row. Two rows for the same server are both mounted by
- * `agent/connections/registry.ts`, so the model sees every one of that
- * server's tools twice and both copies count against the tool cap. Two cards
- * for one server are reachable: `propose_connection` refuses a URL that is
- * already connected and allows one pending card per thread, but that is per
- * thread, and two bots can each hold a card the owner then authorizes.
+ * A URL may hold one row. Two rows for the same server would show the model
+ * every one of that server's tools twice. Two cards for one server are
+ * reachable: `connect_server` refuses a URL that is already connected and
+ * allows one pending card per chat, but that is per chat, and two chats can
+ * each hold a card the owner then authorizes.
  *
  * When another row already holds this URL, that row wins untouched and comes
  * back with `won: false`. It is never merged with the incoming entry: its

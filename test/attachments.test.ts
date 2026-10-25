@@ -75,7 +75,7 @@ test("images are told apart by bytes and travel as file parts", () => {
   assert.equal(list[0]?.text?.includes("Attached image: shot.png"), true);
   assert.equal(list[0]?.text?.includes("not readable"), false);
   assert.deepEqual(list[1], { type: "file", data: dataUrl, mediaType: "image/png", filename: "shot.png" });
-  // An image with no text still carries a non-empty text part: eve refuses an empty one.
+  // An image with no text still carries a non-empty text part: a model call refuses an empty one.
   const only = turnMessage("", [{ name: "shot.png", bytes: 11, mediaType: "image/png", dataUrl }]) as Array<Record<string, string>>;
   assert.equal(only[0]?.text, "Attached image: shot.png");
 });

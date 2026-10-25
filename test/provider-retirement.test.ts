@@ -162,7 +162,7 @@ test("a retired chat connection read from disk answers its sentence, with the en
         error instanceof ProviderRouteRetiredError && error.message === (alias === "image" ? retiredRouteMessage("alibaba:plan") : sentence)
       ), alias);
     }
-    // A bot with no model of its own follows the default and is refused before eve with the sentence.
+    // A bot with no model of its own follows the default and is refused before the engine with the sentence.
     const refusal = modelSelectionRefusal(readShell().bots[0], store);
     assert.ok(refusal);
     assert.equal(refusal.status, 409);
@@ -251,7 +251,7 @@ test("removing a retired connection works and its credential leaves the file", (
   assert.equal(cleared.connections["zai:plan"], undefined);
 });
 
-test("a bot pinned to a retired route is refused before eve with the route's own message, and removing it resets the pin", async () => {
+test("a bot pinned to a retired route is refused before the engine with the route's own message, and removing it resets the pin", async () => {
   await withWorld(async () => {
     const bot = readShell().bots[0];
     const pick: ModelSelection = { connectionId: "alibaba:plan", modelId: "qwen3.7-max", effort: null, speed: "standard" };

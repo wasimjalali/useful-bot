@@ -356,7 +356,7 @@ function snapshotStores(providers: string, shell: string): [string | null, strin
 
 test("fresh install: connecting a provider leaves a null bot inheriting the new default, and a send is not refused", async () => {
   await withWorld(async ({ shell }) => {
-    // Nothing connected: the seeded bot has no model, and its send is refused by the proxy before eve.
+    // Nothing connected: the seeded bot has no model, and its send is refused before the engine.
     const before = readShell(shell).bots[0];
     assert.equal(before.model, null);
     assert.equal(effectiveDefault(readProviderStore()), null, "nothing usable to pin to yet");
