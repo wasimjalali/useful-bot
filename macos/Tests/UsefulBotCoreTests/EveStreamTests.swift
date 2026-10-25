@@ -121,6 +121,92 @@ import Testing
         #expect(projection.activity == .working)
     }
 
+    @Test func theCallIdFollowsTheStepItCameWith() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        #expect(projection.activityCall == nil)
+
+        // web_search (c1), then its result.
+        let search = #"{"type":"actions.requested","meta":{"id":"2"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}"#
+        projection.apply(EveStream.parseLine(search)!)
+        #expect(projection.activityCall == "c1")
+        projection.apply(EveEvent(type: "action.result", id: "3"))
+        #expect(projection.activity == .thinking)
+        #expect(projection.activityCall == nil)
+
+        // The bash delta names its own call: never the search's id.
+        let delta = #"{"type":"action.input.appended","meta":{"id":"4"},"data":{"callId":"c2","toolName":"bash","inputTextDelta":"ls"}}"#
+        projection.apply(EveStream.parseLine(delta)!)
+        #expect(projection.activity == .tool("bash"))
+        #expect(projection.activityCall == "c2")
+
+        // The request that follows carries the same id: still one step.
+        let bash = #"{"type":"actions.requested","meta":{"id":"5"},"data":{"actions":[{"callId":"c2","kind":"tool-call","toolName":"bash","input":{"command":"ls -la"}}]}}"#
+        projection.apply(EveStream.parseLine(bash)!)
+        #expect(projection.activity == .tool("bash", detail: "ls"))
+        #expect(projection.activityCall == "c2")
+
+        // A late delta of the same tool does not change the step.
+        projection.apply(EveStream.parseLine(#"{"type":"action.input.appended","meta":{"id":"6"},"data":{"callId":"c9","toolName":"bash","inputTextDelta":"x"}}"#)!)
+        #expect(projection.activityCall == "c2")
+
+        // The reply, and the next turn, leave no id behind.
+        projection.apply(EveEvent(type: "message.appended", id: "7", messageDelta: "Done"))
+        #expect(projection.activity == .working)
+        #expect(projection.activityCall == nil)
+    }
+
+    @Test func aDeltaWithoutACallIdLeavesNoStaleOne() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        let search = #"{"type":"actions.requested","meta":{"id":"2"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}"#
+        projection.apply(EveStream.parseLine(search)!)
+        // No result in between: a delta for another tool replaces the step.
+        let delta = #"{"type":"action.input.appended","meta":{"id":"3"},"data":{"toolName":"bash","inputTextDelta":"ls"}}"#
+        projection.apply(EveStream.parseLine(delta)!)
+        #expect(projection.activity == .tool("bash"))
+        #expect(projection.activityCall == nil)
+    }
+
+    @Test func aSearchThenABashStepIsOneBurstNotTwo() {
+        // The step keys the working row sees, in order, through web_search (c1),
+        // its result, then a bash delta and its request. A key that changes
+        // from one id to another restarts the figure, so there must be none.
+        var projection = StreamProjection()
+        var keys: [String?] = []
+        func key() -> String? {
+            guard case .tool("bash", let detail) = projection.activity else { return nil }
+            return projection.activityCall ?? detail
+        }
+        func feed(_ line: String) {
+            projection.apply(EveStream.parseLine(line)!)
+            keys.append(key())
+        }
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        feed(#"{"type":"actions.requested","meta":{"id":"2"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}"#)
+        projection.apply(EveEvent(type: "action.result", id: "3"))
+        keys.append(key())
+        feed(#"{"type":"action.input.appended","meta":{"id":"4"},"data":{"callId":"c2","toolName":"bash","inputTextDelta":"l"}}"#)
+        feed(#"{"type":"action.input.appended","meta":{"id":"5"},"data":{"callId":"c2","toolName":"bash","inputTextDelta":"s"}}"#)
+        feed(#"{"type":"actions.requested","meta":{"id":"6"},"data":{"actions":[{"callId":"c2","kind":"tool-call","toolName":"bash","input":{"command":"ls"}}]}}"#)
+
+        var sequencer = AgentMarkSequencer(start: 0)
+        var bursts = 0
+        var previous: String?
+        var now = 10.0
+        for step in keys {
+            if step != nil, sequencer.phase != .command { sequencer.set(.command, at: now); bursts += 1 }
+            if sequencer.phase == .command, AgentMarkSequencer.isNewCommandStep(from: previous, to: step) {
+                sequencer.set(.command, at: now, restart: true)
+                bursts += 1
+            }
+            previous = step
+            now += 0.05
+        }
+        #expect(keys.compactMap { $0 } == ["c2", "c2", "c2"])
+        #expect(bursts == 1)
+    }
+
     @Test func activityNamesWhatTheToolWasPointedAt() {
         var projection = StreamProjection()
         projection.apply(EveEvent(type: "turn.started", id: "1"))

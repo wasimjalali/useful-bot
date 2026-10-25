@@ -105,6 +105,14 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     /// read as a hang.
     case compacting
 
+    /// A shell command is running (the `bash` tool): the working mark shows
+    /// its four-dot figure. Only `bash` counts. `install_cli` also runs a
+    /// command, but it reads as "Setting up a tool", a step of its own.
+    public var runsCommand: Bool {
+        if case .tool("bash", _) = self { return true }
+        return false
+    }
+
     /// Sentence case, no trailing period: the row swaps between these while
     /// the turn runs, and a period on every one of them reads as a stutter.
     public var label: String {
@@ -810,6 +818,25 @@ public enum EveStream {
         return nil
     }
 
+    /// The call id an `action.input.appended` delta carries, if any.
+    static func callId(of data: JSONValue?) -> String? {
+        guard let id = data?["callId"]?.stringValue, !id.isEmpty else { return nil }
+        return String(id.prefix(80))
+    }
+
+    /// The call id of the call `requestedToolName` names, if the event has one.
+    static func requestedCallId(_ data: JSONValue?) -> String? {
+        guard let actions = data?["actions"]?.arrayValue else { return nil }
+        for action in actions {
+            for key in ["toolName", "remoteAgentName", "name"] {
+                guard let name = action[key]?.stringValue, !name.isEmpty else { continue }
+                let id = action["callId"]?.stringValue ?? ""
+                return id.isEmpty ? nil : String(id.prefix(80))
+            }
+        }
+        return nil
+    }
+
     /// What the first named call was pointed at, in one short line. Only the
     /// fields that read as a sentence are used; ids and payloads are not. A
     /// shell line is cut to its program and subcommand: its arguments are
@@ -886,6 +913,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// Every failed turn still worth showing, in the order they failed. A
     /// retry that gets somewhere takes its failure's mark away.
     public private(set) var failureMarks: [FailureMark] = []
+    /// The call id of the step `activity` names, so two steps with the same
+    /// command line are still two steps (the working mark bursts for each).
+    public private(set) var activityCall: String?
     /// Every compaction eve ran in this session, in order.
     public private(set) var compactionMarks: [CompactionMark] = []
     /// The mark of the failure `failed` is about, while it is.
@@ -897,7 +927,12 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     public private(set) var searchHits: [SearchChip] = []
     /// What the turn is doing right now. Reasoning and tool calls both reach
     /// us on this stream, so the working row can say which one it is.
-    public private(set) var activity: TurnActivity = .thinking
+    public private(set) var activity: TurnActivity = .thinking {
+        // A call id belongs to the step it came with. When the activity moves
+        // to anything else (thinking after a result, the reply, a new tool
+        // from a delta) the id of the step it left must not follow it.
+        didSet { if activity != oldValue { activityCall = nil } }
+    }
     /// MCP App widgets the live turn produced, shown in the transcript.
     public private(set) var widgets: [LiveWidget] = []
     /// Questions the bot asked with eve's `ask_question` that nobody has
@@ -1849,6 +1884,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             if case .current = owner { foldRetriedFailures() }
             if case .current = owner, let name = EveStream.requestedToolName(event.data) {
                 activity = .tool(name, detail: EveStream.requestedToolDetail(event.data))
+                activityCall = EveStream.requestedCallId(event.data)
             }
             // The validated call is the one place a drawing is complete and
             // carries its call id. Input deltas are partial JSON, one event
@@ -1867,6 +1903,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 // call already gave this same tool.
                 if case .tool(name, _) = activity { break }
                 activity = .tool(name)
+                // The delta names its own call, and the request that follows
+                // carries the same id, so one step is one id from the start.
+                activityCall = EveStream.callId(of: event.data)
             }
         case "message.appended":
             let delta = event.messageDelta ?? ""

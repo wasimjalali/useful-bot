@@ -622,17 +622,15 @@ struct ChatView: View {
                         // when the row leaves: the content is bottom-aligned,
                         // and a row that vanished pulled everything down by
                         // its height.
-                        Group {
-                            if model.pending || model.backgroundWorking {
-                                WorkingRow(
-                                    bot: bot,
-                                    activity: model.activity,
-                                    since: model.activitySince,
-                                    toolkits: model.connectorApps,
-                                    runningModel: model.runningModelNote(for: bot.id)
-                                )
-                            }
-                        }
+                        WorkingSlot(
+                            working: model.pending || model.backgroundWorking,
+                            bot: bot,
+                            activity: model.activity,
+                            call: model.activityCall,
+                            since: model.activitySince,
+                            toolkits: model.connectorApps,
+                            runningModel: model.runningModelNote(for: bot.id)
+                        )
                         .frame(height: WorkingRow.height, alignment: .leading)
                         if !model.searchHits.isEmpty {
                             SearchChipsRow(chips: model.searchHits)
@@ -1537,9 +1535,62 @@ struct TranscriptRowView: View, Equatable {
     }
 }
 
+/// The working row while a turn runs, and for the 50 ms the dots take to
+/// shrink away once it ends, so the mark leaves the way the spec draws it
+/// instead of being cut.
+private struct WorkingSlot: View {
+    let working: Bool
+    let bot: ShellBot
+    let activity: TurnActivity
+    let call: String?
+    let since: Date
+    let toolkits: [ConnectorToolkit]
+    var runningModel: String?
+
+    @State private var finishing = false
+    @State private var wasWorking = false
+
+    /// The label settles on the muted ink over 150 ms (WorkingLabel), and the
+    /// dots take 50 ms to vanish: the row stays up for the longer of the two,
+    /// plus a frame.
+    private static let linger = max(AgentMarkFrames.completionDuration, 0.15) + 1.0 / 60
+
+    var body: some View {
+        Group {
+            if working || finishing {
+                WorkingRow(
+                    bot: bot,
+                    activity: activity,
+                    call: call,
+                    since: since,
+                    toolkits: toolkits,
+                    runningModel: runningModel,
+                    done: !working
+                )
+            }
+        }
+        // Restarts on every change of `working`, so a new turn cancels a
+        // linger that is still counting.
+        .task(id: working) {
+            if working {
+                wasWorking = true
+                finishing = false
+                return
+            }
+            guard wasWorking else { return }
+            wasWorking = false
+            finishing = true
+            try? await Task.sleep(nanoseconds: UInt64(Self.linger * 1e9))
+            if !Task.isCancelled { finishing = false }
+        }
+    }
+}
+
 private struct WorkingRow: View {
     let bot: ShellBot
     let activity: TurnActivity
+    /// The running step's call id, when the stream gave one.
+    let call: String?
     /// When this step began. The row counts up from it, a second at a time.
     let since: Date
     /// The connected apps, for the logo and name of a connector step.
@@ -1547,6 +1598,16 @@ private struct WorkingRow: View {
     /// The model this turn is still on when the owner has picked another
     /// since it started. Nil when they match.
     var runningModel: String?
+    /// The turn has ended: the dots shrink away and the label stops sweeping.
+    var done = false
+
+    /// False for the first beat of a fresh row, so the mark arrives alone and
+    /// the label follows (spec section 5). A row that opens on a turn already
+    /// under way shows its label at once.
+    @State private var labelShown = false
+    /// The label on screen: each one is held for at least 0.8 s, and the latest
+    /// offer wins when the hold ends. Empty until the first label arrives.
+    @State private var hold = LabelHold("", at: 0)
 
     /// The avatar's box, which is also the slot the transcript reserves.
     static let height: CGFloat = 24
@@ -1565,32 +1626,37 @@ private struct WorkingRow: View {
         let connector = connector
         let step = connector?.label ?? activity.label
         let label = runningModel.map { "\(step) · \($0)" } ?? step
+        let shownLabel = hold.shown.isEmpty ? label : hold.shown
         // Sits where the reply will, so the text does not jump sideways
         // when the first token lands.
-        HStack(alignment: .center, spacing: 10) {
-            // The ring sits in the same box a reply avatar used to, so the
-            // label keeps the reply's left edge.
-            DotsRing(size: 18)
-                .frame(width: Self.height, height: Self.height)
+        // The label starts 16 pt from the mark's 24 pt box: 28 pt from the
+        // centre of the dots.
+        HStack(alignment: .center, spacing: 16) {
+            // A row that opens on a turn already past the arrival cuts in at
+            // the loop instead of replaying it.
+            AgentMark(
+                phase: done ? .done : (activity.runsCommand ? .command : .thinking),
+                arrives: Date().timeIntervalSince(since) < AgentMarkFrames.arrivalDuration,
+                step: commandStep
+            )
+            .frame(width: Self.height, height: Self.height)
             HStack(spacing: 8) {
                 if let connector {
                     AppLogo(name: connector.name, url: connector.logo, size: 16)
                         .transition(.opacity)
                 }
-                // Swapped in one frame, the way Claude's step line does: a
-                // crossfade between labels of different widths ran the old
-                // one over the timer beside it.
-                Text(label)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .font(.system(size: DesignTokens.FontSize.chatBody))
-                    .foregroundStyle(Theme.C.inkMuted)
-                // One text view redrawn once a second, not a clock ticking
-                // through the transcript.
+                // Slides up and crossfades in 120 ms. The outgoing text is an
+                // overlay clipped to the new label's width, so it never runs
+                // over the timer beside it.
+                WorkingLabel(text: shownLabel, visible: labelShown, done: done)
+                // Shown from 5 s, then once a second: one text view redrawn
+                // once a second, not a clock ticking through the transcript.
                 TimelineView(.periodic(from: since, by: 1)) { context in
-                    Text(Self.elapsed(from: since, to: context.date))
-                        .font(.system(size: DesignTokens.FontSize.chatBody).monospacedDigit())
-                        .foregroundStyle(Theme.C.inkFaint)
+                    if Self.elapsedSeconds(from: since, to: context.date) >= AgentShimmer.timerAfter {
+                        Text(Self.elapsed(from: since, to: context.date))
+                            .font(.system(size: DesignTokens.FontSize.chatBody).monospacedDigit())
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
                 }
                 .layoutPriority(1)
             }
@@ -1604,11 +1670,55 @@ private struct WorkingRow: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
+        .task {
+            guard !labelShown else { return }
+            let age = Date().timeIntervalSince(since)
+            guard age < AgentShimmer.firstLabelDelay else { labelShown = true; return }
+            try? await Task.sleep(nanoseconds: UInt64(AgentShimmer.firstLabelDelay * 1e9))
+            labelShown = true
+            // The hold counts from when the label could be seen.
+            hold.restart(at: Date.now.timeIntervalSinceReferenceDate)
+        }
+        // Restarts on every new label, so a label that arrives while another
+        // is waiting out its hold replaces it: only the latest shows.
+        // The reveal restarts the hold, which can move the due time while a
+        // label waits, so it is part of the key and the wait loops until
+        // nothing is pending.
+        .task(id: HoldKey(label: label, revealed: labelShown)) {
+            let now = Date.now.timeIntervalSinceReferenceDate
+            guard !hold.shown.isEmpty else {
+                hold = LabelHold(label, at: now)
+                return
+            }
+            hold.offer(label, at: now)
+            while let due = hold.due {
+                let wait = due - Date.now.timeIntervalSinceReferenceDate
+                if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
+                if Task.isCancelled { return }
+                hold.settle(at: Date.now.timeIntervalSinceReferenceDate)
+            }
+        }
+    }
+
+    private struct HoldKey: Hashable {
+        let label: String
+        let revealed: Bool
+    }
+
+    /// The command step being run, so the mark can tell one from the next: its
+    /// call id, or the command line when the stream gave no id.
+    private var commandStep: String? {
+        guard case .tool("bash", let detail) = activity else { return nil }
+        return call ?? detail
+    }
+
+    static func elapsedSeconds(from start: Date, to now: Date) -> Int {
+        max(0, Int(now.timeIntervalSince(start)))
     }
 
     /// "0s", "9s", "1m 5s": whole seconds, never negative.
     static func elapsed(from start: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        let seconds = elapsedSeconds(from: start, to: now)
         return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
     }
 }

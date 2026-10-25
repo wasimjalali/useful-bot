@@ -112,7 +112,10 @@ final class AppModel: ObservableObject {
     /// way `pending` does; the follower keeps it in step with the stream.
     @Published private(set) var backgroundWorking = false {
         didSet {
-            if backgroundWorking, !oldValue, !pending { activitySince = Date() }
+            // A reopened chat whose turn is already running keeps the turn's
+            // own start, so the working row does not replay the arrival or
+            // restart its timer; a turn this app did not send starts now.
+            if backgroundWorking, !oldValue, !pending { activitySince = projection.turnStartedAt ?? Date() }
         }
     }
     /// Failures with no turn to put them under (a send that never reached
@@ -185,6 +188,9 @@ final class AppModel: ObservableObject {
     /// What the live turn is doing, shown in the working row until the reply
     /// takes its place.
     @Published private(set) var activity: TurnActivity = .thinking
+    /// The running step's call id, so the working mark can tell one command
+    /// step from the next even when the command line is the same.
+    @Published private(set) var activityCall: String?
     /// When the running turn began, for the working row's timer. It counts
     /// the whole turn, from the send to the reply, through every step: a
     /// timer that went back to 0 at each tool read as the bot starting over.
@@ -2043,6 +2049,7 @@ final class AppModel: ObservableObject {
         // left over from the follower must not outlive it.
         backgroundWorking = false
         activity = .thinking
+        activityCall = nil
         threadError = nil
         stickyThreadError = nil
         sendErrors[bot.id] = nil
@@ -3023,6 +3030,7 @@ final class AppModel: ObservableObject {
         if let started = projection.turnStartedAt, pending || backgroundWorking, activitySince != started {
             activitySince = started
         }
+        if projection.activityCall != activityCall { activityCall = projection.activityCall }
         guard projection.activity != activity else { return }
         activity = projection.activity
         // A connector step names its app and shows its logo; the list of
@@ -4375,6 +4383,7 @@ final class AppModel: ObservableObject {
             // reload below reads the session and decides.
             backgroundWorking = false
             activity = stored.activity
+            activityCall = stored.activityCall
             markWorking(botId, sendTasks[botId] != nil)
             durableEvents = transcriptCache[botId]?.events ?? []
             rebuildTranscript()
@@ -4423,6 +4432,7 @@ final class AppModel: ObservableObject {
         pending = false
         backgroundWorking = false
         activity = snapshot.projection.activity
+        activityCall = snapshot.projection.activityCall
         markWorking(snapshot.botId, false)
         seenTurnIds[snapshot.sessionId, default: []].formUnion(snapshot.seenTurnIds)
         // Exactly the snapshot's: its projection holds these turns and no
@@ -4732,6 +4742,7 @@ final class AppModel: ObservableObject {
         resentRowIds = []
         droppedMessageForRow = [:]
         activity = .thinking
+        activityCall = nil
         memoryNotes = nil
         memoryError = nil
         pending = false
