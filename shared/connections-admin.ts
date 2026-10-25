@@ -24,7 +24,7 @@ import { connectionSecretService, keychainDel, keychainGet } from "./keychain.ts
 import { dropOauthPendingForProposal, startMcpOAuth } from "./mcp-oauth.ts";
 
 /**
- * What the Connectors page can do with a direct (MCP or OpenAPI) connection:
+ * What the Connectors page can do with a direct MCP connection:
  * read it, list it again, sign it in again, remove it. The route is a thin
  * layer over these so they can be exercised without a signed-in session.
  * Nothing here returns a token, a header or the Keychain item.

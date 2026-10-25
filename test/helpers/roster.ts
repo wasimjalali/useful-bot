@@ -4,9 +4,8 @@ let seq = 0;
 
 /**
  * A roster with more bots than the app makes any more. `createBot` is gone, so
- * tests that need an earlier-build roster (a second bot, a group, an archived
- * bot) build it the way an old shell.json held it: a copy of the Generalist
- * under another id, with the given fields on top.
+ * tests that need a second bot build it as a copy of the Generalist under
+ * another id, with the given fields on top.
  */
 export function withBot(
   store: ShellStore,
@@ -20,20 +19,16 @@ export function withBot(
   const bot: ShellBot = {
     ...base,
     id,
-    kind: "bot",
     name,
-    petname: null,
     label: "",
     description: "",
-    sessionId: null,
+    chatId: null,
     lastPreview: "",
     lastAt: null,
     createdAt: at,
     updatedAt: at,
-    avatarCustom: true,
     workspace: null,
     model: null,
-    profileRevision: 0,
     ...patch,
   };
   return { store: { ...store, bots: [...store.bots, bot] }, id };

@@ -1,18 +1,14 @@
-import type { ActiveBotContext } from "./active-bot.ts";
-import { turnSnapshot } from "./turn-snapshot.ts";
-
-/** The slice of an eve tool or policy context the marker needs. */
-export type OutsideCtx = ActiveBotContext & { session?: { id?: string; turn?: { id?: string } } };
+/** The slice of a tool context the marker needs (`ToolCtx` has it). */
+export type OutsideCtx = { session?: { id?: string; turn?: { id?: string } } };
 
 /**
  * Whether this turn has read content the owner did not write: a web page, a
- * connected app's answer, a file, a command's output, or a handoff's text.
- * A note the model writes after that is stored as
- * `model-after-outside-content`, so Settings can show it and the owner can
- * delete it in one click. The marker is per session and turn and lives in this
- * process only: a restart mid-turn forgets it, and the next turn starts clean.
- * Notes saved before this mark existed carry source "model", whatever they were
- * written from.
+ * connected app's answer, a file, a command's output. A note the model writes
+ * after that is stored as `model-after-outside-content`, so Settings can show
+ * it and the owner can delete it in one click. The marker is per chat and turn
+ * and lives in this process only: a restart mid-turn forgets it, and the next
+ * turn starts clean. Notes saved before this mark existed carry source
+ * "model", whatever they were written from.
  */
 const REGISTRY_KEY = Symbol.for("useful-bot.outside-content");
 const CAP = 256;
@@ -42,12 +38,9 @@ export function markOutside(ctx: OutsideCtx | undefined): void {
   add(key);
 }
 
-/** True once a tool marked the turn, or when the turn is a handoff (the snapshot says so). */
+/** True once a tool marked the turn. */
 export function seenOutside(ctx: OutsideCtx | undefined): boolean {
   const key = keyOf(ctx);
   if (!key) return false;
-  if (seen().has(key)) return true;
-  const sessionId = ctx?.session?.id as string;
-  const snapshot = turnSnapshot(sessionId, ctx?.session?.turn?.id);
-  return snapshot?.status === "ok" && snapshot.outside;
+  return seen().has(key);
 }

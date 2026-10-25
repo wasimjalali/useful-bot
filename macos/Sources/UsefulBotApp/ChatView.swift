@@ -29,34 +29,17 @@ struct ChatView: View {
     @State private var holdingReplyAnchor = false
     /// The chat whose transcript rests at its newest turn. Until it names the
     /// open chat, the transcript lays out hidden under the loader, so a chat
-    /// never opens in the middle of its history while the replay settles.
+    /// never opens in the middle of its history while its rows settle.
     /// Keyed by chat rather than a flag, so a switch reads as not landed from
     /// its first frame instead of once the mount's task has run.
-    @State private var landedBotId: String?
+    @State private var landedChatKey: String?
     /// The transcript's latest scroll geometry, for the landing check. A
     /// plain object so the pin tracker's per-frame writes do not re-render
     /// the chat.
     @State private var scrollProbe = ScrollProbe()
-    /// The restored chat whose reload is slow to confirm its rows: the loader
-    /// comes back rather than a blank pane. Keyed by chat, so a chat left
-    /// before it landed cannot hand its loader to the next one.
-    @State private var slowRestoreBotId: String?
-    /// How long a stalled replay may keep the loader up before the rows on
-    /// hand are shown anyway. A healthy replay lands well inside it: the
-    /// loader stays until the newest turn is in, because rows shown before
-    /// then are replaced underneath the reader.
+    /// How long a stalled load may keep the loader up before the rows on
+    /// hand are shown anyway. A healthy load lands well inside it.
     private static let landingCap: TimeInterval = 10
-    /// How long a restored chat waits for its reload with nothing on screen.
-    /// The reload's answer (a durable read, a one-file probe, whatever the
-    /// session gained since the snapshot) takes about 70 ms, but its reply
-    /// can queue behind the transcript's own build on the main thread; one
-    /// still missing after this gets the loader until it is in, so a chat
-    /// that gained a turn opens on it rather than showing it arrive.
-    private static let resumeConfirmWait: TimeInterval = 0.6
-    private static var fastLanding: Bool {
-        if #available(macOS 15.0, *) { return true }
-        return false
-    }
     /// Room for the user's message above the reply, so an answer that only
     /// just fits is left where it is.
     private static let replyAnchorSlack: CGFloat = 120
@@ -67,7 +50,7 @@ struct ChatView: View {
     private static let bottomFade: CGFloat = 28
     /// The chat whose landing gate is running. A send while it runs does not
     /// land the chat early: the gate is already waiting for the rows.
-    @State private var gatingBotId: String?
+    @State private var gatingChatKey: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,11 +59,7 @@ struct ChatView: View {
                 // only the bot's pill and the panel control sit on top.
                 ZStack(alignment: .top) {
                 if model.hasThreadContent || model.pending {
-                    // Put back from a snapshot or a stash: it lands within
-                    // a few frames, so the loader would only flash and the
-                    // fade would only delay it. macOS 14 has no scroll
-                    // geometry to land it that fast and keeps both.
-                    let restored = model.restoredFromCache && Self.fastLanding
+                    let key = model.chatKey
                     // A chat known to be empty that the owner has just
                     // sent into has nothing to wait for: its only rows are
                     // the send's own. It shows them from its first frame,
@@ -91,41 +70,37 @@ struct ChatView: View {
                     // first load's gate is running waits for that gate.
                     // Read live, the load finishing mid-gate flipped it and
                     // showed the rows before their geometry settled.
-                    let landed = landedBotId == bot.id || (sentIntoReadyChat && gatingBotId != bot.id)
+                    let landed = landedChatKey == key || (sentIntoReadyChat && gatingChatKey != key)
                     transcript(bot)
                         // The landing belongs to this mount. Without this a
                         // chat left for an empty one, or remounted before
-                        // its replay, came back shown before it landed.
+                        // its rows, came back shown before it landed.
                         .onDisappear {
-                            if landedBotId == bot.id { landedBotId = nil }
-                            if gatingBotId == bot.id { gatingBotId = nil }
+                            if landedChatKey == key { landedChatKey = nil }
+                            if gatingChatKey == key { gatingChatKey = nil }
                         }
                         // A new chat gets a new scroll view. Reusing one
-                        // across bots hands the next chat the offset the
+                        // across chats hands the next chat the offset the
                         // last one was left at, which then has to be
                         // corrected on screen.
-                        .id(bot.id)
+                        .id(key)
                         // Only the opacity fades. An animation on the whole
                         // transaction also animated any layout still moving
                         // in it, and the rows drifted while they faded in.
-                        .animation(restored ? nil : .easeOut(duration: 0.15)) {
+                        .animation(.easeOut(duration: 0.15)) {
                             $0.opacity(landed ? 1 : 0)
                         }
                         .accessibilityHidden(!landed)
                         .overlay {
-                            ZStack { if !landed, !restored || slowRestoreBotId == bot.id { loadingState } }
-                                // A restored chat's rows show at once, so
-                                // its loader must not fade out over them.
-                                // A slow one fades, so a confirmation just past
-                                // the wait does not pop the loader for a frame.
-                                .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landed)
+                            ZStack { if !landed { loadingState } }
+                                .animation(.easeOut(duration: 0.15), value: landed)
                         }
                 } else if model.transcriptReady {
                     emptyState
                         // The transcript's landing never mounts for a chat
                         // with no rows; the performance guard's wait ends here.
-                        .task(id: bot.id) {
-                            PerfHarness.shared?.landed(botId: bot.id, reason: "empty", stats: model.perfStats)
+                        .task(id: model.chatKey) {
+                            PerfHarness.shared?.landed(chatKey: model.chatKey, reason: "empty", stats: model.perfStats)
                         }
                 } else {
                     loadingState
@@ -189,15 +164,13 @@ struct ChatView: View {
     // MARK: - Asks
 
     /// Every open question, docked above the composer in the chat column:
-    /// approvals the bot is waiting on and proposals it wants confirmed. Each
-    /// one states what it is asking and puts its answers on the same row, the
-    /// way a coding agent prompts before it acts.
+    /// approvals the bot is waiting on and the question it asked. Each one
+    /// states what it is asking and puts its answers on the same row, the way
+    /// a coding agent prompts before it acts.
     @ViewBuilder
     private func askColumn(_ bot: ShellBot) -> some View {
         let hasAsk = !model.approvals.isEmpty
             || !model.openQuestions.isEmpty
-            || !model.pendingRequests.isEmpty
-            || !model.openProposals.isEmpty
             || model.approvalError != nil
         if hasAsk {
             VStack(spacing: 8) {
@@ -206,27 +179,6 @@ struct ChatView: View {
                 }
                 ForEach(model.openQuestions) { question in
                     questionAsk(question, bot: bot)
-                }
-                ForEach(model.pendingRequests) { request in
-                    WaitingCard(
-                        request: request,
-                        botName: bot.name,
-                        busy: model.busyRequests.contains(request.id)
-                    ) { option in model.answerRequest(request, option: option) }
-                    dismiss: { model.dismissRequest(request) }
-                }
-                ForEach(model.openProposals) { proposal in
-                    ProposalCardView(
-                        proposal: proposal,
-                        pending: model.busyProposals.contains(proposal.id),
-                        onDecision: { confirmed in
-                            model.decideProposal(proposal, confirmed: confirmed)
-                        },
-                        onReopen: { model.reopenConnect(proposal) },
-                        onConfirmSecret: { secret in
-                            model.decideProposal(proposal, confirmed: true, secret: secret)
-                        }
-                    )
                 }
                 if let error = model.approvalError {
                     Text(error)
@@ -435,69 +387,6 @@ struct ChatView: View {
         scrollToBottom(proxy)
     }
 
-    /// A chat put back from its snapshot or its stash has its rows ready, so
-    /// it lands as soon as its reload confirms them and layout reads the true
-    /// bottom at one height on two frames in a row: checked every frame,
-    /// where a replayed chat waits out three 50 ms checks, and shown without
-    /// the fade.
-    @available(macOS 15.0, *)
-    private func landRestored(_ proxy: ScrollViewProxy, botId: String) async {
-        slowRestoreBotId = nil
-        let slowAfter = Date().addingTimeInterval(Self.resumeConfirmWait)
-        let deadline = Date().addingTimeInterval(Self.landingCap)
-        var lastHeight: CGFloat = -1
-        var reason = "cap"
-        while Date() < deadline {
-            try? await Task.sleep(nanoseconds: 16_000_000)
-            guard !Task.isCancelled else { return }
-            let height = scrollProbe.contentHeight
-            // Geometry that never reports has nothing to settle; it is given
-            // a moment to show up first.
-            let atBottom = scrollProbe.seen
-                ? scrollProbe.distance <= 1 || height <= scrollProbe.viewport + 1
-                : Date() >= slowAfter
-            // The reload's word that a snapshot's rows are the session, or a
-            // send of the owner's in this visit, which lands on its own rows.
-            // Rows from a stash are confirmed by a replay from zero, which
-            // they never waited for.
-            let confirmed = model.transcriptReady || (model.pending && model.sentSinceOpen)
-                || !model.restoredFromSnapshot
-            if !confirmed {
-                if slowRestoreBotId != botId, Date() >= slowAfter { slowRestoreBotId = botId }
-                // The two equal frames are counted on the confirmed rows only.
-                lastHeight = -1
-                continue
-            }
-            if atBottom, height == lastHeight {
-                // The newest rows alone do not fill the window: a short
-                // column sits at the top and would drop to the bottom once
-                // the rest mounted, so the rest mounts before anything shows.
-                if model.slimFirstPaint, scrollProbe.seen, height <= scrollProbe.viewport + 1 {
-                    model.finishFirstPaint()
-                    lastHeight = -1
-                    continue
-                }
-                reason = scrollProbe.seen ? "settled" : "no_geometry"
-                break
-            }
-            if scrollProbe.seen, !atBottom { scrollToBottom(proxy) }
-            lastHeight = height
-        }
-        pinnedToBottom = true
-        // `slowRestoreBotId` stays set through the landing, so a slow
-        // chat's loader fades out; the next landing clears it.
-        landedBotId = botId
-        PerfHarness.shared?.landed(botId: botId, reason: reason, stats: model.perfStats)
-        guard model.slimFirstPaint else { return }
-        // Two frames, so the landed frame is committed before the rest of the
-        // window is built above it. Not tied to this task: a remount in those
-        // frames must not leave the window slim for the rest of the visit.
-        Task { @MainActor [model] in
-            try? await Task.sleep(nanoseconds: 34_000_000)
-            model.finishFirstPaint(for: botId)
-        }
-    }
-
     /// The newest turn, without animating the trip. Used where the bottom
     /// anchor is known to be the right place: the transcript's own mount.
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -510,11 +399,11 @@ struct ChatView: View {
 
     private func transcript(_ bot: ShellBot) -> some View {
         // What the rows are handed. A row is skipped while its inputs compare
-        // equal, and a bot's session pointer and last preview change every
-        // time the bot says anything, which made every row in this chat
-        // unequal, and rebuilt its markdown.
+        // equal, and a bot's last preview changes every time the bot says
+        // anything, which made every row in this chat unequal, and rebuilt its
+        // markdown.
         let rowBot = bot.transcriptFace
-        let streaming = model.pending || model.backgroundWorking
+        let streaming = model.pending
         // Built once per transcript change in the model, not once per body.
         // This view re-evaluates on every keystroke in the composer, and
         // regrouping several hundred rows there is what made typing stutter.
@@ -525,7 +414,7 @@ struct ChatView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.transcriptGap) {
-                        if window.hidden > 0 {
+                        if window.hidden > 0 || model.hasEarlierRows {
                             ShowEarlierRow { model.showEarlierMessages() }
                         }
                         ForEach(window.blocks) { block in
@@ -547,24 +436,34 @@ struct ChatView: View {
                             case .message(let row) where row.kind == .unsent:
                                 UnsentRow(
                                     text: row.text,
-                                    retryEnabled: !model.pending,
+                                    retryEnabled: true,
                                     editEnabled: model.canEditUnsent,
                                     maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
                                     retry: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.retryUnsent(id) } },
                                     edit: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.editUnsent(id) } },
                                     dismiss: { if let id = UnsentMessage.id(fromLineRowId: row.id) { model.dismissUnsent(id) } }
                                 )
-                            case .message(let row):
-                                if row.id == model.continuationRowId {
-                                    // The earlier session could not go on, so
-                                    // this one opened with a brief of it.
-                                    DayDividerRow(label: "Continued from an earlier session")
+                            case .message(let row) where row.kind == .card:
+                                // A connect card sits where the bot asked for
+                                // it; once it is answered it leaves.
+                                if let proposal = model.openProposals.first(where: { $0.id == row.text }) {
+                                    ProposalCardView(
+                                        proposal: proposal,
+                                        pending: model.busyProposals.contains(proposal.id),
+                                        onDecision: { confirmed in
+                                            model.decideProposal(proposal, confirmed: confirmed)
+                                        },
+                                        onReopen: { model.reopenConnect(proposal) },
+                                        onConfirmSecret: { secret in
+                                            model.decideProposal(proposal, confirmed: true, secret: secret)
+                                        }
+                                    )
                                 }
+                            case .message(let row):
                                 TranscriptRowView(
                                     row: row,
                                     bot: rowBot,
                                     maxBubbleWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
-                                    queued: model.queuedRowIds.contains(row.id),
                                     // The reply still being written parses
                                     // into one replaceable slot. Part of the
                                     // row's equality, so the turn finishing
@@ -595,18 +494,13 @@ struct ChatView: View {
                                         }
                                     }
                                 }
-                                // eve held this message behind a request and
-                                // never replayed it.
-                                if model.droppedRowIds.contains(row.id) {
-                                    FailureRow(
-                                        text: "\(bot.name) never got this message",
-                                        retryable: !Attachments.namesEchoedFile(row.text) && !model.resentRowIds.contains(row.id),
-                                        enabled: !model.pending,
-                                        until: nil,
-                                        maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
-                                        buttonTitle: "Send again"
-                                    ) { model.resendDropped(rowId: row.id, text: row.text) }
-                                    .padding(.top, DesignTokens.Space.bubbleStackGap - DesignTokens.Space.transcriptGap)
+                                // The row a search hit points at, for a moment.
+                                .background {
+                                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                                        .fill(Theme.C.sunken)
+                                        .padding(-6)
+                                        .opacity(model.highlightRowId == row.id ? 1 : 0)
+                                        .animation(.easeOut(duration: 0.3), value: model.highlightRowId)
                                 }
                             case .images(let rows):
                                 GeneratedImageRun(
@@ -623,12 +517,11 @@ struct ChatView: View {
                         // and a row that vanished pulled everything down by
                         // its height.
                         WorkingSlot(
-                            working: model.pending || model.backgroundWorking,
+                            working: model.pending,
                             bot: bot,
                             activity: model.activity,
                             call: model.activityCall,
                             since: model.activitySince,
-                            toolkits: model.connectorApps,
                             runningModel: model.runningModelNote(for: bot.id)
                         )
                         .frame(height: WorkingRow.height, alignment: .leading)
@@ -641,7 +534,7 @@ struct ChatView: View {
                             .frame(height: 1)
                     }
                     // The transcript spans the pane, not a centered column:
-                    // the owner's bubbles sit flush right and the bots' flush
+                    // the owner's bubbles sit flush right and the bot's flush
                     // left, however wide the window, with `bubbleMax` keeping
                     // the far side empty.
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -733,18 +626,14 @@ struct ChatView: View {
                     // Shown from its first frame (see `sentIntoReadyChat`);
                     // this only records it, so the rows stay up once the turn
                     // ends and the condition no longer holds.
+                    let key = model.chatKey
                     if sentIntoReadyChat {
-                        landedBotId = bot.id
-                        PerfHarness.shared?.landed(botId: bot.id, reason: "sent", stats: model.perfStats)
-                        model.finishFirstPaint()
+                        landedChatKey = key
+                        PerfHarness.shared?.landed(chatKey: key, reason: "sent", stats: model.perfStats)
                         return
                     }
-                    gatingBotId = bot.id
-                    defer { if gatingBotId == bot.id { gatingBotId = nil } }
-                    if #available(macOS 15.0, *), model.restoredFromCache {
-                        await landRestored(proxy, botId: bot.id)
-                        return
-                    }
+                    gatingChatKey = key
+                    defer { if gatingChatKey == key { gatingChatKey = nil } }
                     let deadline = Date().addingTimeInterval(Self.landingCap)
                     var steady = 0
                     var lastHeight: CGFloat = -1
@@ -756,8 +645,7 @@ struct ChatView: View {
                         // A send counts only when it was made in this visit.
                         // One still running from before the chat was left
                         // sits on rows whose history may not be in yet.
-                        guard model.transcriptReady || (model.pending && model.sentSinceOpen)
-                                || (model.restoredFromCache && !model.restoredFromSnapshot) else {
+                        guard model.transcriptReady || (model.pending && model.sentSinceOpen) else {
                             scrollToBottom(proxy)
                             continue
                         }
@@ -771,7 +659,7 @@ struct ChatView: View {
                             let atBottom = !scrollProbe.seen
                                 || scrollProbe.distance <= 1
                                 || height <= scrollProbe.viewport + 1
-                            if atBottom, height == lastHeight || model.pending || model.backgroundWorking {
+                            if atBottom, height == lastHeight || model.pending {
                                 steady += 1
                             } else {
                                 steady = 0
@@ -805,7 +693,7 @@ struct ChatView: View {
                     }
                     // Hidden, the reader cannot have scrolled: it is pinned.
                     pinnedToBottom = true
-                    landedBotId = bot.id
+                    landedChatKey = key
                     if let perf = PerfHarness.shared {
                         var reason = steady >= 3 ? "settled" : "cap"
                         if #available(macOS 15.0, *) {
@@ -813,18 +701,27 @@ struct ChatView: View {
                         } else if steady >= 3 {
                             reason = "unmeasured"
                         }
-                        perf.landed(botId: bot.id, reason: reason, stats: model.perfStats)
+                        perf.landed(chatKey: key, reason: reason, stats: model.perfStats)
                     }
-                    model.finishFirstPaint()
                 }
                 // A replay slower than the cap finishes after the rows were
                 // shown; a reader still at the newest turn is kept there.
                 .onChange(of: model.transcriptReady) { _, ready in
-                    if ready, landedBotId == bot.id { repinAfterBannerChange(proxy) }
+                    if ready, landedChatKey == model.chatKey { repinAfterBannerChange(proxy) }
+                }
+                // A search hit: the chat goes to the row, wherever it is.
+                .onChange(of: model.highlightRowId) { _, id in
+                    guard let id else { return }
+                    pinnedToBottom = false
+                    holdingReplyAnchor = false
+                    scrollProbe.markAppScroll()
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { proxy.scrollTo(id, anchor: .center) }
                 }
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
                 // `defaultScrollAnchor(.bottom)` holds the bottom as the content
-                // grows: opening a chat, switching bots, streaming and the
+                // grows: opening a chat, switching chats, streaming and the
                 // durable reload keep their place without being told to.
                 // Explicit bottom scrolls are kept to the few places that need
                 // one (the send below, the banner and landing re-pins), because
@@ -869,7 +766,7 @@ struct ChatView: View {
                 // read from its first line, so the view moves there once, when
                 // the turn finishes. A reply that already fits is left alone.
                 .onChange(of: model.pending) { wasPending, nowPending in
-                    guard wasPending, !nowPending, landedBotId == bot.id, pinnedToBottom,
+                    guard wasPending, !nowPending, landedChatKey == model.chatKey, pinnedToBottom,
                           !scrollProbe.dragging,
                           // The viewport is already the area under the header.
                           replyHeight > viewportHeight - Self.replyAnchorSlack,
@@ -1109,8 +1006,8 @@ private struct FailureRow: View {
     }
 }
 
-/// The line under an owner message the server refused before the bot got it:
-/// what happened, then Retry and Edit. Right-aligned under the bubble it
+/// The line under an owner message the bot never got: what happened, then
+/// Send again, Edit and Dismiss. Right-aligned under the bubble it
 /// belongs to. Edit waits for an empty composer, since the text would
 /// otherwise stack on whatever is there.
 private struct UnsentRow: View {
@@ -1136,7 +1033,7 @@ private struct UnsentRow: View {
                     .multilineTextAlignment(.trailing)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                NativeButton("Retry", kind: .secondary, small: true, enabled: retryEnabled, action: retry)
+                NativeButton("Send again", kind: .secondary, small: true, enabled: retryEnabled, action: retry)
                     .accessibilityIdentifier("unsent-retry")
                 NativeButton("Edit", kind: .secondary, small: true, enabled: editEnabled, action: edit)
                     .help(editEnabled ? "" : UnsentMessage.editBlockedHint)
@@ -1279,10 +1176,31 @@ private extension ShellBot {
     /// transcript row draws: a row shows a name and a face, never a preview.
     var transcriptFace: ShellBot {
         var face = self
-        face.sessionId = nil
+        face.chatId = nil
         face.lastPreview = ""
         face.lastAt = nil
         return face
+    }
+}
+
+/// A file the owner attached, as a small chip under the message.
+private struct AttachmentChip: View {
+    let name: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "paperclip")
+                .font(.system(size: 11))
+            Text(name)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(Theme.C.inkMuted)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Theme.C.sunken, in: Capsule())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -1392,8 +1310,6 @@ struct TranscriptRowView: View, Equatable {
     let row: TranscriptRow
     let bot: ShellBot
     var maxBubbleWidth: CGFloat = 612
-    /// eve is holding this owner message until a waiting card is answered.
-    var queued = false
     /// The bubble of a turn still running: its markdown is parsed into a
     /// transient slot instead of the shared cache, one entry per delta.
     var streaming = false
@@ -1402,8 +1318,6 @@ struct TranscriptRowView: View, Equatable {
         switch row.kind {
         case .user:
             userRow
-        case .note where row.connectedName != nil:
-            connectedCard(name: row.connectedName ?? "")
         case .note:
             // An event, not something said: one centered line.
             HStack(spacing: 0) {
@@ -1437,16 +1351,18 @@ struct TranscriptRowView: View, Equatable {
         case .page:
             // The row's text is the page title; the id names the Library item.
             PageRow(mediaId: row.imageId ?? "", title: row.text)
-        case .failure, .unsent:
-            // Drawn by the transcript itself, which owns its Retry.
+        case .failure, .unsent, .card:
+            // Drawn by the transcript itself, which owns their buttons.
             EmptyView()
         }
     }
 
     private var userRow: some View {
         // Pictures the owner sent sit above their words, a size up from the
-        // composer's preview; the lines that name them are not shown.
-        let sent = Attachments.sentImages(in: row.text)
+        // composer's preview; other files are a chip each under them.
+        let images = row.attachments.filter(\.isImage).map(\.name)
+        let files = row.attachments.filter { !$0.isImage }
+        let sent = (text: row.text, images: images)
         return VStack(alignment: .trailing, spacing: 6) {
             if !sent.images.isEmpty {
                 HStack(spacing: 0) {
@@ -1458,6 +1374,17 @@ struct TranscriptRowView: View, Equatable {
                     }
                     .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
                     .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            if !files.isEmpty {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 60)
+                    WrapHStack(spacing: 6) {
+                        ForEach(files.indices, id: \.self) { index in
+                            AttachmentChip(name: files[index].name)
+                        }
+                    }
+                    .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
                 }
             }
             if !sent.text.isEmpty {
@@ -1472,7 +1399,7 @@ struct TranscriptRowView: View, Equatable {
                     }
                 }
             }
-            if queued { QueuedTag() }
+            if row.queued { QueuedTag() }
         }
     }
 
@@ -1499,40 +1426,6 @@ struct TranscriptRowView: View, Equatable {
         }
     }
 
-    /// The host's word that an app was added, written by the app and not by
-    /// the bot: a bubble with the logo, the name and the outcome.
-    private func connectedCard(name: String) -> some View {
-        HStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 12) {
-                AppLogo(name: name, url: row.connectedLogo)
-                Text(name)
-                    .font(Theme.font(DesignTokens.FontSize.chatBody, .semibold))
-                    .foregroundStyle(Theme.C.ink)
-                    .lineLimit(1)
-                Spacer(minLength: 24)
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Added")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundStyle(Theme.C.success)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Theme.C.successSoft)
-                .clipShape(Capsule())
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: 420)
-            .background(Theme.C.bubbleBot)
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-            .cardLift(cornerRadius: DesignTokens.Radius.md)
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(name) added")
-    }
 }
 
 /// The working row while a turn runs, and for the 50 ms the dots take to
@@ -1544,7 +1437,6 @@ private struct WorkingSlot: View {
     let activity: TurnActivity
     let call: String?
     let since: Date
-    let toolkits: [ConnectorToolkit]
     var runningModel: String?
 
     @State private var finishing = false
@@ -1563,7 +1455,6 @@ private struct WorkingSlot: View {
                     activity: activity,
                     call: call,
                     since: since,
-                    toolkits: toolkits,
                     runningModel: runningModel,
                     done: !working
                 )
@@ -1593,8 +1484,6 @@ private struct WorkingRow: View {
     let call: String?
     /// When this step began. The row counts up from it, a second at a time.
     let since: Date
-    /// The connected apps, for the logo and name of a connector step.
-    let toolkits: [ConnectorToolkit]
     /// The model this turn is still on when the owner has picked another
     /// since it started. Nil when they match.
     var runningModel: String?
@@ -1612,19 +1501,8 @@ private struct WorkingRow: View {
     /// The avatar's box, which is also the slot the transcript reserves.
     static let height: CGFloat = 24
 
-    /// A connected app's step: its logo leads the label, the way Claude
-    /// shows "Searching Gmail email threads" behind the Gmail mark.
-    private var connector: (logo: String, name: String, label: String)? {
-        guard case .tool("connector_execute", let detail?) = activity else { return nil }
-        let step = TurnActivity.connectorStep(detail, toolkits: toolkits.map { ($0.slug, $0.name) })
-        let slug = step.toolkit ?? String(detail.lowercased().prefix { $0 != "_" })
-        let logo = toolkits.first { $0.slug == slug }?.logo ?? "https://logos.composio.dev/api/\(slug)"
-        return (logo, slug, step.label)
-    }
-
     var body: some View {
-        let connector = connector
-        let step = connector?.label ?? activity.label
+        let step = activity.label
         let label = runningModel.map { "\(step) · \($0)" } ?? step
         let shownLabel = hold.shown.isEmpty ? label : hold.shown
         // Sits where the reply will, so the text does not jump sideways
@@ -1641,10 +1519,6 @@ private struct WorkingRow: View {
             )
             .frame(width: Self.height, height: Self.height)
             HStack(spacing: 8) {
-                if let connector {
-                    AppLogo(name: connector.name, url: connector.logo, size: 16)
-                        .transition(.opacity)
-                }
                 // Slides up and crossfades in 120 ms. The outgoing text is an
                 // overlay clipped to the new label's width, so it never runs
                 // over the timer beside it.
@@ -1660,7 +1534,6 @@ private struct WorkingRow: View {
                 }
                 .layoutPriority(1)
             }
-            .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: connector?.logo)
             // The logo's own fade only. The first reply pushes
             // the row down in the same update that turns "Thinking"
             // into "Writing", and without this the label slid down
@@ -1706,10 +1579,10 @@ private struct WorkingRow: View {
     }
 
     /// The command step being run, so the mark can tell one from the next: its
-    /// call id, or the command line when the stream gave no id.
+    /// call id, which arrives just after the step starts.
     private var commandStep: String? {
-        guard case .tool("bash", let detail) = activity else { return nil }
-        return call ?? detail
+        guard case .tool("bash", _) = activity else { return nil }
+        return call
     }
 
     static func elapsedSeconds(from start: Date, to now: Date) -> Int {
@@ -2237,82 +2110,13 @@ struct StarterPrompt: Identifiable {
     static var first: [StarterPrompt] { Array(all.prefix(3)) }
 }
 
-/// What eve is waiting on that is not a question: a session limit, an
-/// approval, a kind this build does not know. Amber, so it reads as needing
-/// the owner rather than as a normal ask.
-struct WaitingCard: View {
-    let request: PendingRequest
-    let botName: String
-    let busy: Bool
-    let answer: (PendingRequest.Option) -> Void
-    let dismiss: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "hourglass")
-                    .font(.system(size: 11, weight: .regular))
-                Text("\(botName) is waiting on you")
-                    .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
-                    .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(Theme.C.warning)
-            Text(PendingRequestCopy.body(for: request))
-                .font(.system(size: 14))
-                .foregroundStyle(Theme.C.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .multilineTextAlignment(.leading)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if request.options.isEmpty {
-                // Nothing to press: it can only be answered in words, or hidden.
-                HStack(spacing: 8) {
-                    Text("This can't be answered here. Dismiss hides the card.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkMuted)
-                    Spacer(minLength: 0)
-                    NativeButton("Dismiss", small: true, action: dismiss)
-                        .accessibilityIdentifier("request-dismiss")
-                }
-            } else {
-                HStack(spacing: 8) {
-                    ForEach(request.options) { option in
-                        NativeButton(
-                            PendingRequestCopy.label(of: option, in: request),
-                            kind: PendingRequestCopy.isPrimary(option, in: request) ? .primary : .secondary,
-                            small: true,
-                            enabled: !busy
-                        ) { answer(option) }
-                        .accessibilityIdentifier("request-option-\(option.id)")
-                    }
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Theme.C.warningSoft)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.warning.opacity(0.5), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-        .compositingGroup()
-        .popShadow()
-        .opacity(busy ? 0.7 : 1)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("waiting-card")
-    }
-}
-
-/// Under an owner bubble eve is holding until a request is answered.
+/// Under an owner bubble the engine holds behind the running turn.
 struct QueuedTag: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "clock")
                 .font(.system(size: 11))
-            Text("Queued until you answer the card")
+            Text("Queued")
                 .font(.system(size: 12))
         }
         .foregroundStyle(Theme.C.inkMuted)

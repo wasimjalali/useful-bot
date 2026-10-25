@@ -9,10 +9,6 @@ struct RoutinesPage: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            let moved = model.movedRoutines.count
-            if moved > 0 {
-                notice(moved)
-            }
             HStack(spacing: 0) {
                 list
                     .frame(width: 320)
@@ -44,30 +40,6 @@ struct RoutinesPage: View {
         .padding(.horizontal, 20)
         .padding(.top, 14)
         .padding(.bottom, 12)
-    }
-
-    private func notice(_ count: Int) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.C.warning)
-            Text(count == 1
-                ? "1 routine from your earlier bots is paused. Review it and turn it on if you want it."
-                : "\(count) routines from your earlier bots are paused. Review them and turn on the ones you want.")
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.C.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            NativeButton("Dismiss", kind: .secondary, small: true) {
-                model.dismissMovedRoutines()
-            }
-            .accessibilityIdentifier("routines-moved-dismiss")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(Theme.C.warningSoft, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-        .padding(.horizontal, 20)
-        .padding(.bottom, 12)
-        .accessibilityIdentifier("routines-moved-notice")
     }
 
     // MARK: - List
@@ -131,12 +103,6 @@ struct RoutinesPage: View {
 }
 
 extension Routine {
-    /// The earlier bot this routine came from, by name, while it is still unreviewed.
-    func movedFromName(_ store: ShellStore?) -> String? {
-        guard let movedFrom else { return nil }
-        return store?.bots.first { $0.id == movedFrom }?.name
-    }
-
     /// How the last run went, for the list: "Paused", "Failed", "Ran today",
     /// "Ran yesterday", "Ran Oct 23" or "Never run".
     func statusLabel(now: Date = Date(), calendar: Calendar = .current) -> (text: String, failed: Bool) {
@@ -226,9 +192,7 @@ struct RoutineRowView: View {
 
     private var subtitle: String {
         if !pageRow { return routine.active ? RoutineCopy.scheduleLine(routine.schedules) : "Paused" }
-        let schedule = RoutineCopy.scheduleLine(routine.schedules)
-        guard let from = routine.movedFromName(model.store) else { return schedule }
-        return "\(schedule) · from \(from)"
+        return RoutineCopy.scheduleLine(routine.schedules)
     }
 }
 
@@ -534,9 +498,30 @@ struct RoutineEditorView: View {
                             }
                         }
                         Spacer(minLength: 0)
+                        runChatLink(run)
                     }
                     .padding(.vertical, 2)
                 }
+            }
+        }
+    }
+
+    /// Each run points at the routine's chat it used: Open chat, or "Chat
+    /// deleted" once that chat is gone. A run with no chat shows neither.
+    @ViewBuilder
+    private func runChatLink(_ run: RoutineRun) -> some View {
+        if let chatId = run.chatId, !chatId.isEmpty {
+            if model.chatIsGone(chatId) {
+                Text("Chat deleted")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkFaint)
+            } else {
+                Button("Open chat") { model.openChat(chatId) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.C.ink)
+                    .pointerOnHover()
+                    .accessibilityIdentifier("routine-run-open-chat")
             }
         }
     }

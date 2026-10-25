@@ -1,5 +1,12 @@
 # Pi engine: UI and UX for one bot
 
+> **Owner, 2026-10-25 13:42: the Pi release ships as a brand-new app.** The owner is the only user, so there is
+> no migration and no compatibility code for older installs: no `shell.json` v1 migration, no archived or
+> earlier bots, no moved routines, no first-launch note, no OpenAPI note, no image-prompt backfill, no eve
+> leftovers kept for a release (PR 4 is folded into PR 3). A store whose format changed starts fresh; stores
+> whose format didn't (providers, config, Keychain, memory, routines, connections, media) keep working with no
+> extra code. Where this file says otherwise, this note wins.
+
 Status: draft 2, 2026-10-25, matches the mockups the owner approved on 2026-10-25. Decision
 (owner, 2026-10-25): **one bot only**, no second bot, no bot switcher; the sidebar is built around
 chats.
