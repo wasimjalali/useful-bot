@@ -92,7 +92,9 @@ Dev and never quits or relaunches the daily app, and the records it writes under
 are committed. It's a shared resource: one run at a time, by the orchestrator. A breach is fixed, or the
 budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-run never erases a
 breach. The fixture chats ("Perf ...", synthetic Pi session files from `scripts/perf-fixtures.mjs`,
-hidden from the sidebar) are frozen: never send to them. See `perf/README.md`.
+hidden from the sidebar) are frozen: never send to them. They are written with the dev app quit
+(`perf/run.sh fixtures`, which also locks them) and measured by `rows_first_paint` and `rows_done`
+as well as the landing. See `perf/README.md`.
 
 ## Pi SDK updates
 
