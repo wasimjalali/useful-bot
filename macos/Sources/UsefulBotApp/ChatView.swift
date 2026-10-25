@@ -1600,6 +1600,9 @@ private struct WorkingRow: View {
     /// the label follows (spec section 5). A row that opens on a turn already
     /// under way shows its label at once.
     @State private var labelShown = false
+    /// The label on screen: each one is held for at least 0.8 s, and the latest
+    /// offer wins when the hold ends. Empty until the first label arrives.
+    @State private var hold = LabelHold("", at: 0)
 
     /// The avatar's box, which is also the slot the transcript reserves.
     static let height: CGFloat = 24
@@ -1618,6 +1621,7 @@ private struct WorkingRow: View {
         let connector = connector
         let step = connector?.label ?? activity.label
         let label = runningModel.map { "\(step) · \($0)" } ?? step
+        let shownLabel = hold.shown.isEmpty ? label : hold.shown
         // Sits where the reply will, so the text does not jump sideways
         // when the first token lands.
         // The label starts 16 pt from the mark's 24 pt box: 28 pt from the
@@ -1639,7 +1643,7 @@ private struct WorkingRow: View {
                 // Slides up and crossfades in 120 ms. The outgoing text is an
                 // overlay clipped to the new label's width, so it never runs
                 // over the timer beside it.
-                WorkingLabel(text: label, visible: labelShown, done: done)
+                WorkingLabel(text: shownLabel, visible: labelShown, done: done)
                 // Shown from 5 s, then once a second: one text view redrawn
                 // once a second, not a clock ticking through the transcript.
                 TimelineView(.periodic(from: since, by: 1)) { context in
@@ -1667,6 +1671,23 @@ private struct WorkingRow: View {
             guard age < AgentShimmer.firstLabelDelay else { labelShown = true; return }
             try? await Task.sleep(nanoseconds: UInt64(AgentShimmer.firstLabelDelay * 1e9))
             labelShown = true
+            // The hold counts from when the label could be seen.
+            hold.restart(at: Date.now.timeIntervalSinceReferenceDate)
+        }
+        // Restarts on every new label, so a label that arrives while another
+        // is waiting out its hold replaces it: only the latest shows.
+        .task(id: label) {
+            let now = Date.now.timeIntervalSinceReferenceDate
+            guard !hold.shown.isEmpty else {
+                hold = LabelHold(label, at: now)
+                return
+            }
+            hold.offer(label, at: now)
+            guard let due = hold.due else { return }
+            let wait = due - Date.now.timeIntervalSinceReferenceDate
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
+            if Task.isCancelled { return }
+            hold.settle(at: Date.now.timeIntervalSinceReferenceDate)
         }
     }
 

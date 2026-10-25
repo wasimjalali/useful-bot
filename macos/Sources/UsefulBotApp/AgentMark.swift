@@ -119,7 +119,10 @@ final class MarkClock {
     struct Sequencer {
         fileprivate let clock: MarkClock
 
-        func dots(at now: Double) -> [MarkDot] { clock.stored?.dots(at: now) ?? [] }
+        func dots(at now: Double) -> [MarkDot] {
+            clock.stored?.advance(to: now)
+            return clock.stored?.dots(at: now) ?? []
+        }
 
         func set(_ next: AgentMarkPhase, at now: Double, restart: Bool = false) {
             clock.stored?.set(next, at: now, restart: restart)

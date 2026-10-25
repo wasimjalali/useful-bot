@@ -232,6 +232,16 @@ import Testing
         #expect(AgentMarkFrames.collapse(from: [], at: 0.05).isEmpty)
     }
 
+    @Test func aCollapseCanShrinkOntoTheNextFiguresFirstDot() {
+        let snapshot = dots([(-8, 0, 4.5), (0, 0, 3), (8, 0, 5.5)])
+        let almost = AgentMarkFrames.collapse(from: snapshot, at: 0.1999, endSize: 7)
+        #expect(almost.allSatisfy { abs($0.d - 7) < 0.05 && $0.x == 0 })
+        // Never a blank frame on the way.
+        for t in stride(from: 0.0, to: 0.2, by: 0.002) {
+            #expect(!AgentMarkFrames.collapse(from: snapshot, at: t, endSize: 3.5).isEmpty)
+        }
+    }
+
     @Test func aDotOnItsWayOutDoesNotBalloonInACollapse() {
         let snapshot = dots([(0, 0, 0.8)])
         for t in stride(from: 0.0, to: 0.2, by: 0.01) {
@@ -268,33 +278,42 @@ import Testing
     @Test func commandCollapsesBurstsAndLoopsThenReturnsToThree() {
         var s = AgentMarkSequencer(start: 0)
         s.set(.command, at: 10)
-        // Folding: at the end of the collapse nothing is left, then a short gap.
-        #expect(s.dots(at: 10.205).isEmpty)
-        // Burst starts after the 30 ms gap, ends on the square 0.2 s later.
-        #expect(same(s.dots(at: 10 + 0.2 + 0.03 + eps), AgentMarkFrames.burst(at: 0)))
-        #expect(same(s.dots(at: 10 + 0.2 + 0.03 + 0.2 + eps), AgentMarkFrames.commandLoop(at: 0)))
-        #expect(same(s.dots(at: 10 + 0.2 + 0.03 + 0.2 + 0.09 + eps), AgentMarkFrames.commandLoop(at: 0.09)))
-        // Thinking again: the square contracts, 200 ms of nothing, then the
-        // arrival from 0.48 and the three-dot loop resumes at its row.
+        // Folding, then the burst starts on the dot the fold ended on: no gap.
+        #expect(!s.dots(at: 10.205).isEmpty)
+        #expect(same(s.dots(at: 10 + 0.2 + eps), AgentMarkFrames.burst(at: 0)))
+        #expect(same(s.dots(at: 10 + 0.2 + 0.2 + eps), AgentMarkFrames.commandLoop(at: 0)))
+        #expect(same(s.dots(at: 10 + 0.2 + 0.2 + 0.09 + eps), AgentMarkFrames.commandLoop(at: 0.09)))
+        // Thinking again once the dwell is over: the square contracts onto the
+        // 3.5 pt dot the fan starts from, and the three-dot loop resumes at its row.
         s.set(.thinking, at: 20)
-        #expect(s.dots(at: 20.3).isEmpty)
-        #expect(same(s.dots(at: 20 + 0.2 + 0.2 + eps), AgentMarkFrames.arrival(at: 0.48)))
-        #expect(same(s.dots(at: 20 + 0.2 + 0.2 + 0.18 + eps), AgentMarkFrames.thinkingLoop(at: 0.30)))
+        #expect(!s.dots(at: 20.3).isEmpty)
+        #expect(same(s.dots(at: 20 + 0.2 + eps), AgentMarkFrames.arrival(at: 0.48)))
+        #expect(same(s.dots(at: 20 + 0.2 + 0.18 + eps), AgentMarkFrames.thinkingLoop(at: 0.30)))
     }
 
-    @Test func aSecondCommandStepFoldsAndBurstsAgainWhileThePhaseStaysCommand() {
+    @Test func aFoldEndsOnTheFirstDotOfTheNextFigure() {
+        // To a command: the burst's 7 pt dot. Back to thinking: the fan's 3.5 pt dot.
         var s = AgentMarkSequencer(start: 0)
         s.set(.command, at: 10)
-        // Well into the first command's loop.
-        let t = 10 + 0.2 + 0.03 + 0.2 + 0.5
+        let end = s.dots(at: 10 + 0.2 - eps)
+        #expect(end.allSatisfy { abs($0.d - 7) < 0.1 && $0.x == 0 })
+        s.set(.thinking, at: 20)
+        let back = s.dots(at: 20 + 0.2 - eps)
+        #expect(back.allSatisfy { abs($0.d - 3.5) < 0.1 && $0.x == 0 })
+    }
+
+    @Test func aSecondCommandStepFoldsAndBurstsAgainOnceTheDwellIsOver() {
+        var s = AgentMarkSequencer(start: 0)
+        s.set(.command, at: 10)
+        // Well past the dwell (0.2 + 0.2 + 1.26 s), in the loop.
+        let t = 12.0
         let looping = s.dots(at: t)
-        #expect(same(looping, AgentMarkFrames.commandLoop(at: 0.5)))
-        // The next command step: same phase, restart.
+        #expect(!looping.isEmpty)
         s.set(.command, at: t, restart: true)
         #expect(same(s.dots(at: t), looping))
-        #expect(s.dots(at: t + 0.2 + 0.015).isEmpty)
-        #expect(same(s.dots(at: t + 0.2 + 0.03 + eps), AgentMarkFrames.burst(at: 0)))
-        #expect(same(s.dots(at: t + 0.2 + 0.03 + 0.2 + eps), AgentMarkFrames.commandLoop(at: 0)))
+        #expect(!s.dots(at: t + 0.1).isEmpty)
+        #expect(same(s.dots(at: t + 0.2 + eps), AgentMarkFrames.burst(at: 0)))
+        #expect(same(s.dots(at: t + 0.2 + 0.2 + eps), AgentMarkFrames.commandLoop(at: 0)))
         // Without `restart` the same phase is left alone, and `restart` means
         // nothing for the three-dot figure.
         var plain = AgentMarkSequencer(start: 0)
@@ -307,27 +326,107 @@ import Testing
         #expect(same(thinking.dots(at: 3), before))
     }
 
+    // MARK: Dwell
+
+    /// A real turn: three bash steps that each end within a second, with
+    /// thinking in between.
+    private func fastTurn() -> AgentMarkSequencer {
+        var s = AgentMarkSequencer(start: 0)
+        s.set(.command, at: 10.25)     // the burst starts at 10.45
+        s.set(.thinking, at: 10.55)    // too soon: waits
+        s.set(.command, at: 10.80)     // continues the same figure
+        s.set(.thinking, at: 11.00)    // waits again
+        s.set(.command, at: 11.30)
+        s.set(.thinking, at: 11.50)
+        return s
+    }
+
+    @Test func fastCommandStepsKeepTheFourDotFigureForAFullShear() {
+        let s = fastTurn()
+        let burstStart = 10.25 + 0.2
+        let dwellEnd = burstStart + 0.2 + 1.26
+        // From the burst to the end of the dwell it is one unbroken figure:
+        // the burst, then the loop, never a fold, never a restart.
+        for t in stride(from: burstStart + 0.002, to: dwellEnd, by: 0.005) {
+            let expected = t - burstStart < 0.2
+                ? AgentMarkFrames.burst(at: t - burstStart)
+                : AgentMarkFrames.commandLoop(at: t - burstStart - 0.2)
+            #expect(same(s.dots(at: t), expected), "frame at \(t)")
+        }
+        // The square formed, in full.
+        let square = dots([(-6, -6, 5), (6, -6, 5), (-6, 6, 5), (6, 6, 5)])
+        #expect(same(s.dots(at: burstStart + 0.2), square))
+        // Only then does it fold back, from the square, at the end of the dwell.
+        #expect(same(s.dots(at: dwellEnd + 0.001), AgentMarkFrames.collapse(
+            from: AgentMarkFrames.commandLoop(at: 1.26), at: 0.001, endSize: 3.5)))
+        #expect(same(s.dots(at: dwellEnd + 0.2 + eps), AgentMarkFrames.arrival(at: 0.48)))
+    }
+
+    @Test func aFastPhaseSequenceNeverShowsABlankFrame() {
+        let s = fastTurn()
+        // 60 fps from just before the first command to well after the last return.
+        var t = 10.0
+        while t < 14.0 {
+            #expect(!s.dots(at: t).isEmpty, "blank frame at \(t)")
+            t += 1.0 / 60
+        }
+    }
+
+    @Test func aCommandInsideTheDwellCancelsTheWaitingReturn() {
+        var s = AgentMarkSequencer(start: 0)
+        s.set(.command, at: 10)
+        s.set(.thinking, at: 10.5)
+        s.set(.command, at: 10.8)
+        // Past where the thinking would have started, it is still the command figure.
+        #expect(same(s.dots(at: 12.0), AgentMarkFrames.commandLoop(at: 12.0 - 10.2 - 0.2)))
+        #expect(same(s.dots(at: 15.0), AgentMarkFrames.commandLoop(at: 15.0 - 10.2 - 0.2)))
+        // A restart inside the dwell continues the figure too.
+        var r = AgentMarkSequencer(start: 0)
+        r.set(.command, at: 10)
+        let before = r.dots(at: 10.7)
+        r.set(.command, at: 10.7, restart: true)
+        #expect(same(r.dots(at: 10.7), before))
+        #expect(same(r.dots(at: 10.9), AgentMarkFrames.commandLoop(at: 10.9 - 10.2 - 0.2)))
+    }
+
+    @Test func theLatestReturnWinsAndAFinishedTurnDoesNotWait() {
+        var s = AgentMarkSequencer(start: 0)
+        s.set(.command, at: 10)
+        s.set(.thinking, at: 10.5)
+        // The turn ends inside the dwell: the dots shrink away at once.
+        let showing = s.dots(at: 10.6)
+        s.set(.done, at: 10.6)
+        #expect(same(s.dots(at: 10.6), showing))
+        #expect(s.dots(at: 10.66).isEmpty)
+        // A new turn then arrives afresh.
+        s.set(.thinking, at: 20)
+        #expect(same(s.dots(at: 20), AgentMarkFrames.arrival(at: 0)))
+    }
+
+    @Test func aRowThatOpensOnACommandHoldsItForTheDwellToo() {
+        var s = AgentMarkSequencer(start: 100, phase: .command, arrives: true)
+        s.set(.thinking, at: 100.5)
+        #expect(same(s.dots(at: 101.0), AgentMarkFrames.commandLoop(at: 101.0 - 100.2)))
+        #expect(!s.dots(at: 101.5).isEmpty)
+        // The dwell ends at 100 + 0.2 + 1.26.
+        #expect(!s.dots(at: 101.5).isEmpty)
+        #expect(same(s.dots(at: 101.46 + 0.2 + eps), AgentMarkFrames.arrival(at: 0.48)))
+    }
+
     @Test func aPhaseChangeMidFoldFoldsFromWhatIsOnScreen() {
         var s = AgentMarkSequencer(start: 0)
         s.set(.command, at: 10)
-        let half = s.dots(at: 10.1)
+        s.set(.thinking, at: 20)
+        let half = s.dots(at: 20.1)
         #expect(!half.isEmpty)
-        s.set(.thinking, at: 10.1)
-        #expect(same(s.dots(at: 10.1), half))
+        s.set(.command, at: 20.1)
+        #expect(same(s.dots(at: 20.1), half))
     }
 
-    @Test func aPhaseChangeDuringAnEmptyFrameGoesStraightToTheEntry() {
-        var s = AgentMarkSequencer(start: 0)
-        s.set(.command, at: 10)
-        // 10.21 s: the fold is over and the gap is on, so nothing is drawn.
-        #expect(s.dots(at: 10.21).isEmpty)
-        // Back to thinking in the gap: nothing to fold, so the fan starts at once.
-        s.set(.thinking, at: 10.21)
-        #expect(same(s.dots(at: 10.21 + eps), AgentMarkFrames.arrival(at: 0.48)))
-        #expect(same(s.dots(at: 10.21 + 0.18 + eps), AgentMarkFrames.thinkingLoop(at: 0.30)))
-        // The same from the three-dot figure's own blank frames, into a command.
+    @Test func aPhaseChangeOnAnEmptyFrameGoesStraightToTheEntry() {
+        // The arrival blinks out for a frame at 0.44 s. A command that starts
+        // then has nothing to fold, so the burst starts at once.
         var t = AgentMarkSequencer(start: 0)
-        // 0.44 s into the arrival the dot has blinked out.
         #expect(t.dots(at: 0.45).isEmpty)
         t.set(.command, at: 0.45)
         #expect(same(t.dots(at: 0.45 + eps), AgentMarkFrames.burst(at: 0)))
@@ -422,5 +521,72 @@ import Testing
         #expect(!TurnActivity.working.runsCommand)
         #expect(TurnActivity.tool("bash").label == "Running a command")
         #expect(TurnActivity.tool("web_search").label == "Searching the web")
+    }
+
+    // MARK: Label hold
+
+    @Test func aLabelStaysUpForAtLeastEightHundredMilliseconds() {
+        var hold = LabelHold("Thinking", at: 100)
+        hold.offer("Running a command", at: 100.3)
+        #expect(hold.shown(at: 100.3) == "Thinking")
+        #expect(hold.shown(at: 100.79) == "Thinking")
+        #expect(hold.shown(at: 100.8) == "Running a command")
+        #expect(abs((hold.due ?? 0) - 100.8) < 1e-9)
+    }
+
+    @Test func aRapidLabelSequenceCoalescesToTheLatestOne() {
+        // Thinking, a command, thinking, a command, a search: all within 0.5 s.
+        var hold = LabelHold("Thinking", at: 100)
+        hold.offer("Running a command", at: 100.1)
+        hold.offer("Thinking", at: 100.2)
+        hold.offer("Running a command", at: 100.3)
+        hold.offer("Searching the web", at: 100.5)
+        // Nothing changes until the first label's hold ends, and then only
+        // the last offer shows: the ones in between never appear.
+        for t in stride(from: 100.0, to: 100.79, by: 0.01) { #expect(hold.shown(at: t) == "Thinking") }
+        #expect(hold.shown(at: 100.8) == "Searching the web")
+        // It then holds for its own 0.8 s.
+        hold.offer("Thinking", at: 101.0)
+        #expect(hold.shown(at: 101.0) == "Searching the web")
+        #expect(hold.shown(at: 101.59) == "Searching the web")
+        #expect(hold.shown(at: 101.6) == "Thinking")
+    }
+
+    @Test func swapsAreAtLeastAHoldApartSoCrossfadesNeverOverlap() {
+        var hold = LabelHold("a", at: 0)
+        var swaps: [Double] = []
+        var last = hold.shown
+        // A new label every 50 ms for 5 s.
+        var n = 0
+        for step in 0..<100 {
+            let t = Double(step) * 0.05
+            hold.offer("label \(n)", at: t)
+            n += 1
+            for dt in stride(from: 0.0, to: 0.05, by: 0.001) {
+                let shown = hold.shown(at: t + dt)
+                if shown != last {
+                    swaps.append(t + dt)
+                    last = shown
+                }
+            }
+        }
+        #expect(swaps.count >= 5)
+        for (a, b) in zip(swaps, swaps.dropFirst()) { #expect(b - a >= 0.8 - 0.002) }
+    }
+
+    @Test func offeringTheShownLabelAgainDropsAPendingOne() {
+        var hold = LabelHold("Thinking", at: 100)
+        hold.offer("Running a command", at: 100.2)
+        hold.offer("Thinking", at: 100.4)
+        #expect(hold.due == nil)
+        #expect(hold.shown(at: 105) == "Thinking")
+    }
+
+    @Test func aLabelThatOnlyBecameVisibleLaterHoldsFromThen() {
+        var hold = LabelHold("Thinking", at: 100)
+        hold.restart(at: 100.6)
+        hold.offer("Running a command", at: 100.7)
+        #expect(hold.shown(at: 101.3) == "Thinking")
+        #expect(hold.shown(at: 101.4) == "Running a command")
     }
 }

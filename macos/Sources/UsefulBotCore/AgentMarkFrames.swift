@@ -41,10 +41,14 @@ public enum AgentMarkFrames {
     public static let burstDuration = 0.20
     /// A figure folding into one dot before the next one starts.
     public static let collapseDuration = 0.20
-    /// Nothing on screen between a collapse and the next figure: one to two
-    /// frames going to four dots, about 200 ms coming back to three.
-    public static let gapToCommand = 0.03
-    public static let gapToThinking = 0.20
+    /// What a collapse shrinks to, so there is never an empty frame between
+    /// figures: the burst's first dot going to the command figure, the 3.5 pt
+    /// dot the fan starts from going back to thinking.
+    public static let collapseEndCommand = 7.0
+    public static let collapseEndThinking = 3.5
+    /// Once the command figure has started, it stays through its burst and one
+    /// full shear before it gives way, so fast steps do not flicker.
+    public static let commandDwell = burstDuration + commandPeriod
     /// Where the arrival picks up when the three-dot figure comes back after
     /// a command: the one 3.5 pt dot, then the fan.
     public static let fanEntry = 0.48
@@ -83,8 +87,9 @@ public enum AgentMarkFrames {
     public static func burst(at t: Double) -> [MarkDot] { burstTrack.dots(at: t) }
 
     /// A figure folding away: every dot slides to the centre and fuses at
-    /// 8 pt, then shrinks to nothing (ease-in). Empty once it is done.
-    public static func collapse(from snapshot: [MarkDot], at t: Double) -> [MarkDot] {
+    /// 8 pt, then shrinks (ease-in) to `endSize`, which is the first dot of
+    /// whatever comes next (nothing, by default). Empty once it is done.
+    public static func collapse(from snapshot: [MarkDot], at t: Double, endSize: Double = 0) -> [MarkDot] {
         guard !snapshot.isEmpty, t.isFinite, t >= 0, t < collapseDuration else { return [] }
         let converge = collapseDuration * 0.6
         if t < converge {
@@ -92,7 +97,7 @@ public enum AgentMarkFrames {
             return snapshot.map { MarkDot($0.x * (1 - p), $0.y * (1 - p), $0.d + (fuseSize($0.d) - $0.d) * p) }
         }
         let p = Ease.shrink((t - converge) / (collapseDuration - converge))
-        return snapshot.map { MarkDot(0, 0, fuseSize($0.d) * (1 - p)) }
+        return snapshot.map { MarkDot(0, 0, fuseSize($0.d) + (endSize - fuseSize($0.d)) * p) }
     }
 
     /// What a dot swells to as the figure fuses: up to the spec's 8 pt, but a
@@ -260,6 +265,12 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     private(set) var stage: Stage
     private var stageStart: Double
     public private(set) var phase: AgentMarkPhase
+    /// When the command figure started (its burst), while it is the figure.
+    private var commandStart: Double?
+    /// A return to thinking that came while the command figure was still in
+    /// its dwell. It is applied the moment the dwell ends; a command before
+    /// then cancels it.
+    private var pending: AgentMarkPhase?
 
     /// `arrives`: the turn's arrival first (a chat's working row). Without it
     /// the mark loops from the clock, so every sidebar mark stays in step.
@@ -269,21 +280,43 @@ public struct AgentMarkSequencer: Equatable, Sendable {
         switch (arrives, phase) {
         case (_, .done): stage = .done(from: [])
         case (true, .thinking): stage = .arrival
-        case (true, .command): stage = .burst
+        case (true, .command):
+            stage = .burst
+            commandStart = start
         case (false, _): stage = .loop(phase)
         }
     }
 
-    /// The phase changed at `now`. `restart` re-triggers the collapse and
-    /// burst when a command step is followed by another command step: the
-    /// phase stays `.command`, but consecutive steps must not read as one
-    /// long loop (spec 4.3).
+    /// When the command figure may give way, or nil when it is not showing.
+    private var dwellEnd: Double? { commandStart.map { $0 + AgentMarkFrames.commandDwell } }
+
+    /// The phase changed at `now`.
+    ///
+    /// The command figure keeps the mark until its burst and one full shear
+    /// have run. A return to thinking inside that dwell waits for it (the
+    /// latest request wins), and a command inside it continues the same
+    /// figure, a `restart` included: the steps are too close to tell apart.
+    /// Past the dwell, `restart` re-triggers the collapse and burst when one
+    /// command step follows another (spec 4.3). A finished turn ends at once.
     public mutating func set(_ next: AgentMarkPhase, at now: Double, restart: Bool = false) {
+        settle(at: now)
+        if next == .done {
+            pending = nil
+        } else if phase == .command, let end = dwellEnd, now < end {
+            pending = next == .thinking ? .thinking : nil
+            return
+        }
         guard next != phase || (restart && next == .command) else { return }
-        let showing = dots(at: now)
+        apply(next, at: now)
+    }
+
+    /// Switches figure at `now`, which is already past any dwell.
+    private mutating func apply(_ next: AgentMarkPhase, at now: Double) {
+        let showing = rawDots(at: now)
         let previous = phase
         phase = next
         stageStart = now
+        commandStart = nil
         switch next {
         case .done:
             stage = .done(from: showing)
@@ -291,17 +324,42 @@ public struct AgentMarkSequencer: Equatable, Sendable {
             if previous == .done {
                 // A new turn on the same mark: arrive afresh.
                 stage = next == .thinking ? .arrival : .burst
+                if next == .command { commandStart = now }
             } else if showing.isEmpty {
-                // Nothing on screen (a gap, or a figure that has just gone):
-                // there is nothing to fold, so go straight into the entry.
+                // Nothing on screen (the arrival's one-frame blink): there is
+                // nothing to fold, so go straight into the entry.
                 stage = next == .command ? .burst : .fan
+                if next == .command { commandStart = now }
             } else {
                 stage = .collapse(from: showing, to: next)
+                if next == .command { commandStart = now + AgentMarkFrames.collapseDuration }
             }
         }
     }
 
+    /// Applies a return to thinking that was waiting for the dwell, if the
+    /// dwell is over by `now`. It starts when the dwell ended, not when it
+    /// was noticed.
+    private mutating func settle(at now: Double) {
+        guard let next = pending, let end = dwellEnd, now >= end else { return }
+        pending = nil
+        apply(next, at: end)
+    }
+
+    /// Moves on past a dwell that has ended, so the work is done once and not
+    /// again on every frame. `dots(at:)` gives the same answer either way.
+    public mutating func advance(to now: Double) { settle(at: now) }
+
     public func dots(at now: Double) -> [MarkDot] {
+        if pending != nil, let end = dwellEnd, now >= end {
+            var settled = self
+            settled.settle(at: now)
+            return settled.rawDots(at: now)
+        }
+        return rawDots(at: now)
+    }
+
+    private func rawDots(at now: Double) -> [MarkDot] {
         let t = max(0, now - stageStart)
         guard t.isFinite else { return [] }
         switch stage {
@@ -315,10 +373,12 @@ public struct AgentMarkSequencer: Equatable, Sendable {
         case .loop(let phase):
             return AgentMarkFrames.dots(at: now, phase: phase)
         case .collapse(let snapshot, let to):
-            if t < AgentMarkFrames.collapseDuration { return AgentMarkFrames.collapse(from: snapshot, at: t) }
-            let gap = to == .command ? AgentMarkFrames.gapToCommand : AgentMarkFrames.gapToThinking
-            let s = t - AgentMarkFrames.collapseDuration - gap
-            if s < 0 { return [] }
+            let end = to == .command ? AgentMarkFrames.collapseEndCommand : AgentMarkFrames.collapseEndThinking
+            if t < AgentMarkFrames.collapseDuration {
+                return AgentMarkFrames.collapse(from: snapshot, at: t, endSize: end)
+            }
+            // The next figure starts on the dot the fold ended on.
+            let s = t - AgentMarkFrames.collapseDuration
             return to == .command ? Self.burst(s) : Self.fan(s)
         case .done(let snapshot):
             return AgentMarkFrames.completion(from: snapshot, at: t)
@@ -339,6 +399,53 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     /// The three-dot loop, joined after the arrival's own fan: it starts at its row.
     private static func loop(after s: Double) -> [MarkDot] {
         AgentMarkFrames.thinkingLoop(at: AgentMarkFrames.thinkingFanEnd + s)
+    }
+}
+
+// MARK: - Label hold
+
+/// What the working row's label shows. A label stays up for at least `hold`
+/// before the next one replaces it, so a run of fast steps ("Thinking",
+/// "Running a command", "Thinking") can be read, and the 120 ms swaps never
+/// overlap. A label offered during the hold waits as the pending one, and a
+/// newer offer replaces it: only the latest shows when the hold ends.
+public struct LabelHold: Equatable, Sendable {
+    public static let hold = 0.8
+
+    public private(set) var shown: String
+    private var shownSince: Double
+    private var pending: String?
+
+    public init(_ label: String, at now: Double) {
+        shown = label
+        shownSince = now
+    }
+
+    /// The label was offered at `now`.
+    public mutating func offer(_ label: String, at now: Double) {
+        settle(at: now)
+        pending = label == shown ? nil : label
+    }
+
+    /// Restarts the hold, for a label that only became visible at `now`.
+    public mutating func restart(at now: Double) { shownSince = now }
+
+    /// When the pending label replaces the shown one, or nil with none pending.
+    public var due: Double? { pending == nil ? nil : shownSince + Self.hold }
+
+    /// Shows the pending label if its hold is over by `now`.
+    public mutating func settle(at now: Double) {
+        guard let next = pending, let due, now >= due else { return }
+        shown = next
+        shownSince = due
+        pending = nil
+    }
+
+    /// The label on screen at `now`, without changing anything.
+    public func shown(at now: Double) -> String {
+        var copy = self
+        copy.settle(at: now)
+        return copy.shown
     }
 }
 
