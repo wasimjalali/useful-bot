@@ -31,7 +31,7 @@ export type ToolCtx = {
   abortSignal: AbortSignal;
   /** Bot, frozen selection, window, permission, folder and context of this turn. */
   snapshot: OkSnapshot;
-  /** Compatibility for helpers written against eve's ctx: `session.id` is the chat id. */
+  /** For helpers that read `session.id`: it is the chat id. */
   session: { id: string; turn: { id: string } };
   /** Writes a `ub.row` entry and emits a `row` event. Idempotent by `row.key`. */
   appendRow(row: RowInput): Promise<void>;
@@ -81,6 +81,7 @@ export type ToolSpec<S extends z.ZodType> = {
 
 export type UsefulTool<S extends z.ZodType = z.ZodType> = ToolSpec<S> & {
   label: string;
+  prepareArguments: (raw: unknown) => unknown;
   /** Plain JSON Schema of the input, as declared to the model. */
   parameters: Record<string, unknown>;
   toPiTool(resolve: CtxResolver): ToolDefinition;
@@ -95,12 +96,28 @@ export function toPiResult(value: unknown): { content: (TextPart | ImagePart)[];
   return { content: [{ type: "text", text: JSON.stringify(value ?? null) }], details: value };
 }
 
+/**
+ * The default `prepareArguments`: run the zod schema on the raw arguments and
+ * hand Pi the coerced result, so the lenient fields ("null", "", numeric
+ * strings) reach Pi's JSON-Schema validator as the plain types the schema
+ * declares. A call zod rejects goes on as it came, so Pi reports the problem
+ * in its own words.
+ */
+function coerceWithZod(schema: z.ZodType): (raw: unknown) => unknown {
+  return (raw) => {
+    const parsed = schema.safeParse(raw);
+    return parsed.success ? parsed.data : raw;
+  };
+}
+
 export function defineTool<S extends z.ZodType>(spec: ToolSpec<S>): UsefulTool<S> {
   const parameters = z.toJSONSchema(spec.inputSchema, { io: "input" }) as Record<string, unknown>;
   delete parameters.$schema;
   const label = spec.label ?? spec.name;
+  const prepareArguments = spec.prepareArguments ?? coerceWithZod(spec.inputSchema);
   return {
     ...spec,
+    prepareArguments,
     label,
     parameters,
     toPiTool(resolve) {
@@ -111,7 +128,7 @@ export function defineTool<S extends z.ZodType>(spec: ToolSpec<S>): UsefulTool<S
         // Plain JSON Schema; Pi validates it (TypeBox schemas are JSON Schema too).
         parameters: parameters as unknown as ToolDefinition["parameters"],
         ...(spec.sequential ? { executionMode: "sequential" as const } : {}),
-        ...(spec.prepareArguments ? { prepareArguments: spec.prepareArguments as ToolDefinition["prepareArguments"] } : {}),
+        prepareArguments: prepareArguments as ToolDefinition["prepareArguments"],
         async execute(callId: string, params: unknown, signal: AbortSignal | undefined, _onUpdate: unknown, pi: ExtensionToolContext) {
           const input = spec.inputSchema.parse(params);
           const result = await spec.execute(input, resolve(callId, signal, pi));

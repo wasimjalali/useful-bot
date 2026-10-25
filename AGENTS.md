@@ -13,8 +13,8 @@ This product is the macOS app. Everything else serves it.
    on a phone are worth thinking about now; nothing else about mobile is in scope until it
    starts.
 3. **No web UI.** The browser UI was removed on 2026-09-28 (PR 1 of the launch plan); git
-   history keeps it. `web/` is now only the API service the apps call (`web/app/api`, the
-   eve proxy in `web/app/eve`), and `/` returns a plain status. Do not add browser pages.
+   history keeps it. `web/` is now only the API service the apps call (`web/app/api`, which
+   proxies the chat routes to the engine), and `/` returns a plain status. Do not add browser pages.
    The one exception (decided 2026-09-29): the public website, the landing and privacy pages on
    `bot.usefulbuild.com`, lives in this repo under `site/` (static files on a Cloudflare assets
    Worker; deploy with `npx wrangler deploy --config site/wrangler.jsonc`).
@@ -32,7 +32,7 @@ script in cloud sessions. What this repo adds:
 - **Shared resources take turns, run by the orchestrator only:** Useful Bot Dev (one app identity,
   state in `~/.useful-bot-dev-app`, ports 4419/4420/4421, `com.usefulbot.dev.*` Keychain items),
   `npm run build:dev-app` and `install:dev-app` (a build swaps the installed dev app), the dev
-  app's bot and `perf:check`. Worktree workers run `tsc`, lint, node tests and Swift builds and tests in their
+  app's bot, its engine and `perf:check`. Worktree workers run `tsc`, lint, node tests and Swift builds and tests in their
   own tree, never the dev app.
 - **After every merge:** sync local `main`, then rebuild and reinstall Useful Bot Dev from it
   (`npm run build:dev-app`, `npm run install:dev-app`). The daily app is not rebuilt per PR: it
@@ -47,7 +47,7 @@ script in cloud sessions. What this repo adds:
 A UI change is verified with a real screenshot of the running macOS app, not with tests
 alone. Drive it with the `mac-app-verify` skill and save artifacts under `verify/<branch>/`.
 **Every live check runs in Useful Bot Dev, never the daily app** (decided 2026-10-01,
-UB-004). `/Applications/Useful Bot.app` is the owner's daily install with his real bots: agents
+UB-004). `/Applications/Useful Bot.app` is the owner's daily install with his real chats: agents
 never launch, quit, screenshot-test or send to it. Useful Bot Dev is a separate identity
 (`ai.useful.bot.dev`, `~/Applications/Useful Bot Dev.app`, state in `~/.useful-bot-dev-app`,
 `com.usefulbot.dev.*` Keychain items, ports 4419/4420/4421). Build and install it with
@@ -56,7 +56,7 @@ the working tree (stage `macos/.build/runtime-stage-dev`, stamp `<version>-dev+<
 runs its services from a copy under `~/Library/Application Support/Useful Bot Dev/app`, never from
 the checkout (an ad hoc signed bundle gets a fresh Desktop-folder privacy prompt on every rebuild,
 and a service reading the checkout blocks on it). Inside the dev app, a check that sends
-a message goes to its one bot (`bot-useful`), never to a perf fixture bot. Never use `~/.useful-bot-dev`: it
+a message goes to its one bot (`bot-useful`), never into a perf fixture chat. Never use `~/.useful-bot-dev`: it
 holds older owner data. The daily app is a release build with a runtime payload: it comes from
 `npm run release:mac` (installed from the DMG or by Sparkle), and only when the owner asks for it.
 A plain `npm run build:app` then `npm run install:app` installs a checkout-run daily app instead
@@ -91,9 +91,24 @@ auto-install rewrites `package-lock.json`, and the router refuses a changed lock
 Dev and never quits or relaunches the daily app, and the records it writes under `evals/results/`
 are committed. It's a shared resource: one run at a time, by the orchestrator. A breach is fixed, or the
 budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-run never erases a
-breach. The fixture bots ("Perf ...") are frozen: never send to them. See `perf/README.md`.
+breach. The fixture chats ("Perf ...", synthetic Pi session files from `scripts/perf-fixtures.mjs`,
+hidden from the sidebar) are frozen: never send to them. See `perf/README.md`.
+
+## Pi SDK updates
+
+A weekly cloud routine ("Useful Bot: weekly Pi SDK update", Mondays 09:00 Berlin, set up
+2026-10-25) checks for a newer `@earendil-works/pi-coding-agent`. When there is one, it bumps the
+exact pin, restamps the registry, runs the tests and opens a `pi-update` + `needs-local` PR (pick
+it up like any `needs-local` PR). Pi ships about three releases a week, so don't bump it by hand
+in feature PRs: keep all Pi calls behind `agent/engine/` so a bump stays an adapter change.
 
 ## Code traps
+
+- **A worktree resolves missing packages from the main checkout.** Worktrees sit under
+  `.claude/worktrees/`, so Node and TypeScript walk up to the main checkout's `node_modules` and
+  find a package this branch removed. A leftover import of a removed package type-checks and runs
+  there and fails only in the shipped app. Grep for the import instead of trusting a passing run
+  (found 2026-10-25, PR 3).
 
 - **Never call `Process.waitUntilExit()` after an `await`, or from a thread other than the one that
   ran the process.** Foundation can then wait forever on that thread's stale task state (it hung

@@ -8,7 +8,7 @@
 export const JSON_BODY_MAX = 256 * 1024;
 /**
  * A turn can carry up to five images as data URLs (~1.4 MB each encoded), so
- * the eve proxy takes the same cap as the router's completion route.
+ * the turn route takes the same cap as the router's completion route.
  */
 export const TURN_BODY_MAX = 8 * 1024 * 1024;
 

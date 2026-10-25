@@ -1,5 +1,12 @@
 # Pi engine: replace eve, one strong bot
 
+> **Owner, 2026-10-25 13:42: the Pi release ships as a brand-new app.** The owner is the only user, so there is
+> no migration and no compatibility code for older installs: no `shell.json` v1 migration, no archived or
+> earlier bots, no moved routines, no first-launch note, no OpenAPI note, no image-prompt backfill, no eve
+> leftovers kept for a release (PR 4 is folded into PR 3). A store whose format changed starts fresh; stores
+> whose format didn't (providers, config, Keychain, memory, routines, connections, media) keep working with no
+> extra code. Where this file says otherwise, this note wins.
+
 Status: draft 3, 2026-10-25 (one bot only, chat-first UI). Draft 2 was hardened by a five-model
 council (Fable 5.1, Sonnet 5.5, Haiku 5.5, GLM 5.3, DeepSeek V4.1 Flash; record in
 `evals/results/2026-10-24-pi-engine-spec-council.md`). Author: Opus 5.5 orchestrator.
@@ -95,7 +102,7 @@ The implementing agents follow these defaults. The owner can override any of the
 | D3 | Model path | Through the router. A registered native provider delegates to Pi's built-in `openai-completions` stream with our `routerFetch` |
 | D4 | Pi built-ins | All off: no built-in tools, no extensions from disk, no skill or context-file discovery, in-memory settings, nothing read under `~/.pi` |
 | D5 | Bots | One bot: the default (`bot-useful`), named "Useful Bot" (PR 2b renames the stored bot; the name can't be edited). No second bot, no bot switcher, no bot creation |
-| D6 | Other existing bots | Archived ("earlier bots"): hidden, record and memory notes kept under their id; their routines move to the bot, paused; Settings > General > Earlier bots offers Copy instructions, Move notes and Remove. No restore |
+| D6 | Other existing bots | None: the release is a fresh install (owner, 2026-10-25). PR 2's archive and Earlier bots are removed in PR 3 |
 | D7 | Sub-agents | Removed |
 | D8 | Groups, sections, pins, hide, handoffs, fan-out, cross-bot send, bot and group proposals, profile proposals | Removed |
 | D9 | Chats | The sidebar is the chat list (one Pi session per chat): new, open, rename, delete (to a trash kept 30 days), search, live state per chat (`UI.md` 3.3) |
@@ -106,13 +113,13 @@ The implementing agents follow these defaults. The owner can override any of the
 | D14 | Sends during a running turn | Queued **in the host** and sent as their own turn after the running one settles. Pi's follow-up queue is not used |
 | D15 | Mid-turn crash | No resume. The turn is closed with an "Interrupted" row and Retry |
 | D16 | MCP | Our own client, OAuth, Keychain auth, `find_tools` and `<connectionId>__<tool>` names; picked tools registered as Pi tools |
-| D17 | OpenAPI connections | Dropped. Existing entries show "No longer supported, add it as an MCP server" |
+| D17 | OpenAPI connections | Dropped, with no note for old entries |
 | D18 | Routines | Scheduler in the engine (20 s timer), at most 4 at once. Each routine runs in its own chat (created on first run, reused), so runs never pile into the owner's chat |
 | D19 | Connect-card resume | Web calls the engine's system-turn endpoint (PR 3, which also deletes the handoff queue); PR 2 keeps the handoff queue for this one use |
 | D20 | Tools dropped | `list_bots`, `rail_action`, `delete_bot`, `propose_bot`, `propose_group`, `post_to_group`, `send_to_bot`, `update_bot_profile`, `clear_history`, `review`, `list_models`, `plant_read`, eve `agent`, `task_cancel` |
 | D21 | Tools merged | memory (4 to 1), routines (5 to 1), Composio apps (4 to 1) |
 | D22 | Old chats | Clean slate. Not imported, not archived |
-| D23 | eve's store | Deleted by the Pi release: the runtime rsync stops excluding `/.eve/`. A first-launch note says old chats were not carried over |
+| D23 | eve's store | Deleted by the Pi release: the runtime rsync stops excluding `/.eve/`. No first-launch note |
 | D24 | Reasoning effort | Pi thinking level `off`; the router applies effort from the selection |
 | D25 | Reviewer role | Removed: `review` tool, `/api/reviewer`, the Providers pane reviewer row. The router alias stays unused |
 | D26 | Delivery | PR 1 (router), PR 2 (one bot) and PR 2b (chat-first UI) land on `main` on eve; PR 3 is the engine swap on a feature branch; PR 4 cleans up. See `PLAN.md` |
@@ -487,7 +494,9 @@ summarized history from the transcript.
 ## 6. Chat protocol v1
 
 All paths are on the web service under `/api` with cookie session and CSRF as today; the web
-proxies them to the engine with the engine token and streams NDJSON without buffering.
+proxies them to the engine with the engine token and streams NDJSON without buffering. On the
+engine the same routes drop the `/api` prefix (`/chats/...`), and `/api/engine/status` is the
+engine's `/status`.
 
 ### 6.1 Requests
 
@@ -501,7 +510,7 @@ proxies them to the engine with the engine token and streams NDJSON without buff
 | `POST /api/chats/:chatId/open` | | marks it current and open in the app (clears `replyReady`) |
 | `GET /api/chats/:chatId/rows?before=&limit=` | | page (5.12) |
 | `GET /api/chats/:chatId/events?after=<seq>&epoch=<epoch>` | | NDJSON, stays open |
-| `POST /api/chats/:chatId/turns` | `{clientId, text, attachments: [{uploadId}], retry?: true}` | 202 `{turnId}` or `{queued: true}`; refusals 6.4 |
+| `POST /api/chats/:chatId/turns` | `{clientId, text, attachments: [{name, mediaType, size, text?, dataUrl?}], retry?: true}` (up to 5; `text` or `dataUrl` as `POST /api/attachments` returned them; there is no upload store) | 202 `{turnId}` or `{queued: true}`; refusals 6.4 |
 | `POST /api/chats/:chatId/cancel` | | 202 |
 | `GET /api/engine/status` | | `{epoch, cleanSlateNotice, chats: [{chatId, running: {turnId, activity}|null, waitingOnOwner: "question"|"approval"|null, replyReadySince|null, lastTurn: {turnId, outcome, endedAt}|null}]}`: every chat that is working, waiting on the owner, reply-ready or whose newest turn failed (until a later turn starts), plus chats with a `lastTurn` in the last 24 h |
 | `GET /api/proposals?botId=` | | open connect-app and connect-server proposals with their phase (replaces the proposals half of `/api/agent/state`) |
@@ -510,7 +519,7 @@ proxies them to the engine with the engine token and streams NDJSON without buff
 - The app polls `/api/engine/status` with the approvals poll (1.5 s) and drives the chat-row state
   marks (`UI.md` 3.3), turn notifications (on a `lastTurn` change while the window is not key or
   the chat is not open, if the bot's notify setting is on) and
-  the Dock badge from it. `cleanSlateNotice` is true until the first-launch note was shown once. `replyReadySince` is set when a turn settles in a chat that is not open in the app
+  the Dock badge from it. `cleanSlateNotice` is true from the clean-slate migration until the first owner turn starts (persisted in `migration.json`). `replyReadySince` is set when a turn settles in a chat that is not open in the app
   and cleared by `POST /open`.
 - The app polls `/api/proposals` while a card is in the waiting phase (2.5 s), as it polls
   `/api/agent/state` today. Proposal confirm and dismiss stay on `PUT /api/shell`.
@@ -690,6 +699,8 @@ File table with line counts: `app-map/swift.md` 5.2 and 6.2.
   `connection-tools.json` per-session picks.
 - **Deleted by the runtime update:** `.eve/` under the runtime install (the rsync exclude goes).
 - Migration runs once at engine boot, logged to `<stateRoot>/engine/migration.json`, idempotent.
+  The dropped files above are moved into `<stateRoot>/engine/legacy/` rather than deleted (small,
+  and recoverable if something was missed).
   `agent/engine/migrate.ts` (W1) orchestrates it and calls the store functions that do the work:
   the `shell.json` v2 migration in `shared/shell-store.ts` and the image-prompt backfill in
   `shared/media-store.ts` (both W3).

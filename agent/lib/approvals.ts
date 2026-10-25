@@ -15,12 +15,11 @@ import {
 import { dirname } from "node:path";
 import { statePath } from "../../shared/stack.ts";
 import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
-import type { ActiveBotContext } from "./active-bot.ts";
 
 /**
  * One boot epoch per process. Records carry the epoch that requested them, and
  * consume rejects any other epoch, so an approval that was granted but not yet
- * used when the agent restarted cannot be replayed after the restart. The UI
+ * used when the engine restarted cannot be replayed after the restart. The UI
  * process only decides; it never consumes, so its different epoch is harmless.
  */
 const BOOT_EPOCH = randomUUID();
@@ -63,8 +62,8 @@ export type ApprovalTool =
   | "create_routine"
   | "update_routine"
   | "connector"
-  // One tool of a connected MCP server, run by this app rather than by eve:
-  // the tools it mounts on demand are its own to gate.
+  // One tool of a connected MCP server, run by this app: the tools picked
+  // with find_tools are its own to gate.
   | "connection"
   | "install_cli";
 export type ApprovalDecision = "approve" | "deny";
@@ -81,7 +80,9 @@ export interface ApprovalAction {
 
 export interface StoredApproval {
   id: string;
-  sessionId: string;
+  /** The chat whose turn raised the card. */
+  chatId: string;
+  botId: string;
   turnId: string;
   toolCallId: string;
   tool: ApprovalTool;
@@ -96,26 +97,20 @@ export interface StoredApproval {
 
 export type PendingApproval = Pick<
   StoredApproval,
-  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt" | "sessionId"
+  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt" | "chatId" | "botId"
 >;
 
-/** The subset of an eve ToolContext an approval record needs for attribution. */
-export type ApprovalActorContext = ActiveBotContext & {
-  session?: { turn?: { id?: string } };
-  callId?: string;
-};
+/** The slice of a tool context an approval record needs for attribution. */
+export type ApprovalActorContext = { chatId: string; botId: string; turnId: string; callId: string };
 
-/** Who a card is for: the session, turn and tool call that raised it. */
-export function approvalActor(ctx?: ApprovalActorContext): {
-  sessionId: string;
+/** Who a card is for: the chat, bot, turn and tool call that raised it. */
+export function approvalActor(ctx: ApprovalActorContext): {
+  chatId: string;
+  botId: string;
   turnId: string;
   toolCallId: string;
 } {
-  return {
-    sessionId: ctx?.session?.id ?? "live",
-    turnId: ctx?.session?.turn?.id ?? "live",
-    toolCallId: ctx?.callId ?? "live",
-  };
+  return { chatId: ctx.chatId, botId: ctx.botId, turnId: ctx.turnId, toolCallId: ctx.callId };
 }
 
 export function defaultApprovalsPath(): string {
@@ -125,7 +120,7 @@ export function defaultApprovalsPath(): string {
 
 /**
  * Cross-process lock for a read/merge/write cycle. Both the Next server and the
- * eve agent process hold their own ApprovalStore, and every persist writes the
+ * engine process hold their own ApprovalStore, and every persist writes the
  * whole record map, so an unlocked load/mutate/save can drop the other writer's
  * decision. The directory lock keeps one writer at a time.
  */
@@ -196,7 +191,8 @@ export class ApprovalStore {
   }
 
   request(input: {
-    sessionId: string;
+    chatId: string;
+    botId: string;
     turnId: string;
     toolCallId: string;
     tool: ApprovalTool;
@@ -211,7 +207,8 @@ export class ApprovalStore {
         id: this.persistPath
           ? `apr_${randomUUID().replaceAll("-", "").slice(0, 16)}`
           : `apr_${this.seq.toString().padStart(4, "0")}`,
-        sessionId: input.sessionId,
+        chatId: input.chatId,
+        botId: input.botId,
         turnId: input.turnId,
         toolCallId: input.toolCallId,
         tool: input.tool,
@@ -312,7 +309,8 @@ export class ApprovalStore {
             actionSha256: record.actionSha256,
             createdAt: record.createdAt,
             expiresAt: record.expiresAt,
-            sessionId: record.sessionId,
+            chatId: record.chatId,
+            botId: record.botId,
           });
         }
       }
@@ -323,16 +321,17 @@ export class ApprovalStore {
   }
 
   /**
-   * A stopped session can no longer act on its cards: retire them now, the
+   * A stopped chat can no longer act on its cards: retire them now, the
    * pending ones and the approved ones not yet consumed (an approval granted
    * just before Stop must not run after it). A consumed card has already run.
+   * Deleting a chat does the same.
    */
-  expireSession(sessionId: string): number {
+  expireSession(chatId: string): number {
     return this.locked(() => {
       this.load();
       let expired = 0;
       for (const record of this.records.values()) {
-        if ((record.status === "pending" || record.status === "approved") && record.sessionId === sessionId) {
+        if ((record.status === "pending" || record.status === "approved") && record.chatId === chatId) {
           record.status = "expired";
           expired += 1;
         }
@@ -342,6 +341,22 @@ export class ApprovalStore {
     });
   }
 
+  /** Retires one card whose tool stopped waiting (the turn was cancelled). */
+  expire(id: string): void {
+    this.locked(() => {
+      this.load();
+      const record = this.records.get(id);
+      if (record && (record.status === "pending" || record.status === "approved")) {
+        record.status = "expired";
+        this.persist();
+      }
+    });
+  }
+
+  /**
+   * Boot: a card left pending or approved by an earlier process has no tool
+   * waiting on it any more. Retire them all so the app shows no ghost cards.
+   */
   invalidateOnRestart(): void {
     this.locked(() => {
       this.load();
@@ -400,29 +415,54 @@ export class ApprovalStore {
   }
 }
 
+/**
+ * Waits for the owner's decision. Returns `"aborted"` when the turn's signal
+ * fires first (Stop), after retiring the card so it leaves the owner's list.
+ */
 export async function waitUntilNotPending(
   store: ApprovalStore,
   id: string,
+  signal?: AbortSignal,
   timeoutMs = POLICY_APPROVAL_TTL_MS,
   intervalMs = 250,
-): Promise<StoredApproval> {
+): Promise<StoredApproval | "aborted"> {
   const deadline = Date.now() + timeoutMs;
+  const aborted = () => {
+    store.expire(id);
+    return "aborted" as const;
+  };
   while (Date.now() < deadline) {
+    if (signal?.aborted) return aborted();
     const record = readWhileWaiting(store, id);
     // A transient lock timeout is not a decision; keep waiting instead of
     // treating it as a missing approval or aborting the wait.
     if (record === "locked") {
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      await pause(intervalMs, signal);
       continue;
     }
     if (!record) throw new Error(`approval_not_found:${id}`);
     if (record.status !== "pending") return record;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await pause(intervalMs, signal);
   }
+  if (signal?.aborted) return aborted();
   const expired = readWhileWaiting(store, id);
   if (expired === "locked") throw new Error("approval_expired");
   if (expired && expired.status !== "pending") return expired;
   throw new Error("approval_expired");
+}
+
+/** A sleep that ends early when the signal fires. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 function readWhileWaiting(store: ApprovalStore, id: string): StoredApproval | undefined | "locked" {

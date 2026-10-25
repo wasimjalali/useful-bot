@@ -11,10 +11,10 @@ import { join } from "node:path";
 import { statePath } from "./stack.ts";
 
 /**
- * Legacy generated images, one JSON record each under ~/.useful-bot/images/.
- * New images are files under the media folder (shared/media-store.ts); this
- * store only reads the old records until they are migrated. The event
- * carries the id either way and the app fetches through /api/agent/image.
+ * Generated images the media folder would not take, one JSON record each under
+ * ~/.useful-bot/images/. Images are files under the media folder
+ * (shared/media-store.ts); this is the fallback when that write fails. The
+ * row carries the id either way and the app fetches through /api/agent/image.
  */
 export type ImageRecord = {
   id: string;
@@ -43,7 +43,7 @@ const PROMPT_MAX = 2_000;
 
 export function imagesDir(root = process.env.UB_IMAGES_DIR): string {
   if (root) return root;
-  // Migration deletes from here, so a test must never reach the real folder.
+  // Tests delete from here, so a test must never reach the real folder.
   if (process.env.NODE_TEST_CONTEXT) throw new Error("images under test needs UB_IMAGES_DIR");
   return statePath("images");
 }
@@ -100,9 +100,8 @@ export function deleteImage(id: string, dir = imagesDir()): void {
 }
 
 /**
- * Ids of the records still in the legacy folder. Images now live as files
- * under the media folder (shared/media-store.ts); these are migrated there
- * and never swept: what the agent made is the owner's to delete.
+ * Ids of the records in the fallback folder. They are never swept: what the
+ * agent made is the owner's to delete.
  */
 export function legacyImageIds(dir = imagesDir()): string[] {
   let names: string[];

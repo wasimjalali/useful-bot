@@ -157,7 +157,7 @@ export type TurnFilePart = { type: "file"; data: string; mediaType: string; file
 export type TurnMessage = string | Array<TurnTextPart | TurnFilePart>;
 
 /**
- * What a turn posts to eve. A plain string when nothing needs pixels, so the
+ * What a turn is sent as. A plain string when nothing needs pixels, so the
  * verified text path stays byte identical; text plus file parts when an
  * image is attached.
  */

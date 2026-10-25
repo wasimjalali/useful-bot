@@ -12,19 +12,15 @@ import {
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { acquireDirLock } from "../../shared/dir-lock.ts";
-import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { statePath } from "../../shared/stack.ts";
 
-/**
- * Every note is desktop memory. `shared-phone` rows from before ownership
- * existed fold into `desktop` in the index migration below.
- */
+/** Every note is desktop memory. */
 export type Audience = "desktop";
 
 /**
- * Who wrote the note last: the owner (Settings), the model (memory_upsert), or
+ * Who wrote the note last: the owner (Settings), the model (memory save), or
  * the model in a turn that had read outside content (a page, an app result, a
- * file, a handoff). The last one is sticky: the model editing such a note
+ * file). The last one is sticky: the model editing such a note
  * keeps the mark, and only the owner's edit or delete clears it.
  */
 export type NoteSource = "owner" | "model" | "model-after-outside-content";
@@ -68,14 +64,10 @@ export interface MemoryNoteCard extends MemoryExcerpt {
   source: NoteSource;
 }
 
-/** Index schema: 2 added `bot_id` and folded `shared-phone` into `desktop`. */
-const INDEX_SCHEMA_VERSION = 2;
-/** The legacy ownership tag, read only by the migration. */
-const BOT_TAG_PREFIX = "bot:";
 /** Search and list return previews this long; `read` returns the whole note. */
 const PREVIEW_CHARS = 1024;
 const NOTE_ID_PATTERN = /^[A-Za-z0-9-]{1,80}$/;
-// Long enough to wait out a first-open migration of a big store.
+// Long enough to wait out an index rebuild of a big store.
 const LOCK_TIMEOUT_MS = 30_000;
 /** Note ids are file names; anything else is a path traversal or a bad key. */
 function assertNoteId(id: string): void {
@@ -128,45 +120,24 @@ export function memoryRoot(): string {
 }
 
 /**
- * A note's meta as this build reads it, whatever wrote the file. A note from
- * before ownership carries its bot in a `bot:<id>` tag; an untagged one
- * belongs to the Generalist. `legacy` says the file on disk should be
- * rewritten into the current shape (the migration does that once).
+ * A note's meta as this build reads it. Every expiry check compares strings
+ * with a UTC instant, so an offset form is rewritten to UTC here. An expiry
+ * that is not a time at all, or a note with no owner or source, is malformed.
  */
-function normalizeMeta(rec: Record<string, unknown>): { meta: NoteMeta; legacy: boolean } {
-  const tags = Array.isArray(rec.tags) ? rec.tags.filter((tag): tag is string => typeof tag === "string") : [];
-  const botTagId = tags.find((tag) => tag.startsWith(BOT_TAG_PREFIX))?.slice(BOT_TAG_PREFIX.length) ?? "";
-  const botId = typeof rec.botId === "string" && rec.botId !== ""
-    ? rec.botId
-    : botTagId !== "" ? botTagId : DEFAULT_BOT_ID;
-  // Every expiry check compares strings with a UTC instant, so an offset form
-  // is rewritten to UTC here (and the file with it, by the migration). An
-  // expiry that is not a time at all makes the note malformed.
+function normalizeMeta(rec: Record<string, unknown>): NoteMeta {
+  if (typeof rec.botId !== "string" || rec.botId === "") throw new Error("note_format");
+  if (typeof rec.source !== "string" || !NOTE_SOURCES.includes(rec.source)) throw new Error("note_format");
+  if (!Array.isArray(rec.tags) || rec.tags.some((tag) => typeof tag !== "string")) throw new Error("note_format");
   let expiresAt: string | null = null;
   if (typeof rec.expiresAt === "string") {
     const at = Date.parse(rec.expiresAt);
     if (!Number.isFinite(at)) throw new Error("note_format");
     expiresAt = new Date(at).toISOString();
   }
-  const source: NoteSource = typeof rec.source === "string" && NOTE_SOURCES.includes(rec.source) ? rec.source as NoteSource : "model";
-  const legacy = typeof rec.botId !== "string"
-    || rec.botId === ""
-    || rec.audience !== "desktop"
-    || rec.source !== source
-    || expiresAt !== (rec.expiresAt ?? null)
-    || tags.some((tag) => tag.startsWith(BOT_TAG_PREFIX));
-  const meta = {
-    ...(rec as unknown as NoteMeta),
-    tags: tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX)),
-    audience: "desktop" as const,
-    expiresAt,
-    botId,
-    source,
-  };
-  return { meta, legacy };
+  return { ...(rec as unknown as NoteMeta), audience: "desktop", expiresAt };
 }
 
-function parseNote(raw: string): { meta: NoteMeta; body: string; legacy: boolean } {
+function parseNote(raw: string): { meta: NoteMeta; body: string } {
   const lines = raw.split("\n");
   if (lines[0] !== "---" || lines[2] !== "---") {
     throw new Error("note_format");
@@ -186,9 +157,9 @@ function parseNote(raw: string): { meta: NoteMeta; body: string; legacy: boolean
   ) {
     throw new Error("note_format");
   }
-  const { meta, legacy } = normalizeMeta(rec);
+  const meta = normalizeMeta(rec);
   const body = lines.slice(3).join("\n");
-  return { meta, body, legacy };
+  return { meta, body };
 }
 
 /** The note file's text, or null when it vanished; any other failure throws. */
@@ -224,8 +195,6 @@ export class MemoryStore {
   private readonly db: DatabaseSync;
   private readonly dirtyPath: string;
   private skippedRows = 0;
-  /** Note files the last migration or rebuild could not parse, by name. */
-  migrationRejected: string[] = [];
 
   constructor(root: string = memoryRoot()) {
     this.root = root;
@@ -235,7 +204,7 @@ export class MemoryStore {
     mkdirSync(this.notesDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(this.indexPath);
     this.db.exec("PRAGMA journal_mode=WAL");
-    this.migrateIfNeeded();
+    this.createTables();
     this.repairIfDirty();
   }
 
@@ -255,62 +224,6 @@ export class MemoryStore {
       );
       CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(title, tags, body, id UNINDEXED);
     `);
-  }
-
-  private schemaVersion(): number {
-    return (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  }
-
-  /**
-   * One-time migration to ownership, safe to run twice and from two processes
-   * (the web server and the agent both open the store). Under the store lock
-   * it rewrites every legacy note file into the current shape (bot from the
-   * `bot:<id>` tag, untagged notes to the Generalist, `shared-phone` to
-   * `desktop`), then rebuilds the index with the `bot_id` column.
-   */
-  private migrateIfNeeded(): void {
-    if (this.schemaVersion() >= INDEX_SCHEMA_VERSION) {
-      this.createTables();
-      return;
-    }
-    const release = this.acquire();
-    try {
-      // Re-checked under the lock: the other process may have finished first.
-      if (this.schemaVersion() >= INDEX_SCHEMA_VERSION) {
-        this.createTables();
-        return;
-      }
-      for (const name of readdirSync(this.notesDir)) {
-        if (!name.endsWith(".md")) continue;
-        const path = join(this.notesDir, name);
-        // An operational failure (a read, a rename) aborts the migration
-        // before it is marked done, so the next open retries. Only a note
-        // that is itself malformed is skipped, and the rebuild reports it.
-        const raw = readNoteFile(path);
-        if (raw === null) continue;
-        let note: ReturnType<typeof parseNote>;
-        try {
-          note = parseNote(raw);
-        } catch {
-          continue;
-        }
-        const { meta, body, legacy } = note;
-        if (!legacy || !NOTE_ID_PATTERN.test(meta.id)) continue;
-        const tmp = join(this.notesDir, `.${meta.id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
-        writeFileSync(tmp, serializeNote(meta, body), { encoding: "utf8", mode: 0o600, flag: "wx" });
-        renameSync(tmp, path);
-      }
-      this.db.exec("DROP TABLE IF EXISTS notes; DROP TABLE IF EXISTS notes_fts;");
-      this.createTables();
-      const rebuilt = this.rebuildRows();
-      this.migrationRejected = rebuilt.rejectedFiles;
-      if (rebuilt.rejectedFiles.length > 0) {
-        console.warn(`[useful-bot] memory migration skipped ${rebuilt.rejectedFiles.length} malformed note file(s): ${rebuilt.rejectedFiles.join(", ")}`);
-      }
-      this.db.exec(`PRAGMA user_version = ${INDEX_SCHEMA_VERSION}`);
-    } finally {
-      release();
-    }
   }
 
   /** Rows that could not be read during the last list or search. */
@@ -364,7 +277,7 @@ export class MemoryStore {
 
   private acquire(): () => void {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    // Owned lock: a live holder (a long migration, say) is never robbed by a
+    // Owned lock: a live holder (an index rebuild, say) is never robbed by a
     // timer; only a dead holder's lock is reclaimed.
     return acquireDirLock(join(this.root, "index.lock"), {
       timeoutMs: LOCK_TIMEOUT_MS,
@@ -603,8 +516,7 @@ export class MemoryStore {
         id,
         revision,
         title: input.title,
-        // The legacy ownership tag is never stored: owner is `botId`.
-        tags: input.tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX)),
+        tags: input.tags,
         audience: "desktop",
         botId: input.botId,
         source,
@@ -682,84 +594,6 @@ export class MemoryStore {
     } finally {
       release();
     }
-  }
-
-  /**
-   * Move every live note of `from` to `to`: the front matter's `botId` is
-   * rewritten, the revision goes up by one and `updatedAt` moves, and the index
-   * row follows. It is the only path that changes a note's bot (`upsert` refuses
-   * it, a note is never retagged by a bot), and the archive migration's owner
-   * action "Move notes" is its only caller. The body, and so the index's
-   * `body_sha`, does not change. An archived or expired note is not live and
-   * stays. One note at a time under the store lock, file first and index
-   * second, so a run that is cut short leaves the rest under `from` for the
-   * next run. Returns how many moved.
-   */
-  moveBotNotes(from: string, to: string): number {
-    if (!from || !to) throw new Error("memory_bot_required");
-    if (from === to) return 0;
-    const release = this.acquire();
-    try {
-      let moved = 0;
-      const now = new Date().toISOString();
-      for (const name of readdirSync(this.notesDir)) {
-        if (!name.endsWith(".md")) continue;
-        const path = join(this.notesDir, name);
-        const raw = readNoteFile(path);
-        if (raw === null) continue;
-        let note: ReturnType<typeof parseNote>;
-        try {
-          note = parseNote(raw);
-        } catch {
-          continue;
-        }
-        const { meta, body } = note;
-        if (meta.botId !== from || meta.status !== "active" || !NOTE_ID_PATTERN.test(meta.id)) continue;
-        if (meta.expiresAt !== null && meta.expiresAt <= now) continue;
-        const next: NoteMeta = { ...meta, botId: to, revision: meta.revision + 1, updatedAt: now };
-        const tmp = join(this.notesDir, `.${meta.id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
-        writeFileSync(tmp, serializeNote(next, body), { encoding: "utf8", mode: 0o600, flag: "wx" });
-        this.markDirty(meta.id);
-        try {
-          renameSync(tmp, path);
-        } catch (error) {
-          try { unlinkSync(tmp); } catch { /* ignore */ }
-          throw error;
-        }
-        this.transaction(() => this.insertIndex(next, body));
-        this.clearDirty();
-        moved += 1;
-      }
-      return moved;
-    } finally {
-      release();
-    }
-  }
-
-  /**
-   * Archive every live note of a bot (not a hard delete: the files stay with
-   * status `archived`). For removing an earlier bot. Returns how many.
-   */
-  archiveBotNotes(botId: string): number {
-    if (!botId) throw new Error("memory_bot_required");
-    let archived = 0;
-    // 100 notes a pass, and a pass that archives nothing ends it.
-    for (let pass = 0; pass < 200; pass += 1) {
-      let progressed = 0;
-      for (const card of this.list(botId, 100)) {
-        try {
-          this.archive(card.id, botId, card.revision);
-          archived += 1;
-          progressed += 1;
-        } catch (err) {
-          // Gone or edited since the list: the next pass sees what is left.
-          const message = err instanceof Error ? err.message : "";
-          if (message !== "memory_not_found" && message !== "memory_revision_conflict") throw err;
-        }
-      }
-      if (progressed === 0) break;
-    }
-    return archived;
   }
 
   /** One of the bot's live notes, whole, with the fields Settings shows. Refused like `read`. */

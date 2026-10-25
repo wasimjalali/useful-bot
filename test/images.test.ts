@@ -18,7 +18,7 @@ import {
   writeProviderStore,
 } from "../shared/providers.ts";
 import { generateImage } from "../router/src/upstreams/images.ts";
-import { ensureTurnSnapshot } from "../agent/lib/turn-snapshot.ts";
+import { buildSnapshot } from "../agent/lib/turn-snapshot.ts";
 import { renderContext } from "../shared/context-blocks.ts";
 import { readShell } from "../shared/shell-io.ts";
 import { RouterError } from "../router/src/errors.ts";
@@ -184,10 +184,9 @@ test("the turn context names the bot's model and the image model", async () => {
     process.env.UB_SHELL_PATH = join(dir, "shell.json");
     readShell();
     try {
-      const ctx = { session: { id: "sess-img", turn: { id: "turn-1" }, auth: { current: { attributes: { botId: "bot-useful" } } } } };
-      const snapshot = await ensureTurnSnapshot(ctx, "turn-1");
-      assert.equal(snapshot?.status, "ok");
-      const context = snapshot?.status === "ok" ? renderContext(snapshot.context) : "";
+      const snapshot = buildSnapshot("bot-useful", { session: { id: "sess-img" } }, "turn-1");
+      assert.equal(snapshot.status, "ok");
+      const context = renderContext(snapshot.context);
       assert.match(context, /Model: .*\(openai\/gpt-4\.1-mini\) via OpenRouter/);
       assert.match(context, /generate_image uses .*\(google\/gemini-3\.1-flash-image\)/);
     } finally {
