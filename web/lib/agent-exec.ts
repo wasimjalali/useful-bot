@@ -1,9 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { libraryDrawingIds } from "../../shared/media-store.ts";
 import { listWidgets, sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { sweepOrphanRoutines } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
-import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
+import { readWorkspaceStore, removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V3, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { retiredRouteMessage } from "../../shared/provider-catalog.ts";
@@ -83,6 +84,36 @@ export function syncSessionWorkspace(
 }
 
 /**
+ * A permission or folder change takes effect now, not at the next turn, in
+ * every chat: a turn or routine running in another chat re-reads its own
+ * grant before it spends a card, so it must see the Read only the owner just
+ * picked. The permission and folder are the bot's, and there is one bot, so
+ * every grant is restamped. The selection each running turn was stamped with
+ * is kept, so the change cannot move an in-flight turn's model. A grant that
+ * can't be restamped is revoked: no grant reads as Read only (fail closed),
+ * and the next turn's stamp restores it.
+ */
+export function restampWorkspaceGrants(botId: string): void {
+  // Providers store first, then the roster, the order the turn freeze uses:
+  // a per-bot pick pins this bot before it moves the default, so a store read
+  // first never pairs with an older roster.
+  const store = readProviderStore();
+  const bot = readShell().bots.find((item) => item.id === botId);
+  for (const grant of readWorkspaceStore().grants) {
+    try {
+      if (!bot) removeSessionGrant(grant.chatId);
+      else syncSessionWorkspace(grant.chatId, bot, store, { keptSelection: grant.selection });
+    } catch {
+      try {
+        removeSessionGrant(grant.chatId);
+      } catch {
+        /* a store locked twice in a row: the next turn's stamp settles it */
+      }
+    }
+  }
+}
+
+/**
  * Pin every bot that has no model of its own to the effective default as it
  * stands now, so the per-bot pick that follows moves one bot only.
  *
@@ -150,9 +181,12 @@ function chatsWithSessionFile(): Set<string> | null {
     const raw = JSON.parse(readFileSync(path, "utf8")) as { chats?: unknown } | null;
     if (!raw || !Array.isArray(raw.chats)) return null;
     const live = new Set<string>();
+    // The engine stores sessionFile relative to its own folder; this service's
+    // working directory is elsewhere, so resolve against that folder.
+    const engineDir = statePath("engine");
     for (const row of raw.chats) {
       const chat = row as { chatId?: unknown; sessionFile?: unknown } | null;
-      if (typeof chat?.chatId === "string" && typeof chat.sessionFile === "string" && existsSync(chat.sessionFile)) {
+      if (typeof chat?.chatId === "string" && typeof chat.sessionFile === "string" && existsSync(resolve(engineDir, chat.sessionFile))) {
         live.add(chat.chatId);
       }
     }

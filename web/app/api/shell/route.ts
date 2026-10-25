@@ -11,13 +11,11 @@ import {
   type Proposal,
 } from "../../../../shared/agent-store.ts";
 import { engineNoteRow } from "../../../../shared/engine-client.ts";
-import { syncSessionWorkspace } from "../../../lib/agent-exec";
+import { restampWorkspaceGrants } from "../../../lib/agent-exec";
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { applyShellAction, DESCRIPTION_MAX, isGrantableRootPath, isShellActionType, type ShellAction } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
-import { readProviderStore } from "../../../../shared/providers.ts";
-import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { webOrigin } from "../../../../shared/stack.ts";
 
 export async function GET(request: Request) {
@@ -234,29 +232,7 @@ export async function PUT(request: Request) {
     // when they make it. The selection the running turn was stamped with is
     // kept, so the change cannot move an in-flight turn's model.
     if (action?.type === "setPermission" || action?.type === "setWorkspace") {
-      const chatId = next.bots.find((item) => item.id === action.botId)?.chatId;
-      if (chatId) {
-        try {
-          // Providers store first, then the roster, the order the turn
-          // freeze uses: a per-bot pick pins this bot before it moves the
-          // default, so a store read first never pairs with an older roster.
-          const store = readProviderStore();
-          const keptSelection = readSessionGrant(chatId)?.selection;
-          const fresh = readShell().bots.find((item) => item.id === action.botId);
-          if (!fresh) removeSessionGrant(chatId);
-          else syncSessionWorkspace(chatId, fresh, store, { keptSelection });
-        } catch {
-          // The roster action stood but the grant still says the old
-          // permission, and a card already open re-reads that grant before
-          // it spends. No grant at all reads as Read only, so revoking is
-          // the fail-closed answer; the next turn's stamp restores it.
-          try {
-            removeSessionGrant(chatId);
-          } catch {
-            /* a store locked twice in a row: the next turn's stamp settles it */
-          }
-        }
-      }
+      restampWorkspaceGrants(action.botId);
     }
     if (claimed) {
       try {

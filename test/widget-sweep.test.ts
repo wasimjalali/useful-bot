@@ -114,17 +114,20 @@ function chatWidget(id: string, chatId: string | null): WidgetRecord {
 test("the sweep keeps the widgets of chats whose session file exists, and drops the rest", () => {
   sweepWorld(({ widgets, chats, session }) => {
     const live = session("live.jsonl");
+    session("relative.jsonl");
     chats({ schemaVersion: 1, chats: [
       { chatId: "chat-live", sessionFile: live },
+      // What the engine writes: relative to its own folder, not this service's cwd.
+      { chatId: "chat-relative", sessionFile: "relative.jsonl" },
       { chatId: "chat-gone", sessionFile: join(widgets, "..", "engine", "deleted.jsonl") },
       { chatId: "chat-new", sessionFile: null },
     ] });
-    for (const [id, chatId] of [["livewidget1", "chat-live"], ["gonewidget1", "chat-gone"], ["newwidget01", "chat-new"], ["unknownchat1", "chat-nobody"], ["nochatwidget", null]] as const) {
+    for (const [id, chatId] of [["livewidget1", "chat-live"], ["relwidget01", "chat-relative"], ["gonewidget1", "chat-gone"], ["newwidget01", "chat-new"], ["unknownchat1", "chat-nobody"], ["nochatwidget", null]] as const) {
       writeWidget(chatWidget(id, chatId), widgets);
       age(widgets, id, WIDGET_ORPHAN_GRACE_MS * 2);
     }
     sweepOrphanState();
-    assert.deepEqual(readdirSync(widgets), ["livewidget1.json"]);
+    assert.deepEqual(readdirSync(widgets).sort(), ["livewidget1.json", "relwidget01.json"]);
   });
 });
 

@@ -172,6 +172,7 @@
   "running": {
     "turnId": "7a1e0001-0000-4000-8000-00000000a003",
     "startedAt": "2026-10-25T12:00:16.000Z",
+    "rowId": "7a1e0001-0000-4000-8000-00000000a003:a0",
     "partialText": "Working on a shorter",
     "activity": {
       "kind": "tool",

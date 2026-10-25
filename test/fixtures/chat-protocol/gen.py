@@ -117,7 +117,7 @@ write_json("rows-page.json", {
     "rows": rows,
     "tailSeq": 57,
     "epoch": EPOCH,
-    "running": {"turnId": T3, "startedAt": at(16), "partialText": "Working on a shorter",
+    "running": {"turnId": T3, "startedAt": at(16), "rowId": f"{T3}:a0", "partialText": "Working on a shorter",
                 "activity": {"kind": "tool", "tool": "web_search", "detail": "Searching the web"}},
     "queued": [{"clientId": "c1c1c1c1-0000-4000-8000-0000000000c5", "text": "Then list three next steps"}],
     "openQuestion": None,

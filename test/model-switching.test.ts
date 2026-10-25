@@ -29,7 +29,7 @@ import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
 import { readSessionGrant, removeSessionGrant } from "../shared/workspace-store.ts";
 import { exactModelOption, snapComposer } from "../shared/models.ts";
 import { catalogFor } from "../shared/live-models.ts";
-import { ensureBotSelections, modelSelectionRefusal, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
+import { ensureBotSelections, modelSelectionRefusal, restampWorkspaceGrants, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
 import { applyProvidersDelete, applyProvidersPut, CONNECTION_REMOVED_BOTS_PINNED } from "../web/lib/providers-write.ts";
 import { windowFor } from "../shared/admission.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../shared/policy.ts";
@@ -318,6 +318,21 @@ test("selections survive a restart: shell, grant and header are read back from d
     const unpinned = readShell(shell).bots.find((item) => item.model === null)!;
     syncSessionWorkspace("sess-restart-2", unpinned);
     assert.deepEqual(readSessionGrant("sess-restart-2")?.selection, lastPick(readProviderStore()));
+  });
+});
+
+test("a permission change restamps every chat's grant, not only the current chat's, and keeps each turn's model", () => {
+  withWorld(({ shell }) => {
+    const { aId } = twoBots(selGo5, null, shell);
+    const bot = readShell(shell).bots.find((item) => item.id === aId)!;
+    // Two chats with turns under way: the open one and a routine's.
+    syncSessionWorkspace("chat-open", bot);
+    syncSessionWorkspace("chat-routine", bot, undefined, { keptSelection: selGo });
+    updateShell((store) => ({ ...store, bots: store.bots.map((item) => (item.id === aId ? { ...item, permission: "read_only" as const } : item)) }), shell);
+    restampWorkspaceGrants(aId);
+    assert.equal(readSessionGrant("chat-open")?.permission, "read_only");
+    assert.equal(readSessionGrant("chat-routine")?.permission, "read_only");
+    assert.deepEqual(readSessionGrant("chat-routine")?.selection, selGo, "the running turn's model is kept");
   });
 });
 
