@@ -418,10 +418,13 @@ const SQL_DESTRUCTIVE = /\b(drop|truncate)\s+(table|database|schema|index|view)\
  * other absolute path is a reach outside.
  */
 export function commandRisk(command: string, root: string, depth = 0): string | null {
-  if (SQL_DESTRUCTIVE.test(command)) return "runs a destructive SQL statement";
+  // A heredoc body that is only data (see `readLine`) holds no statement
+  // and no substitution: the scans below read the line without it.
+  const scan = readLine(command).text;
+  if (SQL_DESTRUCTIVE.test(scan)) return "runs a destructive SQL statement";
   // A substitution runs wherever it sits, quotes or not: `echo "$(rm x)"`
   // still deletes. Each one is judged as a line of its own.
-  for (const match of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+  for (const match of scan.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
     const inner = (match[1] ?? match[2] ?? "").trim();
     if (!inner) continue;
     const reason = commandRisk(inner, root, depth);
@@ -429,7 +432,7 @@ export function commandRisk(command: string, root: string, depth = 0): string | 
   }
   // The tokenizer turns a backtick into a separator, which drops the operand
   // a substitution stands for; a move, copy, link or sync with one fails closed.
-  const backtickDestination = /(?:^|[\s;&|(])(?:git\s+(?:-\S+\s+)*mv|mv|cp|ln|rsync|ditto|install)\s[^;&|\n]*`/.exec(command);
+  const backtickDestination = /(?:^|[\s;&|(])(?:git\s+(?:-\S+\s+)*mv|mv|cp|ln|rsync|ditto|install)\s[^;&|\n]*`/.exec(scan);
   if (backtickDestination) return "puts something at a variable or substitution destination this cannot read (a backtick substitution)";
   for (const segment of split(tokenize(command))) {
     // What the command does comes first: `sudo rm -rf /` is "runs as root",
@@ -503,7 +506,7 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
   if (depth > MAX_DEPTH) return null;
   // A backslash-newline continues the line; judged as the one line it is.
   command = command.replace(/\\\n/g, " ");
-  for (const match of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+  for (const match of readLine(command).text.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
     const inner = (match[1] ?? match[2] ?? "").trim();
     if (!inner) continue;
     const reason = wipeRisk(inner, root, home, ownerHome, depth);
@@ -1485,17 +1488,118 @@ function split(tokens: (Token | { separator: string })[]): Segment[] {
   return segments;
 }
 
+type Item = Token | { separator: string };
+/** A heredoc `lex` found: its operator's index, and the body it reads up to the delimiter line. */
+type Heredoc = { op: number; literal: boolean; terminated: boolean; body: string; start: number; end: number };
+
+/**
+ * Commands that only ever read their standard input as data, so a heredoc
+ * fed to them (and through every pipe after them) is text, not a script.
+ * Anything else that takes a body (a shell, an interpreter, `xargs`, a
+ * database CLI, `ssh`, a wrapper like `time`) keeps the body judged line
+ * by line, the way it always was.
+ */
+const STDIN_DATA_COMMANDS = new Set([
+  "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "sort", "uniq", "cut", "tr",
+  "column", "nl", "od", "xxd", "hexdump", "strings", "md5", "md5sum", "shasum", "sha256sum",
+  "cksum", "base64", "jq", "yq", "diff", "cmp", "comm", "iconv", "expand", "unexpand", "fold",
+  "fmt", "paste", "rev", "tac", "tee", "git",
+]);
+
 /**
  * A small shell tokenizer: quotes group, backslashes escape, and the
  * operators above separate. Parentheses and backticks open a new segment
  * so `$(rm -rf x)`, `( rm x )` and `<(rm x)` are all seen as `rm`.
  */
-function tokenize(command: string): (Token | { separator: string })[] {
-  const out: (Token | { separator: string })[] = [];
+function tokenize(command: string): Item[] {
+  return readLine(command).items;
+}
+
+/**
+ * The line's items with every heredoc settled, and the line's text with the
+ * bodies that are only data cut out (the text the substitution and SQL scans
+ * read). A body is data when it is complete, the command it feeds and every
+ * command that one pipes into read it as data, and, unquoted, it holds no
+ * substitution. A data body is dropped: `cat <<'EOF' | wc -w` is the same as
+ * `printf '...' | wc -w`. An unquoted body with `$(...)` or a backtick runs
+ * them, so it stays as one quoted argument, the way `"$(x)"` is judged. Any
+ * other body is tokenized line by line, as if there were no heredoc.
+ */
+function readLine(command: string): { items: Item[]; text: string } {
+  const { items, heredocs } = lex(command);
+  if (heredocs.length === 0) return { items: items as Item[], text: command };
+  const data = heredocs.map((doc) => doc.terminated && feedsData(items, doc.op));
+  const carried = new Map<number, Token>();
+  heredocs.forEach((doc, at) => {
+    if (data[at] && !doc.literal && /\$\(|`/.test(doc.body)) carried.set(doc.op, { text: doc.body, quoted: true });
+  });
+  const out: Item[] = [];
+  items.forEach((item, index) => {
+    if ("heredoc" in item) {
+      const doc = heredocs[item.heredoc];
+      if (!data[item.heredoc]) out.push(...tokenize(command.slice(doc.start, doc.end)));
+      return;
+    }
+    out.push(item);
+    const body = carried.get(index);
+    if (body) out.push(body);
+  });
+  let text = "";
+  let from = 0;
+  heredocs.forEach((doc, at) => {
+    if (!data[at] || !doc.literal) return;
+    text += command.slice(from, doc.start);
+    from = doc.end;
+  });
+  return { items: out, text: text + command.slice(from) };
+}
+
+/** Whether the command a heredoc feeds, and each one it pipes into, reads stdin as data. */
+function feedsData(items: (Item | { heredoc: number })[], op: number): boolean {
+  let start = op;
+  while (start > 0 && isToken(items[start - 1])) start -= 1;
+  if (!dataHead(items, start)) return false;
+  for (let i = op + 1; i < items.length; i += 1) {
+    const item = items[i];
+    if (!("separator" in item)) continue;
+    if (item.separator !== "|") return true;
+    // A pipe may continue on the line after the body: `cat <<EOF |`.
+    let next = i + 1;
+    while (next < items.length && ("heredoc" in items[next] || (items[next] as { separator?: string }).separator === "\n")) next += 1;
+    if (!dataHead(items, next)) return false;
+    i = next;
+  }
+  return true;
+}
+
+function isToken(item: Item | { heredoc: number } | undefined): item is Token {
+  return item !== undefined && "text" in item;
+}
+
+/** The command at `at`, past its assignments, is a bare name from STDIN_DATA_COMMANDS. */
+function dataHead(items: (Item | { heredoc: number })[], at: number): boolean {
+  let i = at;
+  while (isToken(items[i]) && isAssignment(items[i] as Token)) i += 1;
+  const head = items[i];
+  return isToken(head) && !head.quoted && !/[/$]/.test(head.text) && STDIN_DATA_COMMANDS.has(head.text);
+}
+
+/**
+ * The tokenizer proper. A heredoc operator becomes a `<<` token (its
+ * delimiter word is not an argument), and at the end of its line each body
+ * is read up to its delimiter and left as a placeholder for `readLine`.
+ */
+function lex(command: string): { items: (Item | { heredoc: number })[]; heredocs: Heredoc[] } {
+  const out: (Item | { heredoc: number })[] = [];
+  const heredocs: Heredoc[] = [];
+  let pending: { op: number; delimiter: string; literal: boolean; dash: boolean }[] = [];
   let buffer = "";
   let quoted = false;
   let inSingle = false;
   let inDouble = false;
+  // After an unquoted `#` at the start of a word the rest of the line is a
+  // comment: a `<<` there opens no heredoc, so what follows stays commands.
+  let inComment = false;
   const flush = () => {
     if (buffer.length > 0 || quoted) out.push({ text: buffer, quoted });
     buffer = "";
@@ -1526,12 +1630,93 @@ function tokenize(command: string): (Token | { separator: string })[] {
     if (ch === "(" || ch === ")") { flush(); out.push({ separator: ch }); continue; }
     if (ch === "&" && command[i + 1] === "&") { flush(); out.push({ separator: "&&" }); i += 1; continue; }
     if (ch === "|" && command[i + 1] === "|") { flush(); out.push({ separator: "||" }); i += 1; continue; }
+    if (ch === "\n" && pending.length > 0) {
+      flush();
+      out.push({ separator: "\n" });
+      let at = i + 1;
+      for (const doc of pending) {
+        const start = at;
+        const lines: string[] = [];
+        let end = command.length;
+        let terminated = false;
+        while (at < command.length) {
+          const newline = command.indexOf("\n", at);
+          const lineEnd = newline < 0 ? command.length : newline;
+          const line = command.slice(at, lineEnd).replace(doc.dash ? /^\t+/ : /^$/, "");
+          at = newline < 0 ? command.length : newline + 1;
+          if (line === doc.delimiter) {
+            terminated = true;
+            end = lineEnd;
+            break;
+          }
+          lines.push(line);
+        }
+        heredocs.push({ op: doc.op, literal: doc.literal, terminated, body: lines.join("\n"), start, end });
+        out.push({ heredoc: heredocs.length - 1 });
+      }
+      pending = [];
+      inComment = false;
+      out.push({ separator: "\n" });
+      i = at - 1;
+      continue;
+    }
+    if (ch === "\n") inComment = false;
     if (SEPARATORS.has(ch)) { flush(); out.push({ separator: ch }); continue; }
     if (ch === " " || ch === "\t" || ch === "\r") { flush(); continue; }
+    if (ch === "#" && buffer.length === 0 && !quoted) inComment = true;
+    if (ch === "<" && command[i + 1] === "<" && !inComment) {
+      // `<<<` is a here-string: one word on this line, no body.
+      if (command[i + 2] === "<") { buffer += "<<<"; i += 2; continue; }
+      const word = heredocWord(command, i + 2);
+      if (word) {
+        // `0<<EOF` names the descriptor; it is part of the operator.
+        const fd = !quoted && /^[0-9]+$/.test(buffer) ? buffer : "";
+        if (fd) buffer = "";
+        else flush();
+        out.push({ text: `${fd}<<${word.dash ? "-" : ""}`, quoted: false });
+        pending.push({ op: out.length - 1, delimiter: word.delimiter, literal: word.literal, dash: word.dash });
+        i = word.end - 1;
+        continue;
+      }
+    }
     buffer += ch;
   }
   flush();
-  return out;
+  return { items: out, heredocs };
+}
+
+/**
+ * The delimiter word after `<<` or `<<-`, starting at `from`. Any quote or
+ * backslash in it makes the body literal (no expansion); the delimiter is
+ * the word with those removed.
+ */
+function heredocWord(command: string, from: number): { delimiter: string; literal: boolean; dash: boolean; end: number } | null {
+  const dash = command[from] === "-";
+  let j = dash ? from + 1 : from;
+  while (command[j] === " " || command[j] === "\t") j += 1;
+  let delimiter = "";
+  let literal = false;
+  while (j < command.length) {
+    const c = command[j];
+    if (c === "'" || c === '"') {
+      const close = command.indexOf(c, j + 1);
+      if (close < 0) return null;
+      delimiter += command.slice(j + 1, close);
+      literal = true;
+      j = close + 1;
+      continue;
+    }
+    if (c === "\\" && j + 1 < command.length) {
+      delimiter += command[j + 1];
+      literal = true;
+      j += 2;
+      continue;
+    }
+    if (/[\s;&|()<>`]/.test(c)) break;
+    delimiter += c;
+    j += 1;
+  }
+  return delimiter ? { delimiter, literal, dash, end: j } : null;
 }
 
 /**
