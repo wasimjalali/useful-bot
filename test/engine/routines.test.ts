@@ -47,8 +47,7 @@ test("a routine runs in its own chat: a note, no owner bubble, and the run is re
 
     const run = readRoutine(made.id)?.runHistory.at(-1);
     assert.equal(run?.status, "ok");
-    // The routines store records the run's chat (seams.md, W3); a store that does not yet say nothing here.
-    if ("chatId" in (run ?? {})) assert.equal((run as { chatId?: string }).chatId, started.chatId);
+    assert.equal(run?.chatId, started.chatId);
 
     // The shape of a routine's stream is the fixture's.
     const live = recorder.events as Record<string, unknown>[];

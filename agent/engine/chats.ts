@@ -29,6 +29,8 @@ export type ChatMeta = {
   updatedAt: string;
   /** The newest settled turn, so the status poll can report a failure after a restart. */
   lastTurn: LastTurn | null;
+  /** A question from `ask` is waiting for the owner's next message (kept here so the status poll needs no session file). */
+  questionOpen: boolean;
 };
 
 type IndexFile = { schemaVersion: 1; chats: ChatMeta[] };
@@ -86,6 +88,7 @@ export class ChatIndex {
         fixture: item.fixture === true,
         createdAt: item.createdAt ?? item.updatedAt,
         lastTurn: item.lastTurn ?? null,
+        questionOpen: item.questionOpen === true,
       });
     }
   }
@@ -132,6 +135,7 @@ export class ChatIndex {
       createdAt: stamp,
       updatedAt: stamp,
       lastTurn: null,
+      questionOpen: false,
     };
     if (this.chats.has(meta.chatId)) throw new Error("chat_exists");
     this.chats.set(meta.chatId, meta);

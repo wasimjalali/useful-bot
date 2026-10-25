@@ -308,7 +308,7 @@ export class Engine {
       if (meta.fixture) continue;
       const runtime = this.host.runtimes().find((item) => item.chatId === meta.chatId);
       const running = runtime?.turn ? { turnId: runtime.turn.turnId, activity: runtime.turn.activity ?? { kind: "thinking" as const } } : null;
-      const waitingOnOwner = runtime?.openQuestion ? "question" : pending.has(meta.chatId) ? "approval" : null;
+      const waitingOnOwner = meta.questionOpen ? "question" : pending.has(meta.chatId) ? "approval" : null;
       const replyReadySince = runtime?.replyReadySince ?? null;
       const lastTurn = meta.lastTurn;
       const recent = lastTurn !== null && now - Date.parse(lastTurn.endedAt) <= DAY_MS;
@@ -352,7 +352,7 @@ export class Engine {
   /** Connect-card resume and the like: a turn the app did not type (D19). Idempotent by `key`. */
   systemTurn(botId: string, key: string, text: string, note?: string): { chatId: string; turnId: string | null; queued: boolean } {
     const chatId = this.currentOrNewChat(botId);
-    if (note) this.host.chat(chatId).appendRow({ key: `note:system-turn-${key}`, kind: "note", text: note, source: "connect" } as RowInput);
+    if (note) this.host.chat(chatId).appendRow({ key: `note:system-turn-${key}`, kind: "note", text: note, source: "connect" });
     const result = this.turns.submitInternal(chatId, "system", `system:${key}`, text);
     return { chatId, turnId: result.turnId, queued: result.queued };
   }

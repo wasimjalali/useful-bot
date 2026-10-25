@@ -30,10 +30,6 @@ type Claimed = { routine: Routine };
 
 const DEFAULTS = { tickMs: 20_000, maxRunning: 4, budgetMs: 60 * 60_000, idleMs: 10 * 60_000, checkMs: 5_000 };
 
-function chatOf(routine: Routine): string | null {
-  return (routine as { chatId?: string | null }).chatId ?? null;
-}
-
 export class RoutineScheduler {
   private readonly options: typeof DEFAULTS;
   private readonly running = new Map<string, Promise<void>>();
@@ -99,17 +95,17 @@ export class RoutineScheduler {
   private begin(routine: Routine): { chatId: string; turnId: string | null; queued: boolean } {
     const index = this.engine.host.index;
     // The index is the truth: a routine's chat is the one that names it, created on its first run.
-    const known = index.all().find((meta) => meta.routineId === routine.id) ?? (chatOf(routine) ? index.get(chatOf(routine) as string) : undefined);
+    const known = index.all().find((meta) => meta.routineId === routine.id) ?? (routine.chatId ? index.get(routine.chatId) : undefined);
     let chatId = known?.chatId;
     if (!chatId) {
       chatId = index.create({ botId: routine.botId, title: routine.name, routineId: routine.id }).chatId;
       this.engine.host.deps.setRoutineChat(routine.id, chatId);
-    } else if (chatOf(routine) !== chatId) {
+    } else if (routine.chatId !== chatId) {
       this.engine.host.deps.setRoutineChat(routine.id, chatId);
     }
     const chat = this.engine.host.chat(chatId);
     const stamp = this.engine.host.now().toISOString();
-    chat.appendRow({ key: `note:routine-run-${routine.id}-${stamp}`, kind: "note", text: `Routine ${routine.name} ran.`, source: "routine" } as never);
+    chat.appendRow({ key: `note:routine-run-${routine.id}-${stamp}`, kind: "note", text: `Routine ${routine.name} ran.`, source: "routine" });
     const prompt = `Scheduled run of the routine ${routine.name}. Nobody is watching: do not ask questions or wait for cards.\n\n${routine.instruction}`;
     const submitted = this.engine.turns.submitInternal(chatId, "routine", `routine:${routine.id}:${stamp}`, prompt);
     const finished = this.watch(routine, chatId, submitted.turnId, submitted.done);
@@ -132,10 +128,10 @@ export class RoutineScheduler {
     try {
       const result = await done;
       if (result.outcome === "completed") {
-        appendRoutineRun(routine.id, { status: "ok", sessionId: null, chatId } as never);
+        appendRoutineRun(routine.id, { status: "ok", chatId });
       } else {
         const error = result.failure?.detail ?? (result.outcome === "cancelled" ? "The run was stopped." : "The run failed.");
-        appendRoutineRun(routine.id, { status: "failed", sessionId: null, chatId, error } as never);
+        appendRoutineRun(routine.id, { status: "failed", chatId, error });
       }
     } finally {
       clearInterval(timer);
@@ -146,6 +142,6 @@ export class RoutineScheduler {
     const detail = error instanceof EngineError && typeof error.fields.message === "string"
       ? error.fields.message
       : error instanceof EngineError ? error.code : error instanceof Error ? error.message : String(error);
-    appendRoutineRun(routine.id, { status: "failed", sessionId: null, ...(chatId ? { chatId } : {}), error: detail } as never);
+    appendRoutineRun(routine.id, { status: "failed", ...(chatId ? { chatId } : {}), error: detail });
   }
 }

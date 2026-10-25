@@ -296,9 +296,12 @@ export class TurnRunner {
         ...(turn.origin === "owner" ? { text: turn.spec.text, attachments: turn.spec.attachments } : {}),
       };
       const question = chat.openQuestion;
-      if (question && turn.origin === "owner") {
-        chat.openQuestion = null;
-        chat.bus.emit({ type: "input.resolved", requestId: question.requestId }, turn.turnId);
+      if (turn.origin === "owner") {
+        if (question) {
+          chat.openQuestion = null;
+          chat.bus.emit({ type: "input.resolved", requestId: question.requestId }, turn.turnId);
+        }
+        if (chat.meta.questionOpen) this.host.index.update(chat.chatId, { questionOpen: false }, { touch: false });
       }
       chat.appendCustom(UB.turnStart, startData);
       this.titleFrom(chat, turn);
@@ -622,6 +625,7 @@ export class TurnRunner {
         allowFreeform: question.allowFreeform === true,
       };
       chat.appendCustom(UB.question, data);
+      this.host.index.update(chat.chatId, { questionOpen: true }, { touch: false });
       chat.openQuestion = { requestId: data.requestId, prompt: data.prompt, options: data.options as never, allowFreeform: data.allowFreeform };
       chat.bus.emit({ type: "input.requested", requestId: data.requestId, kind: "question", prompt: data.prompt, options: data.options, allowFreeform: data.allowFreeform }, turn.turnId);
     }
