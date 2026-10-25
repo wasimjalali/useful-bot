@@ -268,16 +268,16 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     public private(set) var phase: AgentMarkPhase
     /// When the command figure started (its burst), while it is the figure.
     private var commandStart: Double?
-    /// What came while the command figure was still in its dwell: a return to
-    /// thinking, or another command step. It is applied the moment the dwell
-    /// ends; the latest wins, and a plain command cancels a return.
-    private var pending: Pending?
-
-    private enum Pending: Equatable, Sendable {
-        case thinking
-        /// Another command step began: fold and burst once the dwell is over.
-        case restartCommand
-    }
+    /// What came while the command figure was still in its dwell, applied the
+    /// moment the dwell ends. `returnOwed`: the steps ended and thinking is
+    /// back; a command after it cancels it. `restartOwed`: another command
+    /// step began, so the figure folds and bursts again. They are separate so
+    /// that a return that comes after a restart does not lose it: command A,
+    /// command B, thinking, command C is still owed one burst. When both are
+    /// owed at the end, the return wins (the later command step has ended).
+    private var returnOwed = false
+    private var restartOwed = false
+    private var owes: Bool { returnOwed || restartOwed }
 
     /// `arrives`: the turn's arrival first (a chat's working row). Without it
     /// the mark loops from the clock, so every sidebar mark stays in step.
@@ -297,6 +297,14 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     /// When the command figure may give way, or nil when it is not showing.
     private var dwellEnd: Double? { commandStart.map { $0 + AgentMarkFrames.commandDwell } }
 
+    /// Whether the command step key changing from `old` to `new` is one command
+    /// step following another. A step that is only now getting its id or
+    /// detail (nil before) is the same step.
+    public static func isNewCommandStep(from old: String?, to new: String?) -> Bool {
+        guard let old, let new else { return false }
+        return old != new
+    }
+
     /// The phase changed at `now`.
     ///
     /// The command figure keeps the mark until its burst and one full shear
@@ -304,16 +312,22 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     /// latest request wins), and a command inside it continues the same
     /// figure. A `restart` (one command step following another, spec 4.3)
     /// inside the dwell waits for the dwell's end too, so a long command that
-    /// follows a short one still bursts. A finished turn ends at once.
+    /// follows a short one still bursts, and so does a command that follows a
+    /// return to thinking there (a new step either way). A finished turn ends
+    /// at once.
     public mutating func set(_ next: AgentMarkPhase, at now: Double, restart: Bool = false) {
         settle(at: now)
         if next == .done {
-            pending = nil
+            returnOwed = false
+            restartOwed = false
         } else if phase == .command, let end = dwellEnd, now < end {
             if next == .thinking {
-                pending = .thinking
+                returnOwed = true
             } else {
-                pending = restart ? .restartCommand : nil
+                // A command after a waiting return, or flagged as the next
+                // step, is a new step: owed a burst at the end of the dwell.
+                if restart || returnOwed { restartOwed = true }
+                returnOwed = false
             }
             return
         }
@@ -328,6 +342,8 @@ public struct AgentMarkSequencer: Equatable, Sendable {
         phase = next
         stageStart = now
         commandStart = nil
+        returnOwed = false
+        restartOwed = false
         switch next {
         case .done:
             stage = .done(from: showing)
@@ -348,13 +364,13 @@ public struct AgentMarkSequencer: Equatable, Sendable {
         }
     }
 
-    /// Applies a return to thinking that was waiting for the dwell, if the
-    /// dwell is over by `now`. It starts when the dwell ended, not when it
-    /// was noticed.
+    /// Applies what waited for the dwell, if the dwell is over by `now`: the
+    /// return to thinking, or else the deferred restart (fold and burst
+    /// again). It starts when the dwell ended, not when it was noticed.
     private mutating func settle(at now: Double) {
-        guard let next = pending, let end = dwellEnd, now >= end else { return }
-        pending = nil
-        apply(next == .thinking ? .thinking : .command, at: end)
+        guard owes, let end = dwellEnd, now >= end else { return }
+        let next: AgentMarkPhase = returnOwed ? .thinking : .command
+        apply(next, at: end)
     }
 
     /// Moves on past a dwell that has ended, so the work is done once and not
@@ -362,7 +378,7 @@ public struct AgentMarkSequencer: Equatable, Sendable {
     public mutating func advance(to now: Double) { settle(at: now) }
 
     public func dots(at now: Double) -> [MarkDot] {
-        if pending != nil, let end = dwellEnd, now >= end {
+        if owes, let end = dwellEnd, now >= end {
             var settled = self
             settled.settle(at: now)
             return settled.rawDots(at: now)

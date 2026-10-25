@@ -48,7 +48,7 @@ struct AgentMark: View {
         }
         .onChange(of: step) { old, new in
             // A different command while one is running: fold and burst again.
-            guard phase == .command, let old, let new, old != new else { return }
+            guard phase == .command, AgentMarkSequencer.isNewCommandStep(from: old, to: new) else { return }
             clock.sequencer(phase: phase, arrives: arrives)
                 .set(.command, at: Date.now.timeIntervalSinceReferenceDate, restart: true)
         }

@@ -373,14 +373,52 @@ import Testing
         }
     }
 
-    @Test func aCommandInsideTheDwellCancelsTheWaitingReturn() {
+    @Test func aCommandInsideTheDwellCancelsTheWaitingReturnAndBurstsAtItsEnd() {
         var s = AgentMarkSequencer(start: 0)
         s.set(.command, at: 10)
         s.set(.thinking, at: 10.5)
         s.set(.command, at: 10.8)
-        // Past where the thinking would have started, it is still the command figure.
-        #expect(same(s.dots(at: 12.0), AgentMarkFrames.commandLoop(at: 12.0 - 10.2 - 0.2)))
-        #expect(same(s.dots(at: 15.0), AgentMarkFrames.commandLoop(at: 15.0 - 10.2 - 0.2)))
+        let dwellEnd = 10.2 + 1.46
+        // Until the dwell ends it is the same figure: the return never happens.
+        #expect(same(s.dots(at: 11.0), AgentMarkFrames.commandLoop(at: 11.0 - 10.2 - 0.2)))
+        #expect(same(s.dots(at: dwellEnd - 0.01), AgentMarkFrames.commandLoop(at: dwellEnd - 0.01 - 10.2 - 0.2)))
+        // The command that came after the return is a new step: it bursts, and
+        // the mark does not go back to thinking.
+        #expect(!s.dots(at: dwellEnd + 0.1).isEmpty)
+        #expect(same(s.dots(at: dwellEnd + 0.2 + eps), AgentMarkFrames.burst(at: 0)))
+        #expect(same(s.dots(at: dwellEnd + 0.4 + eps), AgentMarkFrames.commandLoop(at: 0)))
+        #expect(same(s.dots(at: dwellEnd + 3), AgentMarkFrames.commandLoop(at: 3 - 0.4)))
+    }
+
+    @Test func aDeferredRestartSurvivesALaterReturnAndAPlainCommand() {
+        // Command A, command B (a restart), brief thinking, command C (plain):
+        // C is a new step, so one burst is still owed at the dwell's end.
+        var s = AgentMarkSequencer(start: 0)
+        s.set(.command, at: 10)
+        s.set(.command, at: 10.4, restart: true)
+        s.set(.thinking, at: 10.6)
+        s.set(.command, at: 10.9)
+        let dwellEnd = 10.2 + 1.46
+        #expect(same(s.dots(at: 11.2), AgentMarkFrames.commandLoop(at: 11.2 - 10.2 - 0.2)))
+        #expect(same(s.dots(at: dwellEnd + 0.2 + eps), AgentMarkFrames.burst(at: 0)))
+        // The same without the plain command at the end: the return wins.
+        var ended = AgentMarkSequencer(start: 0)
+        ended.set(.command, at: 10)
+        ended.set(.command, at: 10.4, restart: true)
+        ended.set(.thinking, at: 10.6)
+        #expect(same(ended.dots(at: dwellEnd + 0.2 + eps), AgentMarkFrames.arrival(at: 0.48)))
+        // And a restart with nothing after it bursts.
+        var restart = AgentMarkSequencer(start: 0)
+        restart.set(.command, at: 10)
+        restart.set(.command, at: 10.4, restart: true)
+        #expect(same(restart.dots(at: dwellEnd + 0.2 + eps), AgentMarkFrames.burst(at: 0)))
+    }
+
+    @Test func aStepOnlyNowGettingItsIdIsNotANewStep() {
+        #expect(!AgentMarkSequencer.isNewCommandStep(from: nil, to: "c1"))
+        #expect(!AgentMarkSequencer.isNewCommandStep(from: "c1", to: nil))
+        #expect(!AgentMarkSequencer.isNewCommandStep(from: "c1", to: "c1"))
+        #expect(AgentMarkSequencer.isNewCommandStep(from: "c1", to: "c2"))
     }
 
     @Test func aRestartInsideTheDwellWaitsForItsEndAndThenBursts() {

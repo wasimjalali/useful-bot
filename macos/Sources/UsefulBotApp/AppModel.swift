@@ -2049,6 +2049,7 @@ final class AppModel: ObservableObject {
         // left over from the follower must not outlive it.
         backgroundWorking = false
         activity = .thinking
+        activityCall = nil
         threadError = nil
         stickyThreadError = nil
         sendErrors[bot.id] = nil
@@ -4382,6 +4383,7 @@ final class AppModel: ObservableObject {
             // reload below reads the session and decides.
             backgroundWorking = false
             activity = stored.activity
+            activityCall = stored.activityCall
             markWorking(botId, sendTasks[botId] != nil)
             durableEvents = transcriptCache[botId]?.events ?? []
             rebuildTranscript()
@@ -4430,6 +4432,7 @@ final class AppModel: ObservableObject {
         pending = false
         backgroundWorking = false
         activity = snapshot.projection.activity
+        activityCall = snapshot.projection.activityCall
         markWorking(snapshot.botId, false)
         seenTurnIds[snapshot.sessionId, default: []].formUnion(snapshot.seenTurnIds)
         // Exactly the snapshot's: its projection holds these turns and no
@@ -4739,6 +4742,7 @@ final class AppModel: ObservableObject {
         resentRowIds = []
         droppedMessageForRow = [:]
         activity = .thinking
+        activityCall = nil
         memoryNotes = nil
         memoryError = nil
         pending = false

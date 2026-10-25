@@ -818,6 +818,12 @@ public enum EveStream {
         return nil
     }
 
+    /// The call id an `action.input.appended` delta carries, if any.
+    static func callId(of data: JSONValue?) -> String? {
+        guard let id = data?["callId"]?.stringValue, !id.isEmpty else { return nil }
+        return String(id.prefix(80))
+    }
+
     /// The call id of the call `requestedToolName` names, if the event has one.
     static func requestedCallId(_ data: JSONValue?) -> String? {
         guard let actions = data?["actions"]?.arrayValue else { return nil }
@@ -921,7 +927,12 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     public private(set) var searchHits: [SearchChip] = []
     /// What the turn is doing right now. Reasoning and tool calls both reach
     /// us on this stream, so the working row can say which one it is.
-    public private(set) var activity: TurnActivity = .thinking
+    public private(set) var activity: TurnActivity = .thinking {
+        // A call id belongs to the step it came with. When the activity moves
+        // to anything else (thinking after a result, the reply, a new tool
+        // from a delta) the id of the step it left must not follow it.
+        didSet { if activity != oldValue { activityCall = nil } }
+    }
     /// MCP App widgets the live turn produced, shown in the transcript.
     public private(set) var widgets: [LiveWidget] = []
     /// Questions the bot asked with eve's `ask_question` that nobody has
@@ -1892,6 +1903,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 // call already gave this same tool.
                 if case .tool(name, _) = activity { break }
                 activity = .tool(name)
+                // The delta names its own call, and the request that follows
+                // carries the same id, so one step is one id from the start.
+                activityCall = EveStream.callId(of: event.data)
             }
         case "message.appended":
             let delta = event.messageDelta ?? ""
