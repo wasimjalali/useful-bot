@@ -712,7 +712,9 @@ def plan(quick):
     runs = CONFIG["runs"]
     cold = 2 if quick else runs["cold"]
     warm_short, warm_long = (4, 6) if quick else (runs["warmShort"], runs["warmLong"])
-    launches = []
+    # Untimed: parks the app on the short fixture, so the first cold launch
+    # opens there and not on the owner's chat the last run restored.
+    launches = [("prep", park())]
     for i in range(cold):
         for key, case in (("longTools", "cold_first_open_tools"), ("longReplies", "cold_first_open_replies")):
             launches.append((f"cold-{case}-{i + 1}", [step("pause", ms=CONFIG["pauseMs"])] + select(key, case) + park()))

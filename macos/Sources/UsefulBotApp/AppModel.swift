@@ -683,13 +683,15 @@ final class AppModel: ObservableObject {
             selectedBotId = loaded.bot?.id
             PerfHarness.shared?.mark("initial_selection", ["bot": selectedBotId ?? ""])
             phase = .ready
-            PerfHarness.shared?.run(model: self)
             // The chat the app opens on is read while the operator and composer
             // are: they share nothing with it.
             let opening = Task { @MainActor [weak self] in await self?.loadInitialChat() }
             await loadOperator()
             await refreshComposer()
             await opening.value
+            // Started once the launch chat is open: before it, the harness saw
+            // no chat and its first select raced the launch chat's open.
+            PerfHarness.shared?.run(model: self)
             await pollApprovals()
             // The first-run gate and the skipped-setup bar read these. Not
             // awaited: a cold live-model refresh can take seconds.
