@@ -23,7 +23,8 @@ the comparison.
   inputs labelled A or B at random (key in `runs/2026-10-25-pi/judge-batch-key.json`), with the run ids
   in file paths replaced by a neutral `run` so the path didn't name the engine. The baseline's earlier
   solo judgement of eve is kept in `runs/2026-10-25-eve-r3/judgements.json`; the numbers below use the
-  blind batch for both engines.
+  blind batch for both engines. Three eve scores differ from the solo judgement (t03 and t07 3, was
+  2; t09 2, was 3; mean 2.3, was 2.2). Pi's scores are the same in both files.
 - **Cost:** `cost.py` from the router's usage records at DeepSeek's published V4.1 Flash prices
   (`prices.json`); an upper bound, since the router records no cache hits.
 - **When:** Pi run 2026-10-25 17:07 to 17:12 CET, about five minutes.
@@ -55,16 +56,19 @@ judge passes it.
 - **Quality is level.** The judge's mean is 2.3 for eve and 2.2 for Pi in the same blind batch. Pi's
   lost points are style, not correctness: longer confirmations, an extra list, a reply that offered
   history nobody asked for. Pi's question in t09 and DeepWiki answer in t08 scored 3.
-- **Pi is faster overall** (141 s vs 172 s), mostly from the long chat (39 s vs 97 s): each of eve's
-  six turns took longer, and this eval doesn't break down where that time went. t07 is the exception: Pi took 38 s and 10 model requests to
+- **Pi is faster overall** (141 s vs 172 s), mostly from the long chat (39 s vs 97 s): eve was slower on
+  four of its six turns, most of all turns 4 and 5 (36 s and 25 s against 9 s and 2 s), and this eval
+  doesn't break down where that time went. t07 is the exception: Pi took 38 s and 10 model requests to
   create and test-run the routine (eve: 14 s), because it ran the routine once to check it.
-- **Cost is about 11% higher on Pi** ($0.069 vs $0.062 for all ten tasks), almost all of it t07's
-  extra test run and t04's search. Both are cents.
+- **Cost is about 11% higher on Pi** ($0.069 vs $0.062 for all ten tasks), mainly t07's extra
+  test run and t04's search (together $0.013 more; the long chat was $0.005 cheaper). Both are cents.
 
 ## Conclusion
 
 The Pi engine does the ten jobs at least as well as eve: every check passes, the judge's quality score
 is level, and the long chat is more than twice as fast. Nothing here argues against shipping PR #220.
+These are single runs per engine and task with one model judge, so small gaps are within noise: eve's
+t04 miss happened in 2 of 3 baseline runs, and Pi scored above eve only on t04 and t09.
 
 ## What changed because of it
 
