@@ -971,6 +971,10 @@ final class AppModel: ObservableObject {
             } catch BackendError.chat(let code, _) where code == "chat_not_found" {
                 guard generation == followGeneration else { return }
                 goneChatIds.insert(chatId)
+                // A gone chat refuses every send, and New chat on its empty
+                // screen only focused the composer: the owner was stuck. The
+                // screen becomes a new chat, so the next message starts one.
+                if chatId == currentChatId { openChat(nil) }
                 transcriptReady = true
                 threadError = BackendError.chatCopy(code)
                 return
