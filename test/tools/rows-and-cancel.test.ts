@@ -68,6 +68,8 @@ test("an .html write files the page and puts one page row in the chat, once per 
     assert.equal(row.path, first.path);
     assert.equal(row.key, `page:${row.mediaId}`);
     assert.equal(listMedia().filter((item) => item.kind === "page").length, 1);
+    // The Library item names the chat that wrote it.
+    assert.equal(listMedia().find((item) => item.id === row.mediaId)?.chatId, env.ctx.chatId);
     // Writing the page again keeps one Library item and the same row key.
     const keys: string[] = [];
     const again = fakeCtx({ chatId: "chat-rows" });
@@ -125,6 +127,7 @@ test("generate_image saves the image with its prompt, adds an image row, and the
     const item = listMedia().find((entry) => entry.id === out.imageId);
     assert.equal(item?.prompt, "a red fox in the snow");
     assert.equal(item?.botName, "Useful Bot");
+    assert.equal(item?.chatId, env.ctx.chatId);
     assert.ok(out.path && existsSync(out.path));
     assert.match(seen.session ?? "", /^[0-9a-f-]{36}$/);
     assert.ok(seen.signal instanceof AbortSignal);

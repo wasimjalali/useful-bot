@@ -983,9 +983,12 @@ public struct MediaItem: Codable, Equatable, Identifiable, Sendable {
     public let mime: String
     public let createdAt: String
     public let exists: Bool
+    /// The chat that made it; nil for an item with no chat to open.
+    public let chatId: String?
 
     public init(id: String, kind: String, path: String, botId: String, botName: String, title: String,
-                prompt: String, model: String, provider: String, mime: String, createdAt: String, exists: Bool) {
+                prompt: String, model: String, provider: String, mime: String, createdAt: String, exists: Bool,
+                chatId: String? = nil) {
         self.id = id
         self.kind = kind
         self.path = path
@@ -998,6 +1001,24 @@ public struct MediaItem: Codable, Equatable, Identifiable, Sendable {
         self.mime = mime
         self.createdAt = createdAt
         self.exists = exists
+        self.chatId = chatId
+    }
+}
+
+/// What the Library shows beside an item's chat.
+public enum MediaChatLink: Equatable, Sendable {
+    /// No chat on record: neither a button nor a note.
+    case none
+    case open(String)
+    /// The chat is no longer there.
+    case deleted
+}
+
+extension MediaItem {
+    /// "Open chat" while the chat exists, "Chat deleted" once it is gone.
+    public func chatLink(isGone: (String) -> Bool) -> MediaChatLink {
+        guard let chatId, !chatId.isEmpty else { return .none }
+        return isGone(chatId) ? .deleted : .open(chatId)
     }
 }
 

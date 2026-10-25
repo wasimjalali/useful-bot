@@ -393,6 +393,7 @@ struct LibraryDetail: View {
     let onLocate: () -> Void
     let onRegenerate: () -> Void
     let onTrash: () -> Void
+    @EnvironmentObject private var model: AppModel
     @State private var preview: NSImage?
     @State private var scene: ExcalidrawScene?
     @State private var liveReady = false
@@ -496,6 +497,7 @@ struct LibraryDetail: View {
                         }
                         NativeButton(item.exists ? "Move to Trash" : "Remove", kind: .secondary, small: true, action: onTrash)
                     }
+                    chatLink
                 }
                 .padding(.top, 4)
             }
@@ -553,6 +555,26 @@ struct LibraryDetail: View {
         .help("Open in your browser")
         .accessibilityLabel(Text(item.displayTitle))
         .accessibilityHint("Opens the page in your browser")
+    }
+
+    /// The chat that made the item: Open chat, or "Chat deleted" once it is gone.
+    @ViewBuilder
+    private var chatLink: some View {
+        switch item.chatLink(isGone: model.chatIsGone) {
+        case .none:
+            EmptyView()
+        case .deleted:
+            Text("Chat deleted")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.inkFaint)
+        case .open(let chatId):
+            Button("Open chat") { model.openChat(chatId) }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.C.ink)
+                .pointerOnHover()
+                .accessibilityIdentifier("library-open-chat")
+        }
     }
 
     private func fact(_ label: String, _ value: String) -> some View {

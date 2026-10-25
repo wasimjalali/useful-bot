@@ -33,7 +33,7 @@ export default defineTool({
  */
 async function showPage(path: string, html: string, ctx: ToolCtx): Promise<string> {
   try {
-    const { item } = recordPage({ path, html, botId: ctx.botId, botName: ctx.snapshot.context.bot.name });
+    const { item } = recordPage({ path, html, botId: ctx.botId, botName: ctx.snapshot.context.bot.name, chatId: ctx.chatId });
     if (item.forgotten) return "The owner removed this page from their Library, so it is not shown again.";
     // Once per page per chat: the row key repeats, so a rewrite does not
     // post a second card, and a card a failed write never posted is posted
