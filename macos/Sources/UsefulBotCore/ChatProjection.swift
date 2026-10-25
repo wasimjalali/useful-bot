@@ -167,6 +167,9 @@ public struct ChatProjection: Equatable, Sendable {
         case "tool.result": toolResult(event)
         case "row":
             if let row = event.row { upsert(row) }
+        case "row.removed":
+            // An attempt Pi retried and hid from the model: its streamed bubble goes.
+            if let rowId = event.rowId { rows.removeAll { $0.rowId == rowId } }
         case "input.requested":
             if let question = event.question { openQuestion = question }
         case "input.resolved":

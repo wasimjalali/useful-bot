@@ -127,6 +127,18 @@ private func event(_ json: String) -> ChatEvent {
         #expect(projection.retryableFailureRowId == nil)
     }
 
+    @Test func anAttemptPiRetriedLosesItsBubbleAndTheAnswerStreamsUnderTheNextRow() {
+        var projection = empty(tailSeq: 0)
+        projection.apply(event(#"{"seq":1,"epoch":"\#(epoch)","chatId":"c","turnId":"t1","type":"turn.started","origin":"owner","clientId":"c1"}"#))
+        projection.apply(event(#"{"seq":2,"epoch":"\#(epoch)","chatId":"c","turnId":"t1","type":"message.delta","rowId":"t1:a0","delta":"Here is the pl"}"#))
+        #expect(projection.rows.contains { $0.rowId == "t1:a0" })
+        // The stream dropped and Pi retried the attempt: the engine says the cut bubble goes.
+        projection.apply(event(#"{"seq":3,"epoch":"\#(epoch)","chatId":"c","turnId":"t1","type":"row.removed","rowId":"t1:a0"}"#))
+        #expect(!projection.rows.contains { $0.rowId == "t1:a0" })
+        projection.apply(event(#"{"seq":4,"epoch":"\#(epoch)","chatId":"c","turnId":"t1","type":"message.final","rowId":"t1:a1","text":"Here is the plan."}"#))
+        #expect(projection.rows.filter { $0.kind == .assistant }.map(\.text) == ["Here is the plan."])
+    }
+
     @Test(.enabled(if: ChatFixtures.available)) func messagesSentDuringATurnQueueAndACancelHandsThemBackUnsent() throws {
         var projection = empty(tailSeq: 40)
         var queuedMidTurn: [TranscriptRow] = []
