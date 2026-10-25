@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
@@ -104,6 +104,39 @@ test("read_file fences file text as untrusted data and flags an offset overshoot
   } finally {
     if (previous === undefined) delete process.env.UB_WORKSPACE_ROOT;
     else process.env.UB_WORKSPACE_ROOT = previous;
+  }
+});
+
+test("read_file reads only its window: a huge file costs nothing, multi-byte text pages cleanly", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-read-big-"));
+  const previous = process.env.UB_WORKSPACE_ROOT;
+  process.env.UB_WORKSPACE_ROOT = root;
+  try {
+    // A 2 GB sparse file: reading it whole would block the engine for seconds.
+    writeFileSync(join(root, "disk.img"), "start of the image\n");
+    truncateSync(join(root, "disk.img"), 2 * 1024 * 1024 * 1024);
+    const t0 = Date.now();
+    const big = await run<{ text: string; truncated: boolean }>(readFile, { path: "disk.img" });
+    assert.ok(Date.now() - t0 < 500, "a huge file is not read whole");
+    assert.equal(big.text.includes("start of the image"), true);
+    assert.equal(big.truncated, true);
+    await assert.rejects(run(readFile, { path: "disk.img", offset: 3_000_000 }), /read_offset_too_far/);
+
+    // Multi-byte text: the window is exact characters, never a broken one at the cut.
+    writeFileSync(join(root, "euro.txt"), "€".repeat(20_000));
+    const first = await run<{ text: string; truncated: boolean }>(readFile, { path: "euro.txt", limit: 100 });
+    assert.equal(first.truncated, true);
+    assert.equal(first.text.includes("\uFFFD"), false);
+    const tail = await run<{ text: string; truncated: boolean; offsetOutOfRange: boolean }>(readFile, { path: "euro.txt", offset: 19_990 });
+    assert.equal(tail.truncated, false);
+    assert.equal(tail.offsetOutOfRange, false);
+    assert.equal((tail.text.match(/€/g) ?? []).length, 10);
+    const past = await run<{ offsetOutOfRange: boolean }>(readFile, { path: "euro.txt", offset: 20_001 });
+    assert.equal(past.offsetOutOfRange, true);
+  } finally {
+    if (previous === undefined) delete process.env.UB_WORKSPACE_ROOT;
+    else process.env.UB_WORKSPACE_ROOT = previous;
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
