@@ -33,6 +33,12 @@ const EXCLUDE = [
   /^docs\/plan\/pi-engine\/mockups\//,
 ];
 
+// Top-level entries of the public clone the snapshot never replaces.
+const PUBLIC_ONLY = new Set([".git", ".github"]);
+if (execFileSync("git", ["ls-files", ".github"], { cwd: ROOT, encoding: "utf8" }).trim()) {
+  throw new Error(".github is tracked here too: decide which copy the public repo keeps");
+}
+
 const { values } = parseArgs({
   options: {
     clone: { type: "string" },
@@ -69,8 +75,9 @@ if (secrets.length) throw new Error(`refusing to publish files that look like se
 const stage = mkdtempSync(path.join(tmpdir(), "ub-source-"));
 try {
   for (const file of files) cpSync(path.join(ROOT, file), path.join(stage, file), { verbatimSymlinks: true });
-  // The public tree is exactly the stage: everything else in the clone goes.
-  for (const entry of readdirSync(clone)) if (entry !== ".git") rmSync(path.join(clone, entry), { recursive: true, force: true });
+  // The public tree is exactly the stage, except what lives only in the public
+  // repo: its own CI (`.github/`, added there) would otherwise be deleted.
+  for (const entry of readdirSync(clone)) if (!PUBLIC_ONLY.has(entry)) rmSync(path.join(clone, entry), { recursive: true, force: true });
   cpSync(stage, clone, { recursive: true, verbatimSymlinks: true });
 } finally {
   rmSync(stage, { recursive: true, force: true });
